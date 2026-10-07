@@ -337,8 +337,44 @@ test("first use without a character stays quiet across polls and binds after the
     env.setPublication({ ...lifecyclePublication(), characterPresentation });
     await env.tick();
     assert.equal(events.at(-1).status, "ready");
-    assert.equal(prepared.length, 1);
+    assert.equal(prepared.length, 2, "ready transition binds services that were unavailable during setup");
+    await env.tick();
+    assert.equal(prepared.length, 2, "unchanged ready state does not reload services");
   } finally {
+    client.dispose();
+  }
+});
+
+test("ready transition awaits services that were unavailable when the character first appeared", async () => {
+  const env = harness();
+  const entered = deferred(), binding = deferred();
+  const events = [];
+  let ready = false, bindings = 0;
+  const characterPresentation = { generationId: "generation-1", characterId: "alpha" };
+  env.setPublication({ ...lifecyclePublication(1, "running", "initializing"), characterPresentation });
+  const client = env.create(event => events.push(event), {
+    prepareGeneration: async () => {
+      bindings += 1;
+      if (ready) { entered.resolve(); await binding.promise; }
+      return true;
+    },
+  });
+  try {
+    await client.start();
+    assert.equal(events.at(-1).status, "initializing");
+    ready = true;
+    env.setPublication({ ...lifecyclePublication(), characterPresentation });
+    const poll = env.tick();
+    await entered.promise;
+    assert.equal(events.at(-1).status, "rehydrating");
+    await assert.rejects(client.send({ message: "too early" }), /CHAT_NOT_READY/);
+    binding.resolve();
+    await poll;
+    assert.equal(events.at(-1).status, "ready");
+    await env.tick();
+    assert.equal(bindings, 2);
+  } finally {
+    binding.resolve();
     client.dispose();
   }
 });

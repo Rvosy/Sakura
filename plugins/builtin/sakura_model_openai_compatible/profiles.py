@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from copy import deepcopy
+from pathlib import Path
 import re
 import threading
 import uuid
@@ -345,9 +346,8 @@ class ProviderProfiles:
     def register_settings(self):
         settings = self._context.get("sakura.host.settings")
         settings.register({"sectionId": "connections", "title": "模型服务", "order": 10,
-            "presentation": {"component": "connection-editor", "serviceKey": SERVICE_KEY, "valueField": "connections",
-                             "requestField": "probeRequest", "resultField": "probeResult", "timeoutSection": "request", "timeoutField": "timeout_seconds",
-                             "probeAction": "probe", "statusAction": "probeStatus", "cancelAction": "cancelProbe"},
+            "presentation": {"component": "module", "standalone": True,
+                             "source": Path(__file__).with_name("frontend").joinpath("connections.js").read_text(encoding="utf-8")},
             "fields": [{"key": "connections", "label": "连接", "type": "data", "default": []},
                        {"key": "probeRequest", "label": "测试请求", "type": "data", "default": {}},
                        {"key": "probeResult", "label": "测试结果", "type": "data", "default": {}, "readonly": True}],

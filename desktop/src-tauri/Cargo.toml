@@ -35,7 +35,7 @@ percent-encoding = "=2.3.2"
 rfd = "=0.15.4"
 time = { version = "=0.3.53", features = ["formatting", "local-offset", "parsing"] }
 rodio = { version = "=0.22.2", default-features = false, features = ["playback", "wav"] }
-cpal = "=0.17.3"
+sakura-asr-native = { path = "../../plugins/builtin/sakura_asr_hub/native" }
 image = { version = "=0.25.10", default-features = false, features = ["jpeg"] }
 uuid = { version = "=1.23.5", features = ["v4"] }
 xcap = "=0.9.6"

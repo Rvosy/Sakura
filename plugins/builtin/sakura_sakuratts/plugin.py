@@ -49,9 +49,11 @@ def character_voice(character, character_id, tone='中性'):
     for key, label in (('toneRefs', '参考音频表'), ('gptModel', 'GPT 模型'), ('sovitsModel', 'SoVITS 模型')):
         if not extension.get(key):
             raise ValueError(f'角色尚未配置{label}，请在角色工坊中添加。')
-    resolve = lambda key: str(character.resolve_resource(character_id, extension[key]))
+    package_dir = Path(manifest_path).parent
+    resources = {key: Path(character.resolve_resource(character_id, extension[key]))
+                 for key in ('toneRefs', 'gptModel', 'sovitsModel')}
     references = []
-    for line in Path(resolve('toneRefs')).read_text(encoding='utf-8-sig').splitlines():
+    for line in resources['toneRefs'].read_text(encoding='utf-8-sig').splitlines():
         if not line.strip() or line.lstrip().startswith('#'):
             continue
         parts = [part.strip() for part in line.split('|')]
@@ -62,8 +64,14 @@ def character_voice(character, character_id, tone='中性'):
         raise ValueError('角色尚未配置参考音频。')
     reference = next((r for r in references if r[3] == tone),
                      next((r for r in references if r[3] == '中性'), references[0]))
-    return {'gpt': resolve('gptModel'), 'sovits': resolve('sovitsModel'),
-            'ref_audio_path': str(character.resolve_resource(character_id, reference[0])),
+    reference_paths = {row[0]: Path(character.resolve_resource(character_id, row[0])) for row in references}
+    character.declare_resources(character_id, {'kind': 'tts',
+        'paths': [path.relative_to(package_dir).as_posix()
+                  for path in (*resources.values(), *reference_paths.values())],
+        'pluginRequirements': [{'kind': 'tts', 'type': 'gpt-sovits.models@1',
+            'plugins': [{'id': PROVIDER_ID, 'name': 'SakuraTTS'}]}]})
+    return {'gpt': str(resources['gptModel']), 'sovits': str(resources['sovitsModel']),
+            'ref_audio_path': str(reference_paths[reference[0]]),
             'prompt_lang': reference[1].lower(), 'prompt_text': reference[2],
             'text_lang': extension.get('textLang', 'ja')}
 

@@ -1375,42 +1375,6 @@ input[type="checkbox"]:hover:not(:disabled) {
   grid-template-columns: minmax(0, 1fr);
 }
 
-#ttsProviderSettings {
-  display: grid;
-  gap: 14px;
-  min-width: 0;
-}
-
-#ttsProviderSettings > .plugin-voice-section {
-  padding: 0;
-  border: 0;
-  border-radius: 0;
-  background: transparent;
-}
-
-#ttsProviderSettings > .plugin-voice-section > legend {
-  margin: 0;
-  padding: 0;
-  color: var(--sakura-secondary-text);
-  background: transparent;
-  border-radius: 0;
-}
-
-#ttsProviderSettings > .plugin-voice-section--single > legend {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  padding: 0;
-  margin: -1px;
-  overflow: hidden;
-  clip-path: inset(50%);
-  white-space: nowrap;
-}
-
-.plugin-voice-section[hidden] {
-  display: none;
-}
-
 .voice-advanced-settings {
   display: grid;
   gap: 10px;

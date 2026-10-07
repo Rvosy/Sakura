@@ -293,7 +293,6 @@
                   <button id="ttsPluginSettings" type="button" class="voice-engine-settings" aria-label="打开角色语音插件设置" data-tooltip="插件设置" disabled><span class="sakura-icon icon-settings" aria-hidden="true"></span></button>
                 </div>
               </div>
-              <div id="ttsProviderSettings"></div>
             </fieldset>
           </div>
           <fieldset id="asrSettings" class="settings-group">
@@ -597,23 +596,7 @@
       </section>
     </main>
 
-    <div id="asrInputControlsHome" hidden>
-      <div id="asrInputControls" class="asr-input-controls">
-        <div class="setting-row">
-          <label class="setting-row-text" for="asrInputDevice">
-            <span class="setting-title">麦克风</span>
-          </label>
-          <select id="asrInputDevice"><option value="">系统默认</option></select>
-        </div>
-        <div class="plugin-setting-actions">
-          <button id="asrRefreshDevices" type="button" class="secondary-button">刷新设备</button>
-          <button id="asrTestStart" type="button" class="secondary-button">开始测试</button>
-          <button id="asrTestCancel" type="button" class="secondary-button" hidden>取消测试</button>
-        </div>
-        <meter id="asrTestLevel" min="0" max="1" value="0" aria-label="实际麦克风音量" hidden></meter>
-        <output id="asrTestResult" class="asr-test-result" role="status" aria-live="polite"></output>
-      </div>
-    </div>
+
 
     <div id="toastStack" class="toast-stack" aria-live="polite"></div>
 

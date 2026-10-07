@@ -187,8 +187,8 @@ class SakuraMem0Runtime:
                         {"key": "layer", "label": "分层", "type": "string"},
                         {"key": "category", "label": "类别", "type": "string"},
                         {"key": "source", "label": "来源", "type": "string"},
-                        {"key": "importance", "label": "重要度", "type": "number"},
-                        {"key": "confidence", "label": "置信度", "type": "number"},
+                        {"key": "importance", "label": "重要度", "type": "number", "format": "percent"},
+                        {"key": "confidence", "label": "置信度", "type": "number", "format": "percent"},
                         {"key": "updatedAt", "label": "更新时间", "type": "datetime"},
                     ],
                     "fields": [

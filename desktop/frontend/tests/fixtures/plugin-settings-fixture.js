@@ -209,7 +209,7 @@ export function featureFixture(invoke, options = {}) {
     removeOverlayAfterExit: async (overlay) => overlay.remove(), showPage() {},
     isCharacterTransitioning: () => false, hasPendingCharacterSelection: () => false,
     refreshSelect() {}, closeSelects() {}, focusSelect: (control) => control?.focus(),
-    replayMotion() {}, getVoiceController: () => null,
+    replayMotion() {},
     ...options,
   });
   return {

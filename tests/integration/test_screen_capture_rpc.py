@@ -77,12 +77,19 @@ class ScreenRpc:
         self.screen.close()
         self.client_peer.close()
         self.host_peer.close()
-        for sock in self.sockets:
-            sock.shutdown(socket.SHUT_RDWR)
-        for stream in self.streams:
-            stream.close()
-        for sock in self.sockets:
-            sock.close()
+        # One full shutdown wakes both socketpair readers; macOS reports
+        # ENOTCONN if the disconnected peer is shut down again.
+        try:
+            self.sockets[0].shutdown(socket.SHUT_RDWR)
+            for peer in (self.client_peer, self.host_peer):
+                for worker in (peer._reader, peer._writer):
+                    worker.join(3)
+                    assert not worker.is_alive(), "Screen RPC worker survived cleanup"
+        finally:
+            for stream in self.streams:
+                stream.close()
+            for sock in self.sockets:
+                sock.close()
 
 
 @pytest.fixture

@@ -38,7 +38,7 @@ function showPage(id) {
   feature?.onPageChanged(id);
 }
 function dirty(){document.getElementById('applyButton').disabled=!(feature?.isDirty()||models?.isDirty());}
-feature=createPluginSettingsFeature({document,window,invoke:window.nativeInvoke,onDirty:dirty,onError:(error,message)=>{window.lastError=message;if(error)errorDialog.show({error,message});else errorDialog.close();},notify:()=>{},confirmAction:async()=>true,enhanceSelect,refreshSelect,closeSelects,focusSelect,replayMotion:()=>{},getVoiceController:()=>null,removeOverlayAfterExit:async e=>e.remove(),showPage,isCharacterTransitioning:()=>false,hasPendingCharacterSelection:()=>false,onModelCatalogChanged:()=>models?.refreshChoices()});
+feature=createPluginSettingsFeature({document,window,invoke:window.nativeInvoke,onDirty:dirty,onError:(error,message)=>{window.lastError=message;if(error)errorDialog.show({error,message});else errorDialog.close();},notify:()=>{},confirmAction:async()=>true,enhanceSelect,refreshSelect,closeSelects,focusSelect,replayMotion:()=>{},removeOverlayAfterExit:async e=>e.remove(),showPage,isCharacterTransitioning:()=>false,hasPendingCharacterSelection:()=>false,onModelCatalogChanged:()=>models?.refreshChoices()});
 models=createProviderSettingsFeature({document,invoke:window.nativeInvoke,onDirty:dirty,onError:e=>{throw e;},enhanceSelect,getProviderCatalog:()=>feature.providerCatalog()});
 feature.initialize(await window.nativeInvoke('settings_plugins_get')); await models.initialize();
 window.feature=feature; window.models=models; window.showPage=showPage;
@@ -74,6 +74,8 @@ def run():
         with tempfile.TemporaryDirectory(prefix='sakura-contributions-') as temporary, sync_playwright() as pw:
             roots = RuntimeRoots(Path(temporary)/'distribution', Path(temporary)/'user')
             roots.user_root.mkdir()
+            roots.distribution_root.mkdir()
+            shutil.copy2(ROOT / "VERSION", roots.distribution_root / "VERSION")
             # Match desktop initialization instead of treating fixture config as a legacy install.
             (roots.user_root/'config').mkdir()
             shutil.copy2(ROOT/'desktop/src-tauri/src/new_user_plugin_migrations.json', roots.user_root/'config/plugin-migrations.json')
@@ -116,6 +118,9 @@ def run():
                 production=(ROOT/'desktop/frontend/settings/settings.js').read_text(encoding='utf-8')
                 save_source='async function saveRuntimeSettings('+production.split('async function saveRuntimeSettings(',1)[1].split('\nfunction collectThemeSettings',1)[0]
                 page.route('**/settings/settings.js',lambda route:route.fulfill(content_type='text/javascript',body=SCRIPT.replace('/* SAVE_SETTINGS */', save_source)))
+                csp = json.loads((ROOT/'desktop/src-tauri/tauri.conf.json').read_text())['app']['security']['csp']
+                page.route('**/settings/', lambda route: route.fulfill(content_type='text/html',
+                    headers={'Content-Security-Policy': csp}, body=(ROOT/'desktop/frontend/settings/index.html').read_text()))
                 page.goto(origin+'/desktop/frontend/settings/');page.wait_for_selector('body[data-ready="true"]')
                 expect(page.locator('[data-provider-field="api_key"]')).to_have_value('')
                 expect(page.locator('[data-provider-field="api_key"]')).to_have_attribute('placeholder','留空保留原密钥')
@@ -224,6 +229,34 @@ def run():
                 assert [m['modelId'] for m in saved['models']]==['fixture-model','discovered-model','manual-model']
                 assert saved['models'][0]['contextWindowTokens']==96000
                 assert page.evaluate('numericValues.decimal') == 0.375
+                page.evaluate("""async () => {
+                  const {importPluginModule} = await import('../core/plugin-module-loader.js');
+                  const playback = await importPluginModule(await (await fetch('/plugins/builtin/sakura_tts_hub/frontend/playback.mjs')).text());
+                  const calls=[], events=new Map();
+                  const tts=playback.createTtsController({invoke:async(name,args)=>{calls.push(name);return {};},
+                    listen:async(name,handler)=>{events.set(name,handler);return ()=>events.delete(name);},errorText:String});
+                  await tts.start(); tts.beginReply('browser-module-playback',[]); tts.cancel(); tts.dispose();
+                  if(events.size || !calls.includes('tts_cancel_synthesis')) throw new Error('playback module lifecycle failed');
+                  const input=await importPluginModule(await (await fetch('/plugins/builtin/sakura_asr_hub/frontend/input.js')).text());
+                  const values={selectedProviderId:'fixture.asr',inputDeviceId:'disconnected'};
+                  const lifetime=new AbortController();
+                  const asr=await input.mount({document,signal:lifetime.signal,
+                    importModule:path=>import(new URL('../'+path,location.href)),
+                    invoke:async name=>name==='settings_asr_get'?{providers:[{providerId:'fixture.asr',label:'ASR'}]}:
+                      {devices:[{id:'usb',label:'USB'}],defaultDeviceId:'usb'},listen:async()=>()=>{},
+                    read:key=>values[key],write:(key,value)=>values[key]=value,
+                    enhanceSelect(){},refreshSelect(){},onError:error=>{throw error;}});
+                  document.body.append(asr.element); asr.update();
+                  const device=asr.element.querySelector('[aria-label="麦克风"]');
+                  await new Promise(resolve=>{
+                    const observer=new MutationObserver(ready);
+                    function ready(){if([...device.options].some(option=>option.value==='usb')){observer.disconnect();resolve();}}
+                    observer.observe(device,{childList:true});ready();
+                  });
+                  device.value='usb'; device.dispatchEvent(new Event('change'));
+                  if(values.inputDeviceId!=='usb') throw new Error('device draft not owned by module');
+                  lifetime.abort(); asr.dispose();
+                }""")
                 assert not errors, errors
                 page.evaluate('numericForm.dispose();feature.dispose();models.dispose()');browser.close()
             finally: app.close()

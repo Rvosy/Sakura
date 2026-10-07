@@ -70,17 +70,12 @@ def requirements_for_manifest(manifest, *, include_tts=True):
         visual_types.add("sakura.visual.portrait@1")
         requirements.append({"kind": "visual", "type": "sakura.visual.portrait@1", "plugins": [{"id": "sakura.portrait", "name": "立绘"}]})
     if include_tts:
-        mapping = lambda value: value if isinstance(value, Mapping) else {}
-        voice = mapping(manifest.get("voice"))
-        extensions = mapping(manifest.get("extensions"))
-        shared = mapping(extensions.get("sakura.tts.gpt-sovits"))
-        # This is the existing shared model-resource contract, not a demand to
-        # install its namesake provider. Genie can consume it via conversion.
-        if (shared.get("gptModel") or voice.get("gpt_model")) and (shared.get("sovitsModel") or voice.get("sovits_model")):
-            requirements.append({"kind": "tts", "type": GPT_SOVITS_MODELS, "plugins": [
-                {"id": "sakura.tts.gpt-sovits", "name": "GPT-SoVITS"}, {"id": "sakura.tts.genie", "name": "Genie"}]})
-        if mapping(extensions.get("sakura.tts.genie")).get("onnxModelDir"):
-            requirements.append({"kind": "tts", "type": GENIE_ONNX, "plugins": [{"id": "sakura.tts.genie", "name": "Genie"}]})
+        from app.config.extension_resources import parse_extension_resources
+        from app.config.character_packages import legacy_voice_requirements
+        declarations = parse_extension_resources(manifest.get("extensionResources", {}))
+        for declaration in declarations.values():
+            requirements.extend(declaration["pluginRequirements"])
+        requirements.extend(legacy_voice_requirements(manifest, declarations))
     merged = {}
     for item in requirements:
         if item["kind"] == "visual" and item["type"] not in visual_types:

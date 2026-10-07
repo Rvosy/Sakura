@@ -7,6 +7,7 @@ import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any, Callable
+from collections.abc import Mapping
 
 from app.core_host.screen_host import caller_identity
 
@@ -45,21 +46,41 @@ class SpeechHostService:
         self._closed = False
         self._switching_character = False
 
-    def begin(self, character_id: str, history_entry_id: str, segment_index: int) -> dict[str, str]:
+    def cache_status(self, headroom: int = 0) -> dict[str, Any]:
+        caller_identity()
+        if type(headroom) is not int or headroom < 0:
+            raise SpeechHostError("SPEECH_REQUEST_INVALID")
+        with self._lock:
+            return self._boundary().cache_status(headroom)
+
+    def cache_page(self, character_id: str, before_cursor: str | None, limit: int) -> dict[str, Any]:
+        caller_identity()
+        with self._lock:
+            return self._boundary().cache_page(character_id, before_cursor, limit)
+
+    def _boundary(self):
+        boundary = self._boundary_provider()
+        if self._closed or self._switching_character or boundary is None:
+            raise SpeechHostError("SPEECH_UNAVAILABLE")
+        return boundary
+
+    def begin(self, character_id: str, history_entry_id: str, segment_index: int,
+              options: Mapping[str, Any] | None = None) -> dict[str, str]:
         owner = caller_identity()
         if not isinstance(character_id, str):
             raise SpeechHostError("SPEECH_REQUEST_INVALID")
-        boundary = self._boundary_provider()
-        if boundary is None:
-            raise SpeechHostError("SPEECH_UNAVAILABLE")
+        options = {} if options is None else options
+        if (not isinstance(options, Mapping) or set(options) - {"background", "exportAudio"}
+                or any(type(value) is not bool for value in options.values())):
+            raise SpeechHostError("SPEECH_REQUEST_INVALID")
+        background, export_audio = options.get("background", False), options.get("exportAudio", True)
         operation_id = "speech-" + uuid.uuid4().hex
         job_id = "speech-job-" + uuid.uuid4().hex
         with self._lock:
-            if self._closed or self._switching_character:
-                raise SpeechHostError("SPEECH_UNAVAILABLE")
+            boundary = self._boundary()
             resolved_character = boundary.authorize_history_segment(
                 operation_id, history_entry_id, segment_index,
-                character_id=character_id.strip() or None,
+                character_id=character_id.strip() or None, background=background,
             )
             job = _SpeechJob(owner, boundary, operation_id, resolved_character,
                              history_entry_id, segment_index)
@@ -75,9 +96,9 @@ class SpeechHostService:
                 with self._lock:
                     if job.cancelled or self._closed or self._jobs.get(job_id) is not job:
                         raise SpeechHostError("TTS_SYNTHESIS_CANCELLED")
-                    artifact = self._export_audio(owner, recording)
                     job.result = {
-                        "artifact": artifact, "recordingId": recording.recording_id,
+                        **({"artifact": self._export_audio(owner, recording)} if export_audio else {}),
+                        "recordingId": recording.recording_id,
                         "characterId": job.character_id, "historyEntryId": job.entry_id,
                         "segmentIndex": job.segment_index,
                     }
@@ -125,7 +146,7 @@ class SpeechHostService:
     def _cancel(self, job: _SpeechJob) -> None:
         job.cancelled = True
         job.boundary.cancel_speech(job.operation_id)
-        if job.result is not None:
+        if job.result is not None and "artifact" in job.result:
             self._release_artifact(job.result["artifact"]["artifactId"])
             job.result = None
 

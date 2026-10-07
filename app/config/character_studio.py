@@ -1991,24 +1991,8 @@ def _validate_package_local_paths(package_dir: Path) -> None:
         _check_local_path(package_dir, voice.get("tone_refs"), "语气参考表")
         _check_local_path(package_dir, voice.get("gpt_model"), "GPT 模型")
         _check_local_path(package_dir, voice.get("sovits_model"), "SoVITS 模型")
-    extensions = raw.get("extensions")
-    if isinstance(extensions, dict):
-        for plugin_id in (_GPT_SOVITS_EXTENSION, "sakura.tts.genie"):
-            extension = extensions.get(plugin_id)
-            if not isinstance(extension, dict):
-                continue
-            _check_local_path(package_dir, extension.get("toneRefs"), f"{plugin_id} 语气参考表")
-            _check_local_path(package_dir, extension.get("gptModel"), f"{plugin_id} GPT 模型")
-            _check_local_path(package_dir, extension.get("sovitsModel"), f"{plugin_id} SoVITS 模型")
-            onnx_dir = extension.get("onnxModelDir")
-            if isinstance(onnx_dir, str) and onnx_dir.strip():
-                resolved = resolve_workspace_path(
-                    package_dir,
-                    onnx_dir,
-                    f"{plugin_id} ONNX 模型目录",
-                )
-                if not resolved.is_dir():
-                    raise ValueError(f"{plugin_id} ONNX 模型目录不存在：{onnx_dir}")
+    from app.config.extension_resources import parse_extension_resources, extension_resource_files
+    extension_resource_files(package_dir, parse_extension_resources(raw.get("extensionResources", {})))
 
 
 def _check_local_path(package_dir: Path, value: object, label: str) -> None:

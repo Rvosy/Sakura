@@ -487,6 +487,7 @@ def test_import_responses_report_missing_plugins_and_genie_compatibility(tmp_pat
     import shutil
     from types import SimpleNamespace
     from app.plugins.inventory import PluginInventory
+    shutil.copy2(Path(__file__).resolve().parents[2] / "VERSION", tmp_path / "VERSION")
     inventory = PluginInventory(tmp_path)
     application = SimpleNamespace(inventory=inventory.scan)
     boundary = CharacterSettingsBoundary(GENERATION, CREDENTIAL, tmp_path, plugin_application_provider=lambda: application)

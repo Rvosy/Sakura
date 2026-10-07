@@ -4,6 +4,7 @@ import json
 import io
 import shutil
 import time
+import threading
 import wave
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -12,7 +13,6 @@ import pytest
 
 from app.plugin_sdk.sakura_tools import ToolRegistry
 from app.core_host.asr_boundary import ASRBoundary
-from app.core_host import asr_boundary
 from app.core_host.audio_input import AudioInputError, AudioInputResources
 from app.core_host.plugin_runtime_application import PluginRuntimeApplication
 from app.plugins.host_services import HOST_CALLER
@@ -44,7 +44,7 @@ def runtime(tmp_path):
     distribution = tmp_path / "distribution"
     bundled = distribution / "plugins" / "builtin"
     bundled.mkdir(parents=True)
-    shutil.copytree(Path(__file__).parents[2] / "plugins/builtin/sakura_asr_hub", bundled / "hub")
+    shutil.copytree(Path(__file__).parents[2] / "plugins/builtin/sakura_asr_hub", bundled / "hub", ignore=shutil.ignore_patterns("native", "__pycache__"))
     for name in ("one", "two"):
         root = bundled / name
         root.mkdir()
@@ -94,6 +94,8 @@ class Provider:
     def poll(self, job_id): return self.jobs[job_id]
     def cancel(self, job_id): return True  # Native reader cannot be interrupted.
     def probe(self): return {"reading":self.reading, "jobs":len(self.jobs)}
+    def access_input(self):
+        return self.hub.input("capture_target", {"recordingId":"record-1"})
     def impersonate(self):
         return self.hub.registerProvider({"providerId":"test.asr.one", "serviceKey":"test.asr.one.service", "label":"spoofed", "processingLocation":"remote"})
 
@@ -101,7 +103,7 @@ class Plugin:
     def setup(self, context):
         provider = Provider(context)
         service = "test.asr.NAME.service"
-        context.provide(service, provider, exports=("status","warmup","begin","poll","cancel","probe","impersonate","fail_warmup"))
+        context.provide(service, provider, exports=("status","warmup","begin","poll","cancel","probe","impersonate","access_input","fail_warmup"))
         context.get("sakura.asr").registerProvider({"providerId":"test.asr.NAME", "serviceKey":service, "label":"NAME", "processingLocation":"local"})
 '''.replace("NAME", name), encoding="utf-8")
     roots = RuntimeRoots(distribution, tmp_path / "user")
@@ -152,7 +154,7 @@ def test_warmup_rpc_failure_reaches_input_poll_with_source_diagnostics(runtime):
 def test_real_process_route_selection_and_exactly_one_draft_result(runtime):
     app, boundary, request, _ = runtime
     path = ready(request)
-    assert boundary._tasks["record-1"].language == "ja"
+    assert app.call_service("sakura.asr", "input", "poll", {"recordingId": "record-1"})["language"] == "ja"
     assert request("asr.settings.save", language="zh")["error"]["code"] == "ASR_SELECTION_INVALID"
     # Switching the selected engine affects the next recording, not this audio.
     assert request("asr.settings.save", selectedProviderId="test.asr.two")["ok"]
@@ -218,11 +220,11 @@ def test_settings_test_routes_explicit_provider_and_device_without_saving_or_dra
     assert request("asr.input.poll", recordingId="test-input")["payload"]["state"] == "consumed"
     settings = request("asr.settings.get")["payload"]
     assert settings["selectedProviderId"] == "test.asr.one" and settings["inputDeviceId"] == "device-saved"
-    assert boundary._tasks["test-input"].language == "en"
+    assert app.call_service("sakura.asr", "input", "poll", {"recordingId": "test-input"})["language"] == "en"
     assert app.call_service("test.asr.one.service", "probe")["jobs"] == 0
     until(lambda: path.exists(), lambda exists: not exists)
     ready(request, "draft-after-test")
-    assert boundary._tasks["draft-after-test"].input_device_id == "device-saved"
+    assert app.call_service("sakura.asr", "input", "poll", {"recordingId": "draft-after-test"})["inputDeviceId"] == "device-saved"
     request("asr.input.capture_discarded", recordingId="draft-after-test")
 
 
@@ -237,7 +239,8 @@ def test_hub_availability_does_not_depend_on_provider_readiness(runtime):
     assert not unavailable["enabled"]
     assert "sakura.asr" in unavailable["diagnostics"]["diagnostic"]
     result = request("asr.settings.save", inputDeviceId="mic-without-hub")
-    assert result["ok"] and result["payload"]["inputDeviceId"] == "mic-without-hub"
+    assert not result["ok"]
+    # Microphone settings belong to the disabled plugin, so no host setting is changed.
     app.set_plugin_enabled("sakura.asr", True)
     assert request("asr.settings.get")["payload"]["selectedProviderId"] == "not.installed"
 
@@ -285,7 +288,7 @@ def test_input_logs_transitions_once_without_poll_noise_or_private_audio(runtime
         "asr.input.preparing", "asr.input.ready", "asr.input.recognizing", "asr.input.succeeded"]
     cancelled = [row for row in rows if row["attributes"]["event"] == "asr.input.cancelled"]
     assert len(cancelled) == 1 and cancelled[0]["severity"] == "info"
-    assert all(row["channel"] == "core" and not row.get("plugin_id") for row in rows)
+    assert all(row["channel"] == "plugin" and row.get("plugin_id") == "sakura.asr" for row in rows)
     serialized = stream.getvalue().decode("utf-8")
     assert "测试完整文字" not in serialized and str(path) not in serialized
 
@@ -366,22 +369,6 @@ def test_cancel_overtaking_prepare_blocks_late_capture_and_service_caller_cannot
     assert status["label"] == "one" and status["processingLocation"] == "local"
 
 
-def test_permission_wait_does_not_reduce_recording_budget(runtime, monkeypatch):
-    app, boundary, request, _ = runtime
-    clock = [100.0]
-    monkeypatch.setattr(asr_boundary, "monotonic", lambda: clock[0])
-    assert request("asr.input.prepare", recordingId="permission", contextId="ctx")["ok"]
-    until(lambda: request("asr.input.poll", recordingId="permission"),
-          lambda r: r["payload"]["state"] == "ready")
-    assert request("asr.input.capture_target", recordingId="permission")["ok"]
-    clock[0] += 80  # User is deciding in the system permission dialog.
-    assert request("asr.input.capture_ready", recordingId="permission")["ok"]
-    clock[0] += 40  # Only 40 seconds of the actual recording budget elapsed.
-    time.sleep(0.15)
-    assert request("asr.input.capture_status", recordingId="permission")["payload"]["state"] == "recording"
-    request("asr.input.capture_discarded", recordingId="permission")
-    assert app.audio_input.count == 0
-
 
 def test_host_authorizes_only_selected_scope_and_validated_descriptor(tmp_path):
     identities = {"sakura.asr": {"providerId": "hub", "scopeId": "hub-1"},
@@ -416,3 +403,81 @@ def test_host_authorizes_only_selected_scope_and_validated_descriptor(tmp_path):
     finally:
         HOST_CALLER.reset(token)
         resources.close()
+
+
+def test_device_selection_moves_to_hub_without_changing_cpal_identity(runtime):
+    from app.config.settings_service import AppSettingsService
+    from app.config.yaml_config import save_yaml_mapping
+
+    app, _, request, _ = runtime
+    settings = AppSettingsService(app.audio_input._user_root)
+    original = "CoreAudio:kept-device-id"
+    save_yaml_mapping(settings.system_config_path, {"config_version": 1, "audio_input": {"device_id": original}})
+    assert request("asr.settings.get")["payload"]["inputDeviceId"] == original
+    assert request("asr.settings.save", inputDeviceId="CoreAudio:new-device-id")["ok"]
+    app.reload_plugin("sakura.asr")
+    assert request("asr.settings.get")["payload"]["inputDeviceId"] == "CoreAudio:new-device-id"
+    assert settings.load_audio_input_device() == original
+
+
+def test_hub_runs_input_without_a_core_recognition_worker(runtime):
+    app, boundary, _, _ = runtime
+    call = lambda name, **values: app.call_service("sakura.asr", "input", name, {"recordingId": "hub-owned", **values})
+    assert call("prepare", purpose="test")["state"] == "preparing"
+    until(lambda: call("poll"), lambda value: value["state"] == "ready")
+    target = call("capture_target")
+    path = Path(target["path"])
+    wav(path)
+    assert call("capture_ready")["state"] == "recording"
+    assert call("submit")["state"] == "recognizing"
+    result = until(lambda: call("poll"), lambda value: value["state"] == "succeeded")
+    assert result["text"] == "测试完整文字"
+    assert boundary._tasks == {}
+    until(lambda: app.audio_input.count, lambda count: count == 0)
+    assert not path.exists()
+
+
+def test_provider_cannot_open_the_hub_private_recording_control(runtime):
+    app, _, request, _ = runtime
+    path = ready(request)
+    with pytest.raises(PluginRuntimeError, match="ASR_INPUT_UNAUTHORIZED"):
+        app.call_service("test.asr.one.service", "access_input")
+    request("asr.input.capture_discarded", recordingId="record-1")
+    assert app.audio_input.count == 0 and not path.exists()
+
+
+def test_late_ready_snapshot_cannot_overwrite_recording_state(runtime, monkeypatch):
+    app, boundary, request, _ = runtime
+    entered, resume = threading.Event(), threading.Event()
+    process = app._manager._records["sakura.asr"].process
+    original = process.call_service
+    gated = False
+    delivered = threading.Event()
+    accept = boundary._accept_snapshot
+    def observe_delivery(task, result):
+        accept(task, result)
+        if result["state"] == "ready":
+            delivered.set()
+    monkeypatch.setattr(boundary, "_accept_snapshot", observe_delivery)
+    def delayed_ready(key, method, args, **kwargs):
+        nonlocal gated
+        result = original(key, method, args, **kwargs)
+        if method == "input" and args[0] == "poll" and result.get("state") == "ready" and not gated:
+            gated = True
+            entered.set()
+            assert resume.wait(3)
+        return result
+    monkeypatch.setattr(process, "call_service", delayed_ready)
+    try:
+        assert request("asr.input.prepare", recordingId="record-1", contextId="ctx")["ok"]
+        assert entered.wait(2)
+        # The Hub already finished preparation; a native notification can overtake
+        # the earlier poll response on the host's independent request threads.
+        assert request("asr.input.capture_target", recordingId="record-1")["ok"]
+        assert request("asr.input.capture_ready", recordingId="record-1")["payload"]["state"] == "recording"
+        resume.set()
+        assert delivered.wait(2)
+        assert boundary._tasks["record-1"].state == "recording"
+    finally:
+        resume.set()
+        request("asr.input.capture_discarded", recordingId="record-1")

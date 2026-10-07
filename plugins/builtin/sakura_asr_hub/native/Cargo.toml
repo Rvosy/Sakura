@@ -1,0 +1,12 @@
+[package]
+name = "sakura-asr-native"
+version = "0.2.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+cpal = "=0.17.3"
+serde_json = "=1.0.150"
+
+[dev-dependencies]
+uuid = { version = "=1.23.5", features = ["v4"] }

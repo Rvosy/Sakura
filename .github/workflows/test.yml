@@ -314,6 +314,11 @@ jobs:
           & ./runtime/python.exe -m pytest -c NUL --noconftest -p no:cacheprovider tests/unit/test_runtime_v2_launcher.py -q
           exit $LASTEXITCODE
 
+      - name: Test the core voice input native module
+        run: >-
+          cargo test --manifest-path plugins/builtin/sakura_asr_hub/native/Cargo.toml
+          --target-dir desktop/src-tauri/target --locked
+
       - name: Run the complete Rust test suite (Windows)
         if: runner.os == 'Windows'
         working-directory: desktop

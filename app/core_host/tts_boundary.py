@@ -19,13 +19,7 @@ from app.storage.tts_storage import TtsStorage, TtsStorageUnavailable
 from app.storage.paths import StoragePaths
 from app.storage.timeline import TimelineDataError, TimelineKind, TimelineStore
 from app.voice.cache_settings import VoiceCacheSettings, load_voice_cache_settings
-from app.voice.device_load import device_below_peak
-from app.voice.idle_fill import (
-    IDLE_FILL_BACKOFF_SECONDS,
-    IDLE_FILL_HEADROOM_BYTES,
-    IdleFillCursor,
-    next_missing_speech,
-)
+
 from app.voice.recording_store import VoiceRecordingError, VoiceRecordingStore
 
 
@@ -83,6 +77,7 @@ class _Authorization:
     history_entry_id: str
     expires_at: float
     segment_count: int | None = None
+    background: bool = False
     state: str = "authorized"
     request_id: str = ""
 
@@ -207,10 +202,6 @@ class TTSBoundary:
         self._cancelled_history: set[str] = set()
         self._handles: dict[str, object] = {}
         self._closed = False
-        self._idle_stop = threading.Event()
-        self._idle_thread: threading.Thread | None = None
-        self._idle_pause_until = 0.0
-        self._idle_cursor = IdleFillCursor()
 
     def set_event_publisher(self, publisher: Callable[[dict[str, Any]], None]) -> None:
         with self._lock:
@@ -313,6 +304,7 @@ class TTSBoundary:
         character_id: str,
         history_entry_id: str,
         segment_count: int | None = None,
+        background: bool = False,
     ) -> bool:
         if not text.strip() or segment_index < 0:
             return False
@@ -330,6 +322,7 @@ class TTSBoundary:
                 character_id=character_id,
                 history_entry_id=history_entry_id,
                 segment_count=segment_count,
+                background=background,
                 expires_at=monotonic() + AUTHORIZATION_TTL_SECONDS,
             )
             while len(self._authorizations) > MAX_AUTHORIZATIONS:
@@ -383,102 +376,56 @@ class TTSBoundary:
                 error=error.public_error(),
             )
 
-    def start_idle_fill(self, *, interval_seconds: float = 15.0) -> None:
-        with self._lock:
-            if self._idle_thread is not None or self._closed:
-                return
-            thread = threading.Thread(
-                target=self._idle_loop,
-                args=(interval_seconds,),
-                name="sakura-voice-idle-fill",
-                daemon=True,
-            )
-            self._idle_thread = thread
-            thread.start()
-
-    def fill_once(self) -> bool:
-        """Synthesize one missing line when idle fill is on and the machine is quiet."""
-
+    def cache_status(self, headroom: int) -> dict[str, Any]:
         settings = self._refresh_cache_settings()
-        if not settings.idle_fill or monotonic() < self._idle_pause_until or not device_below_peak():
-            return False
         with self._lock:
-            if self._closed:
-                return False
+            self._ensure_open_locked()
             self._expire_locked()
-            if self._user_voice_busy_locked(""):
-                return False
             identity = self._voice_character_identity()
-        if identity is None:
-            return False
-        character_id = identity[0]
-        if not self._recordings.has_room(character_id, headroom=IDLE_FILL_HEADROOM_BYTES):
-            return False
-        try:
-            missing = next_missing_speech(
-                self._timeline, self._recordings, character_id, self._idle_cursor,
-            )
-        except TimelineDataError:
-            return False
-        if missing is None:
-            return False
-        operation_id = f"idle-{uuid.uuid4().hex}"
-        if not self.authorize_segment(
-            operation_id=operation_id,
-            segment_index=missing.segment_index,
-            text=missing.text,
-            tone=missing.tone,
-            portrait=missing.portrait,
-            character_id=character_id,
-            history_entry_id=missing.history_entry_id,
-        ):
-            return False
-        try:
-            self._handle_start(
-                {"payload": {"operationId": operation_id, "segmentIndex": missing.segment_index}},
-                reuse_recording=False,
-                recording_only=True,
-            )
-        except TTSBoundaryError as error:
-            if error.retryable or error.code in {
-                "TTS_SERVICE_UNAVAILABLE",
-                "TTS_SYNTHESIS_FAILED",
-                "TTS_SYNTHESIS_TIMEOUT",
-            }:
-                self._idle_pause_until = monotonic() + IDLE_FILL_BACKOFF_SECONDS
-            return False
-        return True
+            if identity is None:
+                raise TTSBoundaryError("SPEECH_CHARACTER_NOT_CURRENT", "当前角色不可用")
+            character_id = identity[0]
+            return {"characterId": character_id, "idleFill": settings.idle_fill,
+                    "busy": self._user_voice_busy_locked(""),
+                    "hasRoom": self._recordings.has_room(character_id, headroom=headroom),
+                    "latestCursor": self._timeline.latest_cursor(character_id) if self._timeline.path.is_file() else ""}
 
-    def _idle_loop(self, interval_seconds: float) -> None:
-        while not self._idle_stop.wait(interval_seconds):
-            try:
-                self.fill_once()
-            except Exception:
-                log_event(
-                    "TTS",
-                    "idle voice fill failed",
-                    {},
-                    event="tts.idle_fill.failed",
-                    severity="warning",
-                )
+    def cache_page(self, character_id: str, before_cursor: str | None, limit: int) -> dict[str, Any]:
+        self._refresh_cache_settings()
+        with self._lock:
+            self._ensure_open_locked()
+            identity = self._voice_character_identity()
+            if identity is None or character_id != identity[0]:
+                raise TTSBoundaryError("SPEECH_CHARACTER_NOT_CURRENT", "角色已切换")
+            if not self._timeline.path.is_file():
+                return {"entries": [], "nextCursor": None, "hasMore": False}
+            entries, next_cursor, has_more, _total = self._timeline.read_page_before(
+                character_id, limit, before_cursor=before_cursor)
+            recorded = self._recordings.recorded_segments(character_id)
+            return {"entries": [{"entryId": entry.entry_id, "kind": entry.kind.value,
+                "segments": [{"hasText": bool(segment.get("text", "").strip()),
+                    "suppressed": segment.get("suppressTts") is True,
+                    "recorded": (entry.entry_id, index) in recorded}
+                    for index, segment in enumerate(entry.payload.get("segments", []))]}
+                for entry in entries], "nextCursor": next_cursor, "hasMore": has_more}
 
     def _refresh_cache_settings(self) -> VoiceCacheSettings:
         settings = load_voice_cache_settings(self._user_root)
         self._recordings.apply_cache_settings(settings.directory, settings.max_bytes)
         return settings
 
-    def _user_voice_busy_locked(self, idle_operation_id: str) -> bool:
+    def _user_voice_busy_locked(self, operation_id: str) -> bool:
         return any(
-            item.operation_id != idle_operation_id
+            item.operation_id != operation_id
             and item.state in {"authorized", "synthesizing", "committing", "cancelling"}
             for item in self._authorizations.values()
         )
 
-    def _preempt_idle_fill(self) -> None:
+    def _preempt_background(self) -> None:
         with self._lock:
             request_ids: list[str] = []
             for item in self._authorizations.values():
-                if not item.operation_id.startswith("idle-"):
+                if not item.background:
                     continue
                 if item.state not in {"authorized", "synthesizing", "committing"}:
                     continue
@@ -491,7 +438,6 @@ class TTSBoundary:
             self._cancel_request_id(request_id)
 
     def close(self) -> None:
-        self._idle_stop.set()
         self.cancel_all()
         with self._lock:
             if self._closed:
@@ -544,15 +490,18 @@ class TTSBoundary:
         )
 
     def authorize_history_segment(self, operation_id: str, entry_id: str, index: int,
-                                  *, character_id: str | None = None) -> str:
+                                  *, character_id: str | None = None, background: bool = False) -> str:
         """Reserve saved text for desktop playback or a plugin audio export."""
         if (not isinstance(entry_id, str) or not entry_id.strip() or len(entry_id) > 128
                 or type(index) is not int or index < 0):
             raise TTSBoundaryError("TTS_SEGMENT_NOT_AUTHORIZED", "朗读段落标识无效")
-        self._preempt_idle_fill()
+        if not background:
+            self._preempt_background()
         with self._lock:
             self._ensure_open_locked()
             self._expire_locked()
+            if background and (not self._refresh_cache_settings().idle_fill or self._user_voice_busy_locked(operation_id)):
+                raise TTSBoundaryError("TTS_BACKGROUND_DEFERRED", "后台语音暂不可用", retryable=True)
             if operation_id in self._cancelled_history:
                 raise TTSBoundaryError("TTS_SYNTHESIS_CANCELLED", "朗读已取消")
             identity = self._voice_character_identity()
@@ -577,7 +526,7 @@ class TTSBoundary:
                 operation_id=operation_id, segment_index=index,
                 text=segment["text"], tone=segment.get("tone", ""), portrait=segment.get("portrait", ""),
                 character_id=identity[0], history_entry_id=entry_id,
-                segment_count=len(segments),
+                segment_count=len(segments), background=background,
             )
             return identity[0]
 
@@ -614,8 +563,11 @@ class TTSBoundary:
             or segment_index < 0
         ):
             raise TTSBoundaryError("TTS_SEGMENT_NOT_AUTHORIZED", "invalid segment identity")
-        if not operation_id.startswith("idle-"):
-            self._preempt_idle_fill()
+        with self._lock:
+            pending = self._authorizations.get((operation_id, segment_index))
+            background = pending is not None and pending.background
+        if not background:
+            self._preempt_background()
         with self._lock:
             self._ensure_open_locked()
             self._expire_locked()
@@ -624,7 +576,7 @@ class TTSBoundary:
                 raise TTSBoundaryError(
                     "TTS_SEGMENT_NOT_AUTHORIZED", "segment is not authorized for synthesis"
                 )
-            if operation_id.startswith("idle-") and self._user_voice_busy_locked(operation_id):
+            if authorization.background and self._user_voice_busy_locked(operation_id):
                 authorization.state = "cancelled"
                 raise TTSBoundaryError("TTS_SYNTHESIS_CANCELLED", "空闲补齐已让出")
             try:
@@ -846,7 +798,7 @@ class TTSBoundary:
                     "options": {
                         "tone": authorization.tone,
                         "portrait": authorization.portrait,
-                        **({"background": True} if authorization.operation_id.startswith("idle-") else {}),
+                        **({"background": True} if authorization.background else {}),
                     },
                 },
             )
@@ -1045,18 +997,15 @@ class TTSBoundary:
             "characterId",
             "enabled",
             "providerId",
-            "sections",
         }:
             raise TTSBoundaryError("INVALID_TTS_SETTINGS", "settings draft is invalid")
         character_id = draft.get("characterId")
         enabled = draft.get("enabled")
         provider_id = draft.get("providerId")
-        raw_sections = draft.get("sections")
         if (
             (character_id is not None and (not isinstance(character_id, str) or not character_id))
             or not isinstance(enabled, bool)
             or (provider_id is not None and (not isinstance(provider_id, str) or not provider_id))
-            or not isinstance(raw_sections, list)
             or (character_id is None and (enabled or provider_id is not None))
         ):
             raise TTSBoundaryError("INVALID_TTS_SETTINGS", "settings draft is invalid")
@@ -1065,57 +1014,6 @@ class TTSBoundary:
             application, current_character_id = self._voice_application_and_character()
             if character_id != current_character_id:
                 raise TTSBoundaryError("INVALID_TTS_SETTINGS", "character identity changed")
-        allowed = {
-            (section.get("pluginId"), section.get("sectionId"))
-            for section in getattr(application, "settings_sections")("voice")
-            if isinstance(section, Mapping)
-        }
-        sections: list[tuple[str, str, Mapping[str, Any]]] = []
-        for section in raw_sections:
-            if not isinstance(section, Mapping) or set(section) != {
-                "pluginId",
-                "sectionId",
-                "values",
-            }:
-                raise TTSBoundaryError("INVALID_TTS_SETTINGS", "settings section is invalid")
-            plugin_id = section.get("pluginId")
-            section_id = section.get("sectionId")
-            values = section.get("values")
-            if (
-                not isinstance(plugin_id, str)
-                or not isinstance(section_id, str)
-                or (plugin_id, section_id) not in allowed
-                or not isinstance(values, Mapping)
-            ):
-                raise TTSBoundaryError("INVALID_TTS_SETTINGS", "settings section is invalid")
-            sections.append((plugin_id, section_id, values))
-
-        application_states: list[str] = []
-        saved_sections: list[dict[str, str]] = []
-        try:
-            for plugin_id, section_id, values in sections:
-                result = getattr(application, "settings_save")(
-                    plugin_id,
-                    section_id,
-                    values,
-                )
-                state = result.get("applicationState") if isinstance(result, Mapping) else None
-                if state not in {"applied", "restart_required", "error"}:
-                    raise ValueError("settings application state is invalid")
-                application_states.append(str(state))
-                saved_sections.append({"pluginId": plugin_id, "sectionId": section_id})
-        except (OSError, RuntimeError, TypeError, ValueError) as exc:
-            if saved_sections:
-                return self._partial_voice_settings_save(
-                    saved_sections,
-                    application_states,
-                    reason_code="TTS_PROVIDER_SETTINGS_SAVE_FAILED",
-                    error=exc,
-                )
-            raise TTSBoundaryError(
-                "INVALID_TTS_SETTINGS", "TTS Provider settings could not be saved"
-            ) from exc
-
         selection_saved = False
         reason_code = "CHARACTER_REQUIRED"
         if character_id is not None:
@@ -1127,17 +1025,9 @@ class TTSBoundary:
                     {"enabled": enabled, "provider": provider_id},
                 )
             except (OSError, RuntimeError, TypeError, ValueError) as exc:
-                if saved_sections:
-                    return self._partial_voice_settings_save(
-                        saved_sections,
-                        application_states,
-                        reason_code="TTS_SELECTION_SAVE_FAILED",
-                        error=exc,
-                    )
                 raise TTSBoundaryError("INVALID_TTS_SETTINGS", "TTS settings could not be saved") from exc
             selection_saved = True
             reason_code = "READY"
-        application_state = _combined_application_state(application_states)
         log_event(
             "TTS", "TTS settings saved",
             {
@@ -1149,39 +1039,9 @@ class TTSBoundary:
         )
         return {
             "snapshot": self._voice_settings_snapshot(),
-            "applicationState": application_state,
+            "applicationState": "applied",
             "saveState": "complete",
-            "savedSections": saved_sections,
             "selectionSaved": selection_saved,
-            "reasonCode": reason_code,
-        }
-
-    def _partial_voice_settings_save(
-        self,
-        saved_sections: list[dict[str, str]],
-        application_states: list[str],
-        *,
-        reason_code: str,
-        error: BaseException,
-    ) -> dict[str, Any]:
-        try:
-            snapshot: dict[str, Any] | None = self._voice_settings_snapshot()
-        except TTSBoundaryError:
-            snapshot = None
-        log_event(
-            "TTS",
-            "TTS settings were only partially saved",
-            {"reason_code": reason_code, "saved_sections": len(saved_sections)},
-            event="tts.settings.partial",
-            severity="warning",
-        )
-        return {
-            "snapshot": snapshot,
-            "applicationState": _combined_application_state(application_states),
-            "saveState": "partial",
-            "diagnostics": exception_diagnostics(error, reason_code=reason_code, stage="tts.settings.save"),
-            "savedSections": saved_sections,
-            "selectionSaved": False,
             "reasonCode": reason_code,
         }
 
@@ -1226,7 +1086,6 @@ class TTSBoundary:
                 if isinstance(status, Mapping)
                 else getattr(application, "call_service")("sakura.tts", "listProviders")
             )
-            sections = getattr(application, "settings_sections")("voice")
         except Exception as exc:
             if getattr(exc, "code", "") == "SERVICE_MISSING":
                 # Plugin state can change after the settings window inspected it.
@@ -1240,7 +1099,7 @@ class TTSBoundary:
                 "TTS capability settings are unavailable",
                 retryable=True,
             ) from exc
-        if (character is not None and not isinstance(status, Mapping)) or not isinstance(sections, list):
+        if character is not None and not isinstance(status, Mapping):
             raise TTSBoundaryError("INVALID_TTS_SETTINGS", "TTS capability response is invalid")
         if not isinstance(providers, list):
             raise TTSBoundaryError("INVALID_TTS_SETTINGS", "TTS Provider list is invalid")
@@ -1271,29 +1130,7 @@ class TTSBoundary:
                 else None
             ),
             "providers": [dict(item) for item in providers if isinstance(item, Mapping)][:64],
-            # The generic settings surface carries routing metadata such as
-            # ``surface``.  Voice settings have their own stable response
-            # schema, so project only its public section fields instead of
-            # leaking generic host metadata into the WebView contract.
-            "sections": [
-                {
-                    key: item[key]
-                    for key in (
-                        "pluginId",
-                        "sectionId",
-                        "title",
-                        "reasonCode",
-                        "diagnostics",
-                        "fields",
-                        "values",
-                        "actions",
-                        "collections",
-                    )
-                    if key in item
-                }
-                for item in sections
-                if isinstance(item, Mapping)
-            ][:32],
+
         }
 
     @staticmethod
@@ -1322,7 +1159,6 @@ class TTSBoundary:
             # An unavailable Hub cannot report the persisted character selection.
             "selection": None,
             "providers": [],
-            "sections": [],
         }
 
     def _voice_character_identity(self) -> tuple[str, str] | None:
@@ -1509,14 +1345,6 @@ class TTSBoundary:
             "segmentIndex": authorization.segment_index,
             "requestId": authorization.request_id,
         }
-
-
-def _combined_application_state(states: list[str]) -> str:
-    if "error" in states:
-        return "error"
-    if "restart_required" in states:
-        return "restart_required"
-    return "applied"
 
 
 __all__ = ["TTSBoundary", "TTSBoundaryError", "TTS_CAPABILITY", "TTS_REQUEST_NAMES"]

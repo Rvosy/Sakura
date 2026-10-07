@@ -14,15 +14,6 @@ function createVoiceController(options) {
   return createController({ getPlugins: () => [hub()], ...options });
 }
 
-function field(overrides = {}) {
-  return {
-    key: "timeoutSeconds", label: "超时", type: "integer", default: 60, description: "",
-    options: [], minimum: 1, maximum: 300, step: 1, maxLength: null, placement: "row", actionIds: [],
-    enabledWhen: null, required: false, readonly: false,
-    copyable: false, restartRequired: false, value: 60, ...overrides,
-  };
-}
-
 function snapshot(overrides = {}) {
   return {
     schemaVersion: 1,
@@ -34,16 +25,6 @@ function snapshot(overrides = {}) {
       { providerId: "com.example.neural-voice", label: "Neural Voice", available: true },
       { providerId: "org.demo.graph-voice", label: "Graph Voice", available: false },
     ],
-    sections: [{
-      pluginId: "com.example.neural-voice",
-      sectionId: "runtime",
-      title: "Neural Voice Provider",
-      reasonCode: "READY",
-      fields: [field()],
-      values: { timeoutSeconds: 60 },
-      actions: [],
-      collections: [],
-    }],
     windowGeneration: 7,
     coreGenerationId: "generation-a",
     ...overrides,
@@ -78,7 +59,7 @@ function element(tagName = "div") {
 
 function fixture() {
   const controls = Object.fromEntries([
-    "page-voice", "voiceSettings", "voiceUnavailable", "ttsEnabled", "ttsProvider", "ttsProviderSettings", "ttsPluginSettings",
+    "page-voice", "voiceSettings", "voiceUnavailable", "ttsEnabled", "ttsProvider", "ttsPluginSettings",
   ].map((id) => [id, element()]));
   controls["page-voice"].dataset = {};
   controls.voiceSettings.hidden = false;
@@ -98,39 +79,13 @@ function fixture() {
   };
 }
 
-for (const type of ["status", "resource"]) {
-  test(`voice ${type} failure keeps diagnostics behind the shared error dialog`, async () => {
-    const { document, created } = fixture();
-    const value = { state: "error", label: "异常", taskState: "failed", message: "VOICE_FIXTURE_FAILED", detail: "voice diagnostic" };
-    const data = snapshot();
-    data.sections[0].fields = [field({ key: "health", type, readonly: true, value })];
-    data.sections[0].values = { health: value };
-    const statuses = [];
-    const controller = createVoiceController({ document, invoke: async () => data, onStatus: (...args) => statuses.push(args) });
-    controller.initialize(data);
-    assert.equal(created.some(item => /VOICE_FIXTURE_FAILED|voice diagnostic/.test(item.textContent)), false);
-    const details = created.find(item => item.tagName === "button" && item.textContent === "错误详情");
-    await details.fireAsync("click");
-    assert.equal(statuses.length, 1);
-    assert.equal(statuses[0][0].message, value.message);
-    assert.equal(statuses[0][0].diagnostic, value.detail);
-    assert.equal(statuses[0][1], "error");
-    controller.dispose();
-  });
-}
-
 for (const sameCharacter of [true, false]) {
-  test(`Studio refresh ${sameCharacter ? "preserves edited voice fields" : "does not carry voice drafts to another character"}`, async () => {
+  test(`Studio refresh ${sameCharacter ? "preserves the voice selection" : "does not carry voice drafts to another character"}`, async () => {
     const { controls, document, created } = fixture();
     const original = snapshot();
-    original.sections[0].fields.push(field({ key: "retrySeconds", value: 20 }));
-    original.sections[0].values.retrySeconds = 20;
     const next = structuredClone(original);
     next.coreGenerationId = "generation-b";
     if (!sameCharacter) next.character = { characterId: "beta", displayName: "Beta" };
-    next.sections[0].fields[0].value = 90;
-    next.sections[0].fields[1].value = 30;
-    next.sections[0].values = { timeoutSeconds: 90, retrySeconds: 30 };
     const calls = [];
     const controller = createVoiceController({
       document,
@@ -138,16 +93,13 @@ for (const sameCharacter of [true, false]) {
         calls.push([command, args]);
         if (command === "settings_voice_get") return next;
         if (command === "settings_voice_save") return {
-          applicationState: "applied", saveState: "complete", savedSections: [],
+          applicationState: "applied", saveState: "complete",
           selectionSaved: true, reasonCode: "READY", snapshot: {},
         };
         throw new Error(`unexpected ${command}`);
       },
     });
     controller.initialize(original);
-    const timeout = created.find((item) => item.tagName === "input" && item.value === "60");
-    timeout.value = "120";
-    timeout.fire("input");
     controls.ttsEnabled.checked = false;
     controls.ttsProvider.value = "org.demo.graph-voice";
     controls.ttsProvider.fire("change");
@@ -162,10 +114,7 @@ for (const sameCharacter of [true, false]) {
     const saved = calls.find(([command]) => command === "settings_voice_save")[1];
     assert.equal(saved.coreGenerationId, "generation-b");
     assert.equal(saved.draft.characterId, sameCharacter ? "alpha" : "beta");
-    assert.deepEqual(saved.draft.sections, sameCharacter ? [{
-      pluginId: "com.example.neural-voice", sectionId: "runtime",
-      values: { timeoutSeconds: 120, retrySeconds: 30 },
-    }] : []);
+    assert.equal(Object.hasOwn(saved.draft, "sections"), false);
     assert.equal(controller.isDirty(), false);
   });
 }
@@ -196,132 +145,6 @@ test("voice settings accept additive Core fields", () => {
   assert.deepEqual(exactVoiceSnapshot(value), value);
 });
 
-
-test("voice shell keeps Provider settings editable without a current character", async () => {
-  const { controls, document, created } = fixture();
-  const calls = [];
-  const withoutCharacter = snapshot({ character: null, selection: null });
-  const controller = createVoiceController({
-    document,
-    invoke: async (command, args) => {
-      calls.push([command, args]);
-      if (command === "settings_voice_save") {
-        return {
-          snapshot: withoutCharacter,
-          applicationState: "applied",
-          saveState: "complete",
-          savedSections: [{
-            pluginId: "com.example.neural-voice", sectionId: "runtime",
-          }],
-          selectionSaved: false,
-          reasonCode: "CHARACTER_REQUIRED",
-        };
-      }
-      if (command === "settings_voice_get") return withoutCharacter;
-      throw new Error(`unexpected ${command}`);
-    },
-  });
-
-  controller.initialize(withoutCharacter);
-
-  assert.deepEqual(exactVoiceSnapshot(withoutCharacter), withoutCharacter);
-  assert.equal(controls.voiceSettings.hidden, false);
-  assert.equal(controls.voiceUnavailable.hidden, true);
-  assert.equal(controls.ttsEnabled.disabled, true);
-  assert.equal(controls.ttsProvider.disabled, false);
-  assert.equal(controls.ttsProvider.value, "com.example.neural-voice");
-  assert.equal(created.some((item) => item.className === "page-note"
-    && item.textContent && item.hidden === false), true);
-
-  const timeout = created.find((item) => item.tagName === "input" && item.value === "60");
-  timeout.value = "90";
-  timeout.fire("input");
-  assert.equal(controller.isDirty(), true);
-
-  await controller.save();
-
-  assert.deepEqual(calls[0], ["settings_voice_save", {
-    windowGeneration: 7,
-    coreGenerationId: "generation-a",
-    draft: {
-      characterId: null,
-      enabled: false,
-      providerId: null,
-      sections: [{
-        pluginId: "com.example.neural-voice",
-        sectionId: "runtime",
-        values: { timeoutSeconds: 90 },
-      }],
-    },
-  }]);
-  assert.equal(calls[1][0], "settings_voice_get");
-  assert.equal(controller.isDirty(), false);
-});
-
-test("voice page shows only the selected engine and keeps advanced drafts while switching", () => {
-  const { controls, document, created } = fixture();
-  const enhancedSelects = [];
-  const refreshedSelects = [];
-  const endpointMode = field({
-    key: "endpointMode", label: "服务来源", type: "select", default: "managed", value: "managed",
-    options: [
-      { label: "Sakura 内置（推荐）", value: "managed" },
-      { label: "连接已有服务", value: "custom" },
-    ],
-  });
-  const workDir = field({
-    key: "workDir", label: "内置服务工作目录", type: "string", default: "", value: "D:\\tts",
-    placement: "advanced", options: [], minimum: null, maximum: null, step: null,
-    enabledWhen: { field: "endpointMode", equals: "custom", hide: true },
-  });
-  const second = {
-    pluginId: "org.demo.graph-voice", sectionId: "runtime", title: "Graph Voice 语音服务",
-    reasonCode: "READY", fields: [field()], values: { timeoutSeconds: 60 }, actions: [], collections: [],
-  };
-  const controller = createVoiceController({
-    document,
-    invoke: async () => {},
-    enhanceSelect: (select) => enhancedSelects.push(select),
-    refreshSelect: (select) => refreshedSelects.push(select),
-  });
-  controller.initialize(snapshot({
-    sections: [{
-      pluginId: "com.example.neural-voice", sectionId: "runtime", title: "Neural Voice 语音服务",
-      reasonCode: "READY", fields: [endpointMode, workDir],
-      values: { endpointMode: "managed", workDir: "D:\\tts" }, actions: [], collections: [],
-    }, second],
-  }));
-
-  const neuralGroup = controls.ttsProviderSettings.children[0];
-  const graphGroup = controls.ttsProviderSettings.children[1];
-  const modeSelect = created.find((item) => item.tagName === "select"
-    && item.children.some((option) => option.value === "custom"));
-  const advanced = created.find((item) => item.tagName === "details");
-  const conditionalInput = created.find((item) => item.tagName === "input" && item.value === "D:\\tts");
-  assert.deepEqual(enhancedSelects, [controls.ttsProvider, modeSelect]);
-  assert.equal(refreshedSelects.includes(controls.ttsProvider), true);
-  assert.equal(neuralGroup.hidden, false);
-  assert.equal(graphGroup.hidden, true);
-  assert.equal(advanced.children[0].textContent, "高级设置");
-  assert.equal(conditionalInput.disabled, true);
-  const conditionalRow = created.find((item) => item.children.includes(conditionalInput));
-  assert.equal(conditionalRow.hidden, true);
-
-  modeSelect.value = "custom";
-  modeSelect.fire("input");
-  assert.equal(conditionalInput.disabled, false);
-  assert.equal(conditionalRow.hidden, false);
-
-  controls.ttsProvider.value = "org.demo.graph-voice";
-  controls.ttsProvider.fire("change");
-  assert.equal(neuralGroup.hidden, true);
-  assert.equal(graphGroup.hidden, false);
-  controls.ttsProvider.value = "com.example.neural-voice";
-  controls.ttsProvider.fire("change");
-  assert.equal(modeSelect.value, "custom");
-  assert.equal(conditionalInput.value, "D:\\tts");
-  assert.equal(controller.isDirty(), true);
-});
 
 test("disabled TTS Hub skips voice IPC and can recover after the Hub is enabled", async () => {
   const { controls, document, created } = fixture();
@@ -383,7 +206,6 @@ test("entering voice refreshes prepared providers without applying or losing edi
   controller.initialize(initial);
   controls.ttsProvider.value = initial.providers[1].providerId;
   controls.ttsEnabled.checked = false;
-  created.find(item => item.id?.endsWith("-timeoutSeconds")).value = "75";
   await controller.onPageChanged("plugins");
   assert.deepEqual(calls, []);
   await controller.onPageChanged("voice");
@@ -391,7 +213,6 @@ test("entering voice refreshes prepared providers without applying or losing edi
   assert.equal(controls.ttsProvider.children[1].textContent, next.providers[1].label);
   assert.equal(controls.ttsProvider.value, initial.providers[1].providerId);
   assert.equal(controls.ttsEnabled.checked, false);
-  assert.equal(controller.pluginDraft(initial.providers[0].providerId).sections[0].values.timeoutSeconds, 75);
   assert.equal(controller.isDirty(), true);
   controller.dispose();
   await controller.onPageChanged("voice");
@@ -432,7 +253,6 @@ test("empty voice engine list keeps the selector visible with an installation hi
     invoke: async () => snapshot({
       selection: { configured: false, enabled: false, providerId: null, available: false },
       providers: [],
-      sections: [],
     }),
   });
 
@@ -449,7 +269,7 @@ test("voice settings retain startup diagnostics when the selected provider never
   const controller = createVoiceController({ document, invoke: async () => snapshot({ providers: [],
     selection: { enabled: true, providerId: "fixture.tts", diagnostics: {
       diagnostic: "fixture-tts.dll not found", exception_stack: "at initialize:42",
-    } }, sections: [],
+    } },
   }) });
   await controller.refreshCurrent();
   assert.ok(created.some(item => item.textContent.includes("fixture-tts.dll not found") && item.textContent.includes("initialize:42")));
@@ -476,7 +296,7 @@ test("Hub state changing after the plugin snapshot is shown without a fabricated
     document,
     invoke: async () => snapshot({
       availability: { state: "disabled", reasonCode: "TTS_HUB_DISABLED" },
-      selection: null, providers: [], sections: [],
+      selection: null, providers: [],
     }),
   });
   await controller.refreshCurrent();
@@ -528,7 +348,7 @@ test("voice rendering failures retain the original exception after a successful 
   assert.equal(controls["page-voice"].dataset.voiceState, "error");
 });
 
-test("voice save applies character selection locally and submits only changed Provider sections", async () => {
+test("voice save applies only character selection and leaves provider settings to their plugin", async () => {
   const { controls, document, created } = fixture();
   const calls = [];
   const controller = createVoiceController({
@@ -537,37 +357,20 @@ test("voice save applies character selection locally and submits only changed Pr
       calls.push([command, args]);
       if (command === "settings_voice_save") {
         return {
-          applicationState: "restart_required",
+          applicationState: "applied",
           saveState: "complete",
-          savedSections: [{
-            pluginId: "com.example.neural-voice", sectionId: "runtime",
-          }],
           selectionSaved: true,
           reasonCode: "READY",
           snapshot: {},
         };
       }
       if (command === "settings_voice_get") {
-        return snapshot({
-          sections: [{
-            ...snapshot().sections[0],
-            reasonCode: "CONFIG_RELOAD_REQUIRED",
-            fields: [field({ value: 90 })],
-            values: { timeoutSeconds: 90 },
-            actions: [{
-              actionId: "sakura.reload", label: "重新加载插件",
-              description: "应用配置", danger: false,
-            }],
-          }],
-        });
+        return snapshot();
       }
       throw new Error(`unexpected ${command}`);
     },
   });
   controller.initialize(snapshot());
-  const timeout = created.find((item) => item.tagName === "input" && item.value === "60");
-  timeout.value = "90";
-  timeout.fire("input");
   controls.ttsEnabled.checked = false;
   controls.ttsEnabled.fire("change");
 
@@ -580,115 +383,11 @@ test("voice save applies character selection locally and submits only changed Pr
       characterId: "alpha",
       enabled: false,
       providerId: "com.example.neural-voice",
-      sections: [{
-        pluginId: "com.example.neural-voice",
-        sectionId: "runtime",
-        values: { timeoutSeconds: 90 },
-      }],
     },
   }]);
   assert.equal(calls[1][0], "settings_voice_get");
   assert.equal(controller.isDirty(), false);
 });
-
-test("voice partial save refreshes actual state and remains an explicit failure", async () => {
-  const { controls, document, created } = fixture();
-  const calls = [];
-  const statuses = [];
-  const controller = createVoiceController({
-    document,
-    onStatus: (...args) => statuses.push(args),
-    invoke: async (command, args) => {
-      calls.push([command, args]);
-      if (command === "settings_voice_save") {
-        return {
-          applicationState: "restart_required",
-          saveState: "partial",
-          savedSections: [{
-            pluginId: "com.example.neural-voice", sectionId: "runtime",
-          }],
-          selectionSaved: false,
-          reasonCode: "TTS_SELECTION_SAVE_FAILED",
-          diagnostics: { diagnostic: "voice/config.json: Permission denied", exception_stack: "save_selection:42" },
-          snapshot: {},
-        };
-      }
-      if (command === "settings_voice_get") {
-        return snapshot({
-          selection: {
-            configured: true, enabled: true,
-            providerId: "com.example.neural-voice", available: true,
-          },
-          sections: [{
-            ...snapshot().sections[0],
-            reasonCode: "CONFIG_RELOAD_REQUIRED",
-            fields: [field({ value: 90 })],
-            values: { timeoutSeconds: 90 },
-          }],
-        });
-      }
-      throw new Error(`unexpected ${command}`);
-    },
-  });
-  controller.initialize(snapshot());
-  const timeout = created.find((item) => item.tagName === "input" && item.value === "60");
-  timeout.value = "90";
-  controls.ttsEnabled.checked = false;
-
-  await assert.rejects(
-    controller.save(),
-    error => {
-      assert.match(errorText(error), /voice\/config.json: Permission denied/);
-      assert.match(errorText(error), /save_selection:42/);
-      return /语音引擎配置已保存，但角色语音选择未保存/.test(error.message);
-    },
-  );
-
-  assert.equal(calls[0][0], "settings_voice_save");
-  assert.equal(calls[1][0], "settings_voice_get");
-  assert.match(statuses.at(-1)[0], /页面已刷新为实际状态/);
-  assert.equal(statuses.at(-1)[1], "error");
-  assert.equal(controller.isDirty(), false);
-});
-
-test("plugin dialog reuses voice controls and cancel restores only its opening draft", () => {
-  const { controls, document, created } = fixture();
-  const controller = createVoiceController({ document, invoke: async () => { throw new Error("editing must not save"); } });
-  controller.initialize(snapshot());
-  const timeout = created.find((item) => item.tagName === "input" && item.value === "60");
-  timeout.value = "90"; timeout.fire("input");
-  const before = controller.pluginDraft("com.example.neural-voice");
-  const host = element();
-  const originalGroup = controls.ttsProviderSettings.children[0];
-  controller.mountPluginSections("com.example.neural-voice", host);
-  assert.equal(host.children[0], originalGroup);
-  assert.equal(controls.ttsProviderSettings.children.length, 0);
-  assert.equal(originalGroup.hidden, false);
-  timeout.value = "120"; timeout.fire("input");
-  controller.restorePluginDraft(before);
-  assert.equal(timeout.value, "90");
-  controller.unmountPluginSections();
-  assert.equal(controls.ttsProviderSettings.children[0], originalGroup);
-  assert.equal(controller.isDirty(), true);
-  controller.initialize(snapshot({ coreGenerationId: "generation-b" }));
-  controller.restorePluginDraft(before);
-  assert.equal(controller.pluginDraft("com.example.neural-voice").sections[0].values.timeoutSeconds, 60);
-});
-
-test("refreshing after other plugin changes preserves pending voice edits for the same generation", async () => {
-  const { document, created } = fixture();
-  const controller = createVoiceController({ document, invoke: async () => snapshot() });
-  controller.initialize(snapshot());
-  const timeout = created.find((item) => item.tagName === "input" && item.value === "60");
-  timeout.value = "90"; timeout.fire("input");
-  await controller.refreshCurrent({ preserveDraft: true });
-  assert.equal(controller.pluginDraft("com.example.neural-voice").sections[0].values.timeoutSeconds, 90);
-  assert.equal(controller.isDirty(), true);
-  await controller.refreshCurrent();
-  assert.equal(controller.pluginDraft("com.example.neural-voice").sections[0].values.timeoutSeconds, 60);
-  assert.equal(controller.isDirty(), false);
-});
-
 
 test("voice plugin shortcut follows the selected engine before settings are applied", async () => {
   const { controls, document } = fixture();
@@ -698,7 +397,7 @@ test("voice plugin shortcut follows the selected engine before settings are appl
   controller.initialize(snapshot({ providers: [
     { providerId: "first", label: "First", available: true },
     { providerId: "second", label: "Second", available: true },
-  ], selection: { enabled: true, providerId: "first" }, sections: [] }));
+  ], selection: { enabled: true, providerId: "first" } }));
   assert.equal(controls.ttsPluginSettings.disabled, false);
   controls.ttsProvider.value = "second";
   controls.ttsProvider.fire("change");
@@ -713,7 +412,7 @@ for (const installed of [false, true]) {
     const { document, controls, created } = fixture();
     const controller = createVoiceController({ document,
       getPlugins: () => [hub(), ...(installed ? [{ pluginId: "saved.tts", enabled: true, state: "failed", provides: [] }] : [])],
-      invoke: async () => snapshot({ providers: [], sections: [], selection: {
+      invoke: async () => snapshot({ providers: [], selection: {
         providerId: "saved.tts", enabled: true, stage: "provider_selection", reasonCode: "TTS_PROVIDER_UNAVAILABLE",
         diagnostics: { diagnostic: "selected provider diagnostic" },
       } }),

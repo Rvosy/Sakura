@@ -70,6 +70,7 @@ def test_model_settings_enable_and_reload_do_not_wait_for_cold_sdk(tmp_path, ini
     shutil.copytree(repo / "plugins/builtin/sakura_model_openai_compatible",
                     distribution / "plugins/builtin/sakura_model_openai_compatible",
                     ignore=shutil.ignore_patterns("__pycache__"))
+    shutil.copy2(repo / "VERSION", distribution / "VERSION")
     dependencies = DistributionPaths(distribution).plugin_dependency_root_for(plugin_id)
     dependencies.mkdir(parents=True)
     (dependencies / ".sakura-dependencies.json").write_text(json.dumps({

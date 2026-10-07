@@ -129,7 +129,7 @@ def test_market_reinstalls_same_version_and_keeps_existing_user_state(tmp_path, 
     else:
         (original.code_dir / "plugin.yaml").unlink()
     monkeypatch.setattr("app.plugins.bundled_migrations.migrate_bundled_plugins", lambda *args, **kwargs: {
-        plugin_id: "PLUGIN_MIGRATION_FAILED",
+        plugin_id: {"reasonCode": "PLUGIN_MIGRATION_FAILED", "diagnostics": {"diagnostic": "fixture migration failed"}},
     })
     config = paths.plugins_config().read_bytes()
     private = paths.plugin_data_for(plugin_id) / "settings.json"
@@ -202,7 +202,7 @@ def test_market_restores_missing_migration_with_orphan_dependencies(tmp_path, mo
     uv.write_text('import sys\nfrom pathlib import Path\ntarget = Path(sys.argv[sys.argv.index("--target") + 1])\n(target / "fixture_dependency.py").write_text("VALUE = 42\\n")\n')
     monkeypatch.setattr(PluginDependencyRoots, "_uv_command", lambda self: [sys.executable, str(uv)])
     monkeypatch.setattr("app.plugins.bundled_migrations.migrate_bundled_plugins", lambda *args, **kwargs: {
-        plugin_id: "PLUGIN_MIGRATION_FAILED",
+        plugin_id: {"reasonCode": "PLUGIN_MIGRATION_FAILED", "diagnostics": {"diagnostic": "fixture migration failed"}},
     })
     archive_path = package(tmp_path / "plugin.zip", plugin_id, lazy_dependency=True)
     with zipfile.ZipFile(archive_path, "a") as archive:
@@ -232,7 +232,7 @@ def test_missing_migration_failed_install_releases_runtime_record_before_retry(t
     paths = StoragePaths(roots.user_root)
     PluginDesiredStateStore(roots.user_root).set(plugin_id, True)
     monkeypatch.setattr("app.plugins.bundled_migrations.migrate_bundled_plugins", lambda *args, **kwargs: {
-        plugin_id: "PLUGIN_MIGRATION_FAILED",
+        plugin_id: {"reasonCode": "PLUGIN_MIGRATION_FAILED", "diagnostics": {"diagnostic": "fixture migration failed"}},
     })
     application = PluginApplicationHost(roots, "repair-generation", ToolRegistry())
     boundary = PluginSettingsBoundary("repair-generation", "credential", roots, application_provider=lambda: application)

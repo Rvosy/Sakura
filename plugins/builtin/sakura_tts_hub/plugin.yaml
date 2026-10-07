@@ -3,7 +3,10 @@ id: sakura.tts
 name: 语音输出
 author: Rvosy
 description: 为角色选择语音输出引擎。
-version: 0.1.0
+version: 0.2.0
+min_app_version: "1.3.2"
+frontendModules:
+  playback: frontend/playback.mjs
 entry: plugin:SakuraTTSHubPlugin
 enabled: true
 priority: 100
@@ -11,6 +14,7 @@ provides:
   - sakura.tts
 requires:
   - sakura.host.logging
+  - sakura.host.speech
 presentation:
   kind: infrastructure
   category: voice

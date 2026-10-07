@@ -23,7 +23,7 @@ def runtime(tmp_path: Path):
     distribution = tmp_path / "distribution"
     bundled = distribution / "plugins" / "builtin"
     source = Path(__file__).parents[2] / "plugins" / "builtin" / "sakura_asr_hub"
-    shutil.copytree(source, bundled / "hub", ignore=shutil.ignore_patterns("__pycache__"))
+    shutil.copytree(source, bundled / "hub", ignore=shutil.ignore_patterns("native", "__pycache__"))
     provider = bundled / "provider"
     provider.mkdir()
     (provider / "plugin.yaml").write_text(
@@ -161,13 +161,18 @@ def test_success_returning_after_reload_never_becomes_a_draft(
     ready = threading.Event()
     entered = threading.Event()
     release = threading.Event()
-    monkeypatch.setattr(boundary, "_log_state", lambda _task, state: ready.set() if state == "ready" else None)
+    accept_snapshot = boundary._accept_snapshot
+    def observe_ready(task, result):
+        accept_snapshot(task, result)
+        if result["state"] == "ready":
+            ready.set()
+    monkeypatch.setattr(boundary, "_accept_snapshot", observe_ready)
     hub = application._manager._records["sakura.asr"].process
     original_call = hub.call_service
 
     def delayed_success(key, method, args, **kwargs):
         result = original_call(key, method, args, **kwargs)
-        if method == "poll" and result.get("state") == "succeeded":
+        if method == "input" and args[0] == "poll" and result.get("state") == "succeeded":
             entered.set()
             assert release.wait(4)
         return result
@@ -214,7 +219,12 @@ def test_ready_transcript_is_discarded_if_its_source_reloads_before_first_delive
         plugin_application_provider=lambda: application,
         character_presentation_provider=lambda: character)
     ready = threading.Event()
-    monkeypatch.setattr(boundary, "_log_state", lambda _task, state: ready.set() if state == "ready" else None)
+    accept_snapshot = boundary._accept_snapshot
+    def observe_ready(task, result):
+        accept_snapshot(task, result)
+        if result["state"] == "ready":
+            ready.set()
+    monkeypatch.setattr(boundary, "_accept_snapshot", observe_ready)
 
     def request(name, **payload):
         return boundary.handle({"generationId": "asr-binding-test", "generationCredential": "credential",

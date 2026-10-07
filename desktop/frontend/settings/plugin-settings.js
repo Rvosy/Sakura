@@ -1,6 +1,6 @@
 import { createSettingsUI, sectionDestination } from "./settings-ui.js";
 import { createSettingsForm } from "./settings-form.js";
-import { createConnectionEditor } from "./connection-editor.js";
+import { createPluginModule } from "./plugin-module.js";
 import { createRecordTable } from "./record-table.js";
 import { createConnectionStatus } from "./connection-status.js";
 import { createIcon } from "../core/icons.js";
@@ -21,8 +21,7 @@ export function createPluginSettingsFeature({
   closeSelects,
   focusSelect,
   replayMotion,
-  getVoiceController,
-  getAsrController = () => null,
+  onPluginsChanged = () => {},
   removeOverlayAfterExit,
   showPage,
   isCharacterTransitioning,
@@ -71,8 +70,7 @@ export function createPluginSettingsFeature({
     managementBusy: false,
   };
   let pluginSettingsDialog = null;
-  let uiEpoch = 0;
-  const probeCancels = new Set();
+  const pluginModules = new Set();
   const pendingApplication = new Set();
   const settingsUI = createSettingsUI({ document, showPage, createSection: createContributedSection });
 
@@ -98,47 +96,25 @@ export function createPluginSettingsFeature({
         },
       });
     }
-    if (presentation.component === "connection-editor") {
-      let request = null;
-      let cancelled = false;
-      const cancel = async () => {
-        cancelled = true;
-        if (!request) return;
-        try { await runtimePluginController.action({ pluginId: plugin.plugin_id, sectionId: section.section_id,
-          actionId: presentation.cancelAction, values: { [presentation.requestField]: request } }); } catch { /* scope cleanup is the final owner */ }
-      };
-      probeCancels.add(cancel);
-      const editor = createConnectionEditor({ document, window,
-        read: () => read(presentation.valueField), write: value => write(presentation.valueField, value),
-        onError: setError, notify, onCatalogChanged: onModelCatalogChanged, cancel,
-        async probe(operation, values) {
-          if (request) throw new Error("MODEL_PROBE_BUSY");
-          cancelled = false; const epoch = uiEpoch;
-          const snapshot = runtimePluginController.snapshot();
-          const generation = snapshot?.coreGenerationId;
-          const timeout = pluginSectionValues(plugin.id, presentation.timeoutSection)?.[presentation.timeoutField];
-          const currentRequest = { ...values, ...(timeout != null ? { timeout_seconds: timeout } : {}), operation, requestId: window.crypto.randomUUID() };
-          request = currentRequest;
-          const action = actionId => runtimePluginController.action({ pluginId: plugin.plugin_id, sectionId: section.section_id,
-            actionId, values: { [presentation.requestField]: currentRequest } });
-          try {
-            let result = await action(presentation.probeAction);
-            while (true) {
-              if (cancelled || epoch !== uiEpoch || generation !== runtimePluginController.snapshot()?.coreGenerationId) throw new Error("MODEL_PROBE_CANCELLED");
-              const value = result.values?.[presentation.resultField];
-              if (value?.requestId === currentRequest.requestId && value.state === "completed") return { models: (value.models || []).map(m => m.modelId) };
-              if (value?.requestId === currentRequest.requestId && value.state === "failed") {
-                throw new Error([value.code || "MODEL_PROBE_FAILED", value.message].filter(Boolean).join("|"), { cause: value });
-              }
-              await new Promise(resolve => window.setTimeout(resolve, 200));
-              result = await action(presentation.statusAction);
-            }
-          } finally { if (request === currentRequest) { await cancel(); request = null; } }
+    if (presentation.component === "module") {
+      const generation = runtimePluginController.snapshot()?.coreGenerationId;
+      const component = createPluginModule({ document, source: presentation.source,
+        onError: setError, onReady: onModelCatalogChanged,
+        context: { document, window, section, read, write, invoke, notify, onError: setError,
+          enhanceSelect, refreshSelect, closeSelects, createIcon,
+          onCatalogChanged: onModelCatalogChanged,
+          readSection: (sectionId, key) => pluginSectionValues(plugin.id, sectionId)[key],
+          isCurrent: () => generation === runtimePluginController.snapshot()?.coreGenerationId,
+          action: (actionId, values) => runtimePluginController.action({
+            pluginId: plugin.plugin_id, sectionId: section.section_id, actionId, values }),
+          listen: (event, handler) => window.__TAURI__.event.listen(event, handler),
+          importModule: path => import(new URL(`../${path}`, import.meta.url)),
         },
       });
-      const dispose = editor.dispose;
-      editor.dispose = () => { probeCancels.delete(cancel); dispose(); };
-      return editor;
+      pluginModules.add(component);
+      const dispose = component.dispose;
+      component.dispose = () => { pluginModules.delete(component); dispose(); };
+      return component;
     }
     if (presentation.component === "record-table") {
       const inspectAction = section.actions.find(action => action.action_id === presentation.inspectAction);
@@ -1313,7 +1289,7 @@ export function createPluginSettingsFeature({
         collection.columns.forEach((column) => {
           const cell = document.createElement("td");
           const value = item.values[column.key];
-          cell.textContent = column.type === "boolean" ? (value ? "是" : "否") : String(value ?? "");
+          cell.textContent = collectionDisplayValue(collection, column, value);
           row.append(cell);
         });
         if (collection.can_update || collection.can_delete) {
@@ -1403,7 +1379,7 @@ export function createPluginSettingsFeature({
 
   function renderPluginSettings(plugin, surface = null) {
     const allSections = pluginSettingsSections(plugin);
-    const knownSurfaces = new Set(["memory", "voice", "model", "providers", "screen_awareness"]);
+    const knownSurfaces = new Set(["memory", "model", "providers", "screen_awareness"]);
     const sections = allSections.filter((section) => surface ? section.surface === surface : !sectionDestination(section) && !knownSurfaces.has(section.surface));
     const container = document.createElement("div");
     container.className = "plugin-settings";
@@ -1552,11 +1528,8 @@ export function createPluginSettingsFeature({
   }
 
   function modelServicePlugin() {
-    return (pluginView.items || []).find((plugin) =>
-      plugin.plugin_id === "sakura.model.openai_compatible"
-      || (plugin.provides || []).includes("sakura.model.openai_compatible")
-      || pluginSettingsSections(plugin).some((section) => section.presentation?.component === "connection-editor")
-    );
+    return (pluginView.items || []).find(plugin => pluginSettingsSections(plugin)
+      .some(section => sectionDestination(section) === "host:providers"));
   }
 
   function providerUnavailableCopy(plugin) {
@@ -1578,7 +1551,7 @@ export function createPluginSettingsFeature({
     const host = fields.modelProviderSurface;
     if (!page || !host) return;
     host.querySelector("[data-provider-fallback]")?.remove();
-    if (page.querySelector(".connection-editor")) return;
+    if (page.querySelector(".settings-contributions")) return;
     const plugin = modelServicePlugin();
     const panel = document.createElement("div");
     panel.className = "provider-unavailable";
@@ -1673,16 +1646,20 @@ export function createPluginSettingsFeature({
     const options = collection.filters?.find((filter) => filter.key === key)?.options
       || collection.fields?.find((field) => field.key === key)?.options
       || [];
-    return options.find((option) => option.value === value)?.label || String(value || "未分类");
+    return options.find((option) => option.value === value)?.label || String(value ?? "");
   }
 
-  function formatMemoryTimestamp(value) {
-    if (!value) return "";
-    const date = new Date(value);
-    if (Number.isNaN(date.getTime())) return String(value);
-    return new Intl.DateTimeFormat("zh-CN", {
-      month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit",
-    }).format(date);
+  function collectionDisplayValue(collection, column, value) {
+    if (value == null || value === "") return "";
+    if (column.type === "datetime") {
+      const date = new Date(value);
+      return Number.isNaN(date.getTime()) ? String(value) : new Intl.DateTimeFormat("zh-CN", {
+        month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit",
+      }).format(date);
+    }
+    if (column.type === "boolean") return value ? "是" : "否";
+    if (column.format === "percent") return new Intl.NumberFormat("zh-CN", { style: "percent", maximumFractionDigits: 2 }).format(value);
+    return memoryCollectionOptionLabel(collection, column.key, value);
   }
 
   function collectionEditorValues(collection, item = null) {
@@ -1851,7 +1828,7 @@ export function createPluginSettingsFeature({
     form.className = "memory-dialog-form";
     (collection.fields || []).filter(pluginFieldEditable).forEach((field) => {
       const group = document.createElement("label");
-      group.className = `memory-dialog-field${field.key === "content" ? " is-content" : ""}`;
+      group.className = `memory-dialog-field${field.key === collection.columns[0]?.key ? " is-content" : ""}`;
       const label = document.createElement("span");
       label.className = "memory-dialog-label";
       label.textContent = field.required ? `${field.label} *` : field.label;
@@ -1871,12 +1848,11 @@ export function createPluginSettingsFeature({
           refreshDirty();
         });
         setTimer(() => enhanceSelect(control), 0);
-      } else if (field.key === "content") {
+      } else if (field.key === collection.columns[0]?.key) {
         control = document.createElement("textarea");
         control.rows = 7;
         if (Number.isSafeInteger(field.maxLength)) control.maxLength = field.maxLength;
         control.value = String(state.editor.values[field.key] ?? "");
-        control.placeholder = "例如：喜欢简洁的回答";
         control.addEventListener("input", () => {
           state.editor.values[field.key] = control.value;
           refreshDirty();
@@ -1898,7 +1874,7 @@ export function createPluginSettingsFeature({
         });
       }
       group.append(label, control);
-      if (field.key === "content" && Number.isSafeInteger(field.maxLength)) {
+      if (field.key === collection.columns[0]?.key && Number.isSafeInteger(field.maxLength)) {
         const counter = document.createElement("span");
         counter.className = "memory-character-count";
         counter.textContent = `${String(state.editor.values[field.key] ?? "").length} / ${field.maxLength}`;
@@ -2043,21 +2019,14 @@ export function createPluginSettingsFeature({
     search.type = "search";
     search.className = "memory-search-input";
     search.setAttribute("aria-label", "搜索记忆");
-    search.placeholder = "搜索内容、分类或来源";
+    search.placeholder = "搜索记忆";
     search.disabled = true;
-    const layer = document.createElement("select");
-    layer.setAttribute("aria-label", "分层");
-    layer.disabled = true;
-    const allLayers = document.createElement("option");
-    allLayers.textContent = "全部分层";
-    layer.append(allLayers);
     const refresh = document.createElement("button");
     refresh.type = "button";
     refresh.className = "memory-refresh-button";
     refresh.textContent = "刷新";
     refresh.disabled = true;
-    toolbar.append(search, layer, refresh);
-    setTimer(() => enhanceSelect(layer), 0);
+    toolbar.append(search, refresh);
 
     const body = document.createElement("div");
     body.className = "memory-archive-list is-preparing";
@@ -2110,7 +2079,7 @@ export function createPluginSettingsFeature({
     search.className = "memory-search-input";
     search.dataset.collectionKey = pluginCollectionKey(plugin, section, collection);
     search.setAttribute("aria-label", "搜索记忆");
-    search.placeholder = "搜索内容、分类或来源";
+    search.placeholder = "搜索记忆";
     search.value = state.search;
     search.disabled = activityControlsDisabled;
     search.addEventListener("input", () => {
@@ -2193,7 +2162,9 @@ export function createPluginSettingsFeature({
         if (motion?.itemId === item.itemId) {
           card.classList.add(motion.kind === "create" ? "is-entering" : "is-updated");
         }
-        card.setAttribute("aria-label", `记忆：${String(values.content || "空内容").slice(0, 80)}`);
+        const primary = collection.columns[0];
+        const primaryText = collectionDisplayValue(collection, primary, values[primary.key]);
+        card.setAttribute("aria-label", `${collection.title}：${primaryText.slice(0, 80)}`);
         card.addEventListener("click", () => {
           state.selectedItemId = item.itemId;
           fields.memorySurface.querySelectorAll(".memory-record-card.is-selected")
@@ -2208,30 +2179,19 @@ export function createPluginSettingsFeature({
         main.className = "memory-record-main";
         const content = document.createElement("p");
         content.className = "memory-record-content";
-        content.textContent = String(values.content || "（空记忆）");
+        content.textContent = primaryText;
         const meta = document.createElement("div");
         meta.className = "memory-record-meta";
-        [
-          memoryCollectionOptionLabel(collection, "layer", values.layer),
-          values.category || "未分类",
-          values.source || "未知来源",
-          formatMemoryTimestamp(values.updatedAt),
-        ].filter(Boolean).forEach((text, index) => {
-          const itemMeta = document.createElement("span");
-          itemMeta.className = index === 0 ? "memory-layer-chip" : "";
-          itemMeta.textContent = text;
-          meta.append(itemMeta);
-        });
+        for (const column of collection.columns.slice(1)) {
+          const value = collectionDisplayValue(collection, column, values[column.key]);
+          if (!value) continue;
+          const detail = document.createElement("span");
+          detail.textContent = `${column.label} ${value}`;
+          meta.append(detail);
+        }
         main.append(content, meta);
         const aside = document.createElement("div");
         aside.className = "memory-record-aside";
-        const scores = document.createElement("div");
-        scores.className = "memory-score-row";
-        [["重要", values.importance], ["置信", values.confidence]].forEach(([label, value]) => {
-          const score = document.createElement("span");
-          score.textContent = `${label} ${Math.round(Number(value ?? 0) * 100)}`;
-          scores.append(score);
-        });
         const edit = document.createElement("button");
         edit.type = "button";
         edit.className = "memory-card-edit";
@@ -2240,7 +2200,7 @@ export function createPluginSettingsFeature({
           event.stopPropagation();
           openMemoryCollectionEditor(plugin, section, collection, item);
         });
-        aside.append(scores, edit);
+        aside.append(edit);
         card.append(main, aside);
         body.append(card);
       });
@@ -2400,13 +2360,11 @@ export function createPluginSettingsFeature({
       configure.addEventListener('click', () => openPluginSettingsDialog(plugin)); aside.append(configure);
     }
     const destinations = new Set(pluginSettingsSections(plugin).map(sectionDestination).filter(Boolean));
-    if (getVoiceController()?.hasPluginSections(plugin.plugin_id) || getAsrController()?.isHubPlugin?.(plugin.plugin_id)) destinations.add("host:voice");
     const labels = { providers: "模型服务", model: "模型", voice: "语音", memory: "记忆", interaction: "交互" };
     for (const destination of destinations) {
       const target = destination.startsWith("host:") ? destination.slice(5) : destination;
       const title = labels[target] || pluginView.items.flatMap(p => p.pages || []).find(p => p.pageId === destination)?.title;
-      const available = pluginSettingsSections(plugin).some(s => sectionDestination(s) === destination && s.placement?.available !== false)
-        || (destination === "host:voice" && (getVoiceController()?.hasPluginSections(plugin.plugin_id) || getAsrController()?.isHubPlugin?.(plugin.plugin_id)));
+      const available = pluginSettingsSections(plugin).some(s => sectionDestination(s) === destination && s.placement?.available !== false);
       const link = pluginNode("button", "secondary-button plugin-settings-link", title && available ? `打开${title}设置` : "设置页面不可用");
       link.type = "button"; link.disabled = !title || !available;
       link.addEventListener("click", () => showPage(target)); aside.append(link);
@@ -2575,6 +2533,7 @@ export function createPluginSettingsFeature({
   }
 
   function validateSettings() {
+    for (const module of pluginModules) module.validate();
     const draft = collectPluginSettings().settings_by_id;
     for (const plugin of pluginView.items) for (const section of plugin.settings) {
       const values = draft[plugin.plugin_id]?.[section.section_id];
@@ -2592,17 +2551,7 @@ export function createPluginSettingsFeature({
         if (value != null && field.type === "select") invalid ||= !field.options.some(option => option.value === value);
         if (invalid) throw new Error(`${section.title}：请检查${field.label}。`);
       }
-      if (section.presentation?.component === "connection-editor") {
-        const identities = new Set();
-        for (const connection of values[section.presentation.valueField] || []) {
-          let url; try { url = new URL(connection.base_url); } catch { /* reported below */ }
-          if (!connection.alias?.trim() || !url || !["http:", "https:"].includes(url.protocol)
-              || url.username || url.password || url.search || url.hash || identities.has(connection.id)) {
-            throw new Error(`${section.title}：请检查连接名称和 API 地址。`);
-          }
-          identities.add(connection.id);
-        }
-      }
+
     }
   }
 
@@ -2612,7 +2561,7 @@ export function createPluginSettingsFeature({
   }
 
   function applyRuntimePluginSnapshot(snapshot, { preserveDraft = false, draft = null, keepGlobalCollectionDrafts = false } = {}) {
-    void getAsrController()?.refresh({ preserveDraft: true });
+    onPluginsChanged();
     if (!preserveDraft) pendingApplication.clear();
     const previousPlugins = pluginView.items || [];
     const incoming = snapshot.plugins.map(plugin => {
@@ -2875,9 +2824,7 @@ export function createPluginSettingsFeature({
   }
 
   function hasPrivateSettings(plugin) {
-    return pluginSettingsSections(plugin).some(section => !sectionDestination(section))
-      || Boolean(getAsrController()?.hasPluginControls(plugin.plugin_id))
-      || Boolean(getVoiceController()?.hasPluginSections(plugin.plugin_id));
+    return pluginSettingsSections(plugin).some(section => !sectionDestination(section));
   }
 
   function pluginDialogSchema(plugin) {
@@ -2897,7 +2844,7 @@ export function createPluginSettingsFeature({
     }
     editor.general.components?.forEach(component => component.update?.());
     const draftHint = editor.dialog.querySelector(".plugin-draft-hint");
-    if (draftHint) draftHint.hidden = !editor.asr && !editor.voice && !pluginSettingsSections(plugin).some(section =>
+    if (draftHint) draftHint.hidden = !pluginSettingsSections(plugin).some(section =>
       !sectionDestination(section) && (!section.presentation?.visibleField || pluginSectionValues(plugin.id, section.section_id)[section.presentation.visibleField])
       && section.fields.some(pluginFieldEditable));
     const focused = document.activeElement;
@@ -2968,20 +2915,6 @@ export function createPluginSettingsFeature({
     const body = pluginNode('div', 'plugin-dialog-body');
     const general = renderPluginSettings(plugin);
     body.append(general);
-    const asr = getAsrController()?.hasPluginControls(plugin.plugin_id) ? getAsrController() : null;
-    const initialAsr = asr ? clonePlain(asr.pluginDraft()) : null;
-    if (asr) {
-      const controls = pluginNode('div', 'plugin-dialog-asr');
-      body.append(controls);
-      asr.mountPluginControls(plugin.plugin_id, controls);
-    }
-    const voice = getVoiceController()?.hasPluginSections(plugin.plugin_id) ? getVoiceController() : null;
-    const initialVoice = voice ? clonePlain(voice.pluginDraft(plugin.plugin_id)) : null;
-    if (voice) {
-      const controls = pluginNode('div', 'plugin-dialog-voice');
-      body.append(controls);
-      voice.mountPluginSections(plugin.plugin_id, controls);
-    }
     const footer = pluginNode('footer', 'plugin-dialog-footer');
     footer.append(pluginNode('span', 'plugin-draft-hint', '应用设置后生效'));
     const actions = pluginNode('div', '');
@@ -2989,7 +2922,7 @@ export function createPluginSettingsFeature({
     const done = pluginNode('button', '', '完成'); done.type = 'submit'; actions.append(cancel, done); footer.append(actions);
     form.append(header, body, footer); dialog.append(form);
     const editor = {
-      dialog, general, asr, voice, installId: plugin.id, generation: runtimePluginController?.snapshot()?.coreGenerationId,
+      dialog, general, installId: plugin.id, generation: runtimePluginController?.snapshot()?.coreGenerationId,
       schema: pluginDialogSchema(plugin), closing: false,
       initial: Object.fromEntries(pluginSettingsSections(plugin).filter((section) => !sectionDestination(section))
         .map((section) => [section.section_id, clonePlain(editablePluginSectionValues(section, pluginSectionValues(plugin.id, section.section_id)))])),
@@ -2997,11 +2930,7 @@ export function createPluginSettingsFeature({
         if (editor.closing) return;
         editor.closing = true; closeSelects(dialog);
         dialog.inert = true;
-        asr?.unmountPluginControls();
-        voice?.unmountPluginSections();
         if (!accept && restore && runtimePluginController?.snapshot()?.coreGenerationId === editor.generation) {
-          if (asr) asr.restorePluginDraft(initialAsr);
-          if (voice) voice.restorePluginDraft(initialVoice);
           for (const [sectionId, values] of Object.entries(editor.initial)) {
             const current = pluginState.settingsValues[plugin.id]?.[sectionId];
             if (current) Object.assign(current, values);
@@ -3086,19 +3015,11 @@ export function createPluginSettingsFeature({
     },
     renderCollections,
     providerCatalog() {
-      return pluginView.items.filter(p => p.enabled).flatMap(plugin => plugin.settings
-        .filter(section => section.presentation?.component === "connection-editor" && section.presentation.serviceKey)
-        .map(section => ({ serviceKey: section.presentation.serviceKey, label: plugin.name,
-          profiles: (pluginSectionValues(plugin.id, section.section_id)[section.presentation.valueField] || []).map(p => ({
-            profileId: p.id, label: p.alias, models: (p.models || []).map(modelId => ({ modelId, label: modelId })),
-          })) })));
+      return [...pluginModules].flatMap(module => module.contributions()?.modelCatalog || []);
     },
-    async cancelOperations() { uiEpoch++; await Promise.allSettled([...probeCancels].map(cancel => cancel())); },
+    async cancelOperations() { await Promise.allSettled([...pluginModules].map(module => module.cancel())); },
     renderMemorySurface,
     dialogElement: () => pluginSettingsDialog?.dialog,
-    onVoiceSectionsRendered() {
-      renderPluginPage();
-    },
     onPageChanged(page) {
       clearPluginActivityRefresh();
       if (page === "plugins" || page === "about") schedulePluginActivityRefresh();
@@ -3124,14 +3045,10 @@ export function createPluginSettingsFeature({
       refreshDirty();
     },
     dispose() {
-      uiEpoch++; settingsUI.dispose();
+      settingsUI.dispose();
       const editor = pluginSettingsDialog;
       pluginSettingsDialog = null;
       if (editor) {
-        if (!editor.closing) {
-          editor.asr?.unmountPluginControls();
-          editor.voice?.unmountPluginSections();
-        }
         editor.closing = true;
         closeSelects(editor.dialog);
         editor.general.components?.forEach(component => component.dispose());

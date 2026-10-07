@@ -552,6 +552,7 @@ def _roots(tmp_path: Path) -> RuntimeRoots:
     distribution = tmp_path / "distribution"
     user = tmp_path / "user"
     (distribution / "plugins" / "builtin").mkdir(parents=True)
+    shutil.copyfile(Path(__file__).parents[2] / "VERSION", distribution / "VERSION")
     user.mkdir()
     roots = RuntimeRoots(distribution, user)
     from app.plugins.bundled_migrations import migrate_bundled_plugins
@@ -2117,10 +2118,12 @@ def test_generation_close_unregisters_provider_from_live_tts_hub(tmp_path: Path)
     roots = _roots(tmp_path)
     bundled = roots.distribution_root / "plugins" / "builtin"
     hub_source = Path(__file__).resolve().parents[2] / "plugins/builtin/sakura_tts_hub/plugin.py"
-    _plugin_source(
-        bundled, "fixture.tts-hub", "sakura.tts", requires=("sakura.host.logging",),
+    hub_root = _plugin_source(
+        bundled, "fixture.tts-hub", "sakura.tts", requires=("sakura.host.logging", "sakura.host.speech"),
         body=hub_source.read_text(encoding="utf-8") + "\nPlugin = SakuraTTSHubPlugin\n",
     )
+    for source in hub_source.parent.glob("_*.py"):
+        shutil.copyfile(source, hub_root / source.name)
     cleanup_result = tmp_path / "provider-cleanup.json"
     _plugin_source(
         bundled, "fixture.tts-provider", "fixture.tts-provider.service", requires=("sakura.tts",),

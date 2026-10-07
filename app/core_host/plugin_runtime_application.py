@@ -55,7 +55,7 @@ _HOST_EXPORTS = {
     HOST_LOGGING_SERVICE: ("emit",),
     HOST_ARTIFACTS_SERVICE: ("allocate", "commit", "release", "resolve", "release_received", "deliver", "release_delivered"),
     HOST_DIAGNOSTICS_SERVICE: ("emit",),
-    HOST_CHARACTER_SERVICE: ("current", "list", "presentation", "get", "update", "resolve_resource"),
+    HOST_CHARACTER_SERVICE: ("current", "list", "presentation", "get", "update", "resolve_resource", "declare_resources"),
     HOST_TOOLS_SERVICE: ("register", "unregister", "catalog", "execute"),
     HOST_CONTEXT_SERVICE: ("register", "unregister", "describe", "catalog", "collect"),
     HOST_MODEL_SLOTS_SERVICE: ("register", "unregister", "catalog", "resolve", "active", "register_provider", "unregister_provider"),
@@ -136,8 +136,16 @@ class PluginRuntimeApplication:
         self._model_configuration_issue = None
         from app.plugins.bundled_migrations import migrate_bundled_plugins
 
+        if specs is None:
+            from app.plugins.offline_updates import recover_installed_plugins
+
+            recover_installed_plugins(roots)
         # Classify the user before model migration creates config/model_slots.json.
         migration_failures = migrate_bundled_plugins(roots, progress=migration_progress) if specs is None else {}
+        if specs is None:
+            from app.plugins.offline_updates import update_installed_plugins
+
+            migration_failures.update(update_installed_plugins(roots, progress=migration_progress))
         try:
             migrate_legacy_model_configuration(roots.user_root)
         except (OSError, ValueError) as error:
@@ -163,7 +171,7 @@ class PluginRuntimeApplication:
         self.audio_input = AudioInputResources(roots.user_root, generation_id, self._manager.service_identity)
         self._manager.install_host_service(
             HOST_AUDIO_INPUT_SERVICE, self.audio_input,
-            exports=("verifyProvider", "authorize", "acquire", "release", "revoke"),
+            exports=("verifyProvider", "authorize", "acquire", "release", "revoke", "create", "finish", "producerDone", "legacyDevice"),
         )
         self._character_store = PluginCharacterStore(roots.user_root)
         self._host_services = PluginHostServices(
@@ -195,7 +203,7 @@ class PluginRuntimeApplication:
             commit_scope=commit_scope,
         )
         self._manager.install_host_service(HOST_SPEECH_SERVICE, self.speech,
-            exports=("begin", "poll", "cancel"))
+            exports=("begin", "poll", "cancel", "cache_status", "cache_page"))
         self.conversation = ConversationHostService(
             chat_boundary_provider=lambda: self._chat_boundary,
             artifact_resolver=self._host_services.resolve_committed_artifact,

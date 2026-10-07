@@ -4,7 +4,7 @@ import { applyTheme } from "../core/theme.js";
 import { createPlaybackActionIndicator } from "../audio/playback-action-indicator.js";
 import { createErrorDialog } from "../core/error-dialog.js";
 import { renderSubtitleText } from "../pet/multilingual-text.js";
-import { createTtsController } from "../audio/tts-controller.js";
+import { createTtsControllerHost } from "../audio/tts-controller.js";
 import {
   preservePrependScroll,
   projectHistoryEntries,
@@ -50,7 +50,7 @@ function clearPlaybackIndicators() {
   playbackIndicators.clear();
 }
 window.addEventListener("pagehide", clearPlaybackIndicators, { once: true });
-const ttsController = invoke && listen ? createTtsController({
+const ttsController = invoke && listen ? createTtsControllerHost({
   invoke, listen,
   onDiagnostic: error => errors.show({
     title: "语音播放失败",
@@ -263,6 +263,8 @@ async function loadInitial() {
       },
     }));
     if (!loadGuard.isCurrent(revision)) return;
+    await ttsController?.rebind(page.coreGenerationId);
+    if (!loadGuard.isCurrent(revision)) return;
     const firstPaint = entries.length === 0;
     entries = page.entries.slice();
     applyPage(page);
@@ -346,7 +348,6 @@ window.addEventListener("pagehide", () => ttsController?.dispose(), { once: true
 // Install the native listener before the first history request. Otherwise an
 // A -> B reset can race the asynchronous listen() registration and an already
 // opened window can paint A after both reset/ready events were missed.
-await ttsController?.start();
 await subscribeHistoryRefresh(listen, (event) => {
   const action = historyRefreshAction(event?.payload);
   if (action.reset) resetForCharacterSwitch();

@@ -1,6 +1,6 @@
 import { errorText } from "./core/error-display.js";
 import { composerPlaceholder, createChatPresentationReducer } from "./chat/chat-presentation.js";
-import { createTtsController } from "./audio/tts-controller.js";
+import { createTtsControllerHost } from "./audio/tts-controller.js";
 import { createAsrController } from "./audio/asr-controller.js";
 import { createAsrWaveform } from "./audio/asr-waveform.js";
 import { createAsrPresentation } from "./audio/asr-presentation.js";
@@ -1153,14 +1153,13 @@ if (surfaceVisibilityCapabilities.bubbleAutoHide && surfaceVisibilityCapabilitie
   });
 }
 
-const ttsController = createTtsController({
+const ttsController = createTtsControllerHost({
   invoke,
   listen: (eventName, handler) => window.__TAURI__.event.listen(eventName, handler),
   onDiagnostic: (code) => {
     runtimeDiagnostics.record({ level: "warn", event: "webview.tts.degraded", outcome: "failed", code });
   },
 });
-await ttsController.start();
 
 const voiceMic = document.querySelector("#voice-mic");
 const voiceStatus = document.querySelector("#voice-status");
@@ -1400,7 +1399,11 @@ const chatClient = createRealChatClient({
   onEvent: handleCoreEvent,
   listenHost: onEvent => invoke("host_chat_listen", { onEvent }),
   initialPreparedGenerationId: characterPresentation.generationId,
-  prepareGeneration: ({ generationId, refresh }) => rebindCoreGeneration(generationId, { refresh }),
+  prepareGeneration: async ({ generationId, refresh }) => {
+    const prepared = await rebindCoreGeneration(generationId, { refresh });
+    if (prepared) await ttsController.rebind(generationId);
+    return prepared;
+  },
 });
 
 const updateAnnouncement = createUpdateAnnouncementController({

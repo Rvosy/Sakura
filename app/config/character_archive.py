@@ -22,6 +22,7 @@ from app.config.character_packages import (
     allocate_character_installation,
     ensure_legacy_voice_extensions,
 )
+from app.config.extension_resources import parse_extension_resources, extension_resource_files
 from app.storage.atomic import atomic_write_text, rename_with_retry, replace_with_retry
 from app.storage.archive_security import validate_zip_resource_limits
 
@@ -206,10 +207,15 @@ def import_character_voice_archive(
                 source_voice_dir = extract_dir / VOICE_ARCHIVE_ROOT.as_posix()
                 if not source_voice_dir.is_dir():
                     raise CharacterArchiveError("语音包缺少 voice/ 资源目录。")
+                _validate_voice_referenced_files(extract_dir, normalized_voice)
 
                 staging_voice_dir = staging_package_dir / "voice"
-                shutil.copytree(source_voice_dir, staging_voice_dir)
-                _validate_voice_referenced_files(staging_package_dir, normalized_voice)
+                if target_voice_dir.exists():
+                    for resource in (target_voice_dir, *target_voice_dir.rglob("*")):
+                        if resource.is_symlink():
+                            raise CharacterArchiveError(f"角色包不能包含符号链接：{resource}")
+                    shutil.copytree(target_voice_dir, staging_voice_dir)
+                shutil.copytree(source_voice_dir, staging_voice_dir, dirs_exist_ok=True)
 
                 old_voice_moved = False
                 try:
@@ -282,25 +288,47 @@ def export_character_archive(
         raise CharacterArchiveError("角色清单无法读取。") from exc
     character_manifest = _clone_character_data(source_manifest)
 
+    declarations = parse_extension_resources(character_manifest.get("extensionResources", {}))
+    declared_files = extension_resource_files(profile.package_dir, declarations)
+    omitted = set()
+    retained_files = set()
+    retained_directories = set()
+    if not include_voice:
+        for owner, files in declared_files.items():
+            if declarations[owner]["kind"] == "tts":
+                omitted.update(files)
+        # Shared files remain when another declared resource still needs them.
+        for owner, files in declared_files.items():
+            if declarations[owner]["kind"] != "tts":
+                omitted.difference_update(files)
+                retained_files.update(files)
+                retained_directories.update(_resolved(profile.package_dir / relative)
+                    for relative in declarations[owner]["paths"]
+                    if (profile.package_dir / relative).is_dir())
+        retained = {owner: declaration for owner, declaration in declarations.items()
+                    if declaration["kind"] != "tts"}
+        if "extensionResources" in character_manifest:
+            character_manifest["extensionResources"] = retained
+    package_paths = list(profile.package_dir.rglob("*"))
+    for path in package_paths:
+        if path.is_symlink():
+            raise CharacterArchiveError(f"角色包不能包含符号链接：{path}")
     package_files = [
-        path
-        for path in profile.package_dir.rglob("*")
-        if (
-            path.is_file()
-            and _resolved(path) != _resolved(destination)
-            and path != profile.package_dir / "character.json"
-            and not _is_voice_package_file(profile.package_dir, path)
-        )
+        path for path in package_paths
+        if path.is_file()
+        and _resolved(path) != _resolved(destination)
+        and path != profile.package_dir / "character.json"
+        and _resolved(path) not in omitted
+        and (include_voice or _resolved(path) in retained_files or not _is_voice_package_file(profile.package_dir, path))
     ]
+    # Packages predating declarations retain all package-local files, including
+    # opaque extension resources, when exported with voice resources.
     if include_voice:
         package_files.extend(_referenced_voice_package_files(profile.package_dir, profile.voice))
-        package_files.extend(
-            _referenced_extension_voice_files(
-                profile.package_dir,
-                _opaque_extensions(character_manifest.get("extensions")),
-            )
-        )
     package_files = list(dict.fromkeys(package_files))
+    package_directories = [path for path in package_paths if path.is_dir()
+        and (include_voice or not _is_voice_package_file(profile.package_dir, path)
+             or any(root == _resolved(path) or root in _resolved(path).parents for root in retained_directories))]
     package_archive_names = {
         _archive_path_for_package_file(profile.package_dir, path).as_posix()
         for path in package_files
@@ -384,6 +412,9 @@ def export_character_archive(
     try:
         with zipfile.ZipFile(temp_output, "w", zipfile.ZIP_DEFLATED) as zf:
             written: set[str] = set()
+            for directory in package_directories:
+                _operation_checkpoint(cancel_check)
+                zf.write(directory, _archive_path_for_package_file(profile.package_dir, directory).as_posix() + "/")
             for source in package_files:
                 _write_zip_file(
                     zf,
@@ -753,10 +784,10 @@ def _validate_referenced_files(package_dir: Path, character_data: dict[str, Any]
         path = package_dir / _safe_package_path(path_text, label)
         if not path.is_file():
             raise CharacterArchiveError(f"{label}不存在：{path}")
-    _referenced_extension_voice_files(
-        package_dir,
-        _opaque_extensions(character_data.get("extensions")),
-    )
+    try:
+        extension_resource_files(package_dir, parse_extension_resources(character_data.get("extensionResources", {})))
+    except ValueError as error:
+        raise CharacterArchiveError(f"角色插件资源无效：{error}") from error
 
 
 def _validate_voice_referenced_files(package_dir: Path, voice_data: dict[str, str]) -> None:
@@ -801,74 +832,6 @@ def _referenced_voice_package_files(package_dir: Path, voice: Any) -> list[Path]
     return result
 
 
-def _referenced_extension_voice_files(
-    package_dir: Path,
-    extensions: dict[str, Any],
-) -> list[Path]:
-    package_root = _resolved(package_dir)
-    result: list[Path] = []
-    seen: set[Path] = set()
-
-    def add_file(value: object, label: str) -> Path | None:
-        if not isinstance(value, str) or not value.strip():
-            return None
-        path = _resolved(package_dir / _safe_package_path(value.strip(), label))
-        try:
-            path.relative_to(package_root)
-        except ValueError as exc:
-            raise CharacterArchiveError(f"{label}不能指向角色包外。") from exc
-        if not path.is_file() or path.is_symlink():
-            raise CharacterArchiveError(f"{label}不存在或不是普通文件：{path}")
-        if path not in seen:
-            seen.add(path)
-            result.append(path)
-        return path
-
-    for plugin_id in ("sakura.tts.gpt-sovits", "sakura.tts.genie"):
-        extension = extensions.get(plugin_id)
-        if not isinstance(extension, dict):
-            continue
-        tone_refs = add_file(extension.get("toneRefs"), f"{plugin_id}.toneRefs")
-        add_file(extension.get("gptModel"), f"{plugin_id}.gptModel")
-        add_file(extension.get("sovitsModel"), f"{plugin_id}.sovitsModel")
-        if tone_refs is not None:
-            for audio in _tone_ref_audio_files(package_dir, tone_refs):
-                resolved_audio = _resolved(audio)
-                try:
-                    relative_audio = resolved_audio.relative_to(package_root)
-                except ValueError as exc:
-                    raise CharacterArchiveError(
-                        f"{plugin_id}.toneRefs 音频不能指向角色包外。"
-                    ) from exc
-                add_file(
-                    relative_audio.as_posix(),
-                    f"{plugin_id}.toneRefs 音频",
-                )
-        if plugin_id == "sakura.tts.genie":
-            onnx_dir = extension.get("onnxModelDir")
-            if isinstance(onnx_dir, str) and onnx_dir.strip():
-                directory = _resolved(
-                    package_dir / _safe_package_path(onnx_dir.strip(), f"{plugin_id}.onnxModelDir")
-                )
-                try:
-                    directory.relative_to(package_root)
-                except ValueError as exc:
-                    raise CharacterArchiveError(
-                        f"{plugin_id}.onnxModelDir 不能指向角色包外。"
-                    ) from exc
-                if not directory.is_dir() or directory.is_symlink():
-                    raise CharacterArchiveError(f"{plugin_id}.onnxModelDir 不存在或不是普通目录。")
-                for path in directory.rglob("*"):
-                    if path.is_symlink():
-                        raise CharacterArchiveError(f"{plugin_id}.onnxModelDir 不能包含符号链接。")
-                    if path.is_file():
-                        add_file(
-                            path.relative_to(package_root).as_posix(),
-                            f"{plugin_id}.onnxModelDir 资源",
-                        )
-    return result
-
-
 def _tone_ref_audio_files(package_dir: Path, tone_ref_path: Path | None) -> list[Path]:
     if tone_ref_path is None or not tone_ref_path.is_file():
         return []
@@ -904,8 +867,8 @@ def _write_character_voice_manifest(package_dir: Path, voice_data: dict[str, str
     if isinstance(character_data.get("extensions"), dict):
         character_data["extensions"].pop("sakura.tts", None)
     ensure_legacy_voice_extensions(character_data, package_dir)
-    # Import replaces shared voice resources, including any previous Studio
-    # paths. Keep explicit Genie resource overrides intact.
+    # Import updates shared voice paths. Other package files and explicit
+    # Genie resource overrides remain available.
     provider = character_data["extensions"]["sakura.tts.gpt-sovits"]
     for source_key, target_key in (
         ("tone_refs", "toneRefs"), ("ref_lang", "refLang"),

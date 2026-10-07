@@ -117,6 +117,7 @@ def run(
     from app.plugins.installer import LocalPluginInstaller
     from app.plugins.installer import PluginInstallError
     from app.plugins.inventory import PluginDesiredStateStore, PluginInventory
+    from app.plugins.offline_updates import BASELINES, update_installed_plugins
     from app.storage.runtime_roots import RuntimeRoots
 
     import app
@@ -144,6 +145,34 @@ def run(
     fresh = RuntimeRoots(stage, work / "new-user")
     assert migrate_bundled_plugins(fresh) == {}
     assert not any(record.plugin_id in MIGRATIONS for record in PluginInventory(fresh).scan().records)
+    assert update_installed_plugins(fresh) == {}
+    assert not any(record.source == "user" for record in PluginInventory(fresh).scan().records)
+
+    # Use the shipped old source and actual platform dependencies, not checkout
+    # imports or a dependency marker fixture, for the offline update path.
+    baseline_root = stage / BASELINES
+    updates = json.loads((baseline_root / "sources.json").read_text(encoding="utf-8"))
+    for plugin_id, source in updates.items():
+        with tempfile.TemporaryDirectory(prefix="offline-update-", dir=work) as temporary:
+            user = Path(temporary)
+            code = user / "plugins/user" / plugin_id
+            with zipfile.ZipFile(baseline_root / source["baselines"][0]["file"]) as archive:
+                archive.extractall(code)
+            PluginDesiredStateStore(user).set(plugin_id, False)
+            config = user / "data/plugins" / plugin_id / "config.json"
+            config.parent.mkdir(parents=True)
+            config.write_text('{"savedSetting":"retained"}', encoding="utf-8")
+            enabled = (user / "config/plugins.yaml").read_bytes()
+            roots = RuntimeRoots(stage, user)
+            assert update_installed_plugins(roots) == {}
+            record = next(record for record in PluginInventory(roots).scan().records if record.plugin_id == plugin_id)
+            assert (record.source, record.version, record.desired_enabled) == ("user", SOURCES[plugin_id]["version"], False)
+            assert config.read_text(encoding="utf-8") == '{"savedSetting":"retained"}'
+            assert (user / "config/plugins.yaml").read_bytes() == enabled
+            assert update_installed_plugins(roots) == {}
+            shutil.rmtree(code)
+            assert update_installed_plugins(roots) == {}
+            assert not code.exists()
 
     distribution = stage
     if historical_distribution is not None and upgrade_mode == "overlay":

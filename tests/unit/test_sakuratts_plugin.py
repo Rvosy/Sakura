@@ -21,7 +21,7 @@ def isolated_device_inventory(monkeypatch):
     monkeypatch.setattr('plugins.builtin.sakura_sakuratts._runtime.nvidia_device', lambda: {})
 
 
-def test_voice_reads_studio_resources_without_private_extension_or_manifest_writes(tmp_path):
+def test_voice_reads_studio_resources_and_declares_resources_without_private_overrides(tmp_path):
     from app.core_host.plugin_character import PluginCharacterStore
     package = tmp_path / 'physical-character-directory'
     package.mkdir()
@@ -34,7 +34,8 @@ def test_voice_reads_studio_resources_without_private_extension_or_manifest_writ
     store = PluginCharacterStore(tmp_path)
     store._manifest_paths['logical-id'] = manifest
     character = SimpleNamespace(get=lambda cid: store.get('sakura.tts.sakuratts', cid),
-                                resolve_resource=store.resolve_resource)
+                                resolve_resource=store.resolve_resource,
+                                declare_resources=lambda cid, declaration: store.declare_resources('sakura.tts.sakuratts', cid, declaration))
     original = manifest.read_bytes()
     voice = character_voice(character, 'logical-id', '开心')
     assert voice['gpt'] == str(package / 'voice.ckpt')
@@ -43,7 +44,13 @@ def test_voice_reads_studio_resources_without_private_extension_or_manifest_writ
     assert voice['prompt_lang'] == 'ja'
     assert voice['prompt_text'] == 'happy'
     assert character_voice(character, 'logical-id', 'unknown')['ref_audio_path'] == str(package / 'neutral.wav')
-    assert manifest.read_bytes() == original
+    saved = json.loads(manifest.read_text())
+    declared = saved.pop('extensionResources')['sakura.tts.sakuratts']
+    assert saved == json.loads(original)
+    assert set(declared['paths']) == {'refs.txt', 'voice.ckpt', 'voice.pth', 'neutral.wav', 'happy.wav'}
+    written = manifest.stat().st_mtime_ns
+    character_voice(character, 'logical-id')
+    assert manifest.stat().st_mtime_ns == written
     store.update('sakura.tts.sakuratts', 'logical-id', {'gptModel': 'override.ckpt'})
     assert character_voice(character, 'logical-id')['gpt'] == str(package / 'override.ckpt')
 
@@ -287,6 +294,7 @@ def test_cancel_stops_writer_before_releasing_artifact_without_poll(tmp_path, mo
 @pytest.mark.parametrize('installed', ['none', 'missing-interpreter', 'invalid-marker'])
 def test_plugin_loads_in_isolated_host_with_native_settings(tmp_path, installed):
     repo = Path(__file__).parents[2]
+    shutil.copyfile(repo / 'VERSION', tmp_path / 'VERSION')
     shutil.copytree(repo / 'plugins/builtin/sakura_tts_hub', tmp_path / 'plugins/builtin/sakura_tts_hub')
     shutil.copytree(repo / 'plugins/builtin/sakura_sakuratts', tmp_path / 'plugins/builtin/sakura_sakuratts')
     config = tmp_path / 'data/plugins/sakura.tts.sakuratts/config.json'

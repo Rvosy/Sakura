@@ -3,7 +3,7 @@ kind: adr
 status: accepted
 audience: maintainer
 source_of_truth: self
-updated: 2026-09-09
+updated: 2026-10-07
 ---
 
 # ADR-0045：ASR Hub、可替换识别引擎与宿主录音
@@ -23,17 +23,18 @@ Core 使用，Host 录音向插件输入的资源授权仍需补齐。
 
 ASR 使用一个可替换的官方 Hub 插件，提供 `sakura.asr`。各识别引擎是独立插件，提供各自的 Service key，
 向 Hub 登记 descriptor。Hub 持有应用级当前引擎选择，通过 `status/warmup/begin/poll/cancel` 调用 Provider。
-识别语言、支持的语言选项、模型资源、推理和 VAD 由引擎拥有。Hub 只做登记、选择、路由与任务状态，不成为模型运行平台。
+识别语言、支持的语言选项、模型资源、推理和 VAD 由引擎拥有。Hub 负责登记、选择、录音和输入任务；模型仍由独立 Provider 运行。
 
 默认引擎另做官方 SenseVoice Provider，使用 sherpa-onnx、SenseVoiceSmall INT8 和 Silero VAD，优先 CPU
 本地识别。它与第三方遵循同一协议，可关闭和替换。新增 Provider 不要求修改 Core、UI 或 Hub 的模型名单。
 
-麦克风属于 Rust/Tauri 宿主。Core 负责语音输入协调和 Host 管理的临时音频授权，Provider 只读取授予本次任务
-的录音。普通插件 Service 只交换 JSON、资源 descriptor 与任务 ID，不跨插件传路径、音频数组或 callback。
+麦克风采集属于内置 Hub 的原生 Rust crate，随桌面程序静态链接分发。Hub 的 Python 控制器负责录音准备、
+测试与识别协调；Rust/Tauri 桥负责窗口所有权、播放暂停和事件传递。Core 绑定聊天上下文并核对交付来源，
+Host 管理临时音频授权，Provider 只读取授予本次任务的录音。普通插件 Service 只交换 JSON、资源 descriptor 与任务 ID，不跨插件传路径、音频数组或 callback。
 通用 Runtime 不理解 ASR Provider，也不参与模型选择。
 
-语音输入的配置只在独立插件设置中展示。Hub 选择引擎，Provider 管理自己的语言和模型资源。
-设备列表和麦克风选择由宿主管理，在 Provider 插件设置中提供。插件设置中的输入测试
+语音输入的配置只在独立插件设置中展示。Hub 选择引擎、麦克风并提供输入测试，Provider 管理自己的语言和模型资源。
+设备列表、设备 ID 和采集实现位于 Hub 的原生模块，保存选择与设置界面位于 Hub 插件。插件设置中的输入测试
 复用正式采集与识别链路，绑定设置窗口；临时试用的引擎和设备不改变全局选择，文字只展示在测试结果中。
 
 输入栏麦克风位于发送按钮左侧。点击后进入录音，原麦克风变为停止按钮；再次点击停止并识别。录音区域显示
@@ -57,10 +58,11 @@ ASR Hub 关闭时隐藏麦克风并恢复原有布局；显隐不依赖 TTS Hub 
 适配代码。独立 Provider 能直接使用已有的进程与依赖隔离。
 
 让 Provider 自行打开麦克风，能更快运行上游示例，但录音权限、设备释放、UI 波形和切换引擎都要重复实现。
-由宿主采集后交给 Provider，可以让输入行为不随引擎变化。
+由 Hub 统一采集后交给 Provider，可以让输入行为不随引擎变化。
 
 直接使用 WebView 录音也可实现短录音，但跨平台权限、编码格式和窗口关闭后的设备生命周期仍需统一处理。
-当前选择 Rust/Tauri 拥有采集，WebView 只接收状态和音量摘要。
+采集采用 Hub 自有 Rust crate，保留原 CPAL 设备标识与音频处理；宿主通过受管理的接口连接窗口与权限，
+WebView 只接收状态和音量摘要。
 
 ## 后果与关系
 

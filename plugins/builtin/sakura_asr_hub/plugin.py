@@ -8,6 +8,12 @@ from collections import OrderedDict
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
+from pathlib import Path
+
+try:
+    from .input_controller import InputController, InputError
+except ImportError:
+    from input_controller import InputController, InputError
 
 _ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,199}$")
 _CODE = re.compile(r"^[A-Z][A-Z0-9_]{0,79}$")
@@ -37,6 +43,7 @@ class SakuraASRHub:
         self.jobs: OrderedDict[str, Binding] = OrderedDict()
         self.lock = threading.RLock()
         self.closed = False
+        self.inputs = InputController(self)
 
     def _log(self, event, message, level="info", **fields):
         try:
@@ -120,11 +127,13 @@ class SakuraASRHub:
         return {**value, "selectedProviderId": selected, "language": language}
 
     def configure(self, values):
-        if not isinstance(values, Mapping) or not set(values) <= {"selectedProviderId"}:
-            raise ValueError("ASR_SELECTION_INVALID")
+        if not isinstance(values, Mapping) or not set(values) <= {"selectedProviderId", "inputDeviceId"}:
+            raise InputError("ASR_SELECTION_INVALID")
         selected = values.get("selectedProviderId")
+        if "inputDeviceId" in values:
+            InputController._device_id(values["inputDeviceId"])
         if selected is not None and (not isinstance(selected, str) or not _ID.fullmatch(selected)):
-            raise ValueError("ASR_SELECTION_INVALID")
+            raise InputError("ASR_SELECTION_INVALID")
         previous = self.context.config.get()
         self.context.config.update(dict(values))
         result = self.status()
@@ -250,10 +259,28 @@ class SakuraASRHub:
     def _failed(code, diagnostics=None):
         return {"state": "failed", "errorCode": code if isinstance(code, str) and _CODE.fullmatch(code) else "ASR_PROVIDER_FAILED", **({"diagnostics": dict(diagnostics)} if isinstance(diagnostics, Mapping) else {})}
 
+    def input(self, name, payload):
+        if self.context.caller_id != "sakura.core":
+            raise InputError("ASR_INPUT_UNAUTHORIZED")
+        return self.inputs.dispatch(name, payload)
+
+    def load_settings(self):
+        values = self.context.config.get()
+        if "inputDeviceId" not in values:
+            device_id = self.audio.legacyDevice()
+            self.context.config.update({"inputDeviceId": device_id})
+            values["inputDeviceId"] = device_id
+        return {"selectedProviderId": values.get("selectedProviderId") or "", "inputDeviceId": values["inputDeviceId"]}
+
+    def save_settings(self, values):
+        self.configure({**values, **({"selectedProviderId": None} if values.get("selectedProviderId") == "" else {})})
+        return "applied"
+
     def close(self):
         if self.closed:
             return
         self.closed = True
+        self.inputs.close()
         for request_id in list(self.jobs):
             self.cancel(request_id)
         self._log("asr.hub.stopped", "语音输入协调插件已退出")
@@ -262,6 +289,16 @@ class SakuraASRHub:
 class SakuraASRHubPlugin:
     def setup(self, context):
         hub = SakuraASRHub(context)
-        context.provide("sakura.asr", hub, exports=("registerProvider", "unregisterProvider", "listProviders", "status", "configure", "warmup", "begin", "poll", "cancel"))
+        context.provide("sakura.asr", hub, exports=("registerProvider", "unregisterProvider", "listProviders", "status", "configure", "warmup", "begin", "poll", "cancel", "input", "load_settings"))
         context.effect(hub.close)
+        settings = context.get("sakura.host.settings")
+        settings.register({
+            "sectionId": "input", "title": "语音输入", "order": 80,
+            "fields": [
+                {"key": "selectedProviderId", "label": "识别引擎", "type": "string", "default": "", "readonly": True},
+                {"key": "inputDeviceId", "label": "麦克风", "type": "string", "default": ""},
+            ],
+            "presentation": {"component": "module", "source": Path(__file__).with_name("frontend").joinpath("input.js").read_text(encoding="utf-8")},
+        }, load=hub.load_settings, save=hub.save_settings)
+        context.get("sakura.host.settings.surface-v0").register("input", "voice-input")
         hub._log("asr.hub.started", "语音输入协调插件已启用")

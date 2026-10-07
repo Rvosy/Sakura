@@ -55,15 +55,21 @@ def placement(raw):
 def presentation(raw):
     if raw is None:
         return None
-    if not isinstance(raw, dict) or raw.get("component", "form") not in {"form", "connection-editor", "record-table", "connection-status"}:
+    if not isinstance(raw, dict) or raw.get("component", "form") not in {"form", "module", "record-table", "connection-status"}:
         raise ValueError("SETTINGS_PRESENTATION_INVALID")
     result = {"component": raw.get("component", "form"), "collapsible": raw.get("collapsible", False)}
     if not isinstance(result["collapsible"], bool):
         raise ValueError("SETTINGS_PRESENTATION_INVALID")
     result["alignedUnits"] = raw.get("alignedUnits") is True
     result["inlineDescriptions"] = raw.get("inlineDescriptions") is True
-    # Bindings reference declared fields/actions, never executable markup.
-    for key in ("timeoutSection", "timeoutField", "serviceKey", "group", "statusAction", "valueField", "requestField", "resultField", "probeAction", "cancelAction", "itemsField", "inspectAction", "visibleField", "statusField", "imageField", "actionsField"):
+    if result["component"] == "module":
+        source = raw.get("source")
+        if not isinstance(source, str) or not source.strip():
+            raise ValueError("SETTINGS_PRESENTATION_INVALID")
+        result["source"] = source
+        result["standalone"] = raw.get("standalone") is True
+    # Form bindings reference declared fields and actions.
+    for key in ("group", "statusAction", "valueField", "requestField", "resultField", "itemsField", "inspectAction", "visibleField", "statusField", "imageField", "actionsField"):
         if key in raw:
             result[key] = identifier(raw[key])
     if result["component"] == "record-table":

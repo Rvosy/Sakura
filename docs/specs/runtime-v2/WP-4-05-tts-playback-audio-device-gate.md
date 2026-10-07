@@ -15,6 +15,15 @@ updated: 2026-10-07
 
 ## 产品行为
 
+语音输出核心插件拥有前端分段合成、播放与字幕协调模块，入口由插件清单 `frontendModules.playback` 声明。
+主窗口与历史窗口按 `sakura.tts` 服务查找活动提供者，服务未活动时使用唯一兼容安装来源，
+通过通用模块读取边界加载源码；宿主不保留调度实现副本。
+模块接收通用 invoke、listen、诊断和展示回调，取消与销毁仍使迟到的合成和播放结果失效。
+主窗口在 Core 代次准备和进入可聊天状态时绑定模块，历史窗口在读取记录后的刷新流程中绑定；
+同代已加载的模块直接复用，加载失败可通过这些既有恢复入口重新加载，窗口销毁和代次替换会回收迟到的监听。
+原生 Shell 保留默认音频输出、播放凭据校验、窗口所有权与资源回收。模块无法读取或加载时继续呈现文字；
+取消、销毁或新回复同样使迟到的文字准备结果失效。
+
 - `assistant.tts-v1` 为已完成聊天中的 `operationId + segmentIndex` 准备自动语音，也接受已保存的
   `historyEntryId + segmentIndex` 手动朗读。Core 只读取当前角色 Timeline 的 assistant 段落，正文、语气和
   立绘取自原记录；`suppressTts` 和语言守卫必须 fail closed。WebView 不得提交文本、路径、generation 或音频描述符。
@@ -59,9 +68,11 @@ updated: 2026-10-07
   回复本身的语言等约束。实际合成时由 Hub 的 `begin` 检查角色级开关和选择，直接调用已绑定 Provider 的
   `begin`，不先调用 `status`。角色未启用语音时返回 `TTS_DISABLED`，作为正常跳过处理，前端跳过本轮后续语音
   等待，Core 不发布合成失败事件，Hub 不记录失败日志。Worker、Service 或 Provider 异常仍保留独立语音诊断。
-- Voice 页面将“开口说话”开关、语音引擎选择及当前引擎的服务配置放在同一“角色语音”分组，
-  语音缓存位于页面底部。Provider 作为“语音引擎”呈现，只显示 `pluginId == providerId` 的当前引擎设置区块；内置
-  Provider 统一使用“服务来源”区分 `Sakura 内置` 与 `连接已有服务`。GPT-SoVITS 缺少显式模式的旧配置按
+- Voice 页面的“角色语音”分组消费 Hub 的引擎目录和角色选择，保留“开口说话”、引擎选择及插件设置入口，
+  语音缓存位于页面底部。Provider 的服务配置通过通用插件设置表单展示和保存，不按 Provider ID 挂载第二套控件。
+  `tts.settings.save` 只提交 `characterId/enabled/providerId`；Provider 字段统一通过 `settings_plugins_save` 保存，
+  语音快照不再复制插件字段、动作或 Collection。
+- 内置 Provider 统一使用“服务来源”区分 `Sakura 内置` 与 `连接已有服务`。GPT-SoVITS 缺少显式模式的旧配置按
   `customBaseUrl` 推导，保存后写入 `endpointMode`，切换模式不得丢弃非活动服务地址。
 - Genie 的 `Sakura 内置` 固定使用内部 loopback 端点并自动绑定当前 TTS 根下已安装的 `cpu` 整合包；不得要求
   用户填写地址或工作目录。`连接已有服务` 才读取用户地址，且不启动本地进程。Genie/GPT-SoVITS 已安装
@@ -98,6 +109,10 @@ updated: 2026-10-07
   会在没有用户语音任务、缓存仍有余量、并且本机负载未到峰值时逐句生成并写入缓存，不播放。缓存被删、容量
   刚调大，或当时没有可用的语音连接，都属于可补齐的缺失。1 分钟负载达到 CPU 数量的 70%，或可见 GPU
   忙碌度达到 70%，视为峰值并暂停。用户开始朗读或自动语音时取消正在进行的补齐。
+  检测、分页选择和退避由 TTS Hub 插件进程的 `_idle_fill.py` 与 `_device_load.py` 执行，停用或重载 Hub
+  会停止其任务。宿主通过 `sakura.host.speech` 提供当前角色的缓存元数据，并在每次后台请求时重新校验
+  用户设置、当前角色与前台任务；录音提交、取消和代际回收继续使用同一宿主边界。接口见
+  [SDK 回复段落音频](../../devdocs/SAKURA_PLUGIN_SDK.md#回复段落音频)。
 - 持久 recording 与 generation 临时播放副本分离；启动清理只触碰临时目录。跨边界 DTO 不含裸路径。
 - 描述符的 `expiresAt` 限定 Core 向 Rust 交接临时副本的期限，时长由
   `app/core_host/tts_boundary.py::PLAYBACK_TTL_SECONDS` 定义。Rust 注册时验证期限、路径、格式和尺寸；

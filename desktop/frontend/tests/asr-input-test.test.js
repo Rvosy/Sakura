@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createAsrInputTest } from "../settings/asr-input-test.js";
+import { createAsrController } from "../audio/asr-controller.js";
+import { createAsrInputTest } from "../../../plugins/builtin/sakura_asr_hub/frontend/input.js";
 
 function element() {
   const events = new Map();
@@ -13,7 +14,7 @@ function fixture(handlers = {}) {
   const controls = Object.fromEntries(["asrTestStart", "asrTestCancel", "asrTestResult", "asrTestLevel"].map((id) => [id, element()]));
   const events = new Map(), keys = new Map(), calls = [], errors = [];
   let state = "recording";
-  const testInput = createAsrInputTest({
+  const testInput = createAsrInputTest({ createAsrController,
     document: { getElementById: (id) => controls[id], addEventListener: (name, handler) => keys.set(name, handler), removeEventListener: (name) => keys.delete(name) },
     invoke: async (name, args) => {
       calls.push([name, args]);

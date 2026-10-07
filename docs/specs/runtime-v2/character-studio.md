@@ -101,7 +101,8 @@ studio.visual.export
 
 Managed Genie 未显式配置的共享语音字段在运行时继承 GPT-SoVITS extension，再兼容旧 `voice`；Studio
 不向 Genie 复制模型路径。这样源权重编辑可在下一次 Genie 预热或合成时生效，同时保留用户的 Genie 覆盖值。
-独立语音包导入同步替换旧 `voice` 和 GPT-SoVITS 的共享资源字段，保留 Genie 覆盖值与未知字段。
+独立语音包导入同步替换旧 `voice` 和 GPT-SoVITS 的共享资源字段，并覆盖包内同名文件；其它文件、
+插件资源声明、Genie 覆盖值与未知字段保持原样，未安装插件的资源仍可随角色包保存和导出。
 
 Studio 只拥有表单明确编辑的 manifest 字段。`renderer`、`backchannel`、未知顶层或嵌套字段和其他插件
 extension 必须原样保留，已废弃的 `sakura.tts` 运行选择除外。语音资源读取兼容 `voice` 与资源 extension，
@@ -214,9 +215,11 @@ PNG 导入和标签文件解释由内置立绘插件提供。私有草稿以 `vi
 按 ZIP 未压缩大小检查目标磁盘空间并预留 512 MiB；保留路径越界、符号链接保护以及失败清理。
 配置清单和扩展字段不另设容量上限，旧包无需重新打包或安装。
 
-`.char` 导出以原角色 manifest 为基线，只改写已知字段和资源路径。完整包必须携带 legacy `voice` 以及内建
-GPT-SoVITS、Genie extension 引用的模型、参考表和参考音频；导入后继续保留 `renderer`、`backchannel`、
-`extensions` 和未知字段。
+`.char` 导出以原角色 manifest 为基线，只改写已知字段和资源路径。完整包保留包内文件、
+`renderer`、`backchannel`、`extensions`、`extensionResources` 和未知字段，即使对应插件未安装。
+插件通过 [SDK 资源声明](../../devdocs/SAKURA_PLUGIN_SDK.md#当前角色和角色扩展) 列出自己的资源与格式需求；
+宿主只负责包内路径和文件边界，不解释插件的参考表或模型格式。`kind: "tts"` 供不包含语音的导出使用。
+旧包没有声明时完整保留 `voice/`；独立 `.voice` 导入导出继续适配旧语音格式与原路径。
 
 参考语音最大 20 MiB。Rust 为已验证的工作区音频注册五分钟有效的不透明 URL；URL 绑定 generation，响应
 禁用缓存。音频字节不经过 8 MiB Core 帧。屏幕取色由 Rust 为每台显示器创建透明覆盖层，在点击后由原生

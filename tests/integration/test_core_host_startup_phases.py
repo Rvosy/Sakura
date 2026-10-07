@@ -33,7 +33,10 @@ def test_visual_and_real_chat_are_published_before_optional_start_finishes(tmp_p
     optional_fails = outcome == "optional_failed"
     if outcome == "migration_failed":
         monkeypatch.setattr("app.plugins.bundled_migrations.migrate_bundled_plugins",
-            lambda roots, *, progress: {"sakura.memory.mem0": "PLUGIN_MIGRATION_SOURCE_MISSING"})
+            lambda roots, *, progress: {"sakura.memory.mem0": {
+                "reasonCode": "PLUGIN_MIGRATION_SOURCE_MISSING",
+                "diagnostics": {"diagnostic": "fixture migration source is missing"},
+            }})
     user, distribution = tmp_path / "user", tmp_path / "distribution"
     shutil.copytree(REPO / "tests/fixtures/runtime_v2/wp_3_01/ready", user)
     # The portrait fixture must be a loadable image, not its placeholder text.
@@ -43,6 +46,7 @@ def test_visual_and_real_chat_are_published_before_optional_start_finishes(tmp_p
     ))
     portrait = distribution / "plugins/builtin/sakura_portrait"
     shutil.copytree(REPO / "plugins/builtin/sakura_portrait", portrait, ignore=shutil.ignore_patterns("__pycache__"))
+    shutil.copy2(REPO / "VERSION", distribution / "VERSION")
     manifest = portrait / "plugin.yaml"
     manifest.write_text(manifest.read_text(encoding="utf-8").replace(
         "requires:\n", "requires:\n  - fixture.visual.dep\n"), encoding="utf-8")
@@ -217,8 +221,10 @@ class Plugin:
             assert finished.wait(2), "Assistant abort was blocked by optional startup"
             assert not failures
             assert events[-1]["name"] == ("chat.failed" if outcome == "assistant_ack_lost" else "chat.completed"), events
-            with pytest.raises(PluginRuntimeError, match="SERVICE_MISSING"):
+            with pytest.raises(PluginRuntimeError) as unavailable:
                 application.service_identity("sakura.assistant")
+            assert unavailable.value.code == "SERVICE_MISSING"
+            assert unavailable.value.diagnostics["cause_code"] == "ASSISTANT_CALL_UNCERTAIN"
             optional_after = next(item for item in application._manager.snapshot()["plugins"] if item["pluginId"] == "aaa.optional")
             assert optional_after == optional_before
 
@@ -244,6 +250,7 @@ class Plugin:
             missing = next(item for item in settled["plugins"] if item["pluginId"] == "sakura.memory.mem0")
             assert missing["state"] == "failed"
             assert missing["reasonCode"] == "PLUGIN_MIGRATION_SOURCE_MISSING"
+            assert missing["diagnostics"]["diagnostic"] == "fixture migration source is missing"
         assert application.service_identity("sakura.visual.portrait") == visual_identity
         assert application.service_identity("fixture.visual.dep") == dependency_identity
         optional = next(item for item in application.public_snapshot()["plugins"] if item["pluginId"] == "aaa.optional")
@@ -288,7 +295,10 @@ def test_migration_progress_is_visible_before_runtime_and_failure_is_actionable(
         assert release.wait(5)
         progress({"state": "failed" if fails else "completed", "completed": 0 if fails else 1,
                   "total": 1, "pluginId": "sakura.memory.mem0" if fails else None})
-        return {"sakura.memory.mem0": "PLUGIN_MIGRATION_FAILED"} if fails else {}
+        return {"sakura.memory.mem0": {
+            "reasonCode": "PLUGIN_MIGRATION_FAILED",
+            "diagnostics": {"diagnostic": "fixture migration could not finish"},
+        }} if fails else {}
 
     monkeypatch.setattr("app.plugins.bundled_migrations.migrate_bundled_plugins", migrate)
     controller = ReadinessController(HostConfig(RuntimeRoots(tmp_path / "distribution", tmp_path / "user"), "migration-progress", "a" * 32))
@@ -317,6 +327,7 @@ def test_migration_progress_is_visible_before_runtime_and_failure_is_actionable(
             missing = next(item for item in snapshot["plugins"] if item["pluginId"] == "sakura.memory.mem0")
             assert missing["state"] == "failed"
             assert missing["reasonCode"] == "PLUGIN_MIGRATION_FAILED"
+            assert missing["diagnostics"]["diagnostic"] == "fixture migration could not finish"
             assert missing["supported"] is False
             # The normal installation and enable paths repair the missing plugin
             # in this same Core generation, without rerunning startup migration.

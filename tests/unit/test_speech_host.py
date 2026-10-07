@@ -136,11 +136,13 @@ def test_speech_uses_current_cache_settings_and_reuses_the_selected_directory(sy
     assert system.facts == system.desktop == []
 
 
-def test_foreground_speech_cancels_in_progress_idle_fill(system, tmp_path, monkeypatch):
+@pytest.mark.parametrize("preemption", ["foreground", "plugin_close"])
+def test_background_speech_is_cancelled_before_recording_commit(system, tmp_path, monkeypatch, preemption):
     config = tmp_path / "config/voice_cache.json"
     config.parent.mkdir(exist_ok=True)
     config.write_text(json.dumps({"schemaVersion": 1, "directory": "", "maxBytes": 64 * 1024 * 1024, "idleFill": True}), encoding="utf-8")
-    monkeypatch.setattr("app.core_host.tts_boundary.device_below_peak", lambda: True)
+    from plugins.builtin.sakura_tts_hub import _idle_fill
+    monkeypatch.setattr(_idle_fill, "device_below_peak", lambda: True)
     application = system.boundary._plugin_application()
     original = application.call_service
     polling, cancelled, release = threading.Event(), threading.Event(), threading.Event()
@@ -159,16 +161,23 @@ def test_foreground_speech_cancels_in_progress_idle_fill(system, tmp_path, monke
 
     monkeypatch.setattr(application, "call_service", service)
     results = []
-    idle = threading.Thread(target=lambda: results.append(system.boundary.fill_once()))
+    worker = _idle_fill.IdleFill(system.host, SimpleNamespace(warning=lambda *_args, **_kwargs: None))
+    def fill():
+        with caller():
+            results.append(worker.fill_once())
+    idle = threading.Thread(target=fill)
     idle.start()
     try:
         assert polling.wait(5)
-        system.entry("foreground")
         with caller():
-            result = completed(system, "foreground")
+            if preemption == "foreground":
+                system.entry("foreground")
+                result = completed(system, "foreground")
+                assert system.boundary._recordings.get(result["recordingId"]) is not None
+                system.artifacts.call("release_received", [result["artifact"]["artifactId"]])
+            else:
+                worker.close()
             assert cancelled.is_set()
-            assert system.boundary._recordings.get(result["recordingId"]) is not None
-            system.artifacts.call("release_received", [result["artifact"]["artifactId"]])
     finally:
         release.set()
         idle.join(5)
@@ -177,6 +186,141 @@ def test_foreground_speech_cancels_in_progress_idle_fill(system, tmp_path, monke
     assert system.boundary._recordings.for_segment("sakura", "reply-one", 0) is None
     assert system.store.count == 0
     assert system.facts == system.desktop == []
+
+
+def test_hub_idle_fill_uses_host_cache_without_export_or_playback(system, tmp_path, monkeypatch):
+    from plugins.builtin.sakura_tts_hub import _idle_fill
+
+    custom = tmp_path / "idle-cache"
+    config = tmp_path / "config/voice_cache.json"
+    config.parent.mkdir(exist_ok=True)
+    config.write_text(json.dumps({"schemaVersion": 1, "directory": str(custom),
+                                 "maxBytes": 64 * 1024 * 1024, "idleFill": True}))
+    peak = [False]
+    monkeypatch.setattr(_idle_fill, "device_below_peak", lambda: not peak[0])
+    worker = _idle_fill.IdleFill(system.host, SimpleNamespace(warning=lambda *_args, **_kwargs: None))
+    with caller():
+        assert worker.fill_once() is True
+        cached = system.boundary._recordings.for_segment("sakura", "reply-one", 0)
+        assert cached is not None and cached.directory.parent == custom / "sakura"
+        assert system.generated[0]["options"]["background"] is True
+        assert worker.fill_once() is False
+        system.entry("later")
+        peak[0] = True
+        assert worker.fill_once() is False
+        peak[0] = False
+        assert worker.fill_once() is True
+        assert len(system.generated) == 2
+        assert not system.host.cache_status()["busy"]
+    assert system.store.count == 0
+    assert system.boundary._authorizations == {}
+    assert system.facts == system.desktop == []
+
+
+def test_hub_idle_deferral_backs_off_and_resumes_without_failure_event(system, tmp_path, monkeypatch):
+    from plugins.builtin.sakura_tts_hub import _idle_fill
+
+    config = tmp_path / "config/voice_cache.json"
+    config.parent.mkdir(exist_ok=True)
+    config.write_text(json.dumps({"schemaVersion": 1, "idleFill": True}))
+    now = [100.0]
+    monkeypatch.setattr(_idle_fill, "monotonic", lambda: now[0])
+    monkeypatch.setattr(_idle_fill, "device_below_peak", lambda: True)
+    application = system.boundary._plugin_application()
+    original = application.call_service
+    def deferred(key, method, *args):
+        if method == "poll":
+            return {"state": "failed", "requestId": args[0], "providerId": "voice-provider",
+                    "errorCode": "TTS_BACKGROUND_DEFERRED"}
+        return original(key, method, *args)
+    monkeypatch.setattr(application, "call_service", deferred)
+    warnings = []
+    worker = _idle_fill.IdleFill(system.host, SimpleNamespace(warning=lambda *args, **kwargs: warnings.append((args, kwargs))))
+    with caller():
+        assert worker.fill_once() is False
+        assert worker.fill_once() is False
+        assert len(system.generated) == 1
+        now[0] += _idle_fill.IDLE_FILL_BACKOFF_SECONDS
+        monkeypatch.setattr(application, "call_service", original)
+        assert worker.fill_once() is True
+        assert len(system.generated) == 2
+    assert warnings == []
+    assert system.facts == system.desktop == []
+
+
+def test_background_permission_is_checked_at_begin_and_cache_queries_are_character_scoped(system):
+    with caller():
+        assert system.host.cache_status()["idleFill"] is False
+        with pytest.raises(TTSBoundaryError, match="后台语音暂不可用"):
+            system.host.begin("sakura", "reply-one", 0, {"background": True, "exportAudio": False})
+        with pytest.raises(TTSBoundaryError, match="角色已切换"):
+            system.host.cache_page("other", None, 40)
+        page = system.host.cache_page("sakura", None, 40)
+        assert page["entries"][0]["segments"] == [{"hasText": True, "suppressed": False, "recorded": False}]
+    assert system.generated == []
+
+
+def test_idle_policy_runs_through_plugin_process_and_preserves_remote_failure_diagnostics(system, tmp_path, monkeypatch):
+    import io
+    import shutil
+    from app.core_host.plugin_runtime_application import PluginRuntimeApplication
+    from app.plugin_sdk.sakura_tools import ToolRegistry
+    from app.plugins.inventory import PluginInventory
+    from app.storage.runtime_roots import RuntimeRoots
+    from app.core_host.runtime_logging import CORE_BRIDGE_PREFIX, install_runtime_logging
+
+    repository = Path(__file__).parents[2]
+    distribution = tmp_path / "distribution"
+    plugin = distribution / "plugins/builtin/fixture_idle"
+    plugin.mkdir(parents=True)
+    shutil.copyfile(repository / "VERSION", distribution / "VERSION")
+    for name in ("_idle_fill.py", "_device_load.py"):
+        shutil.copyfile(repository / "plugins/builtin/sakura_tts_hub" / name, plugin / name)
+    (plugin / "plugin.yaml").write_text(
+        "api: 4\nid: fixture.idle\nname: Idle\nversion: 1.0.0\nentry: plugin:Plugin\n"
+        "requires: [sakura.host.speech, sakura.host.logging]\nprovides: [fixture.idle]\n")
+    (plugin / "plugin.py").write_text('''
+import _idle_fill
+class Plugin:
+    def setup(self, context):
+        _idle_fill.device_below_peak = lambda: True
+        self.worker = _idle_fill.IdleFill(context.get("sakura.host.speech"), context.get("sakura.host.logging"))
+        context.effect(self.worker.close)
+        context.provide("fixture.idle", self, exports=("run",))
+    def run(self):
+        return self.worker.fill_once()
+''')
+    config = tmp_path / "config/voice_cache.json"
+    config.parent.mkdir(exist_ok=True)
+    config.write_text(json.dumps({"schemaVersion": 1, "idleFill": True}))
+    roots = RuntimeRoots(distribution, tmp_path)
+    application = PluginRuntimeApplication(roots, "idle-protocol", ToolRegistry(), PluginInventory(roots).scan().runtime_specs)
+    application.bind_tts_boundary(system.boundary)
+    stream = io.BytesIO()
+    bridge = install_runtime_logging(stream)
+    try:
+        application.start()
+        assert application.wait_until_loaded(timeout=5)
+        assert application.call_service("fixture.idle", "run") is True
+        assert application.call_service("fixture.idle", "run") is False
+        assert system.boundary._recordings.for_segment("sakura", "reply-one", 0) is not None
+        assert system.generated[0]["options"]["background"] is True
+        assert system.facts == system.desktop == []
+        def unavailable(_character):
+            raise PermissionError(13, "fixture cache denied api_key=private-key", str(tmp_path / "history.sqlite"))
+        monkeypatch.setattr(system.boundary._timeline, "latest_cursor", unavailable)
+        assert application.call_service("fixture.idle", "run") is False
+    finally:
+        application.close()
+        bridge.close()
+    records = [json.loads(line.removeprefix(CORE_BRIDGE_PREFIX))
+               for line in stream.getvalue().splitlines() if line.startswith(CORE_BRIDGE_PREFIX)]
+    failure = next(record for record in records if record.get("message") == "后台语音补齐失败")
+    assert "fixture cache denied" in failure["attributes"]["diagnostic"]
+    assert "PermissionError" in failure["attributes"]["exception_chain"]
+    assert "unavailable" in failure["attributes"]["exception_stack"]
+    assert failure["attributes"]["errno"] == 13
+    assert "private-key" not in repr(failure)
 
 
 @pytest.mark.parametrize("plugin,scope", [("other", "other-scope"), ("remote", "replacement")])

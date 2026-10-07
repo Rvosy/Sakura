@@ -20,6 +20,8 @@ from app.storage.runtime_roots import RuntimeRoots
 def _roots(tmp_path: Path) -> RuntimeRoots:
     repository = Path(__file__).parents[2]
     distribution = tmp_path / "distribution"
+    distribution.mkdir()
+    shutil.copyfile(repository / "VERSION", distribution / "VERSION")
     user = tmp_path / "user"
     plugin_root = user / "plugins/user/sakura.memory.mem0"
     shutil.copytree(

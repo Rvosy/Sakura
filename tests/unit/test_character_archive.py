@@ -166,6 +166,59 @@ def test_character_archive_roundtrips_opaque_plugin_extensions() -> None:
     assert package_manifest["extensions"] == resources
 
 
+def test_unknown_plugin_resources_survive_studio_save_copy_and_export(tmp_path):
+    from app.config.character_studio import CharacterStudioService
+
+    profile = _build_character_package(tmp_path / "source")
+    package = profile.package_dir
+    resource = package / "voice/future/data.bin"
+    resource.parent.mkdir()
+    resource.write_bytes(b"private-format")
+    manifest_path = package / "character.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["extensions"] = {"future.plugin": {"resource": "voice/future", "private": [1, {"x": True}]}}
+    manifest["extensionResources"] = {"future.plugin": {
+        "kind": "tts", "paths": ["voice/future"],
+        "pluginRequirements": [{"kind": "tts", "type": "future.voice@2", "plugins": [{"id": "future.plugin"}]}],
+    }}
+    manifest_path.write_text(json.dumps(manifest))
+    studio = CharacterStudioService(tmp_path / "source")
+    opened = studio.open_character("demo")
+    opened["doc"]["display_name"] = "Edited"
+    studio.save_character(opened["doc"], opened["workspace_id"])
+    archive = tmp_path / "unknown.char"
+    export_character_archive(CharacterRegistry(tmp_path / "source").get("demo"), archive)
+    copied = import_character_archive(archive, tmp_path / "target")
+    restored = json.loads((copied.package_dir / "character.json").read_text())
+    assert restored["extensions"]["future.plugin"] == manifest["extensions"]["future.plugin"]
+    assert restored["extensionResources"] == manifest["extensionResources"]
+    assert (copied.package_dir / "voice/future/data.bin").read_bytes() == b"private-format"
+    assert "future.voice@2" in {item["type"] for item in restored["pluginRequirements"]}
+
+
+def test_voice_exclusion_uses_declarations_outside_legacy_voice_directory(tmp_path):
+    profile = _build_character_package(tmp_path / "source")
+    package = profile.package_dir
+    (package / "model.bin").write_bytes(b"tts-model")
+    (package / "voice/shared.bin").write_bytes(b"shared")
+    (package / "voice/future-empty").mkdir()
+    manifest_path = package / "character.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["extensionResources"] = {
+        "future.tts": {"kind": "tts", "paths": ["model.bin", "voice/shared.bin"]},
+        "future.other": {"kind": "other", "paths": ["voice/shared.bin", "voice/future-empty"]},
+    }
+    manifest_path.write_text(json.dumps(manifest))
+    archive = tmp_path / "without-voice.char"
+    export_character_archive(profile, archive, include_voice=False)
+    copied = import_character_archive(archive, tmp_path / "target")
+    assert not (copied.package_dir / "model.bin").exists()
+    assert (copied.package_dir / "voice/shared.bin").read_bytes() == b"shared"
+    assert (copied.package_dir / "voice/future-empty").is_dir()
+    restored = json.loads((copied.package_dir / "character.json").read_text())
+    assert set(restored["extensionResources"]) == {"future.other"}
+
+
 def test_character_archive_roundtrips_runtime_fields_and_extension_voice_resources() -> None:
     root = _runtime_root("runtime_fields")
     source_root = root / "source"
@@ -273,7 +326,7 @@ def test_character_archive_export_can_cancel_during_large_file_compression() -> 
 
 
 
-def test_character_archive_export_only_includes_referenced_voice_files() -> None:
+def test_character_archive_preserves_undeclared_legacy_voice_files() -> None:
     root = _runtime_root("referenced_voice_export")
     profile = _build_character_package(root / "source")
     (profile.package_dir / "voice" / "models" / "old.ckpt").write_bytes(b"old-gpt")
@@ -289,8 +342,8 @@ def test_character_archive_export_only_includes_referenced_voice_files() -> None
     assert "character/voice/models/sovits.pth" in names
     assert "character/voice/refs/ref.txt" in names
     assert "character/voice/refs/tone_refs/neutral.wav" in names
-    assert "character/voice/models/old.ckpt" not in names
-    assert "character/voice/refs/tone_refs/old.wav" not in names
+    assert "character/voice/models/old.ckpt" in names
+    assert "character/voice/refs/tone_refs/old.wav" in names
 
 
 def test_character_voice_archive_export_only_includes_referenced_files() -> None:
@@ -539,6 +592,46 @@ def test_character_voice_archive_export_can_be_imported() -> None:
     imported = CharacterRegistry(target_root).get(result.character_id)
     assert imported.voice is not None
     assert imported.voice.gpt_model_path.read_bytes() == b"gpt"
+
+
+def test_voice_import_preserves_declared_and_unknown_resources_offline(tmp_path):
+    from app.config.character_studio import CharacterStudioService
+    from app.core_host.plugin_character import PluginCharacterStore
+
+    root = tmp_path / "source"
+    profile = _build_character_package(root)
+    package = profile.package_dir
+    (package / "voice/future").mkdir()
+    (package / "voice/future/data.bin").write_bytes(b"unknown-format")
+    (package / "voice/future/empty").mkdir()
+    (package / "voice/undeclared.bin").write_bytes(b"legacy-resource")
+    store = PluginCharacterStore(root)
+    declarations = {
+        "sakura.tts.gpt-sovits": {"kind": "tts", "paths": [
+            "voice/refs/ref.txt", "voice/refs/tone_refs/neutral.wav",
+            "voice/models/gpt.ckpt", "voice/models/sovits.pth",
+        ]},
+        "future.voice": {"kind": "tts", "paths": ["voice/future/data.bin"]},
+        "future.other": {"kind": "other", "paths": ["voice/future/empty"]},
+    }
+    for owner, declaration in declarations.items():
+        store.declare_resources(owner, "demo", declaration)
+    before = json.loads((package / "character.json").read_text())
+
+    imported = import_character_voice_archive(_build_voice_archive(tmp_path), root, "demo")
+    CharacterStudioService(root).open_character("demo")
+    archive = tmp_path / "updated.char"
+    export_character_archive(imported.profile, archive)
+    copied = import_character_archive(archive, tmp_path / "target")
+    manifest = json.loads((copied.package_dir / "character.json").read_text())
+
+    assert manifest["extensionResources"] == before["extensionResources"]
+    assert (copied.package_dir / "voice/models/gpt.ckpt").read_bytes() == b"gpt-new"
+    assert (copied.package_dir / "voice/refs/tone_refs/happy.wav").read_bytes() == b"wav-new"
+    assert (copied.package_dir / "voice/refs/tone_refs/neutral.wav").read_bytes() == b"wav"
+    assert (copied.package_dir / "voice/future/data.bin").read_bytes() == b"unknown-format"
+    assert (copied.package_dir / "voice/future/empty").is_dir()
+    assert (copied.package_dir / "voice/undeclared.bin").read_bytes() == b"legacy-resource"
 
 
 def test_character_voice_archive_export_requires_voice() -> None:

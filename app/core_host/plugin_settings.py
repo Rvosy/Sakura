@@ -5,6 +5,7 @@ from __future__ import annotations
 import hmac
 import json
 import threading
+import yaml
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
@@ -22,6 +23,7 @@ from app.storage.runtime_roots import RuntimeRoots, coerce_runtime_roots
 PLUGIN_SETTINGS_REQUEST_NAMES = frozenset(
     {
         "plugins.settings.get",
+        "plugins.frontend.get",
         "plugins.settings.save",
         "plugins.enabled.set",
         "plugins.settings.action",
@@ -98,7 +100,11 @@ class PluginSettingsBoundary:
             if not isinstance(payload, Mapping):
                 raise PluginSettingsError("INVALID_REQUEST", "插件设置请求格式无效。")
             name = request.get("name")
-            if name == "plugins.settings.get":
+            if name == "plugins.frontend.get":
+                if set(payload) != {"serviceKey", "moduleName"}:
+                    raise PluginSettingsError("INVALID_REQUEST", "插件界面模块请求格式无效。")
+                result = self.frontend_module(payload["serviceKey"], payload["moduleName"])
+            elif name == "plugins.settings.get":
                 if payload:
                     raise PluginSettingsError("INVALID_REQUEST", "插件设置读取请求必须为空。")
                 result = self.snapshot()
@@ -355,6 +361,39 @@ class PluginSettingsBoundary:
             pluginId=installed.plugin_id,
         )
         return result
+
+    def frontend_module(self, service_key: object, module_name: object) -> dict[str, object]:
+        services = _identifier_list([service_key])
+        if not services:
+            raise PluginSettingsError("INVALID_REQUEST", "插件服务标识无效。")
+        service = services[0]
+        name = _identifier(module_name)
+        application = self._application()
+        providers = [record for record in self._refresh_inventory(application).records
+                     if service in record.provides and record.runtime_eligible]
+        if application is not None:
+            try:
+                owner = application.service_identity(service)["providerId"]
+            except Exception as error:
+                if getattr(error, "code", None) != "SERVICE_MISSING":
+                    raise
+            else:
+                providers = [record for record in providers if record.plugin_id == owner]
+        if len(providers) != 1:
+            raise PluginSettingsError("PLUGIN_FRONTEND_UNAVAILABLE", "插件界面模块不可用。")
+        record = providers[0]
+        parent = (self._roots.distribution_root / "plugins/builtin" if record.source == "bundled"
+                  else StoragePaths(self._user_root).user_plugins_dir)
+        root = (parent / record.directory_name).resolve()
+        manifest = yaml.safe_load((root / "plugin.yaml").read_text(encoding="utf-8"))
+        modules = manifest.get("frontendModules")
+        relative = modules.get(name) if isinstance(modules, Mapping) else None
+        if not isinstance(relative, str) or not relative or Path(relative).is_absolute():
+            raise PluginSettingsError("PLUGIN_FRONTEND_INVALID", "插件界面模块声明无效。")
+        module = (root / relative).resolve()
+        if not module.is_relative_to(root) or module.suffix not in {".js", ".mjs"}:
+            raise PluginSettingsError("PLUGIN_FRONTEND_INVALID", "插件界面模块路径超出插件目录。")
+        return {"pluginId": record.plugin_id, "source": module.read_text(encoding="utf-8")}
 
     def marketplace_install(self, payload: Mapping[str, Any]) -> dict[str, object]:
         plugin_id = _identifier(payload["pluginId"])

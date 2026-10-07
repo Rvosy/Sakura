@@ -81,6 +81,7 @@ class Plugin:
     if tts:
         hub = Path(__file__).parents[2] / "plugins" / "builtin" / "sakura_tts_hub"
         shutil.copytree(hub, distribution / "plugins" / "builtin" / "sakura_tts_hub")
+        shutil.copy2(Path(__file__).parents[2] / "VERSION", distribution / "VERSION")
         source += '''
         hub = self.context.get("sakura.tts")
         hub.registerProvider({"providerId": "fixture.provider",
@@ -111,6 +112,9 @@ class Plugin:
     roots = RuntimeRoots(distribution, user)
     manager = PluginRuntimeManager(roots, "service-binding-test",
                                    PluginInventory(roots).scan().runtime_specs, call_timeout=1.0)
+    if tts:
+        manager.install_host_service("sakura.host.speech",
+            SimpleNamespace(cache_status=lambda _headroom: {"idleFill": False}), exports=("cache_status",))
     manager.install_host_service("sakura.host.logging", SimpleNamespace(emit=lambda *_: {"accepted": True}),
                                  exports=("emit",))
     return manager
@@ -149,8 +153,10 @@ def test_bound_proxy_expires_on_disable_and_does_not_rebind(tmp_path: Path) -> N
         manager.set_enabled(PROVIDER, False)
         with pytest.raises(PluginRuntimeError, match="SERVICE_BINDING_EXPIRED"):
             manager.call_service(CLIENT, "call", "ping")
-        with pytest.raises(PluginRuntimeError, match="SERVICE_MISSING"):
+        with pytest.raises(PluginRuntimeError) as missing:
             manager.call_service(CLIENT, "bind")
+        assert missing.value.code == "SERVICE_MISSING"
+        assert missing.value.diagnostics["cause_code"] == "PLUGIN_DISABLED"
         manager.set_enabled(PROVIDER, True)
         with pytest.raises(PluginRuntimeError, match="SERVICE_BINDING_EXPIRED"):
             manager.call_service(CLIENT, "call", "ping")

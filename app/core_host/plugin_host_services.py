@@ -533,8 +533,10 @@ class _CharacterHostService:
                     _bounded_identifier(args[0], "PLUGIN_ID_INVALID", 64),
                     _bounded_identifier(args[1], "CHARACTER_NOT_FOUND", 128),
                 )
-            if method == "update" and len(args) == 3:
-                return getattr(self._store, "update")(
+            if method in {"update", "declare_resources"} and len(args) == 3:
+                if method == "declare_resources" and HOST_CALLER.get() not in {None, args[0]}:
+                    raise HostServiceError("CHARACTER_RESOURCE_OWNER_INVALID")
+                return getattr(self._store, method)(
                     _bounded_identifier(args[0], "PLUGIN_ID_INVALID", 64),
                     _bounded_identifier(args[1], "CHARACTER_NOT_FOUND", 128),
                     _mapping(args[2], "CHARACTER_EXTENSION_INVALID"),
@@ -1201,13 +1203,6 @@ class _SettingsHostService:
                 field = bindings.get(presentation.get(key))
                 if field is None or field["type"] != kind or not field["readonly"]:
                     raise HostServiceError("SETTINGS_PRESENTATION_INVALID")
-        if presentation and presentation["component"] == "connection-editor":
-            for key in ("valueField", "requestField", "resultField"):
-                field = bindings.get(presentation.get(key))
-                if field is None or field["type"] != "data" or (key != "resultField" and field["readonly"]):
-                    raise HostServiceError("SETTINGS_PRESENTATION_INVALID")
-            if any(presentation.get(key) not in declared_action_ids for key in ("probeAction", "statusAction", "cancelAction")):
-                raise HostServiceError("SETTINGS_PRESENTATION_INVALID")
         if presentation and presentation["component"] == "record-table":
             required = {"itemsField": True, "valueField": False}
             if "inspectAction" in presentation:
@@ -2524,7 +2519,7 @@ def _settings_collection(value: object) -> dict[str, Any]:
 
 def _collection_column(value: object) -> dict[str, Any]:
     raw = _mapping(value, "SETTINGS_DESCRIPTOR_INVALID")
-    if any(key not in {"key", "label", "type", "maxLength"} for key in raw):
+    if any(key not in {"key", "label", "type", "maxLength", "format"} for key in raw):
         raise HostServiceError("SETTINGS_DESCRIPTOR_INVALID")
     key = _bounded_identifier(raw.get("key"), "SETTINGS_DESCRIPTOR_INVALID", 64)
     label = raw.get("label")
@@ -2546,7 +2541,10 @@ def _collection_column(value: object) -> dict[str, Any]:
         )
     ):
         raise HostServiceError("SETTINGS_DESCRIPTOR_INVALID")
-    return {"key": key, "label": label, "type": kind, "maxLength": max_length}
+    if "format" in raw and (raw["format"] != "percent" or kind != "number"):
+        raise HostServiceError("SETTINGS_DESCRIPTOR_INVALID")
+    return {"key": key, "label": label, "type": kind, "maxLength": max_length,
+            **({"format": raw["format"]} if "format" in raw else {})}
 
 
 def _collection_filter(value: object) -> dict[str, Any]:

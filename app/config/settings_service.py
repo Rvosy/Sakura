@@ -237,11 +237,6 @@ class AppSettingsService:
         value = self._system_section("audio_input").get("device_id", "")
         return value if isinstance(value, str) else ""
 
-    def save_audio_input_device(self, device_id: str) -> None:
-        data = self._system_document()
-        data["audio_input"] = {**_mapping(data.get("audio_input")), "device_id": device_id}
-        save_yaml_mapping(self.system_config_path, data)
-
     def load_backchannel_settings(self) -> BackchannelSettings:
         section = self._system_section("backchannel")
         return BackchannelSettings(

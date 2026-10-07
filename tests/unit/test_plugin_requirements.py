@@ -13,7 +13,9 @@ from app.plugins.inventory import PluginInventory
 
 
 def genie_record(tmp_path):
-    source = Path(__file__).resolve().parents[2] / "plugins/optional/sakura_genie/plugin.yaml"
+    repo = Path(__file__).resolve().parents[2]
+    source = repo / "plugins/optional/sakura_genie/plugin.yaml"
+    shutil.copy2(repo / "VERSION", tmp_path / "VERSION")
     plugin = tmp_path / "plugins/user/genie"
     plugin.mkdir(parents=True)
     (plugin / "plugin.yaml").write_text(

@@ -1,4 +1,3 @@
-import { createAsrInputTest } from "./asr-input-test.js";
 import { errorText } from "../core/error-display.js";
 
 export function createAsrSettingsController({ document, invoke, enhanceSelect = () => {},
@@ -8,55 +7,12 @@ export function createAsrSettingsController({ document, invoke, enhanceSelect = 
   const status = document.getElementById("asrStatus");
   const location = document.getElementById("asrLocation");
   const pluginSettings = document.getElementById("asrPluginSettings");
-  const device = document.getElementById("asrInputDevice");
-  const inputControls = document.getElementById("asrInputControls");
-  const inputControlsHome = document.getElementById("asrInputControlsHome");
-  let pluginProvider = null;
-  const inputTest = listen ? createAsrInputTest({
-    document, invoke, listen, readProvider: () => pluginProvider || provider.value,
-    readDevice: () => device?.value || "",
-    onError: (error) => onStatus(error, "error"),
-  }) : null;
   let snapshot = null;
   let baseline = "";
   let disposed = false;
   let revision = 0;
-  let deviceRevision = 0;
-  const draft = () => ({ selectedProviderId: provider.value || null,
-    inputDeviceId: device?.value || "" });
+  const draft = () => ({ selectedProviderId: provider.value || null });
   enhanceSelect(provider);
-  if (device) enhanceSelect(device);
-
-  function selectDevice(id) {
-    if (!device) return;
-    if (id && !Array.from(device.children).some((item) => item.value === id)) {
-      const missing = document.createElement("option");
-      missing.value = id; missing.textContent = `${id}（未连接）`; device.append(missing);
-    }
-    device.value = id || ""; refreshSelect(device);
-  }
-  async function refreshDevices() {
-    if (!device) return;
-    const request = ++deviceRevision;
-    try {
-      const value = await invoke("settings_asr_devices");
-      if (disposed || request !== deviceRevision || !Array.isArray(value?.devices)) return;
-      const selected = device.value;
-      device.replaceChildren();
-      const system = document.createElement("option");
-      system.value = "";
-      const defaultDevice = value.devices.find((item) => item.id === value.defaultDeviceId);
-      system.textContent = defaultDevice ? `系统默认（${defaultDevice.label}）` : "系统默认";
-      device.append(system);
-      for (const item of value.devices) {
-        const option = document.createElement("option");
-        option.value = item.id; option.textContent = item.label; device.append(option);
-      }
-      selectDevice(selected);
-    } catch (error) {
-      if (!disposed && request === deviceRevision) onStatus(error, "error");
-    }
-  }
 
   function renderStatus() {
     const selected = snapshot?.providers.find((item) => item.providerId === provider.value);
@@ -102,11 +58,9 @@ export function createAsrSettingsController({ document, invoke, enhanceSelect = 
         provider.append(missing);
       }
       provider.value = value.selectedProviderId || "";
-      selectDevice(value.inputDeviceId || "");
       baseline = JSON.stringify(draft());
       if (savedDraft) {
         provider.value = savedDraft.selectedProviderId || "";
-        selectDevice(savedDraft.inputDeviceId);
       }
       refreshSelect(provider);
       renderStatus(); onDirty();
@@ -118,35 +72,10 @@ export function createAsrSettingsController({ document, invoke, enhanceSelect = 
     }
   }
   pluginSettings?.addEventListener("click", () => openPlugin(provider.value));
-  provider.addEventListener("change", () => { void inputTest?.cancel(); renderStatus(); onDirty(); });
-  device?.addEventListener("change", () => { void inputTest?.cancel(); onDirty(); });
-  document.getElementById("asrRefreshDevices")?.addEventListener("click", refreshDevices);
-  const hasPluginControls = (pluginId) => Boolean(pluginId && snapshot?.providers.some((item) => item.providerId === pluginId));
+  provider.addEventListener("change", () => { renderStatus(); onDirty(); });
   return Object.freeze({
     refresh,
-    refreshDevices,
-    hasPluginControls,
-    isHubPlugin: (pluginId) => Boolean(pluginId && pluginId === snapshot?.hubPluginId),
-    pluginDraft: draft,
-    restorePluginDraft(value) {
-      provider.value = value?.selectedProviderId || "";
-      selectDevice(value?.inputDeviceId || "");
-      refreshSelect(provider); renderStatus(); onDirty();
-    },
-    mountPluginControls(pluginId, container) {
-      if (!hasPluginControls(pluginId)) return;
-      if (pluginProvider !== pluginId) void inputTest?.cancel();
-      pluginProvider = pluginId;
-      container.append(inputControls); void refreshDevices();
-    },
-    unmountPluginControls() {
-      if (!pluginProvider) return;
-      void inputTest?.cancel(); pluginProvider = null;
-      inputControlsHome?.append(inputControls);
-    },
-    cancelTest: () => inputTest?.cancel(),
     onPageChanged(page) {
-      if (page !== "plugins") void inputTest?.cancel();
       if (page === "voice") void refresh({ preserveDraft: true });
     },
     isDirty: () => Boolean(snapshot) && JSON.stringify(draft()) !== baseline,
@@ -159,6 +88,6 @@ export function createAsrSettingsController({ document, invoke, enhanceSelect = 
       await refresh();
       return result;
     },
-    dispose() { disposed = true; revision += 1; inputTest?.dispose(); },
+    dispose() { disposed = true; revision += 1;  },
   });
 }

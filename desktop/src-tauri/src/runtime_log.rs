@@ -1731,7 +1731,6 @@ fn viewer_ipc_request_message(record: &RuntimeLogRecord) -> Option<String> {
         "asr.input.availability" => "检查语音输入状态",
         "asr.settings.get" => "读取语音输入设置",
         "asr.settings.save" => "保存语音输入设置",
-        "asr.settings.action" => "执行语音输入操作",
         "screen.session" => "读取屏幕共享状态",
         "screen.attach" => "附加截图",
         "screen.remove" => "移除截图",

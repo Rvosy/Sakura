@@ -53,8 +53,10 @@ def test_bound_abort_preserves_replacement_and_stops_exact_provider_and_dependen
         assert manager.call_service("fixture.consumer.service", "pid") == consumer_pid
         assert manager.abort_bound_service("sakura.assistant", current, reason="ASSISTANT_CALL_UNCERTAIN")
         for service in ("sakura.assistant", "fixture.consumer.service"):
-            with pytest.raises(PluginRuntimeError, match="SERVICE_MISSING"):
+            with pytest.raises(PluginRuntimeError) as missing:
                 manager.service_identity(service)
+            assert missing.value.code == "SERVICE_MISSING"
+            assert missing.value.diagnostics["cause_code"] in {"ASSISTANT_CALL_UNCERTAIN", "DEPENDENCY_FAILED"}
         assert not psutil.pid_exists(provider_pid)
         assert not psutil.pid_exists(consumer_pid)
         reasons = {row["pluginId"]: row["reasonCode"] for row in manager.snapshot()["plugins"]}

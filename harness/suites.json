@@ -103,6 +103,7 @@
       "cases": [
         "runtime-v2-asr-python-journey",
         "runtime-v2-asr-rust-journey",
+        "runtime-v2-asr-native-journey",
         "runtime-v2-asr-frontend-journey"
       ]
     },
@@ -672,7 +673,7 @@
     {
       "id": "plugin-marketplace-update",
       "description": "验证运行中插件自动更新、依赖恢复和失败回滚",
-      "argv": ["{python}", "-m", "pytest", "-q", "tests/unit/test_marketplace_update.py", "tests/unit/test_plugin_installer.py", "tests/unit/test_plugin_app_compatibility.py"],
+      "argv": ["{python}", "-m", "pytest", "-q", "tests/unit/test_marketplace_update.py", "tests/unit/test_plugin_installer.py", "tests/unit/test_plugin_app_compatibility.py", "tests/unit/test_offline_plugin_updates.py", "tests/unit/test_plugin_frontend_modules.py"],
       "timeout_seconds": 120
     },
     {
@@ -787,10 +788,19 @@
     },
     {
       "id": "runtime-v2-asr-rust-journey",
-      "description": "验证采集状态、有界 PCM、真实音量摘要、重采样与 WAV 格式；不自动打开麦克风",
+      "description": "验证宿主录音桥的窗口所有权、取消与退出回收",
       "argv": [
         "cargo", "test", "--manifest-path", "desktop/src-tauri/Cargo.toml", "--locked",
         "asr::tests", "--", "--test-threads=1"
+      ],
+      "timeout_seconds": 240,
+      "env": {"NO_COLOR": "1", "CARGO_TERM_COLOR": "never"}
+    },
+    {
+      "id": "runtime-v2-asr-native-journey",
+      "description": "验证内置 ASR 原生模块的设备选择、音量、重采样与 WAV；不自动打开麦克风",
+      "argv": [
+        "cargo", "test", "--manifest-path", "plugins/builtin/sakura_asr_hub/native/Cargo.toml", "--locked", "--target-dir", "desktop/src-tauri/target"
       ],
       "timeout_seconds": 240,
       "env": {"NO_COLOR": "1", "CARGO_TERM_COLOR": "never"}

@@ -757,7 +757,7 @@ settings.place("schedule", page_id=context.plugin_id + ":schedule")
 | 组件 | 声明与行为 |
 |---|---|
 | `form` | 现有表单行、状态、资源、动作和 Collection。`collapsible` 折叠整个区块；同一页面区域内相同 `group` 的区块按放置顺序共用分组。`alignedUnits` 对齐带单位的数字框和下拉框。 |
-| `connection-editor` | 宿主的连接列表与详情、模型标签、手动添加、发现勾选弹窗、连接测试和凭据三态。绑定声明字段和 Action，不接收代码。 |
+| `module` | 已安装插件提供独立 ES Module，拥有复杂设置控件和操作流程；宿主管理加载、草稿、页面和生命周期。 |
 | `connection-status` | 紧凑连接状态、二维码和当前可用操作。插件决定登录流程，宿主统一显示。 |
 | `record-table` | 可搜索的记录列表与所选记录详情。编辑和读取只针对选中项；适合外部设备等已有记录，不负责增删记录。 |
 
@@ -767,14 +767,22 @@ settings.place("schedule", page_id=context.plugin_id + ":schedule")
 模型选择继续使用 `sakura.host.model_slots.v2` 的公开用途注册，复用宿主下拉选择与继承状态。
 Collection 继续使用下面的公开注册与列表详情组件。
 
-`connection-editor` 声明 `valueField/requestField/resultField`（均为 `data`），以及
-`probeAction/statusAction/cancelAction`。可用 `serviceKey` 将连接草稿加入模型选择目录，
-`timeoutSection/timeoutField` 引用同插件的超时草稿。连接值是数组，每项包含 `id/alias/base_url/models`，
-`models` 为模型 ID 数组；凭据只返回 `configured` 和空 `api_key`，编辑时携带 `credential_action=keep|replace|clear`。
-可以保留 `timeout_seconds`。请求含随机 `requestId`、`operation=list_models|test_connection`、
-`profileId/modelId/base_url/credential/timeout_seconds`。结果含同一个 `requestId`、
-`state=running|completed|failed`、安全 `code` 和 `models: [{modelId: ...}]`。
-发现成功只打开勾选弹窗，用户选中后才进入窗口草稿；探测、取消均不调用 `save`。
+`module` 的 `source` 是插件包内前端文件的 UTF-8 源码，导出 `mount(context)`；不支持相对模块导入。
+插件可在注册时通过 `Path(__file__).with_name("frontend").joinpath("settings.js").read_text(encoding="utf-8")` 读取它。
+宿主用 Blob ES Module 加载，沿用安装插件的信任边界。`standalone: true` 让组件独占所在页面区域，不再包一层表单分组。
+
+`mount` 可返回 Promise，完成后返回 `{element, dispose, update?, validate?, cancel?, contributions?}`。
+宿主会在插件重载、Core 切换、弹窗关闭或窗口退出时中止 `context.signal` 并调用 `dispose()`；
+在关闭后才完成挂载的组件也会立即回收。异步回调必须检查 `signal.aborted` 和 `isCurrent()`，保留取消及迟到结果隔离。
+`validate()` 在保存前执行；模块加载或校验失败时保留原始异常，不能继续提交为成功。
+
+上下文提供 `document/window/section`、当前区块的 `read(key)/write(key, value)`、同插件区块的
+`readSection(sectionId, key)`、已声明动作的 `action(actionId, values)`，以及 `invoke/listen` 原生桥、
+`notify/onError`、`enhanceSelect/refreshSelect/closeSelects/createIcon` 公共控件。
+`importModule(path)` 可载入相对 `desktop/frontend/` 的宿主客户端模块，例如原生音频输入客户端。
+复杂业务字段、探测轮询、确认弹窗和取消规则由插件模块实现。模块的 `contributions().modelCatalog`
+可提供标准模型目录草稿，改变时调用 `onCatalogChanged()`；模型引用仍由 `sakura.host.model_slots.v2` 管理。
+OpenAI 兼容连接编辑器的实现和凭据三态见 `plugins/builtin/sakura_model_openai_compatible/frontend/connections.js`。
 
 `connection-status` 绑定只读 `statusField`（`status`）、`imageField`（`image`）和 `actionsField`（`data`）。
 `actionsField` 的值是当前可用的已声明 Action ID 数组，其他操作不显示。扫码图片居中，清空后恢复紧凑状态行。
@@ -800,10 +808,10 @@ Collection 继续使用下面的公开注册与列表详情组件。
 “完成”接受编辑，外层“应用”“保存并关闭”统一提交；取消私有弹窗只恢复其中的编辑，不能恢复功能页草稿。
 调整展示位置不移动配置文件、不改变回调或作用范围。下载、诊断和 Collection 管理保持各自已有的执行方式。
 
-旧 `sakura.host.settings.surface-v0` 继续兼容：`providers/model/voice/memory/screen_awareness`
-分别映射到模型服务、模型、语音、记忆、交互页；`plugin` 或未声明保持私有设置。
-历史 `about` 资源的管理操作仍在插件设置，组件总览保持原入口。语音和记忆的旧贡献继续使用原控制器和布局。
-同一区块不能同时注册 surface 和 `place()`。新贡献优先使用公开页面放置接口；不支持自定义 HTML、JavaScript、CSS 或侧栏分组。
+旧 `sakura.host.settings.surface-v0` 的 `providers/model/memory/screen_awareness` 分别映射到模型服务、模型、记忆、交互页。
+`voice`、`plugin` 或未声明的区块使用通用私有设置；语音页只消费引擎目录和角色选择，不接管 Provider 字段。
+历史 `about` 资源的管理操作仍在插件设置，组件总览保持原入口。同一区块不能同时注册 surface 和 `place()`。
+新贡献优先使用公开页面放置接口；插件不能新增侧栏分组。
 
 ### 分页 Collection
 
@@ -812,7 +820,9 @@ Collection 可声明 `scope: "global" | "character"`：全局记录的草稿跨�
 该字段需要支持它的宿主；旧宿主会按未知字段拒绝登记。它不替插件分区数据库或实现授权。
 
 需要让用户搜索、增删或编辑一组数据时，使用 `sakura.host.settings.collection-v0`。它仍由 Sakura 渲染，
-插件只负责 descriptor 和 CRUD 回调。
+插件只负责 descriptor 和 CRUD 回调。记忆页按 `columns` 的顺序显示记录，首列为正文，其余列显示标签和值，
+不识别插件 ID 或特定业务字段。枚举标签来自 `fields/filters`；数字列可声明 `format: "percent"`，
+日期列使用 `type: "datetime"`。编辑字段、记录 ID、分页、删除确认和数据权限仍由 Collection 声明与回调决定。
 
 ```python
 collections = context.get("sakura.host.settings.collection-v0")
@@ -1146,13 +1156,27 @@ presentation = character.presentation()
 extension = character.get(character_id)
 updated = character.update(character_id, {"voice": "alice"})
 resource_path = character.resolve_resource(character_id, "voices/alice.wav")
+character.declare_resources(character_id, {
+    "kind": "tts",
+    "paths": ["voices/alice.wav", "models"],
+    "pluginRequirements": [{"kind": "tts", "type": "example.voice@1", "plugins": [{"id": "example.tts"}]}],
+})
 ```
 
 `list()` 返回角色的 `id/displayName/initialMessage/current`，`current` 为布尔值；`presentation()` 返回当前角色的
 公开资料及 `themeTokens`，不携带角色资源路径。它不选择角色，聊天仍只受理桌面当前角色。
 
 `get()` 和 `update()` 只能看到当前插件 ID 对应的 `character.json.extensions` 子对象，不会泄漏或覆盖其他
-插件的数据。单插件角色扩展最多 64 KiB。`resolve_resource()` 只解析角色包内部既有资源，并拒绝路径逃逸。
+插件的数据。`resolve_resource()` 只解析角色包内部既有资源，并拒绝路径逃逸。
+
+Sakura 1.3.2 起，`declare_resources()` 将当前插件的资源声明保存在
+`character.json.extensionResources[pluginId]`。`paths` 是包内文件或目录的相对路径；宿主拒绝路径逃逸、
+符号链接和不存在的资源。插件负责解析自己的配置、参考表与模型格式，并列出其中依赖的文件或目录。
+`pluginRequirements` 沿用角色包的插件需求格式。相同声明不重写清单，其他插件的配置和声明保持原样。
+
+声明随角色包保存、复制、导入和导出，不依赖插件是否安装或启用。完整 `.char` 保留包内文件；
+不包含语音的导出排除 `kind: "tts"` 的声明资源以及旧 `voice/` 目录，但保留其他声明仍引用的共享文件。
+未声明的旧包仍可完整导出；旧 `voice` 与语音扩展的兼容读取不要求重新安装角色资源。
 
 ### Timeline
 
@@ -1313,6 +1337,18 @@ state = speech.poll(job["jobId"])
 已解析的文件等插件显式释放或所属进程停止后再删除，原实例仍可调用 `release_received()`。
 不要扫描语音缓存目录，也不要自行调用 Hub 后消费 Provider 私有文件。该能力只准备音频，不启动或中断桌面播放；
 手机端的播放开始、结束由手机端管理，不能把音频准备完成当作桌面的 `tts.started`。
+
+Sakura 1.3.2 起，后台缓存任务可调用
+`speech.begin(character_id, history_entry_id, segment_index, {"background": True, "exportAudio": False})`。
+`background` 任务只在用户打开空闲补齐且没有前台语音请求时获得授权，前台请求会取消正在执行的后台任务。
+`exportAudio: False` 只保留录音，完成结果不含 `artifact`，也不创建播放副本。
+
+`speech.cache_status(0)` 的位置参数是待保留的空间字节数，返回当前角色的
+`characterId/idleFill/busy/hasRoom/latestCursor`。`speech.cache_page(character_id, before_cursor, limit)`
+沿 Timeline 游标读取当前角色的一页记录，返回 `entries/nextCursor/hasMore`；每项包含 `entryId/kind`，
+以及按原顺序排列的 `segments`，其中 `hasText/suppressed/recorded` 描述正文、朗读限制和已有录音。
+查询不返回原文、音频或裸路径，不选择待合成段落。任务仍需通过 `begin()` 重新核对当前角色与授权。
+TTS Hub 的插件进程使用这些接口执行空闲检测、分页选择和失败退避；宿主负责缓存配置、容量、授权及持久化。
 
 ## 当前暂不开放的界面能力
 

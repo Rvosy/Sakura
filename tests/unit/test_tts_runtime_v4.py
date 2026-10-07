@@ -87,6 +87,7 @@ def _runtime_root(
     distribution = tmp_path / "distribution"
     bundled = distribution / "plugins" / "builtin"
     bundled.mkdir(parents=True)
+    shutil.copy2(repository / "VERSION", distribution / "VERSION")
     shutil.copytree(repository / "plugins/builtin/sakura_tts_hub", bundled / "sakura_tts_hub")
     user = tmp_path / "user"
     # These fixtures exercise custom HTTP endpoints only. Archive extraction

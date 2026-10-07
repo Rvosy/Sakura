@@ -772,6 +772,18 @@ class _Coordinator:
         self._thread.join()
 
 
+_CONVERSION_MESSAGES = {
+    "tts.conversion.checking": "正在准备 Genie ONNX 模型",
+    "tts.conversion.reused": "已使用角色包中的 Genie ONNX 模型",
+    "tts.conversion.cache_hit": "已使用 Genie ONNX 转换缓存",
+    "tts.conversion.started": "已启动 Genie ONNX 转换",
+    "tts.conversion.running": "正在转换 Genie ONNX 模型",
+    "tts.conversion.finished": "Genie ONNX 模型转换完成",
+    "tts.conversion.failed": "Genie ONNX 模型转换失败",
+    "tts.conversion.cancelled": "Genie ONNX 模型转换已取消",
+}
+
+
 class GenieProvider:
     def __init__(
         self,
@@ -785,7 +797,14 @@ class GenieProvider:
         self._context = context
         self._character = character
         self._artifacts = artifacts
-        self._diagnostic = diagnostics.emit if diagnostics is not None else None
+        def report(descriptor):
+            event = descriptor["event"]
+            if event in _CONVERSION_MESSAGES:
+                getattr(logger, descriptor["severity"])(_CONVERSION_MESSAGES[event],
+                    fields={"event": event, **descriptor.get("attributes", {})})
+            elif diagnostics is not None:
+                diagnostics.emit(descriptor)
+        self._diagnostic = report if logger is not None else (diagnostics.emit if diagnostics is not None else None)
         self._jobs: dict[str, _Job] = {}
         self._jobs_lock = threading.RLock()
         self._coordinator: _Coordinator | None = None
@@ -1121,6 +1140,7 @@ def _parse_character_voice(
         character, character_id, tone_refs_relative.strip(), "TTS_REFERENCE_UNAVAILABLE"
     )
     references: dict[str, list[ToneReference]] = {}
+    resource_paths = [tone_refs_path]
     for raw_line in tone_refs_path.read_text(encoding="utf-8").splitlines():
         line = raw_line.strip()
         if not line or line.startswith("#"):
@@ -1132,6 +1152,7 @@ def _parse_character_voice(
         audio_path = _required_resource(
             character, character_id, audio_relative, "TTS_REFERENCE_UNAVAILABLE"
         )
+        resource_paths.append(audio_path)
         references.setdefault(tone, []).append(
             ToneReference(tone, audio_path, text, language.lower())
         )
@@ -1139,8 +1160,9 @@ def _parse_character_voice(
         raise ValueError("TTS_CHARACTER_CONFIG_INVALID")
     onnx_value = extension.get("onnxModelDir", "voice/onnx")
     onnx = _optional_onnx_resource(character, character_id, onnx_value)
+    onnx_ready = onnx is not None and bool(_onnx_files(onnx))
     gpt = sovits = None
-    if onnx is None or not _onnx_files(onnx):
+    if not onnx_ready:
         if not extension.get("gptModel") or not extension.get("sovitsModel"):
             raise ValueError("TTS_ONNX_UNAVAILABLE")
         gpt = _required_resource(
@@ -1149,6 +1171,15 @@ def _parse_character_voice(
         sovits = _required_resource(
             character, character_id, extension["sovitsModel"], "TTS_SOURCE_MODEL_UNAVAILABLE"
         )
+    if onnx_ready:
+        resource_paths.append(onnx)
+    resource_paths.extend(path for path in (gpt, sovits) if path is not None)
+    package_dir = Path(character.resolve_resource(character_id, "character.json")).parent
+    resource_type = "genie.onnx@1" if onnx_ready else "gpt-sovits.models@1"
+    character.declare_resources(character_id, {"kind": "tts",
+        "paths": [path.relative_to(package_dir).as_posix() for path in resource_paths],
+        "pluginRequirements": [{"kind": "tts", "type": resource_type,
+            "plugins": [{"id": PROVIDER_ID, "name": "Genie"}]}]})
     return _CharacterVoice(
         character_id=character_id,
         remote_character_name="",

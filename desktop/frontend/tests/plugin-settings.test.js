@@ -885,30 +885,20 @@ test("About component actions use the owning plugin section and refresh its rend
   feature.dispose();
 });
 
-test("voice plugin settings mount available sections and restore cancelled edits", async () => {
-  let voice = null;
-  const calls = [];
-  const ui = featureFixture(async () => snapshot(), { getVoiceController: () => voice });
-  ui.feature.initialize(snapshot());
+test("voice provider sections use ordinary plugin drafts and cancellation", async () => {
+  const data = snapshot();
+  data.plugins[0].sections = [{ ...data.plugins[0].sections[0], surface: "voice" }];
+  const ui = featureFixture(async () => data);
+  ui.feature.initialize(data);
   await ui.openSettings();
-  voice = {
-    hasPluginSections: () => true,
-    pluginDraft: () => ({ pluginId: "fixture_plugin", values: { timeout: 60 } }),
-    restorePluginDraft: (draft) => calls.push(["restore", draft]),
-    mountPluginSections(id, container) {
-      calls.push(["mount", id]);
-      container.append(ui.document.createElement("input"));
-    },
-    unmountPluginSections: () => calls.push(["unmount"]),
-  };
-  ui.feature.onVoiceSectionsRendered();
-  ui.feature.onVoiceSectionsRendered();
-  assert.deepEqual(calls, []);
+  const input = ui.document.querySelector(".plugin-settings-dialog input");
+  const initial = input.value;
+  input.value = "changed"; await input.fire("input");
+  assert.equal(ui.feature.isDirty(), true);
   await ui.document.querySelector(".plugin-dialog-close").fire("click");
   await ui.openSettings();
-  await ui.document.querySelector(".plugin-dialog-close").fire("click");
-  assert.deepEqual(calls, [["mount", "fixture_plugin"], ["unmount"],
-    ["restore", { pluginId: "fixture_plugin", values: { timeout: 60 } }]]);
+  assert.equal(ui.document.querySelector(".plugin-settings-dialog input").value, initial);
+  assert.equal(ui.feature.isDirty(), false);
   ui.feature.dispose();
 });
 
@@ -930,38 +920,26 @@ test("disposing during dialog exit releases it once and ignores the late animati
   assert.equal(ui.timers.size, 0);
 });
 
-for (const exit of ["cancel", "accept", "dispose"]) {
-  test(`ASR plugin settings mount controls and ${exit} releases capture with correct drafts`, async () => {
-    let draft = { inputDeviceId: "saved-mic" };
-    let mounted = false;
-    let releases = 0;
-    const asr = {
-      refresh: async () => {}, hasPluginControls: (id) => id === "fixture_plugin",
-      pluginDraft: () => ({ ...draft }),
-      restorePluginDraft: (value) => { draft = value; },
-      mountPluginControls: (_id, container) => {
-        mounted = true;
-        container.append(ui.document.createElement("select"));
-      },
-      unmountPluginControls: () => { mounted = false; releases++; },
-    };
-    const data = snapshot();
-    data.plugins[0].sections = data.plugins[0].sections.filter(section => !section.surface);
-    const ui = featureFixture(async () => data, { getAsrController: () => asr });
-    ui.feature.initialize(data);
-    assert.equal(ui.document.querySelector(".plugin-settings-link"), null);
-    ui.feature.openPlugin(data.plugins[0].installId, true);
-    assert.equal(mounted, true);
-    assert.ok(ui.document.querySelector(".plugin-dialog-asr select"));
-    draft.inputDeviceId = "new-mic";
-    if (exit === "dispose") ui.feature.dispose();
-    else if (exit === "accept") await ui.document.querySelector(".plugin-settings-dialog form").fire("submit");
-    else await ui.document.querySelector(".plugin-dialog-close").fire("click");
-    await settle();
-    assert.equal(mounted, false);
-    assert.equal(releases, 1);
-    assert.equal(draft.inputDeviceId, exit === "cancel" ? "saved-mic" : "new-mic");
-    if (exit !== "dispose") ui.feature.dispose();
-    assert.equal(releases, 1);
-  });
-}
+
+test("memory cards render only the owning collection columns and preserve record identity", async () => {
+  const data = snapshot();
+  const collection = data.plugins[0].sections[1].collections[0];
+  collection.columns = [{ key: "note", label: "便签", type: "string" },
+    { key: "tags", label: "关键词", type: "string" },
+    { key: "weight", label: "匹配程度", type: "number", format: "percent" }];
+  collection.fields = [field("note"), field("tags")];
+  const ui = featureFixture(async () => ({ items: [{ itemId: "persisted-note-id", values: {
+    note: "保留原始便签", tags: "设备, 项目", weight: 0.85,
+  } }], total: 1, nextCursor: null }));
+  ui.feature.initialize(data);
+  await ui.runTimers(0);
+  const card = ui.document.querySelector(".memory-record-card");
+  assert.equal(card.dataset.itemId, "persisted-note-id");
+  assert.match(card.textContent, /保留原始便签/);
+  assert.match(card.textContent, /关键词 设备, 项目/);
+  assert.match(card.textContent, /匹配程度 85%/);
+  assert.doesNotMatch(card.textContent, /未知来源|未分类|置信|重要/);
+  await card.fire("dblclick");
+  assert.equal(ui.document.querySelector(".memory-dialog-form textarea").value, "保留原始便签");
+  ui.feature.dispose();
+});

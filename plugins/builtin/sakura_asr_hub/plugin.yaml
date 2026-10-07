@@ -2,8 +2,8 @@ api: 4
 id: sakura.asr
 name: 语音输入
 author: Rvosy
-description: 选择语音输入引擎。
-version: 0.1.0
+description: 管理麦克风、录音和语音识别引擎。
+version: 0.2.0
 entry: plugin:SakuraASRHubPlugin
 enabled: true
 priority: 100
@@ -11,6 +11,8 @@ provides:
   - sakura.asr
 requires:
   - sakura.host.audio_input
+  - sakura.host.settings
+  - sakura.host.settings.surface-v0
 presentation:
   kind: infrastructure
   category: voice

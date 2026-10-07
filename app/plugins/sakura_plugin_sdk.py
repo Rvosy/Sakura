@@ -967,6 +967,12 @@ class _CharacterProxy:
             )
         return dict(result)
 
+    def declare_resources(self, character_id: str, declaration: Mapping[str, Any]) -> dict[str, Any]:
+        return self._context._remote_call(
+            "sakura.host.character", "declare_resources",
+            [self._context.plugin_id, character_id, dict(declaration)],
+        )
+
     def resolve_resource(self, character_id: str, relative_path: str) -> str:
         result = self._context._remote_call(
             "sakura.host.character",

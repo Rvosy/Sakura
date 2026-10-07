@@ -1,6 +1,6 @@
 import { createIcon } from "../core/icons.js";
 
-const legacyPages = { screen_awareness: "interaction", providers: "providers", model: "model", voice: "voice", memory: "memory" };
+const legacyPages = { screen_awareness: "interaction", providers: "providers", model: "model", memory: "memory" };
 export function sectionDestination(section) {
   if (section.placement) return section.placement.pageId;
   return legacyPages[section.surface] ? `host:${legacyPages[section.surface]}` : null;
@@ -75,7 +75,7 @@ export function createSettingsUI({ document, showPage, createSection }) {
         entry = { schema, component }; sections.set(key, entry);
       }
       let parent = container;
-      if (section.presentation?.component !== "connection-editor") {
+      if (!section.presentation?.standalone) {
         const groupKey = `${containerKey}/${section.presentation?.group || key}`; liveGroups.add(groupKey);
         let group = groups.get(groupKey);
         if (!group) {

@@ -423,10 +423,11 @@ def test_official_provider_unregisters_on_disable_and_reregisters_in_a_new_scope
     root = Path(__file__).parents[2]
     bundled = tmp_path / "distribution/plugins/builtin"
     bundled.mkdir(parents=True)
+    (bundled.parent.parent / "VERSION").write_text("1.3.2", encoding="utf-8")
     for name in ("sakura_asr_hub", "sakura_asr_sensevoice"):
         # Setup and teardown do not import inference dependencies or need model files.
         shutil.copytree(root / "plugins" / ("optional" if name == "sakura_asr_sensevoice" else "builtin") / name, bundled / name,
-                        ignore=shutil.ignore_patterns("__pycache__", "requirements.txt"))
+                        ignore=shutil.ignore_patterns("native", "__pycache__", "requirements.txt"))
     provider = tmp_path / "user/plugins/user/sakura_asr_sensevoice"
     provider.parent.mkdir(parents=True)
     (bundled / "sakura_asr_sensevoice").rename(provider)
@@ -463,7 +464,8 @@ def test_official_hub_and_third_party_provider_cross_process_audio_contract(tmp_
     distribution = tmp_path / "distribution"
     bundled = distribution / "plugins/builtin"
     bundled.mkdir(parents=True)
-    shutil.copytree(root / "plugins/builtin/sakura_asr_hub", bundled / "sakura_asr_hub", ignore=shutil.ignore_patterns("__pycache__"))
+    (bundled.parent.parent / "VERSION").write_text("1.3.2", encoding="utf-8")
+    shutil.copytree(root / "plugins/builtin/sakura_asr_hub", bundled / "sakura_asr_hub", ignore=shutil.ignore_patterns("native", "__pycache__"))
     for name in ("a", "b"):
         plugin = bundled / name
         plugin.mkdir()
@@ -546,8 +548,9 @@ def test_sensevoice_language_is_owned_by_plugin_and_survives_restart(tmp_path, s
     distribution, user = tmp_path / "distribution", tmp_path / "user"
     bundled = distribution / "plugins/builtin"
     bundled.mkdir(parents=True)
+    (bundled.parent.parent / "VERSION").write_text("1.3.2", encoding="utf-8")
     for name in ("sakura_asr_hub", "sakura_asr_sensevoice"):
-        shutil.copytree(root / "plugins" / ("optional" if name == "sakura_asr_sensevoice" else "builtin") / name, bundled / name, ignore=shutil.ignore_patterns("__pycache__"))
+        shutil.copytree(root / "plugins" / ("optional" if name == "sakura_asr_sensevoice" else "builtin") / name, bundled / name, ignore=shutil.ignore_patterns("native", "__pycache__"))
     # This test exercises settings IPC only; inference dependencies are never imported.
     (bundled / "sakura_asr_sensevoice/requirements.txt").unlink()
     paths = StoragePaths(user)
@@ -605,3 +608,43 @@ def test_legacy_model_marker_reuses_installed_files_without_content_scan(tmp_pat
     resources.thread.join(3)
     assert resources.state == "succeeded"
     assert json.loads(marker.read_text())["sha256"] == {"model": "ignored"}
+
+
+def test_hub_permission_wait_does_not_reduce_recording_budget(monkeypatch):
+    from plugins.builtin.sakura_asr_hub import input_controller
+
+    clock = [100.0]
+    monkeypatch.setattr(input_controller, "monotonic", lambda: clock[0])
+    cycle = threading.Event()
+    class ObservedWake(threading.Event):
+        def wait(self, timeout=None):
+            cycle.set()
+            return super().wait(timeout)
+    audio = SimpleNamespace(
+        verifyProvider=lambda *args: {"providerId": "test.asr", "scopeId": "scope"},
+        create=lambda *args: {"resourceId": "resource", "path": "unused.wav"},
+        revoke=lambda *args: None, producerDone=lambda *args: None,
+    )
+    hub = SimpleNamespace(audio=audio, load_settings=lambda: {"inputDeviceId": ""},
+        status=lambda *args: {"providerId": "test.asr", "serviceKey": "test.service", "configVersion": "one", "state": "ready", "available": True},
+        warmup=lambda *args: None, cancel=lambda *args: None, _log=lambda *args, **kwargs: None)
+    controller = input_controller.InputController(hub)
+    def dispatch(name):
+        return controller.dispatch(name, {"recordingId": "permission"})
+    try:
+        dispatch("prepare")
+        task = controller._tasks["permission"]
+        task.changed = ObservedWake()
+        assert cycle.wait(2)
+        assert dispatch("poll")["state"] == "ready"
+        dispatch("capture_target")
+        clock[0] += 80
+        assert dispatch("capture_ready")["state"] == "recording"
+        clock[0] += 40
+        cycle.clear()
+        task.changed.set()
+        assert cycle.wait(2)
+        assert dispatch("poll")["state"] == "recording"
+        dispatch("capture_discarded")
+    finally:
+        controller.close()

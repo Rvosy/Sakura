@@ -254,3 +254,15 @@ def test_file_picker_references_only_an_editable_string_field():
     section = settings.sections_for_plugin('fixture')[0]
     assert section['actions'] == [{'actionId': 'import', 'label': '导入', 'description': '', 'danger': False,
                                   'filePicker': {'field': 'path', 'extensions': ['zip', '7z', 'gz']}}]
+
+
+def test_installed_plugin_settings_module_source_survives_registration():
+    source = 'export function mount(context) { return context.component; }'
+    settings = _SettingsHostService(lambda *_: {})
+    settings.call("register", ["fixture.module", {
+        "sectionId": "runtime", "title": "运行设置", "fields": [],
+        "presentation": {"component": "module", "source": source, "standalone": True},
+    }, {"load": None, "save": None, "actions": {}}])
+    section = settings.sections_for_plugin("fixture.module")[0]
+    assert section["presentation"]["source"] == source
+    assert section["presentation"]["standalone"] is True

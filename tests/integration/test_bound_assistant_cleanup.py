@@ -93,6 +93,8 @@ def test_stuck_release_deadline_aborts_only_its_real_process_scope(chat, monkeyp
         assert record.state == "active"
         assert record.process.pid is not None
     else:
-        with pytest.raises(PluginRuntimeError, match="SERVICE_MISSING"):
+        with pytest.raises(PluginRuntimeError) as unavailable:
             application.service_identity("sakura.assistant")
+        assert unavailable.value.code == "SERVICE_MISSING"
+        assert unavailable.value.diagnostics["cause_code"] == "ASSISTANT_CALL_UNCERTAIN"
     assert chat.boundary.snapshot_fields("ready", None)["activeInteractionSummary"] is None

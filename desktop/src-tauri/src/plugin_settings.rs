@@ -90,6 +90,40 @@ fn valid_identifier_text(text: &str, maximum: usize) -> bool {
 }
 
 #[tauri::command]
+pub(crate) async fn plugin_frontend_module(
+    window: WebviewWindow,
+    service_key: String,
+    module_name: String,
+    lifecycle: State<'_, ShellLifecycleState>,
+) -> Result<Value, String> {
+    if !matches!(window.label(), "main" | "history" | "settings") {
+        return Err("PLUGIN_FRONTEND_WINDOW_INVALID".into());
+    }
+    let handle = settings_core_handle(&lifecycle)?;
+    let generation = handle
+        .available_generation_id()
+        .map_err(|error| error.to_string())?
+        .ok_or("STALE_GENERATION")?;
+    let response = dispatch_settings_request(
+        handle.clone(),
+        None,
+        "plugins.frontend.get",
+        json!({"serviceKey":service_key,"moduleName":module_name}),
+        std::time::Duration::from_secs(4),
+    )
+    .await?;
+    if handle
+        .available_generation_id()
+        .map_err(|error| error.to_string())?
+        .as_deref()
+        != Some(&generation)
+    {
+        return Err("STALE_GENERATION".into());
+    }
+    settings_response_payload(response)
+}
+
+#[tauri::command]
 pub(crate) async fn settings_plugins_get(
     window: WebviewWindow,
     shell: State<'_, product_shell::ProductShellState>,

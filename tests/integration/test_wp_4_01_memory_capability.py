@@ -27,6 +27,7 @@ from tests.integration.test_core_host_real_chat_integration import (
 
 def _install_official_mem0(distribution_root: Path, user_root: Path) -> None:
     (distribution_root / "app").mkdir(parents=True)
+    shutil.copy2(REPO_ROOT / "VERSION", distribution_root / "VERSION")
     plugin_root = user_root / "plugins" / "user"
     plugin_root.mkdir(parents=True, exist_ok=True)
     shutil.copytree(

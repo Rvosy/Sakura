@@ -61,19 +61,22 @@ test("role refresh queued during pagination starts after the stale page settles"
     ResizeObserver: class { observe() {} disconnect() {} },
     requestAnimationFrame: (callback) => callback(),
   });
-  vm.runInContext(code, context);
-  await context.loadInitial();
-  const earlier = context.loadEarlier();
+  const history = await vm.runInContext(`(async () => { ${code}
+    return { loadInitial, loadEarlier, resetForCharacterSwitch,
+      state: () => ({loading, initialReloadPending, entries, identity}) };
+  })()`, context);
+  await history.loadInitial();
+  const earlier = history.loadEarlier();
   assert.equal(typeof releaseEarlier, "function");
 
   active = "beta";
-  context.resetForCharacterSwitch();
-  await context.loadInitial();
+  history.resetForCharacterSwitch();
+  await history.loadInitial();
   releaseEarlier(page("alpha"));
   await earlier;
   await new Promise((resolve) => setImmediate(resolve));
 
-  const state = vm.runInContext("({loading, initialReloadPending, entries, identity})", context);
+  const state = history.state();
   assert.equal(calls.filter((call) => call.command === "history_bootstrap").length, 2);
   assert.equal(state.loading, false);
   assert.equal(state.initialReloadPending, false);

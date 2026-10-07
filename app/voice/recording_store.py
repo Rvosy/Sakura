@@ -271,6 +271,12 @@ class VoiceRecordingStore:
                       and record.segment_index == segment_index)
         return max(candidates, key=lambda item: (_timestamp(item.created_at), item.recording_id), default=None)
 
+    def recorded_segments(self, character_id: str) -> set[tuple[str, int]]:
+        """Return one cache snapshot for a page of saved reply segments."""
+        return {(record.history_entry_id, record.segment_index)
+                for record in self._scan_character_directory(self.recordings_for(character_id))
+                if record.segment_index is not None}
+
     def set_favorite(self, recording_id: str, favorite: bool) -> VoiceRecording:
         record = self.get(recording_id)
         if record is None:

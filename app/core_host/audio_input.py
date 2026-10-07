@@ -45,6 +45,7 @@ class AudioInputResources:
     def __init__(self, user_root: Path, generation_id: str, identity: Callable) -> None:
         self.root = (StoragePaths(user_root).cache_dir / "asr-input"
                      / sanitize_directory_component(generation_id))
+        self._user_root = user_root
         self._identity = identity
         self._lock = threading.RLock()
         self._items: dict[str, _Audio] = {}
@@ -57,6 +58,25 @@ class AudioInputResources:
         if identity["providerId"] != provider_id:
             raise AudioInputError("ASR_PROVIDER_IDENTITY_INVALID")
         return dict(identity)
+
+    def legacyDevice(self) -> str:
+        self._require_hub()
+        from app.config.settings_service import AppSettingsService
+        return AppSettingsService(self._user_root).load_audio_input_device()
+
+    def create(self, recording_id: str, provider_id: str, service_key: str, scope_id: str) -> dict:
+        self._require_hub()
+        if self._identity(service_key) != {"providerId": provider_id, "scopeId": scope_id}:
+            raise AudioInputError("ASR_PROVIDER_UNAVAILABLE")
+        return self.allocate(recording_id, provider_id, service_key, scope_id)
+
+    def finish(self, resource_id: str) -> dict:
+        self._require_hub()
+        return self.commit(resource_id)
+
+    def producerDone(self, resource_id: str) -> None:
+        self._require_hub()
+        self.producer_done(resource_id)
 
     def allocate(self, recording_id: str, provider_id: str, service_key: str, scope_id: str) -> dict:
         if not isinstance(recording_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", recording_id):

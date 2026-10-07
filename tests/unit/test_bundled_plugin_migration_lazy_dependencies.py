@@ -30,6 +30,8 @@ def test_mem0_partial_lazy_dependencies_are_repaired_or_left_pending(
 
     monkeypatch.setattr(PluginDependencyRoots, "install", no_install)
     roots = RuntimeRoots(tmp_path / "distribution", tmp_path / "user")
+    roots.distribution_root.mkdir()
+    shutil.copyfile(Path(__file__).parents[2] / "VERSION", roots.distribution_root / "VERSION")
     paths = StoragePaths(roots.user_root)
     code = paths.user_plugins_dir / PLUGIN
     shutil.copytree(SOURCE, code)

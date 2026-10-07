@@ -5,7 +5,9 @@ import { runInNewContext } from "node:vm";
 import { createChatPresentationReducer } from "../chat/chat-presentation.js";
 import { createWaitingIndicator } from "../chat/waiting-indicator.js";
 
-import { createTtsController } from "../audio/tts-controller.js";
+import { createTtsController as createPluginTtsController } from "../../../plugins/builtin/sakura_tts_hub/frontend/playback.mjs";
+import { errorText } from "../core/error-display.js";
+const createTtsController = options => createPluginTtsController({ ...options, errorText });
 import { createTypewriter } from "../pet/typewriter.js";
 
 function deferred() {

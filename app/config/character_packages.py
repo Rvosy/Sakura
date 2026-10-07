@@ -122,6 +122,25 @@ def ensure_legacy_voice_extensions(
     return True
 
 
+def legacy_voice_requirements(manifest: Mapping, declarations: Mapping) -> list[dict]:
+    """Read pre-1.3.2 model fields only while their owner has no declaration."""
+    from app.config.plugin_requirements import GPT_SOVITS_MODELS, GENIE_ONNX
+    mapping = lambda value: value if isinstance(value, Mapping) else {}
+    voice = mapping(manifest.get("voice"))
+    extensions = mapping(manifest.get("extensions"))
+    shared = mapping(extensions.get("sakura.tts.gpt-sovits"))
+    result = []
+    if ("sakura.tts.gpt-sovits" not in declarations
+            and (shared.get("gptModel") or voice.get("gpt_model"))
+            and (shared.get("sovitsModel") or voice.get("sovits_model"))):
+        result.append({"kind": "tts", "type": GPT_SOVITS_MODELS, "plugins": [
+            {"id": "sakura.tts.gpt-sovits", "name": "GPT-SoVITS"},
+            {"id": "sakura.tts.genie", "name": "Genie"}]})
+    if "sakura.tts.genie" not in declarations and mapping(extensions.get("sakura.tts.genie")).get("onnxModelDir"):
+        result.append({"kind": "tts", "type": GENIE_ONNX, "plugins": [{"id": "sakura.tts.genie", "name": "Genie"}]})
+    return result
+
+
 def repair_character_packages(
     base_dir: Path,
     *,

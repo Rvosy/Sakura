@@ -17,10 +17,10 @@ import {
 } from "../settings/root-settings-runtime.js";
 
 test("settings errors retain the code, context and original message", () => {
-  assert.equal(
-    formatSettingsError("MODEL_SLOT_INCOMPLETE|model.slots|core:chat|模型槽必须同时选择 Provider 和模型。"),
-    "MODEL_SLOT_INCOMPLETE|model.slots|core:chat|模型槽必须同时选择 Provider 和模型。",
-  );
+  const message = formatSettingsError("MODEL_SLOT_INCOMPLETE|model.slots|core:chat|模型槽必须同时选择 Provider 和模型。");
+  for (const detail of ["MODEL_SLOT_INCOMPLETE", "model.slots", "core:chat", "模型槽必须同时选择 Provider 和模型。"]) {
+    assert.ok(message.includes(detail));
+  }
   assert.equal(
     formatSettingsError("连接失败：PROVIDER_TIMEOUT|providers.test_connection||供应商请求超时。"),
     "连接失败：PROVIDER_TIMEOUT|providers.test_connection||供应商请求超时。",

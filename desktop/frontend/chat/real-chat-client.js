@@ -160,7 +160,8 @@ export function createRealChatClient({
         canPrepareGeneration(publication, view.status)
         && snapshotMatches
         && (preparedGenerationId !== supervisor.generationId || characterChanged
-          || visualBindingId !== preparedVisualBindingId)
+          || visualBindingId !== preparedVisualBindingId
+          || (characterId && isChatReadyLifecycle(view.status) && !isChatReadyLifecycle(lifecycleStatus)))
       ) {
         if (characterChanged) sealInteraction();
         emitLifecycle("rehydrating", supervisor, lifecycleSignatureFor(publication, "rehydrating"), false, null);

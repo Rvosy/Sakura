@@ -141,6 +141,24 @@ class PluginCharacterStore:
                 raise PluginCharacterError("CHARACTER_RESOURCE_INVALID")
             return str(resolved)
 
+    def declare_resources(self, plugin_id: str, character_id: str, declaration: Mapping[str, Any]) -> dict:
+        from app.config.extension_resources import parse_extension_resources, extension_resource_files
+
+        try:
+            declared = parse_extension_resources({plugin_id: declaration})
+            with self._lock:
+                path, manifest = self._manifest(character_id)
+                extension_resource_files(path.parent, declared)
+                resources = manifest.get("extensionResources", {})
+                validated = parse_extension_resources(resources)
+                if validated.get(plugin_id) != declared[plugin_id]:
+                    resources = {**resources, **declared}
+                    manifest["extensionResources"] = resources
+                    atomic_write_text(path, json.dumps(manifest, ensure_ascii=False, indent=2, allow_nan=False))
+                return _clone_object(declared[plugin_id])
+        except (ValueError, OSError) as error:
+            raise PluginCharacterError("CHARACTER_RESOURCE_DECLARATION_INVALID") from error
+
     def _manifest(self, character_id: str) -> tuple[Path, dict[str, Any]]:
         path = self._manifest_path(character_id)
         try:

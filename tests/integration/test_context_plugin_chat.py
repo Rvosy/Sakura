@@ -146,6 +146,7 @@ def chat(tmp_path: Path, request: pytest.FixtureRequest, monkeypatch, assistant_
     _write_plugin(distribution)
     shutil.copytree(Path(__file__).resolve().parents[2] / "plugins" / "builtin" / "sakura_assistant", distribution / "plugins" / "builtin" / "sakura_assistant", ignore=shutil.ignore_patterns("__pycache__"))
     shutil.copytree(Path(__file__).resolve().parents[2] / "plugins/builtin/sakura_model_openai_compatible", distribution / "plugins/builtin/sakura_model_openai_compatible", ignore=shutil.ignore_patterns("__pycache__"))
+    shutil.copy2(Path(__file__).resolve().parents[2] / "VERSION", distribution / "VERSION")
     original_root = PluginDependencyRoots.verified_root
     monkeypatch.setattr(PluginDependencyRoots, "verified_root", lambda self, plugin_id, *args, **kwargs: assistant_dependencies if plugin_id == "sakura.model.openai_compatible" else original_root(self, plugin_id, *args, **kwargs))
     requests: list[dict[str, Any]] = []

@@ -3,43 +3,48 @@ kind: spec
 status: normative
 audience: maintainer
 source_of_truth: self
-updated: 2026-09-16
+updated: 2026-10-07
 ---
 
 # ASR Hub 与点击式语音输入
 
 ## 目标与实现状态
 
-本文定义点击式语音输入。实现由正式输入栏、Rust/Tauri 麦克风采集、Core 输入协调与音频授权、独立 ASR Hub
-和 SenseVoice Provider 组成，沿用 Plugin Runtime v4 的进程与依赖隔离。模型需要用户显式安装；关闭 ASR
+本文定义点击式语音输入。内置 ASR Hub 拥有设备选择、录音、输入测试和识别协调；独立 SenseVoice Provider
+负责模型与推理。宿主连接窗口、聊天上下文和受控音频资源，沿用 Plugin Runtime v4 的进程与依赖隔离。模型需要用户显式安装；关闭 ASR
 插件不影响文字输入。验证范围与实际设备限制见本文末尾。
 
 用户点击发送按钮左侧的麦克风开始录音，再次点击结束录音并识别。完整识别结果写入输入栏，用户可以修改后自行
 发送。语音输入只生成聊天草稿，不直接创建消息、触发 Assistant 或绕过现有发送入口。
 
-第一版包含可替换的 ASR Hub 插件、官方 SenseVoice 引擎插件、宿主录音和实时音量波形。暂不包含常驻监听、
+第一版包含可替换的 ASR Hub 插件、官方 SenseVoice 引擎插件、Hub 原生录音和实时音量波形。暂不包含常驻监听、
 唤醒词、自动发送、边说边出字、说话人分离、情绪驱动桌宠或多引擎并行识别。
 
 ## 职责与不变量
 
 ```text
 输入栏麦克风按钮
-    → Rust/Tauri 采集 → Host 管理的临时音频
-    → sakura.asr Hub → 选中的 ASR Provider
+    → sakura.asr Hub → Hub 原生采集模块 → Host 管理的临时音频
+    → Hub 路由 → 选中的 ASR Provider
     → 完整文本 → 当前输入栏草稿 → 用户发送 → 现有聊天与 TTS
 ```
 
 | 所有者 | 职责 |
 |---|---|
-| Rust/Tauri | 系统麦克风、设备权限、采样、录音时长、音量摘要和设备释放 |
-| Core 语音输入消费者与 Host Service | 协调录音与识别、签发音频资源、绑定输入上下文、处理取消与过期结果 |
-| `sakura.asr` Hub 插件 | Provider 登记与展示、全局引擎选择、任务路由、统一状态和取消 |
+| Rust/Tauri 宿主桥 | 窗口所有权、系统权限上下文、播放暂停、generation 与事件传输 |
+| Core 语音输入消费者与 Host Service | 签发音频资源与读取租约、绑定聊天上下文、隔离过期结果并至多交付一次 |
+| `sakura.asr` Hub 插件 | 设备枚举与选择、采样、限时、音量摘要、录音与测试任务、Provider 登记与路由、状态和取消 |
 | ASR Provider 插件 | 模型和依赖、预热、音频预处理、VAD、识别及引擎自己的设置 |
 | 输入栏 | 状态呈现、录音操作、草稿保护和识别结果插入 |
 
 Core 与 UI 只消费稳定 ASR 能力，不读取 SenseVoice、Qwen 或其他模型的私有配置。通用
 `PluginRuntimeManager` 不新增 ASR 分支。麦克风由用户操作驱动，ASR Provider 不能因启用或预热自行开始收音。
-Host 音频输入能力由 `sakura.host.audio_input` 提供；UI 通过类型化 Tauri 命令操作，不接触录音路径或 PCM。
+Host 音频资源授权由 `sakura.host.audio_input` 提供；UI 通过类型化 Tauri 命令操作，不接触录音路径或 PCM。
+
+Hub 的 Python 输入流程位于 `plugins/builtin/sakura_asr_hub/input_controller.py`，原生采集位于该插件的
+`native` Rust crate。原生模块静态链接进桌面程序，随安装包内置；它通过 `CaptureHost` 接口取得窗口生命期、
+播放暂停和事件交付能力，不依赖宿主的 ASR 状态机。Core 只观察 Hub 结果并核对原 Hub、Provider 与聊天上下文。
+关闭或重载 Hub 后，原生桥观察到绑定失效并停止采集；取消后尚未返回的系统权限请求不能重新开始录音。
 
 ASR Hub 和各 Provider 均遵循 API v4、独立插件进程和独立 dependency root。Hub 可以关闭或替换；官方引擎
 使用与第三方相同的登记、调用和资源访问接口。
@@ -145,9 +150,9 @@ Provider 在用户保存配置后更新该信息。
 登记与注销还核对 Core 提供的 `context.caller_id`，防止其他插件用完整但不属于自己的 ID 和 Service key
 修改展示信息或注销登记。
 
-Hub 只管理应用级 `selectedProviderId`。识别语言及其可选项由各 Provider 通过既有设置贡献管理，互不影响。
-主设置的“语音”页在“语音输入”栏选择识别引擎，并提供下拉框旁的齿轮图标，用于打开当前引擎的插件设置。Hub 插件详情跳转到该页面。
-识别语言、模型资源、麦克风选择和识别测试在对应 Provider 的插件设置中展示。没有检测到识别引擎时，
+Hub 管理应用级 `selectedProviderId` 与 `inputDeviceId`。识别语言及其可选项由各 Provider 通过既有设置贡献管理，互不影响。
+主设置的“语音”页在“语音输入”栏选择识别引擎，并提供下拉框旁的齿轮图标，用于打开当前引擎的插件设置。Hub 插件详情提供自己的设置。
+Hub 设置管理麦克风选择和识别测试；Provider 设置只展示自己的识别语言与模型资源。没有检测到识别引擎时，
 下拉框显示“未安装语音输入插件”，插件设置入口不可用；已有引擎选择仍保存在配置中，不因空列表而清除。
 输入引擎列表及 Hub 插件身份来自运行时，不在前端固定插件 ID 或模型名单。
 插件弹窗的“完成”保留草稿，“取消”还原本次编辑；外层“应用”保存更改。
@@ -157,13 +162,15 @@ SenseVoice 首次建立独立语言配置时，若它是旧配置选中的引擎
 
 ### 麦克风设置与语音输入测试
 
-已登记 Provider 的独立插件设置提供麦克风选择与输入测试。Rust 枚举设备并提供设备 ID 和名称，
-Core 在宿主系统配置的 `audio_input.device_id` 保存选择，空字符串表示系统默认；不写入角色、TTS 或模型私有配置。
+Hub 的独立插件设置提供麦克风选择与输入测试。Hub 原生模块枚举设备并提供 CPAL 设备 ID 和名称，
+Hub 配置的 `inputDeviceId` 保存选择，空字符串表示系统默认；不写入角色、TTS 或模型私有配置。
+已有安装首次读取 Hub 设置时，从旧系统配置 `audio_input.device_id` 导入原设备 ID；已有 Hub 选择不被覆盖。
+原生后端继续使用同一 CPAL 标识，不按名称猜测或退回默认麦克风。
 设备列表只作枚举，不开始采集。选择暂不可用的设备仍保留配置，由用户重新选择。
-设置保存只提交改动字段；单独修改麦克风不依赖 Hub 活动，也不覆盖 Hub 保存的引擎或插件的语言。
+设置保存只提交改动字段；Hub 停用时设置不可写，单独修改麦克风不覆盖已保存的引擎或 Provider 语言。
 
-测试由用户点击开始，再次点击停止并识别，准备、录音和识别期间都可取消。测试使用当前插件和
-麦克风草稿，识别语言等插件参数使用已应用的配置；临时麦克风选择不改变全局配置。沿用正式采集、Hub 路由、音频授权、TTS 暂停和清理链路，
+测试由用户点击开始，再次点击停止并识别，准备、录音和识别期间都可取消。测试使用 Hub 设置中当前选择的引擎和
+麦克风草稿，识别语言等插件参数使用已应用的配置；测试引擎和麦克风的临时选择不改变全局配置。沿用正式采集、Hub 路由、音频授权、TTS 暂停和清理链路，
 结果仅展示在设置中，不进入聊天草稿、附件、消息或历史，也不触发 Assistant。
 
 测试与聊天输入共享单任务限制。Rust 将任务绑定到发起窗口，音量和状态只发送到该窗口；其他窗口不能轮询、
@@ -257,19 +264,20 @@ generation 关闭时统一回收。任务回收不依赖 UI 继续轮询，不�
 现有 `PluginArtifactStore` 主要处理插件生成文件后交给 Core 的输出链路，不能直接假定它已支持 Host 录音向
 其他插件授权读取。实现需要补齐受控输入资源链路，复用既有 generation、scope 和临时目录管理原则。
 
-`AudioInputResources` 独立管理输入资源。Host Service 提供 `verifyProvider(providerId, serviceKey)`、
+`AudioInputResources` 独立管理输入资源。Host Service 向 Hub 提供 `create/finish/producerDone` 管理录音生产者，提供 `verifyProvider(providerId, serviceKey)`、
 `authorize(descriptor, serviceKey)`、`acquire(resourceId)`、`release(leaseId)` 和 `revoke(resourceId)`。
 登记核对声明 Service 的当前进程 scope；读取授权只接受已发布的活动 Service。`acquire` 向授权 Provider
 返回路径与读取租约，`release` 结束租约。资源撤销后禁止新增读取，已有租约退出后才删除文件。
 
 Core 的 `asr.input.prepare/poll/cancel` 绑定录音 ID、输入上下文、草稿版本及选区；`capture_target` 只向
 Rust 分配私有文件路径，设备成功打开后 `capture_ready` 进入录音。停止写入后 `submit` 转交 Core，异常
-或取消由 `capture_discarded` 结束生产者占用。Core 后台持续处理准备、识别与清理，不依赖 UI 继续轮询。
+或取消由 `capture_discarded` 结束生产者占用。Hub 后台持续处理准备、识别与清理，不依赖 UI 继续轮询。
 采集故障通过 `capture_discarded.errorCode` 提交稳定错误码，使尚未结束的任务进入可轮询的 `failed` 状态；
 随后才发送前端故障事件。清理和迟到的取消不覆盖失败原因，已取消的任务也不会因迟到故障改为失败。
 Rust 录音期间通过只读 `capture_status` 观察任务失效，该接口不消费转写结果。
 成功结果通过 `poll` 至多交付一次，后续返回 `consumed`；前端仍核对本地任务和上下文，保留最新草稿与附件。
-`asr.input.availability` 只查询 Hub 服务是否活动，不探测 Provider 或下载资源。设置窗口的 `prepare` 使用
+`asr.input.availability` 只查询 Hub 服务是否活动，不探测 Provider 或下载资源。Hub 的 `input(name, payload)` 仅接受宿主 `sakura.core` 调用，接收准备、采集通知、提交、查询和取消；状态快照的 `revision` 用于丢弃乱序返回，
+不会让较早的准备状态覆盖已提交的录音。设置窗口的 `prepare` 使用
 `purpose: "test"`，允许临时 `providerId` 和 `inputDeviceId`；聊天使用 `purpose: "draft"`，不允许这些覆盖。
 `capture_target` 向 Rust 返回本次绑定的 `inputDeviceId`，之后修改设置只影响下次录音。
 
@@ -321,8 +329,8 @@ Provider 配置；第一次启用只补充缺省值，不覆盖既有用户设�
 ### 运行日志
 
 正常的 `asr.input.availability`、`asr.input.poll` 和 `asr.input.capture_status` 查询使用调试级日志，
-默认不按轮询频率刷屏；请求失败或超时仍保留。Core 记录准备、识别和终态，Rust 记录麦克风采集阶段与设备故障，
-同一录音使用 `recording_id` 关联，均显示在“软件”页。
+默认不按轮询频率刷屏；请求失败或超时仍保留。Hub 记录准备、识别和终态，宿主桥记录麦克风采集阶段与设备故障，
+同一录音使用 `recording_id` 关联。Hub 事件显示在“插件”页，宿主窗口与原生采集桥事件显示在“软件”页。
 
 ASR Hub 与 SenseVoice 通过宿主插件日志接口记录关键事件，在“插件”页按插件名称查看，并写入
 `sakura-plugins.log`。安装、加载和识别失败保留错误码与阶段，正常取消不算错误。日志不包含转写文字、草稿、

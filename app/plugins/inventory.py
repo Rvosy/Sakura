@@ -22,7 +22,7 @@ import yaml
 from app.plugins.bundled_migrations import MIGRATIONS
 from app.plugins.models import PLUGIN_API_V4_VERSION, PluginSpec
 from app.core.diagnostics import exception_diagnostics, safe_diagnostic_text
-from app.plugins.app_compatibility import app_version_reason, minimum_app_version
+from app.plugins.app_compatibility import app_version_reason, minimum_app_version, semver_precedence
 from app.config.plugin_requirements import tts_resource_types
 from app.plugins.visuals import VisualCapability, visual_capabilities_from_manifest
 from app.storage.atomic import atomic_write_text
@@ -266,6 +266,15 @@ class PluginInventory:
                 if not directory.is_dir():
                     continue
                 record = self._record(source, directory, desired)
+                update_failure = self._migration_failures.get(record.plugin_id, {})
+                if source == "user" and "minimumVersion" in update_failure:
+                    try:
+                        incompatible = semver_precedence(record.version) < semver_precedence(update_failure["minimumVersion"])
+                    except ValueError:
+                        incompatible = True
+                    if incompatible:
+                        record = replace(record, runtime_eligible=False,
+                            reason_code=update_failure["reasonCode"], diagnostics=dict(update_failure["diagnostics"]))
                 if source == "bundled" and (record.plugin_id in MIGRATIONS or directory.name in MIGRATIONS.values()):
                     continue
                 records.append(record)

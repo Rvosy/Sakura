@@ -3,7 +3,8 @@ id: sakura.tts.sakuratts
 name: SakuraTTS
 author: Rvosy
 description: 离线合成角色语音，空闲时释放推理资源。
-version: 0.1.0
+version: 0.2.0
+min_app_version: 1.3.2
 entry: plugin:SakuraTTSPlugin
 enabled: true
 priority: 110

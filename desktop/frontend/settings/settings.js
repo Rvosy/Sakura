@@ -1915,8 +1915,7 @@ async function startSettingsFrontend() {
         closeSelects,
         focusSelect,
         replayMotion,
-        getVoiceController: () => runtimeVoiceController,
-        getAsrController: () => runtimeAsrController,
+        onPluginsChanged: () => { void runtimeAsrController?.refresh({ preserveDraft: true }); },
         removeOverlayAfterExit,
         showPage,
         isCharacterTransitioning: () => runtimeCharacterFeature?.isTransitioning(),
@@ -1956,7 +1955,6 @@ async function startSettingsFrontend() {
         openPlugin: openVoicePlugin,
         onDirty: refreshDirty,
         onStatus: notify,
-        onSectionsRendered: () => runtimePluginController?.onVoiceSectionsRendered(),
       });
       await runtimeVoiceController.refreshCurrent();
     });

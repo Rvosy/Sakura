@@ -127,6 +127,7 @@ def model_process(tmp_path, monkeypatch, assistant_dependencies):
     user.mkdir()
     root = Path(__file__).resolve().parents[2]
     shutil.copytree(root / "plugins/builtin/sakura_model_openai_compatible", distribution / "plugins/builtin/model", ignore=shutil.ignore_patterns("__pycache__"))
+    shutil.copy2(root / "VERSION", distribution / "VERSION")
     # Observe the actual provider's retained jobs without adding a production API.
     provider = distribution / "plugins/builtin/model"
     with (provider / "plugin.py").open("a", encoding="utf-8") as source:

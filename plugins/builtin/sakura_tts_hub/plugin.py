@@ -7,6 +7,11 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
+try:
+    from ._idle_fill import IdleFill
+except ImportError:
+    from _idle_fill import IdleFill
+
 
 _IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,199}$")
 _ERROR_CODE = re.compile(r"^[A-Z][A-Z0-9_]{0,79}$")
@@ -467,9 +472,10 @@ class SakuraTTSHub:
 
 class SakuraTTSHubPlugin:
     def setup(self, context: object) -> None:
+        logger = context.get("sakura.host.logging")
         getattr(context, "provide")(
             "sakura.tts",
-            SakuraTTSHub(context, context.config, getattr(context, "get")("sakura.host.logging")),
+            SakuraTTSHub(context, context.config, logger),
             exports=(
                 "registerProvider",
                 "unregisterProvider",
@@ -482,6 +488,9 @@ class SakuraTTSHubPlugin:
                 "cancel",
             ),
         )
+        idle_fill = IdleFill(context.get("sakura.host.speech"), logger)
+        context.effect(idle_fill.close)
+        idle_fill.start()
 
 
 def _stable_error_code(value: object, fallback: str) -> str:

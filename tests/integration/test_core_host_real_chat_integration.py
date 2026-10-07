@@ -192,6 +192,7 @@ def _isolated_assistant_distribution(tmp_path, assistant_dependencies, monkeypat
                     destination,
                     ignore=shutil.ignore_patterns("__pycache__"),
                 )
+        shutil.copy2(REPO_ROOT / "VERSION", distribution / "VERSION")
         dependencies = distribution / "plugins/dependencies/sakura.model.openai_compatible"
         if not dependencies.exists():
             shutil.copytree(assistant_dependencies, dependencies, copy_function=os.link)

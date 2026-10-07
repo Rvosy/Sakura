@@ -171,6 +171,7 @@ def _root(
     (root / "plugins" / "__init__.py").write_text("", encoding="utf-8")
     (plugins / "__init__.py").write_text("", encoding="utf-8")
     repository = Path(__file__).parents[2]
+    shutil.copyfile(repository / "VERSION", root / "VERSION")
     shutil.copytree(repository / "plugins" / "builtin" / "sakura_tts_hub", plugins / "sakura_tts_hub")
     shutil.copytree(
         repository / "plugins" / "optional" / "sakura_gpt_sovits",

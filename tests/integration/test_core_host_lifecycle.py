@@ -82,6 +82,7 @@ def _isolated_lifecycle_distribution(tmp_path, assistant_dependencies, monkeypat
                     distribution / "plugins/builtin" / name,
                     ignore=shutil.ignore_patterns("__pycache__"),
                 )
+            shutil.copy2(REPO_ROOT / "VERSION", distribution / "VERSION")
             dependencies = distribution / "plugins/dependencies/sakura.model.openai_compatible"
             shutil.copytree(assistant_dependencies, dependencies, copy_function=os.link)
             (dependencies / ".sakura-dependencies.json").write_text(
@@ -515,6 +516,7 @@ def test_real_host_keeps_character_visible_while_provider_setup_is_required(
             "enabled": False,
             "providerId": None,
             "available": False,
+            "reasonCode": "TTS_DISABLED",
         }
         assert exchange(process, request("shutdown", "system.shutdown"))["ok"] is True
         assert process.wait(timeout=5) == 0

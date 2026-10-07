@@ -118,6 +118,7 @@ def test_managed_genie_uses_internal_endpoint_and_standard_character_layout(
     refs = package / "voice" / "refs"
     onnx = package / "voice" / "onnx"
     refs.mkdir(parents=True)
+    (package / "character.json").write_text("{}", encoding="utf-8")
     onnx.mkdir(parents=True)
     (refs / "neutral.wav").write_bytes(_wav_bytes())
     (refs / "ref.txt").write_text(
@@ -127,6 +128,8 @@ def test_managed_genie_uses_internal_endpoint_and_standard_character_layout(
     (onnx / "model.onnx").write_bytes(b"onnx")
 
     class Character:
+        declare_resources = staticmethod(lambda *_: None)
+
         @staticmethod
         def resolve_resource(_character_id: str, relative: str) -> str:
             path = package / relative
@@ -230,6 +233,7 @@ def _root(
     (root / "plugins" / "__init__.py").write_text("", encoding="utf-8")
     (plugins / "__init__.py").write_text("", encoding="utf-8")
     repository = Path(__file__).parents[2]
+    shutil.copyfile(repository / "VERSION", root / "VERSION")
     shutil.copytree(repository / "plugins" / "builtin" / "sakura_tts_hub", plugins / "sakura_tts_hub")
     shutil.copytree(repository / "plugins" / "optional" / "sakura_genie", root / "plugins/user/sakura_genie")
     plugin_root = root / "plugins/user/sakura_genie"
@@ -945,6 +949,7 @@ def test_partial_character_warmup_converts_and_synthesis_reuses_cache(
     store = PluginCharacterStore(root)
     character = SimpleNamespace(
         get=lambda cid: store.get(p.PROVIDER_ID, cid), resolve_resource=store.resolve_resource,
+        declare_resources=lambda cid, declaration: store.declare_resources(p.PROVIDER_ID, cid, declaration),
     )
     context = _EffectContext()
     context.config = SimpleNamespace(get=lambda: {"endpointMode": "managed", "workDir": str(tmp_path)})
@@ -972,7 +977,11 @@ def test_partial_character_warmup_converts_and_synthesis_reuses_cache(
         assert _direct_terminal(provider._jobs[job_id])["state"] == "succeeded"
         assert conversions == ([] if onnx_state == "valid" else [(b"gpt", b"sovits")])
         assert [endpoint for endpoint, _ in server.calls] == ["load_character", "set_reference_audio", "tts"]
-        assert manifest_path.read_bytes() == repaired
+        saved = json.loads(manifest_path.read_text())
+        declared = saved.pop("extensionResources")
+        assert saved == json.loads(repaired)
+        assert declared[p.PROVIDER_ID]["pluginRequirements"][0]["type"] == (
+            "genie.onnx@1" if onnx_state == "valid" else "gpt-sovits.models@1")
         if onnx_state != "valid":
             (package / "model.ckpt").write_bytes(b"GPT")
             source_stamp = (package / "model.ckpt").stat().st_mtime_ns + 1_000_000_000
@@ -1041,7 +1050,7 @@ def test_conversion_cancelled_at_export_completion_does_not_commit(tmp_path: Pat
 
 @pytest.mark.parametrize("terminal", ["finished", "failed", "cancelled"])
 def test_conversion_events_reach_core_bridge_and_live_converter_log(tmp_path: Path, monkeypatch, terminal: str) -> None:
-    from app.core_host.plugin_host_services import _DiagnosticsHostService
+    from app.core_host.plugin_host_services import _DiagnosticsHostService, _LoggingHostService
     from app.core_host.runtime_logging import CORE_BRIDGE_PREFIX, install_runtime_logging
     from app.plugins.host_services import HOST_CALLER, HOST_CALLER_LOG_METADATA
     from plugins.optional.sakura_genie import plugin as p
@@ -1071,12 +1080,19 @@ def test_conversion_events_reach_core_bridge_and_live_converter_log(tmp_path: Pa
     raw_log = tmp_path / "logs/genie-converter.log"
     live_output = []
     host = _DiagnosticsHostService()
+    logging_host = _LoggingHostService()
+    def log(level, message, *, fields):
+        logging_host.call("emit", [[{"severity": level, "message": message, "fields": fields}], 0])
+    from functools import partial
+    logger = SimpleNamespace(**{level: partial(log, level) for level in ("debug", "info", "warning", "error")})
+    context = SimpleNamespace(data_path=lambda path: tmp_path / path, config=SimpleNamespace(get=lambda: {}))
+    provider = p.GenieProvider(context, None, None, host, logger)
 
     def report(descriptor):
         caller = HOST_CALLER.set(p.PROVIDER_ID)
         metadata = HOST_CALLER_LOG_METADATA.set(("Genie TTS", (p.SERVICE_KEY,)))
         try:
-            host.call("emit", [p.PROVIDER_ID, descriptor])
+            provider._diagnostic(descriptor)
         finally:
             HOST_CALLER_LOG_METADATA.reset(metadata)
             HOST_CALLER.reset(caller)
@@ -1109,6 +1125,7 @@ def test_conversion_events_reach_core_bridge_and_live_converter_log(tmp_path: Pa
     records = [json.loads(line.removeprefix(CORE_BRIDGE_PREFIX))
                for line in stream.getvalue().splitlines() if line.startswith(CORE_BRIDGE_PREFIX)]
     assert records
+    assert all("Genie ONNX" in record["message"] for record in records)
     assert all(record["event"] == "runtime.message" and record["plugin_id"] == p.PROVIDER_ID
                and record["channel"] == "tts" for record in records)
     events = [record["attributes"]["event"] for record in records]

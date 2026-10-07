@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { createIcon } from "../core/icons.js";
 import { browserFixture, settle } from "./fixtures/plugin-settings-fixture.js";
-import { createConnectionEditor } from "../settings/connection-editor.js";
+import { createConnectionEditor } from "../../../plugins/builtin/sakura_model_openai_compatible/frontend/connections.js";
 import { createCharacterVisualSettings } from "../settings/character-visual-settings.js";
 import { openDownloadSources } from "../settings/download-source-settings.js";
 
@@ -9,7 +10,7 @@ for (const [buttonText, operation] of [["获取模型列表", "list_models"], ["
   test(`model ${operation} allows a connection without an API key`, async () => {
     const { document, window } = browserFixture();
     const calls = [], errors = [];
-    const editor = createConnectionEditor({ document, window,
+    const editor = createConnectionEditor({ document, window, createIcon,
       read: () => [{ id: "local", base_url: "http://192.168.1.20:8000/v1", models: ["local-model"] }],
       write() {}, cancel() {}, notify() {},
       probe: async (...args) => { calls.push(args); return { models: [] }; },
@@ -29,7 +30,7 @@ test("model probe forwards the original error and keeps its diagnostics out of t
   const { document, window } = browserFixture();
   const failure = new Error("MODEL_CONNECTION_FAILED", { cause: new Error("probe transport diagnostic") });
   const reports = [];
-  const editor = createConnectionEditor({ document, window,
+  const editor = createConnectionEditor({ document, window, createIcon,
     read: () => [{ id: "model-service", alias: "Fixture", base_url: "https://example.test/v1", configured: true, models: [] }],
     write() {}, cancel() {}, notify() {}, probe: async () => { throw failure; },
     onError: (error, message) => { if (error) reports.push({ error, message }); },
