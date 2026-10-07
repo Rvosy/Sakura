@@ -468,7 +468,6 @@ class SakuraMem0Runtime:
     def note_completed_chat(self, payload: object) -> None:
         if (
             not isinstance(payload, Mapping)
-            or set(payload) != {"characterId", "turnId", "cursor"}
             or payload.get("characterId") != self._character_id
             or not isinstance(payload.get("turnId"), str)
             or not payload.get("turnId")

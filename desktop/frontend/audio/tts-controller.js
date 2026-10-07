@@ -3,19 +3,6 @@ function playable(segment) {
   return segment && typeof segment === "object" && segment.suppressTts !== true;
 }
 
-function validDescriptor(value) {
-  return Boolean(
-    value
-    && typeof value.opaqueId === "string"
-    && /^[0-9a-f]{32}$/i.test(value.opaqueId)
-    && (value.recordingId === null || typeof value.recordingId === "string")
-    && value.mediaType === "audio/wav"
-    && Number.isSafeInteger(value.byteLength)
-    && value.byteLength > 0
-    && typeof value.expiresAt === "string",
-  );
-}
-
 export function createTtsController({ invoke, listen, onDiagnostic = () => {}, onPlaybackState = () => {} } = {}) {
   if (typeof invoke !== "function" || typeof listen !== "function") {
     throw new Error("TTS_CONTROLLER_DEPENDENCY_INVALID");
@@ -112,10 +99,6 @@ export function createTtsController({ invoke, listen, onDiagnostic = () => {}, o
         ...(current.history ? { historyEntryId: segment.historyEntryId } : {}),
       } });
       if (!isCurrent(current) || current.silent) return null;
-      if (!validDescriptor(descriptor)) {
-        onDiagnostic("AUDIO_RECORDING_INVALID", { history: current.history });
-        return null;
-      }
       return descriptor;
     } catch (error) {
       if (!isCurrent(current) || current.silent) return null;

@@ -492,7 +492,7 @@ for (const failure of ["synthesis", "descriptor", "command", "event", "disabled"
       if (name === "tts_prepare_segment" && args.payload.segmentIndex === 0) {
         if (failure === "synthesis") throw new Error("TTS_SERVICE_UNAVAILABLE");
         if (failure === "disabled") throw "TTS_DISABLED|角色语音已关闭";
-        if (failure === "descriptor") return null;
+        if (failure === "descriptor") throw new Error("AUDIO_RECORDING_INVALID");
       }
       if (name === "tts_play_prepared" && failure === "command") throw new Error("AUDIO_PLAYBACK_FAILED");
       return descriptor;

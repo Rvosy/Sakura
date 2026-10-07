@@ -4,7 +4,7 @@ status: normative
 audience: maintainer
 source_of_truth: self
 status_source: ../../plans/runtime-v2/work-packages.md
-updated: 2026-10-03
+updated: 2026-10-07
 ---
 
 # WP-4-05 TTS、播放与音频设备门禁规范
@@ -99,6 +99,11 @@ updated: 2026-10-03
   刚调大，或当时没有可用的语音连接，都属于可补齐的缺失。1 分钟负载达到 CPU 数量的 70%，或可见 GPU
   忙碌度达到 70%，视为峰值并暂停。用户开始朗读或自动语音时取消正在进行的补齐。
 - 持久 recording 与 generation 临时播放副本分离；启动清理只触碰临时目录。跨边界 DTO 不含裸路径。
+- 描述符的 `expiresAt` 限定 Core 向 Rust 交接临时副本的期限，时长由
+  `app/core_host/tts_boundary.py::PLAYBACK_TTL_SECONDS` 定义。Rust 注册时验证期限、路径、格式和尺寸；
+  注册成功后，副本由当前语音操作持有，播放排队不再受交接期限限制，也不受持久录音淘汰影响。
+  不透明 ID 只能消费一次；取消、换回复、切角色或 generation 结束时，原生管理器清理未播放副本，
+  迟到的合成结果仍按 registration revision 拒绝。WebView 直接使用原生层返回的成功结果。
 
 ## 接口、故障与回退
 

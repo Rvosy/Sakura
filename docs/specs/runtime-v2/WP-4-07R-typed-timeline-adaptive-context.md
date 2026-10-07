@@ -4,7 +4,7 @@ status: normative
 audience: maintainer
 source_of_truth: self
 status_source: ../../plans/runtime-v2/work-packages.md
-updated: 2026-09-16
+updated: 2026-10-07
 ---
 
 # WP-4-07R：类型化交互时间线与自适应上下文
@@ -178,8 +178,9 @@ sakura.host.chat.completed {
 }
 ```
 
-`operationId` 关联发起该次聊天的操作，供请求方确认自己的回复完成。事件必须在 assistant entry 事务提交后发送，仍为 best-effort，且不携带聊天正文。Memory 保存成功消费的
-  当前角色作用域的 cursor；插件 setup 和每次后续完成事件都从该 cursor 补读，因此一次事件投递失败不会永久缺失。重复读取由
+`operationId` 关联发起该次聊天的操作，供请求方确认自己的回复完成。事件必须在 assistant entry 事务提交后发送，仍为 best-effort，且不携带聊天正文。
+消费者验证自己使用的字段，忽略附加字段；Memory 检查当前 `characterId` 及非空 `turnId`、`cursor`，不要求精确字段集合。
+Memory 保存成功消费的当前角色作用域的 cursor；插件 setup 和每次后续完成事件都从该 cursor 补读，因此一次事件投递失败不会永久缺失。重复读取由
 `entry_id` 幂等，不建设 outbox、ack、lease、自动重试线程或第二份原始事件表。
 
 ## 6. 轻量 Turn 投影

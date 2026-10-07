@@ -164,7 +164,7 @@ class PluginSettingsBoundary:
         application = self._application()
         inventory = self._refresh_inventory(application)
         if application is None:
-            plugins = [_project_plugin({}, record=record) for record in inventory.records[:64]]
+            plugins = [_project_plugin({}, record=record) for record in inventory.records]
             state = "starting"
             reason = "PLUGIN_APPLICATION_NOT_READY"
             if self._initialization_failed():
@@ -185,7 +185,7 @@ class PluginSettingsBoundary:
                     reason = raw.get("reasonCode", reason)
                 plugins = raw.get("plugins", []) if isinstance(raw, Mapping) else []
                 plugins = _project_plugins(
-                    [item for item in plugins[:64] if isinstance(item, Mapping)],
+                    [item for item in plugins if isinstance(item, Mapping)],
                     inventory,
                 )
             except Exception as error:
@@ -195,7 +195,7 @@ class PluginSettingsBoundary:
                 plugins = _project_plugins(
                     [
                         item
-                        for item in public.get("plugins", [])[:64]
+                        for item in public.get("plugins", [])
                         if isinstance(item, Mapping)
                     ],
                     inventory,
@@ -261,7 +261,7 @@ class PluginSettingsBoundary:
                 raise PluginSettingsError(code, compatibility_message(code, "插件启停未能应用。")) from error
             result = dict(result)
             result["plugins"] = _project_plugins(
-                [item for item in result.get("plugins", [])[:64] if isinstance(item, Mapping)],
+                [item for item in result.get("plugins", []) if isinstance(item, Mapping)],
                 self._refresh_inventory(application),
             )
             changed = next((item for item in result["plugins"] if item["installId"] == install_id), None)
@@ -601,7 +601,7 @@ def _project_plugins(
     }
     return [
         _project_plugin(by_plugin_id.get(record.plugin_id, {}), record=record)
-        for record in inventory.records[:64]
+        for record in inventory.records
     ]
 
 

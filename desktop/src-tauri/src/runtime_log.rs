@@ -1138,7 +1138,7 @@ fn publish_writer_status(inner: &Arc<RuntimeLogInner>, writers: &[FileWriter; 2]
     let mut failures = Vec::new();
     if let Ok(mut state) = inner.state.lock() {
         for (writer, name) in writers.iter().zip(["runtime", "plugins"]) {
-            if writer.failed && !state.failed_files.iter().any(|old| old == name) {
+            if writer.failure.is_some() && !state.failed_files.iter().any(|old| old == name) {
                 state.failed_files.push(name.to_string());
                 if let Some(error) = &writer.failure {
                     failures.push((name, sanitize_diagnostic(error, &inner.secrets, 4096)));
@@ -1367,8 +1367,6 @@ struct FileWriter {
     max_record_bytes: usize,
     max_file_bytes: u64,
     backup_count: usize,
-    failed: bool,
-    warned: bool,
     failure: Option<String>,
 }
 
@@ -1381,8 +1379,6 @@ impl FileWriter {
             max_record_bytes: config.max_record_bytes,
             max_file_bytes: config.max_file_bytes,
             backup_count: config.backup_count,
-            failed: false,
-            warned: false,
             failure: None,
         }
     }
@@ -1471,17 +1467,16 @@ impl FileWriter {
     }
 
     fn fail_once(&mut self, error: std::io::Error) -> String {
-        self.failed = true;
+        if let Some(failure) = &self.failure {
+            return failure.clone();
+        }
         self.handle = None;
         let detail = diagnostic_error(
             "RUNTIME_LOG_WRITE_FAILED",
             format!("{}: {error}", self.path.display()),
         );
         self.failure = Some(detail.clone());
-        if !self.warned {
-            self.warned = true;
-            eprintln!("{detail}");
-        }
+        eprintln!("{detail}");
         detail
     }
 }

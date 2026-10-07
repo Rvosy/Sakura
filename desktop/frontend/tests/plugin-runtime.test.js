@@ -1,10 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import {
-  createPluginController,
-  validatePluginSnapshot,
-} from "../settings/plugin-runtime.js";
+import { createPluginController } from "../settings/plugin-runtime.js";
 
 function snapshot(coreGenerationId = "generation-a") {
   return {
@@ -86,21 +83,6 @@ for (const saved of [false, true]) {
     assert.deepEqual(calls, ["settings_plugins_save", "settings_plugins_get"]);
   });
 }
-
-test("plugin snapshots carry encoded directory IDs", () => {
-  const value = snapshot();
-  value.plugins[0].installId = `pi_bundled_${Buffer.from("角色".repeat(35)).toString("hex")}`;
-  assert.equal(validatePluginSnapshot(value).plugins[0].installId, value.plugins[0].installId);
-
-});
-
-test("plugin snapshots accept Unicode and additive producer display metadata", () => {
-  const value = snapshot();
-  value.plugins[0].name = "🌸".repeat(120);
-  value.plugins[0].presentation = { kind: "provider", category: "future", extra: true };
-  value.plugins[0].sections[0].fields[0].futureDisplayField = "额外说明";
-  assert.equal(validatePluginSnapshot(value).plugins[0].name, value.plugins[0].name);
-});
 
 function activitySnapshot(state) {
   const current = snapshot();
@@ -578,13 +560,6 @@ test("Plugin API v3 restart-required config is applied by local plugin reload", 
   assert.equal(result.applicationState, "applied");
   assert.deepEqual(calls.map(([command]) => command), ["settings_plugins_save", "settings_plugins_get"]);
 });
-
-test("conditional settings preserve hide behavior projected by the host", () => {
-  const value = snapshot();
-  value.plugins[0].sections[0].fields[0].enabledWhen = { field: "running", equals: "ready", hide: true };
-  assert.equal(validatePluginSnapshot(value).plugins[0].sections[0].fields[0].enabledWhen.hide, true);
-});
-
 
 test("plugin import forwards native picker metadata and excludes readonly values", async () => {
   const calls = [];

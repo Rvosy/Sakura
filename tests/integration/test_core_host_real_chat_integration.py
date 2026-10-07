@@ -668,13 +668,18 @@ def test_started_worker_failure_logs_and_releases_chat_execution(
         boundary.close()
 
 
-def test_completed_history_emits_cursor_only_chat_fact(tmp_path: Path) -> None:
+def test_completed_history_notifies_mem0_after_saving_the_reply(tmp_path: Path) -> None:
+    from plugins.optional.sakura_mem0.plugin import HOST_CHAT_COMPLETED_EVENT, SakuraMem0Runtime
+
     plugin_events: list[tuple[str, dict[str, object]]] = []
     chat_events = []
+    curated = []
 
     class Worker:
         def emit_event(self, name, payload):  # type: ignore[no-untyped-def]
             plugin_events.append((name, payload))
+            if name == HOST_CHAT_COMPLETED_EVENT:
+                memory.note_completed_chat(payload)
 
     class Assistant(_AssistantDouble):
         def run_turn(self, _messages, **_kwargs):  # type: ignore[no-untyped-def]
@@ -702,6 +707,10 @@ def test_completed_history_emits_cursor_only_chat_fact(tmp_path: Path) -> None:
     )
     timeline = TimelineStore(tmp_path / "timeline.sqlite3")
     timeline.initialize()
+    memory = SakuraMem0Runtime(
+        tmp_path, "sakura", timeline=timeline,
+        boundary=SimpleNamespace(note_timeline_changed=lambda store: curated.append(store.read_all("sakura"))),
+    )
     worker = Worker()
     boundary = RealChatBoundary(
         GENERATION_ID,
@@ -724,6 +733,7 @@ def test_completed_history_emits_cursor_only_chat_fact(tmp_path: Path) -> None:
     assert [entry.kind for entry in stored] == [TimelineKind.HUMAN, TimelineKind.ASSISTANT]
     assert stored[0].payload["text"] == request["payload"]["message"]
     assert len(stored[1].payload["segments"]) == 1
+    assert curated == [stored]
     assert chat_events[-1]["payload"]["reply"]["historyEntryId"] == stored[1].entry_id
     assert plugin_events[-1] == (
         "sakura.host.chat.completed",

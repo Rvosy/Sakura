@@ -1,4 +1,5 @@
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -7,6 +8,46 @@ from app.core_host.plugin_application import PluginApplicationHost
 from app.core_host.plugin_host_services import _SettingsHostService
 from app.core_host.plugin_settings import PluginSettingsBoundary, PluginSettingsError
 from app.storage.runtime_roots import RuntimeRoots
+from app.plugins.inventory import PluginInventory
+
+
+@pytest.mark.parametrize("mode", ["starting", "initialization_failed", "ready", "legacy_snapshot", "degraded", "enabled_changed"])
+def test_management_keeps_all_installed_plugins_visible(tmp_path: Path, mode: str) -> None:
+    for index in range(65):
+        plugin_root = tmp_path / "plugins/user" / f"p{index:02}"
+        plugin_root.mkdir(parents=True)
+        (plugin_root / "plugin.py").write_text("class Plugin: pass\n", encoding="utf-8")
+        (plugin_root / "plugin.yaml").write_text(
+            f"api: 4\nid: fixture.p{index:02}\nname: P{index:02}\nversion: 1.0.0\n"
+            "entry: plugin:Plugin\nprovides: []\nrequires: []\n", encoding="utf-8",
+        )
+    inventory = PluginInventory(tmp_path).scan()
+    # Build runtime input from each real inventory record, without using the
+    # aggregate snapshot under test to decide which plugins exist.
+    from app.core_host.plugin_settings import _project_plugin
+    plugins = [_project_plugin({}, record=record) for record in inventory.records]
+    if mode == "legacy_snapshot":
+        plugins = [{key: value for key, value in plugin.items() if key != "installId"} for plugin in plugins]
+
+    def settings_snapshot():
+        if mode == "degraded":
+            raise OSError("settings unavailable")
+        return {"state": "ready", "plugins": plugins}
+
+    application = SimpleNamespace(
+        refresh_inventory=lambda: inventory, settings_snapshot=settings_snapshot,
+        public_snapshot=lambda: {"plugins": plugins},
+        set_enabled=lambda *_args: {"plugins": plugins, "applicationState": "applied"},
+    )
+    boundary = PluginSettingsBoundary(
+        "generation", "credential", tmp_path,
+        application_provider=lambda: None if mode in {"starting", "initialization_failed"} else application,
+        initialization_failed=lambda: mode == "initialization_failed",
+    )
+    snapshot = (boundary.set_enabled(inventory.revision, inventory.records[-1].install_id, True)
+                if mode == "enabled_changed" else boundary.snapshot())
+    assert {plugin["installId"] for plugin in snapshot["plugins"]} == {record.install_id for record in inventory.records}
+    assert len(snapshot["plugins"]) == 65
 
 
 def test_invalid_controls_do_not_stop_plugins_or_hide_valid_settings(tmp_path: Path) -> None:

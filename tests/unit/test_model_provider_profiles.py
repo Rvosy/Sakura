@@ -207,20 +207,53 @@ def test_probe_failure_preserves_reason_redacts_credentials_and_always_releases(
     def release(operation):
         released.set()
         if cleanup_fails:
-            raise RuntimeError("cleanup failed")
+            raise OSError(5, f"cleanup failed: {draft_secret}")
     context.service = SimpleNamespace(begin_probe=lambda descriptor: None, poll=lambda *args: {"sequence": 1, "state": "failed"},
         result=lambda operation: {"failure": {"code": "MODEL_AUTHENTICATION_FAILED",
-            "message": f"API HTTP 403: model access denied; {SECRET}; {draft_secret}"}}, release=release)
+            "message": f"API HTTP 403: model access denied; {SECRET}; {draft_secret}",
+            "diagnostics": {"http_status": 403, "errno": 61, "winerror": 10061, "exit_code": 1}}}, release=release)
     profiles.set_service(context.service)
     profiles.editor_probe({"probeRequest": {"operation": "test_connection", "requestId": "test", "profileId": "fixture", "modelId": "model",
                                            "credential": {"action": "replace", "value": draft_secret}}})
     assert released.wait(2)
     profiles.close()
     result = profiles.editor_probe_status({})
+    assert result["values"]["probeResult"]["state"] == "failed"
     assert result["values"]["probeResult"]["code"] == "MODEL_AUTHENTICATION_FAILED"
+    diagnostics = result["values"]["probeResult"]["diagnostics"]
+    assert {key: diagnostics[key] for key in ("http_status", "errno", "winerror", "exit_code")} == {
+        "http_status": 403, "errno": 61, "winerror": 10061, "exit_code": 1,
+    }
+    if cleanup_fails:
+        assert "cleanup failed" in diagnostics["recovery_diagnostic"]
     assert "API HTTP 403: model access denied" in result["values"]["probeResult"]["message"]
     assert SECRET not in repr(result)
-    assert draft_secret not in result["values"]["probeResult"]["message"]
+    assert draft_secret not in str(result)
+
+
+def test_successful_probe_reports_cleanup_failure_and_keeps_numeric_diagnostics(provider):
+    profiles, context = provider
+    released = threading.Event()
+
+    def release(operation):
+        released.set()
+        raise OSError(5, f"cleanup failed: {SECRET}")
+
+    context.service = SimpleNamespace(
+        begin_probe=lambda descriptor: None,
+        poll=lambda *args: {"sequence": 1, "state": "completed"},
+        result=lambda operation: {"response": {"models": ["model"]}}, release=release,
+    )
+    profiles.set_service(context.service)
+    profiles.editor_probe({"probeRequest": {"operation": "list_models", "requestId": "cleanup", "profileId": "fixture"}})
+    assert released.wait(2)
+    profiles.close()
+    result = profiles.editor_probe_status({})["values"]["probeResult"]
+    assert result["state"] == "failed"
+    assert result["code"] == "MODEL_PROBE_CLEANUP_FAILED"
+    assert result["diagnostics"]["errno"] == 5
+    assert "cleanup failed" in result["message"]
+    assert SECRET not in repr(result)
 
 
 def test_global_timeout_is_applied_only_on_explicit_edit(provider):

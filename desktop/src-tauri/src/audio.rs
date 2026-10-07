@@ -76,7 +76,6 @@ pub struct AudioPlaybackEvent {
 #[derive(Debug)]
 struct RegisteredAudio {
     path: PathBuf,
-    expires_at: OffsetDateTime,
     recording_id: Option<String>,
     segment_index: Option<u64>,
     segment_count: Option<u64>,
@@ -102,12 +101,12 @@ impl AudioRegistry {
         })
     }
 
-    fn register(&self, descriptor: &AudioDescriptor) -> Result<(), String> {
+    fn register(&self, descriptor: &AudioDescriptor, now: OffsetDateTime) -> Result<(), String> {
         validate_opaque_id(&descriptor.opaque_id)?;
         if descriptor.media_type != "audio/wav" {
             return Err("AUDIO_FORMAT_UNSUPPORTED".to_string());
         }
-        let expires_at = validate_expiry(&descriptor.expires_at)?;
+        validate_expiry(&descriptor.expires_at, now)?;
         let unresolved = self.root.join(format!("{}.wav", descriptor.opaque_id));
         let metadata = fs::symlink_metadata(&unresolved).map_err(|source_error| {
             crate::runtime_log::diagnostic_error("AUDIO_RECORDING_INVALID", source_error)
@@ -136,7 +135,6 @@ impl AudioRegistry {
             descriptor.opaque_id.clone(),
             RegisteredAudio {
                 path,
-                expires_at,
                 recording_id: descriptor.recording_id.clone(),
                 segment_index: descriptor.segment_index,
                 segment_count: descriptor.segment_count,
@@ -155,10 +153,8 @@ impl AudioRegistry {
             })?
             .remove(opaque_id)
             .ok_or_else(|| "AUDIO_RECORDING_INVALID".to_string())?;
-        if item.expires_at <= OffsetDateTime::now_utc() {
-            let _ = fs::remove_file(&item.path);
-            return Err("AUDIO_RECORDING_INVALID".to_string());
-        }
+        // Registration consumes the Core handoff authorization. The native
+        // operation owns this copy until playback, cancellation or shutdown.
         Ok(item)
     }
 
@@ -279,7 +275,8 @@ impl AudioManager {
             self.registry.discard_unregistered(&descriptor.opaque_id);
             return Err("STALE_GENERATION".to_string());
         }
-        self.registry.register(descriptor)
+        self.registry
+            .register(descriptor, OffsetDateTime::now_utc())
     }
 
     pub fn play(&self, request: PlayPreparedRequest) -> Result<(), String> {
@@ -706,15 +703,14 @@ fn emit_audio_event(callback: &AudioEventCallback, event: AudioPlaybackEvent) {
     callback(event);
 }
 
-fn validate_expiry(value: &str) -> Result<OffsetDateTime, String> {
+fn validate_expiry(value: &str, now: OffsetDateTime) -> Result<(), String> {
     let expiry = OffsetDateTime::parse(value, &Rfc3339).map_err(|source_error| {
         crate::runtime_log::diagnostic_error("AUDIO_RECORDING_INVALID", source_error)
     })?;
-    let now = OffsetDateTime::now_utc();
     if expiry <= now || (expiry - now).whole_seconds() > MAX_DESCRIPTOR_FUTURE_SECONDS {
         return Err("AUDIO_RECORDING_INVALID".to_string());
     }
-    Ok(expiry)
+    Ok(())
 }
 
 fn validate_wav_header(path: &Path) -> Result<(), String> {
@@ -1705,7 +1701,10 @@ mod tests {
         fs::write(root.join(format!("{id}.wav")), &bytes).unwrap();
         let registry = AudioRegistry::new(root.clone()).unwrap();
         registry
-            .register(&descriptor(id, bytes.len() as u64))
+            .register(
+                &descriptor(id, bytes.len() as u64),
+                OffsetDateTime::now_utc(),
+            )
             .unwrap();
         let audio = registry.take(id).unwrap();
         assert_eq!(audio.segment_index, Some(1));
@@ -1724,32 +1723,39 @@ mod tests {
         let id = "fedcba9876543210fedcba9876543210";
         fs::write(root.join(format!("{id}.wav")), b"not wav").unwrap();
         let registry = AudioRegistry::new(root.clone()).unwrap();
-        assert!(registry.register(&descriptor(id, 7)).is_err());
-        assert!(registry.register(&descriptor("../escape", 7)).is_err());
+        assert!(registry
+            .register(&descriptor(id, 7), OffsetDateTime::now_utc())
+            .is_err());
+        assert!(registry
+            .register(&descriptor("../escape", 7), OffsetDateTime::now_utc())
+            .is_err());
         let _ = fs::remove_dir_all(root);
     }
 
     #[test]
-    fn wp_4_05_gate_rechecks_expiry_when_descriptor_is_consumed() {
+    fn queued_audio_outlives_the_descriptor_handoff_deadline() {
         let root = temp_root();
         let id = "00112233445566778899aabbccddeeff";
         let bytes = wav_bytes();
         let path = root.join(format!("{id}.wav"));
         fs::write(&path, &bytes).unwrap();
         let registry = AudioRegistry::new(root.clone()).unwrap();
-        registry
-            .register(&descriptor(id, bytes.len() as u64))
+        // The fifth 90-second segment starts after a 300-second handoff ticket
+        // expires. It already belongs to this operation's native queue.
+        let prepared_at = OffsetDateTime::now_utc() - time::Duration::seconds(360);
+        let mut audio = descriptor(id, bytes.len() as u64);
+        audio.expires_at = (prepared_at + time::Duration::seconds(300))
+            .format(&Rfc3339)
             .unwrap();
-        registry
-            .items
-            .lock()
-            .unwrap()
-            .get_mut(id)
-            .unwrap()
-            .expires_at = OffsetDateTime::now_utc() - time::Duration::seconds(1);
-
+        assert!(registry
+            .register(&audio, OffsetDateTime::now_utc())
+            .is_err());
+        registry.register(&audio, prepared_at).unwrap();
+        assert_eq!(
+            registry.take(id).unwrap().path,
+            path.canonicalize().unwrap()
+        );
         assert_eq!(registry.take(id).unwrap_err(), "AUDIO_RECORDING_INVALID");
-        assert!(!path.exists());
         let _ = fs::remove_dir_all(root);
     }
 

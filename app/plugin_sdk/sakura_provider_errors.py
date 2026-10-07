@@ -185,10 +185,10 @@ def provider_exception_diagnostics(error: BaseException, *, secrets: Iterable[st
     return diagnostics
 
 
-def provider_failure(error_code: str, error: object) -> dict[str, Any]:
+def provider_failure(error_code: str, error: object, *, secrets: Iterable[str] = ()) -> dict[str, Any]:
     """Keep the failure captured at the worker boundary alongside its stable code."""
-    diagnostics = (provider_exception_diagnostics(error) if isinstance(error, BaseException)
-                   else {"diagnostic": sanitize_provider_diagnostic(str(error))})
+    diagnostics = (provider_exception_diagnostics(error, secrets=secrets) if isinstance(error, BaseException)
+                   else {"diagnostic": sanitize_provider_diagnostic(str(error), secrets=secrets)})
     diagnostics.setdefault("cause_code", error_code)
     return {"errorCode": error_code, "diagnostics": diagnostics}
 

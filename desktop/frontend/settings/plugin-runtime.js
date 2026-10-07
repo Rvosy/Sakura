@@ -6,10 +6,6 @@ function isObject(value) {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
 
-export function validatePluginSnapshot(input) { return Object.freeze(clone(input)); }
-
-function validateManagementSnapshot(input) { return validatePluginSnapshot(input); }
-
 function transitionError(error) {
   const message = String(error?.message || error || "");
   return ["SETTINGS_CORE_GENERATION_MISMATCH", "SETTINGS_CORE_UNAVAILABLE", "CORE_RESTART", "CORE_GENERATION"]
@@ -107,8 +103,6 @@ function collectionRequest(current, input) {
   return { operation, pluginId, sectionId, collectionId, payload };
 }
 
-function validateCollectionResult(_operation, result) { return clone(result); }
-
 export function createPluginController({ invoke, applySnapshot, readDraft, onDirty, onSectionSaved = () => {}, onSectionFailed = () => {} }) {
   let current = null;
   let disposed = false;
@@ -117,7 +111,7 @@ export function createPluginController({ invoke, applySnapshot, readDraft, onDir
 
   function initialize(input, { preserveDraft = false, keepGlobalCollectionDrafts = false } = {}) {
     const preserved = preserveDraft && current ? clone(readDraft()) : null;
-    current = validatePluginSnapshot(input);
+    current = Object.freeze(clone(input));
     applySnapshot(current, { preserveDraft, draft: preserved, keepGlobalCollectionDrafts });
     onDirty();
   }
@@ -129,7 +123,7 @@ export function createPluginController({ invoke, applySnapshot, readDraft, onDir
         try { await refreshPromise; } catch { /* read the state after the mutation below */ }
       }
       if (disposed) throw new Error("SETTINGS_REQUEST_ABORTED");
-      const next = validatePluginSnapshot(await invoke("settings_plugins_get"));
+      const next = await invoke("settings_plugins_get");
       if (!disposed && (!current || JSON.stringify(next) !== JSON.stringify(current))) {
         initialize(next, { preserveDraft, keepGlobalCollectionDrafts });
       }
@@ -143,7 +137,7 @@ export function createPluginController({ invoke, applySnapshot, readDraft, onDir
     if (refreshPromise) return refreshPromise;
     const previous = current;
     refreshPromise = (async () => {
-      const next = validatePluginSnapshot(await invoke("settings_plugins_get"));
+      const next = await invoke("settings_plugins_get");
       // A read started before a save must not replace its committed snapshot.
       if (!disposed && current === previous && (!current || JSON.stringify(next) !== JSON.stringify(current))) {
         initialize(next, { preserveDraft: true });
@@ -174,13 +168,13 @@ export function createPluginController({ invoke, applySnapshot, readDraft, onDir
           const plugin = current.plugins.find((item) => item.pluginId === pluginId);
           if (!plugin) throw new Error("PLUGIN_ENABLED_REQUEST_INVALID");
           enableResultPending = true;
-          const result = validateManagementSnapshot(await invoke("settings_plugins_enabled_set", {
+          const result = await invoke("settings_plugins_enabled_set", {
             windowGeneration: current.windowGeneration,
             coreGenerationId: previousGeneration,
             revision: current.revision,
             installId: plugin.installId,
             enabled,
-          }));
+          });
           if (result.managementAction !== "enabled_changed" || result.installId !== plugin.installId
               || result.pluginId !== pluginId) throw new Error("PLUGIN_MANAGEMENT_RESPONSE_INVALID");
           current = Object.freeze(Object.fromEntries(SNAPSHOT_KEYS.map((key) => [key, result[key]])));
@@ -261,17 +255,16 @@ export function createPluginController({ invoke, applySnapshot, readDraft, onDir
           sourceKind,
         });
         if (result.cancelled === true) return null;
-        const next = validateManagementSnapshot(result);
-        if (next.managementAction !== "installed"
-            || !next.plugins.some((plugin) => plugin.installId === next.installId
-              && plugin.pluginId === next.pluginId
+        if (result.managementAction !== "installed"
+            || !result.plugins.some((plugin) => plugin.installId === result.installId
+              && plugin.pluginId === result.pluginId
               && plugin.source === "user" && plugin.canUninstall && !plugin.enabled)) {
           throw new Error("PLUGIN_MANAGEMENT_RESPONSE_INVALID");
         }
-        initialize(Object.fromEntries(SNAPSHOT_KEYS.map((key) => [key, next[key]])), {
+        initialize(Object.fromEntries(SNAPSHOT_KEYS.map((key) => [key, result[key]])), {
           preserveDraft: true,
         });
-        return next;
+        return result;
       } catch (error) {
         if (uncertainManagementError(error)) {
           try { await bindCurrent({ preserveDraft: true }); } catch { /* keep the management error */ }
@@ -286,12 +279,12 @@ export function createPluginController({ invoke, applySnapshot, readDraft, onDir
         throw new Error("PLUGIN_UNINSTALL_REQUEST_INVALID");
       }
       try {
-        const result = validateManagementSnapshot(await invoke("settings_plugins_uninstall", {
+        const result = await invoke("settings_plugins_uninstall", {
           windowGeneration: current.windowGeneration,
           coreGenerationId: current.coreGenerationId,
           revision: current.revision,
           installId,
-        }));
+        });
         if (result.managementAction !== "uninstalled" || result.installId !== installId
             || result.plugins.some((item) => item.installId === installId)) {
           throw new Error("PLUGIN_MANAGEMENT_RESPONSE_INVALID");
@@ -315,7 +308,7 @@ export function createPluginController({ invoke, applySnapshot, readDraft, onDir
         coreGenerationId: current.coreGenerationId,
         ...request,
       });
-      return validateCollectionResult(request.operation, result);
+      return result;
     },
     refreshCurrent,
     discard() { if (current) applySnapshot(current, { preserveDraft: false, draft: null }); onDirty(); },

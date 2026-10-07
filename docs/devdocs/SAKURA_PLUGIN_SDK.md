@@ -3,7 +3,7 @@ kind: devdoc
 status: current
 audience: plugin-author
 source_of_truth: ../specs/runtime-v2/sakura-plugin-runtime-v4.md
-updated: 2026-10-03
+updated: 2026-10-07
 ---
 
 # 编写 Sakura 插件
@@ -469,7 +469,7 @@ context.on(
 | `sakura.host.app.started` | `{"generationId": "..."}` | 当前 generation 的插件启动完成。 |
 | `sakura.host.message.received` | `{"role": "user", "characters": 12}` | 收到用户消息；不含正文。 |
 | `sakura.host.message.sent` | `{"role": "assistant", "characters": 24}` | 助手已生成消息；不含正文。 |
-| `sakura.host.chat.completed` | `{"characterId": "...", "turnId": "...", "cursor": "..."}` | 对话已写入 Timeline 后发送。 |
+| `sakura.host.chat.completed` | `{"operationId": "...", "characterId": "...", "turnId": "...", "cursor": "..."}` | 对话已写入 Timeline 后发送；字段与消费规则见[时间线规范](../specs/runtime-v2/WP-4-07R-typed-timeline-adaptive-context.md#5-只读-timeline-host-service)。 |
 | `sakura.host.tool.started/finished/failed` | 有界工具状态 | 工具执行状态通知。 |
 | `sakura.host.tts.started/ended` | `playbackId/recordingId/outcome` | 桌面实际播放状态；有可信历史关联时另含 `characterId/historyEntryId/segmentIndex`。 |
 
