@@ -198,6 +198,21 @@ test("non-current character publication refreshes the catalog without rebinding 
   assert.deepEqual(sequence, ["catalog", "apply-catalog"]);
 });
 
+for (const readiness of ["setup_required", "initializing"]) {
+  test(`empty character catalog publication rebinds only a completed empty state (${readiness})`, async () => {
+    const current = lifecycle({ readiness });
+    current.characterPresentation = null;
+    const rebound = [];
+    const applied = await applyCharacterCatalogChange({
+      generationId: "generation-b",
+      readLifecycle: async () => current,
+      async rebindSettings(value) { rebound.push(value); },
+    });
+    assert.equal(applied, readiness === "setup_required");
+    assert.deepEqual(rebound, readiness === "setup_required" ? [current] : []);
+  });
+}
+
 test("catalog events from a superseded generation cannot rebind current settings", async () => {
   let rebound = false;
   const applied = await applyCharacterCatalogChange({

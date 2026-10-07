@@ -213,20 +213,6 @@ class StoragePaths:
 
         return TtsStorage(self.user_root).snapshot(create_default=False).tts_root
 
-    @property
-    def tts_bundles_installed_dir(self) -> Path:
-        return self.tts_bundles_dir
-
-    def tts_bundle_installed_for(self, bundle_key: str) -> Path:
-        return self.tts_bundles_installed_dir / sanitize_file_stem(bundle_key)
-
-    @property
-    def tts_bundles_downloads_dir(self) -> Path:
-        return self.tts_bundles_dir / "_downloads"
-
-    def tts_bundle_onnx_for(self, character_id: str) -> Path:
-        return self.tts_bundles_dir / "onnx" / sanitize_file_stem(character_id)
-
     # ---- 角色工坊 ----
     @property
     def character_studio_dir(self) -> Path:

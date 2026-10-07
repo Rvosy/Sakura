@@ -151,7 +151,7 @@ class _PluginSynthesisHandle:
         if code == "TTS_DISABLED":
             raise TTSBoundaryError("TTS_DISABLED", "角色语音已关闭")
         if code == "TTS_BACKGROUND_DEFERRED":
-            raise TTSBoundaryError(code, "后台语音补齐等待引擎加载。", retryable=True)
+            raise TTSBoundaryError(code, "当前引擎暂不执行后台语音补齐。", retryable=True)
         if code in {
             "TTS_PROVIDER_NOT_SELECTED",
             "TTS_PROVIDER_UNAVAILABLE",

@@ -340,7 +340,7 @@ class SakuraTTSPlugin:
              'enabledWhen': {'field': 'backend', 'equals': 'cuda', 'hide': True},
              'description': '低显存档通过分阶段加载模型节省显存，可能增加耗时。首次使用 FP16 需要转换模型。'},
             {'key': 'idleSeconds', 'label': '空闲后休眠（秒）', 'type': 'integer', 'minimum': 0,
-             'default': DEFAULTS['idleSeconds'], 'description': '0 为不休眠。'},
+             'default': DEFAULTS['idleSeconds'], 'description': '0 为不休眠；启用自动休眠时暂停后台语音补齐。'},
             {'key': 'autoCheckUpdates', 'label': '启动时检查整合包更新', 'type': 'boolean', 'default': True},
         ]}, load=lambda: provider.config, save=context.config.update)
         surface.register('runtime', 'plugin')

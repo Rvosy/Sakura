@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { readFile } from "node:fs/promises";
+import vm from "node:vm";
 
 import {
   createRuntimeAppearanceController,
@@ -8,6 +10,8 @@ import {
   validateAppearanceValues,
 } from "../settings/appearance-runtime.js";
 import { validateAppearancePublication as validatePetAppearancePublication } from "../pet/appearance.js";
+import { FALLBACK_THEME_TOKENS } from "../core/theme.js";
+import { applyThemeTokens, toLegacyThemeTokens } from "../core/theme-runtime.js";
 
 const limits = Object.freeze({
   portraitScalePercent: [50, 150, 100],
@@ -44,6 +48,137 @@ const values = Object.freeze({
   inputFontSize: 16,
   visualEffectMode: "gaussian_blur",
   themeTokens,
+});
+
+test("removing the last character clears real appearance state and continues global settings refresh", async () => {
+  class Control {
+    value = "";
+    disabled = false;
+    checked = false;
+    dataset = {};
+    listeners = {};
+    output = { textContent: "" };
+    parentElement = { querySelector: () => this.output };
+    style = { setProperty() {} };
+    addEventListener(type, listener) { this.listeners[type] = listener; }
+    fire(type) { return this.listeners[type]?.({ type, currentTarget: this }); }
+    setAttribute() {}
+    removeAttribute() {}
+    closest() { return null; }
+    replaceChildren() { this.textContent = ""; }
+  }
+  const controls = Object.fromEntries([
+    "portraitScale", "controlPanelWidth", "bubbleHeight", "bubbleAutoExpand", "controlPanelOffset",
+    "inputBarOffset", "speechFontSize", "nameFontSize", "inputFontSize", "themeAiButton",
+    "themeColors", "visualEffectMode", "resetThemeButton",
+  ].map((id) => [id, new Control()]));
+  const colors = Object.fromEntries(Object.keys(toLegacyTheme(themeTokens)).map((id) => [id, new Control()]));
+  const css = new Map();
+  const document = {
+    getElementById: (id) => controls[id],
+    querySelector: (selector) => colors[selector.match(/data-theme-field="([^"]+)"/)?.[1]],
+    documentElement: { style: { setProperty: (key, value) => css.set(key, value) } },
+  };
+  const source = await readFile(new URL("../settings/settings.js", import.meta.url), "utf8");
+  const functions = [
+    ["function disableRuntimeControl(", "\nconst errorDialog ="],
+    ["function prepareRuntimeCharacterOnly(", "\nfunction applyStorageSnapshot("],
+    ["async function rebindSettingsAfterCharacterSwitch(", "\nfunction renderThemeControls("],
+  ].map(([start, end]) => source.slice(source.indexOf(start), source.indexOf(end))).join("\n");
+  const refreshed = [];
+  const fillTheme = (theme) => {
+    for (const [key, value] of Object.entries(theme)) colors[key].value = value;
+    applyThemeTokens(theme, document.documentElement);
+  };
+  const context = vm.createContext({
+    document, fields: controls, request: null, themeEditor: {}, activeThemeField: "", themeChanged: false,
+    RUNTIME_UNAVAILABLE_REASON: "此设置暂不可用", RUNTIME_LAYOUT_DEFAULTS: {},
+    runtimeVisualEffectModes: [], runtimeCharacterFeature: { applyAppearancePresentation() {}, prepareControls() {} },
+    renderThemeControls() { controls.themeColors.textContent = "character colors"; },
+    setThemeValues: fillTheme, enhanceSelect() {}, refreshSelect() {}, upgradeSliderControls() {},
+    applyThemeTokens, toLegacyThemeTokens, FALLBACK_THEME_TOKENS,
+    runtimeProviderFeature: { rebindIdentity: (id) => refreshed.push(["provider", id]) },
+    runtimeToolsController: { refreshCurrent: async () => refreshed.push("tools") },
+    runtimePluginController: { refreshCurrent: async () => refreshed.push("plugins") },
+    runtimeVoiceController: { refreshCurrent: async () => refreshed.push("voice") },
+  });
+  vm.runInContext(functions, context);
+  const makeSnapshot = (generationId, characterId, scale = 125) => ({
+    schemaVersion: 1, windowGeneration: 4, limits,
+    presentation: { generationId, characterId, themeTokens },
+    appearance: { schemaVersion: 1, coreGenerationId: generationId, characterId,
+      values: { ...values, portraitScalePercent: scale } },
+  });
+  let current = makeSnapshot("generation-a", "alpha");
+  let emptyReadiness = "setup_required";
+  let pollLifecycle;
+  let elapsed = 0;
+  const calls = [], errors = [];
+  const previousWindow = globalThis.window;
+  const previousNow = Date.now;
+  globalThis.window = {
+    setInterval(callback) { pollLifecycle = callback; return 1; }, clearInterval() {},
+    requestAnimationFrame: () => 2, cancelAnimationFrame() {},
+  };
+  Date.now = () => elapsed;
+  const controller = createRuntimeAppearanceController({
+    document,
+    invoke: async (command) => {
+      calls.push(command);
+      if (command === "runtime_lifecycle_snapshot") return {
+        supervisor: { generationId: current?.presentation.generationId || "generation-empty" },
+        snapshot: { generationId: current?.presentation.generationId || "generation-empty", readiness: current ? "ready" : emptyReadiness },
+        characterPresentation: current?.presentation || null,
+      };
+      if (command === "settings_character_appearance_get") {
+        if (!current) throw new Error("CHARACTER_PRESENTATION_NOT_READY");
+        return current;
+      }
+      return {};
+    },
+    prepare: context.prepareRuntimeAppearance, fillTheme,
+    onDirty() {}, onError: (error) => errors.push(error),
+    wait: async (milliseconds) => { elapsed += milliseconds; },
+  });
+  context.runtimeAppearanceController = controller;
+  try {
+    await controller.initialize(current);
+    controls.portraitScale.value = "135";
+    controls.portraitScale.fire("input");
+    assert.equal(controller.isDirty(), true);
+    current = null;
+    await context.rebindSettingsAfterCharacterSwitch("generation-empty", undefined);
+    assert.deepEqual(refreshed, [["provider", "generation-empty"], "tools", "plugins", "voice"]);
+    assert.equal(calls.includes("settings_character_appearance_get"), false);
+    assert.equal(elapsed, 0);
+    assert.equal(controller.isDirty(), false);
+    assert.equal(controls.portraitScale.value, String(limits.portraitScalePercent[2]));
+    assert.equal(controls.portraitScale.disabled, true);
+    assert.equal(controls.themeColors.textContent, "");
+    assert.equal(css.get("--sakura-primary"), FALLBACK_THEME_TOKENS.primary);
+
+    current = makeSnapshot("generation-b", "beta", 75);
+    await pollLifecycle();
+    assert.equal(controls.portraitScale.value, "75");
+    assert.equal(controls.portraitScale.disabled, false);
+    assert.equal(controller.isDirty(), false);
+    current = null;
+    calls.length = 0;
+    emptyReadiness = "initializing";
+    await pollLifecycle();
+    assert.equal(controls.portraitScale.value, "75");
+    assert.equal(controls.portraitScale.disabled, false, "a transient missing presentation keeps the current appearance");
+    emptyReadiness = "setup_required";
+    await pollLifecycle();
+    await pollLifecycle();
+    assert.equal(controls.portraitScale.disabled, true);
+    assert.equal(calls.includes("settings_character_appearance_get"), false);
+    assert.deepEqual(errors, []);
+  } finally {
+    controller.dispose();
+    globalThis.window = previousWindow;
+    Date.now = previousNow;
+  }
 });
 
 test("appearance values validate exact theme and bounded scalar fields", () => {

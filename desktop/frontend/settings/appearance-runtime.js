@@ -608,7 +608,7 @@ export function createRuntimeAppearanceController({
   }
 
   async function rebindIdentity(targetGeneration, targetCharacterId) {
-    if (disposed || !targetGeneration || (
+    if (disposed || !targetGeneration || (!targetCharacterId && !snapshot) || (
       targetGeneration === snapshot?.presentation?.generationId
       && targetCharacterId === snapshot?.presentation?.characterId
     )) return;
@@ -627,6 +627,16 @@ export function createRuntimeAppearanceController({
         await invoke("settings_character_appearance_cancel_preview");
       } catch {
         // Supervisor generation replacement already rolls back an old preview session.
+      }
+      if (disposed) return;
+      if (!targetCharacterId) {
+        for (const [field, inputId] of Object.entries(scalarControls)) {
+          setRange(document.getElementById(inputId), snapshot.limits[field], snapshot.limits[field][2]);
+        }
+        snapshot = baseline = draft = null;
+        prepare(null, THEME_FIELDS);
+        onDirty();
+        return;
       }
       const deadline = Date.now() + 10_000;
       let lastError = null;
@@ -703,6 +713,11 @@ export function createRuntimeAppearanceController({
         const targetGeneration = lifecycle?.supervisor?.generationId;
         if (typeof targetGeneration === "string" && targetGeneration) {
           const presentation = lifecycle.characterPresentation;
+          if (!presentation && lifecycle.snapshot?.generationId === targetGeneration
+              && lifecycle.snapshot.readiness === "setup_required") {
+            await rebindIdentity(targetGeneration, null);
+            return;
+          }
           if (presentation?.generationId !== targetGeneration) return;
           if (!snapshot) {
             // Startup migration may take minutes. Observe presentation readiness

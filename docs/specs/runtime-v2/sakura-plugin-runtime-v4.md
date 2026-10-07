@@ -472,7 +472,8 @@ Provider 调用 `sakura.tts.unregisterProvider(providerId, serviceKey)`。Provid
 
 Core 的空闲历史语音补齐在 `request.options.background` 中传入 `true`，主动朗读不设置此标记；Hub 原样转交。
 Provider 可按自身引擎状态暂缓补齐，返回失败结果 `TTS_BACKGROUND_DEFERRED`。Core 将其记录为跳过，沿用空闲补齐的
-退避调度，不播放音频。SakuraTTS 的受理条件见 [SakuraTTS 运行边界](sakuratts-plugin.md#交互与运行边界)。
+退避调度，不播放音频；Hub 不为这一正常调度结果记录合成错误，实际合成失败仍保留错误日志。
+SakuraTTS 的受理条件见 [SakuraTTS 运行边界](sakuratts-plugin.md#交互与运行边界)。
 
 Hub 按 `state` 读取任务结果，保留失败诊断并忽略未消费的附加字段，不因 Provider 增加进度或耗时字段而拒绝结果。音频描述中的附加字段同样不影响接收；Core 在消费音频时核对必要字段、已提交资源及实际文件，Hub 不重复检查描述字段集合。
 

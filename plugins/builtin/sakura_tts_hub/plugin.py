@@ -320,7 +320,8 @@ class SakuraTTSHub:
             with self._lock:
                 if self._jobs.get(request_id) is binding:
                     del self._jobs[request_id]
-                    if normalized["state"] == "failed" and not failure_reported:
+                    if (normalized["state"] == "failed" and not failure_reported
+                            and normalized["errorCode"] != "TTS_BACKGROUND_DEFERRED"):
                         self._log("error", "语音合成失败", request_id=request_id, provider=binding.provider_id, reason_code=normalized["errorCode"])
         return normalized
 

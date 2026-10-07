@@ -71,10 +71,11 @@ export async function applyCharacterCatalogChange({
   }
 
   const lifecycle = await readLifecycle();
+  const noCharacter = lifecycle?.snapshot?.readiness === "setup_required" && !lifecycle?.characterPresentation;
   if (
     lifecycle?.supervisor?.generationId !== announcedGenerationId
     || lifecycle?.snapshot?.generationId !== announcedGenerationId
-    || lifecycle?.characterPresentation?.generationId !== announcedGenerationId
+    || (!noCharacter && lifecycle?.characterPresentation?.generationId !== announcedGenerationId)
     || !PRESENTATION_READY_STATES.has(lifecycle?.snapshot?.readiness)
   ) return false;
 

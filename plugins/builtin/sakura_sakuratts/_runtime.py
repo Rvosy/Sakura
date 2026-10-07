@@ -102,10 +102,13 @@ class Runtime:
             self._start(bundle, config, voice, cancel, key)
 
     def can_synthesize_in_background(self, bundle, config, voice):
+        # Managed /tts always wakes; a separate status read cannot reserve an awake engine.
+        if config['idleSeconds'] > 0:
+            return False
         with self.lock:
             if self.key != runtime_key(bundle, config, voice):
                 return False
-        return self.status() in {'awake', 'ready'}
+        return self.status() == 'ready'
 
     def _start(self, bundle, config, voice, cancel, key):
         started = time.monotonic()

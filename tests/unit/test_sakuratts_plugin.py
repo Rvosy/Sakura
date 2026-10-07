@@ -160,10 +160,13 @@ def test_prewake_only_for_selected_enabled_conversation(tmp_path, monkeypatch, i
         p.close()
 
 
-@pytest.mark.parametrize('state', ['sleeping', 'stopped', 'awake', 'ready', 'other-character'])
-def test_background_synthesis_reuses_only_the_loaded_character(tmp_path, monkeypatch, state):
+@pytest.mark.parametrize('idle_seconds,state', [
+    (60, 'sleeping'), (60, 'awake'), (0, 'stopped'), (0, 'ready'), (0, 'other-character'),
+])
+def test_background_synthesis_reuses_only_loaded_models_without_auto_sleep(tmp_path, monkeypatch, idle_seconds, state):
     from plugins.builtin.sakura_sakuratts._runtime import runtime_key
     p, released = provider(tmp_path, monkeypatch)
+    p.reconfigure({**p.config, 'idleSeconds': idle_seconds})
     voice = {'gpt': 'gpt', 'sovits': 'sovits'}
     p.runtime.key = runtime_key(p.bundle.current(), p.config, voice)
     if state == 'other-character':
@@ -176,7 +179,7 @@ def test_background_synthesis_reuses_only_the_loaded_character(tmp_path, monkeyp
         job = p.begin({'characterId': 'character', 'text': 'history', 'options': {'background': True}})
         p.executor.submit(lambda: None).result(3)
         result = p.poll(job)
-        if state in {'awake', 'ready'}:
+        if idle_seconds == 0 and state == 'ready':
             assert result['state'] == 'succeeded'
             assert calls == ['tts']
         else:
@@ -193,13 +196,14 @@ def test_background_synthesis_reuses_only_the_loaded_character(tmp_path, monkeyp
 def test_background_state_check_preserves_cancellation(tmp_path, monkeypatch):
     from plugins.builtin.sakura_sakuratts._runtime import runtime_key
     p, released = provider(tmp_path, monkeypatch)
+    p.reconfigure({**p.config, 'idleSeconds': 0})
     p.runtime.key = runtime_key(p.bundle.current(), p.config, {'gpt': 'gpt', 'sovits': 'sovits'})
     checking, resume = threading.Event(), threading.Event()
 
     def status():
         checking.set()
         assert resume.wait(3)
-        return 'sleeping'
+        return 'ready'
 
     monkeypatch.setattr(p.runtime, 'status', status)
     try:
@@ -212,6 +216,47 @@ def test_background_state_check_preserves_cancellation(tmp_path, monkeypatch):
         assert released == ['audio']
     finally:
         resume.set()
+        p.close()
+
+
+def test_hub_logs_real_synthesis_failures_but_not_background_deferrals(tmp_path, monkeypatch):
+    from plugins.builtin.sakura_tts_hub.plugin import SakuraTTSHub
+    p, released = provider(tmp_path, monkeypatch)
+    logs = []
+    logger = SimpleNamespace(**{
+        level: lambda message, *, fields, _level=level: logs.append((_level, message, fields))
+        for level in ('debug', 'info', 'warning', 'error')
+    })
+    hub = SakuraTTSHub(SimpleNamespace(bind=lambda _: p), SimpleNamespace(get=lambda: {
+        'selections': {'character': {'enabled': True, 'provider': 'sakura.tts.sakuratts'}},
+    }), logger)
+    hub.registerProvider({'providerId': 'sakura.tts.sakuratts',
+        'serviceKey': 'sakura.tts.provider.sakuratts', 'label': 'SakuraTTS'})
+
+    def failed_start(*_):
+        raise RuntimeError('fixture engine startup failure')
+
+    monkeypatch.setattr(p.runtime, 'start', failed_start)
+    try:
+        for number in range(2):
+            request_id = f'idle-{number}'
+            assert hub.begin({'requestId': request_id, 'characterId': 'character',
+                'text': 'history', 'options': {'background': True}})['state'] == 'running'
+            p.executor.submit(lambda: None).result(3)
+            result = hub.poll(request_id)
+            assert result['errorCode'] == 'TTS_BACKGROUND_DEFERRED'
+        assert released == ['audio', 'audio']
+        assert not p.jobs and not hub._jobs
+        assert p.error == ''
+        assert not [entry for entry in logs if entry[0] in {'warning', 'error'}]
+
+        hub.begin({'requestId': 'user-replay', 'characterId': 'character', 'text': 'reply', 'options': {}})
+        p.executor.submit(lambda: None).result(3)
+        assert hub.poll('user-replay')['errorCode'] == 'TTS_SYNTHESIS_FAILED'
+        errors = [fields for level, _, fields in logs if level == 'error']
+        assert len(errors) == 1
+        assert errors[0]['reason_code'] == 'TTS_SYNTHESIS_FAILED'
+    finally:
         p.close()
 
 

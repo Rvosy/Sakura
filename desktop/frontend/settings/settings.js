@@ -16,7 +16,9 @@ import {
   applyThemeTokens,
   isHexColor,
   normalizeColorText,
+  toLegacyThemeTokens,
 } from "../core/theme-runtime.js";
+import { FALLBACK_THEME_TOKENS } from "../core/theme.js";
 import { installDevtoolsShortcutGuard } from "../core/devtools-guard.js";
 import { createMigrationStatus } from "./migration-status.js";
 
@@ -170,6 +172,10 @@ function disableRuntimeControl(control, { markRow = true } = {}) {
 }
 
 function prepareRuntimeAppearance(snapshot, themeFields) {
+  if (!snapshot) {
+    prepareRuntimeCharacterOnly();
+    return;
+  }
   for (const id of ["portraitScale", "controlPanelWidth", "bubbleHeight", "bubbleAutoExpand",
     "controlPanelOffset", "inputBarOffset", "speechFontSize", "nameFontSize", "inputFontSize",
     "resetThemeButton", "visualEffectMode"]) {
@@ -786,6 +792,15 @@ function prepareRuntimeCharacterOnly() {
     fields.resetThemeButton,
     fields.visualEffectMode,
   ]) disableRuntimeControl(control);
+  fields.themeColors.replaceChildren();
+  fields.visualEffectMode.replaceChildren();
+  refreshSelect(fields.visualEffectMode);
+  fields.bubbleAutoExpand.checked = false;
+  request = null;
+  themeEditor = {};
+  activeThemeField = "";
+  themeChanged = false;
+  applyThemeTokens(toLegacyThemeTokens(FALLBACK_THEME_TOKENS), document.documentElement);
   runtimeCharacterFeature?.prepareControls();
 }
 
