@@ -125,7 +125,7 @@ struct StartedInputExpansion {
 struct WindowGeometrySession {
     revision: LayoutRevisionGuard,
     portrait_anchor: Option<window_geometry::PhysicalPoint>,
-    physical_local_anchor: Option<[u32; 2]>,
+    physical_local_anchor: Option<[i32; 2]>,
     active_bounds: Option<[u32; 4]>,
     surface_scale: f64,
     application: Option<LayoutApplication>,
@@ -618,7 +618,7 @@ struct PetSurfaceDiagnostics {
     physical_window: window_geometry::PhysicalPlacement,
     physical_work_area: PhysicalRect,
     global_anchor: window_geometry::PhysicalPoint,
-    physical_local_anchor: [u32; 2],
+    physical_local_anchor: [i32; 2],
     dpi_scale: f64,
     content_scale: f64,
     anchor_policy: &'static str,
@@ -2345,7 +2345,11 @@ fn commit_bootstrap_geometry(
 
 fn prepare_initial_pet_window(window: &WebviewWindow) -> Result<(), String> {
     let contract = layout_contract()?;
-    let monitor = target_monitor(window, None)?;
+    let saved_anchor = window
+        .state::<ui_config::UiConfigRepository>()
+        .load_pet_anchor()?
+        .map(|[x, y]| window_geometry::PhysicalPoint { x, y });
+    let monitor = target_monitor(window, saved_anchor)?;
     // Revision zero is a recoverable bootstrap. It is published to the session without
     // advancing the revision guard, so the WebView still owns the first normal revision.
     let application = compute_pet_window_layout(
@@ -2353,7 +2357,7 @@ fn prepare_initial_pet_window(window: &WebviewWindow) -> Result<(), String> {
         PresentationState::Product,
         0,
         &monitor,
-        None,
+        saved_anchor,
         AnchorPolicy::Automatic,
         100,
         None,
@@ -2434,7 +2438,7 @@ fn compute_dragged_pet_window_layout(
     revision: u64,
     monitor: &MonitorDescriptor,
     position: window_geometry::PhysicalPoint,
-    previous_local_anchor: [u32; 2],
+    previous_local_anchor: [i32; 2],
     portrait_scale_percent: u16,
     control_surface: Option<&ControlSurfaceLayout>,
     portrait_alpha_mask: Option<&character_presentation::PortraitAlphaMask>,
@@ -2551,6 +2555,9 @@ fn commit_dragged_window_position(
     session.application = Some(application.clone());
     session.hit_regions = Some(hit_regions.clone());
     session.anchor_user_positioned = true;
+    window
+        .state::<ui_config::UiConfigRepository>()
+        .save_pet_anchor([application.portrait_anchor.x, application.portrait_anchor.y])?;
     Ok(PetLayoutApplication {
         layout: application,
         hit_regions: Some(hit_regions),
@@ -7838,6 +7845,7 @@ fn main() {
                 .build(),
         )
         .plugin(tauri_plugin_updater::Builder::new().build())
+        .manage(ui_config_repository.clone())
         .manage(Mutex::new(WindowGeometrySession::default()))
         .manage(product_shell::ProductShellState::default())
         .manage(character_studio_window::CharacterStudioWindowState::default())

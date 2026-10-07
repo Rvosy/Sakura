@@ -138,6 +138,12 @@ updated: 2026-09-05
 - 精确命中区域必须携带同 revision 的目标物理 envelope；Windows、macOS、Linux 应使用该值裁剪和
   路由，不得以 resize 后的即时窗口 readback 代替，否则首次扩大窗口可能按旧尺寸截空控件。
 
+窗口裁剪后的局部锚点允许为负数：当可见内容位于角色锚点右侧或下方时，锚点可以落在窗口之外。
+`LayoutApplication.physical_local_anchor` 使用有符号物理坐标；启动布局、拖动定位和菜单扩窗均保留该偏移。
+
+拖动结束后将全局物理锚点保存到 `config/ui.json` 的 `settings.pet_anchor`，下次启动恢复该位置。
+启动恢复按当前显示器工作区约束位置；没有保存位置时使用默认右下角位置。
+
 ## 平台契约
 
 - Windows 静止态使用精确 Win32 window region，不得把复杂 alpha 退成 bbox。设置布局预览使用保留

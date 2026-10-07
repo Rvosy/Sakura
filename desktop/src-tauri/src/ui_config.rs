@@ -42,6 +42,25 @@ impl UiConfigRepository {
         self.load_unlocked(namespace)
     }
 
+    pub fn load_pet_anchor(&self) -> Result<Option<[i32; 2]>, String> {
+        let document = self.load("PET_POSITION")?;
+        match document.pointer("/settings/pet_anchor") {
+            None => Ok(None),
+            Some(value) => serde_json::from_value(value.clone())
+                .map(Some)
+                .map_err(|error| {
+                    crate::runtime_log::diagnostic_error("PET_POSITION_INVALID", error)
+                }),
+        }
+    }
+
+    pub fn save_pet_anchor(&self, anchor: [i32; 2]) -> Result<(), String> {
+        self.update("PET_POSITION", |document| {
+            document["settings"]["pet_anchor"] = serde_json::json!(anchor);
+            Ok(())
+        })
+    }
+
     pub fn update(
         &self,
         namespace: &str,
@@ -210,6 +229,28 @@ fn sync_parent(_parent: &Path, _namespace: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pet_position_survives_restart_without_overwriting_other_settings() {
+        let root = std::env::temp_dir().join(format!("sakura-position-{}", uuid::Uuid::new_v4()));
+        let path = root.join("ui.json");
+        let repository = UiConfigRepository::new(path.clone());
+        assert_eq!(repository.load_pet_anchor().unwrap(), None);
+        repository
+            .update("FIXTURE", |document| {
+                document["settings"]["portrait_scale_percent"] = serde_json::json!(50);
+                Ok(())
+            })
+            .unwrap();
+        repository.save_pet_anchor([-640, 700]).unwrap();
+        let reopened = UiConfigRepository::new(path);
+        assert_eq!(reopened.load_pet_anchor().unwrap(), Some([-640, 700]));
+        assert_eq!(
+            reopened.load("FIXTURE").unwrap()["settings"]["portrait_scale_percent"],
+            50
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn invalid_document_keeps_parser_location_and_write_keeps_os_error() {

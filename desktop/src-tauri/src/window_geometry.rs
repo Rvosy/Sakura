@@ -364,7 +364,7 @@ pub struct LayoutApplication {
     pub physical_placement: PhysicalPlacement,
     pub visible_fit_bounds: [u32; 4],
     pub active_bounds: [u32; 4],
-    pub physical_local_anchor: [u32; 2],
+    pub physical_local_anchor: [i32; 2],
     pub portrait_anchor: PhysicalPoint,
     pub work_area: PhysicalRect,
     pub monitor_name: Option<String>,
@@ -546,10 +546,10 @@ pub fn apply_window_layout_with_fit_bounds(
     let height = u32::try_from(bottom - top).map_err(|source_error| {
         crate::runtime_log::diagnostic_error("pet surface height overflow", source_error)
     })?;
-    let local_anchor_x = u32::try_from(-left).map_err(|source_error| {
+    let local_anchor_x = i32::try_from(-left).map_err(|source_error| {
         crate::runtime_log::diagnostic_error("pet surface local anchor x overflow", source_error)
     })?;
-    let local_anchor_y = u32::try_from(-top).map_err(|source_error| {
+    let local_anchor_y = i32::try_from(-top).map_err(|source_error| {
         crate::runtime_log::diagnostic_error("pet surface local anchor y overflow", source_error)
     })?;
     let placement = PhysicalPlacement {
@@ -766,8 +766,8 @@ pub fn expand_application_preserving_anchor(
         true,
     )?;
     let expected_local_anchor = [
-        u32::try_from(-left).map_err(|_| "pet surface local anchor x overflow")?,
-        u32::try_from(-top).map_err(|_| "pet surface local anchor y overflow")?,
+        i32::try_from(-left).map_err(|_| "pet surface local anchor x overflow")?,
+        i32::try_from(-top).map_err(|_| "pet surface local anchor y overflow")?,
     ];
     let expected_width = u32::try_from(base_right_physical - left)
         .map_err(|_| "base pet surface physical width overflow")?;
@@ -845,7 +845,7 @@ pub fn native_wayland_session() -> bool {
 
 pub fn anchor_from_window_position(
     window_position: PhysicalPoint,
-    physical_local_anchor: [u32; 2],
+    physical_local_anchor: [i32; 2],
 ) -> Result<PhysicalPoint, String> {
     let x = i64::from(window_position.x) + i64::from(physical_local_anchor[0]);
     let y = i64::from(window_position.y) + i64::from(physical_local_anchor[1]);
@@ -1362,7 +1362,11 @@ mod tests {
             },
             1.0,
         );
-        for bounds in [[0, 0, 0, 10], [899, 0, 2, 10], [0, 995, 10, 2]] {
+        for bounds in [
+            [0, 0, 0, 10],
+            [899, 0, 2, 10],
+            [0, MAX_CANONICAL_VIEWPORT_HEIGHT - 1, 10, 2],
+        ] {
             assert!(apply_window_layout(
                 &contract,
                 PresentationState::Product,
@@ -2114,6 +2118,70 @@ mod tests {
             ],
             contract.viewport.window_size
         );
+    }
+
+    #[test]
+    fn cropped_surface_below_anchor_supports_startup_drag_and_expansion() {
+        let contract = contract();
+        for scale_factor in [1.0, 1.25, 2.0] {
+            let monitor = monitor(
+                PhysicalRect {
+                    x: -2000,
+                    y: -1200,
+                    width: 4000,
+                    height: 3000,
+                },
+                scale_factor,
+            );
+            // Visible controls can lie below the portrait anchor while the portrait is hidden.
+            let bounds = [126, 1000, 648, 120];
+            for anchor in [None, Some(PhysicalPoint { x: 640, y: 900 })] {
+                let application = apply_window_layout(
+                    &contract,
+                    PresentationState::Product,
+                    1,
+                    &monitor,
+                    anchor,
+                    bounds,
+                )
+                .unwrap();
+                assert!(application.physical_local_anchor[1] < 0);
+                let position = PhysicalPoint {
+                    x: application.physical_placement.x,
+                    y: application.physical_placement.y,
+                };
+                assert_eq!(
+                    anchor_from_window_position(position, application.physical_local_anchor)
+                        .unwrap(),
+                    application.portrait_anchor
+                );
+                let dragged = PhysicalPoint {
+                    x: position.x + 31,
+                    y: position.y - 47,
+                };
+                assert_eq!(
+                    anchor_from_window_position(dragged, application.physical_local_anchor)
+                        .unwrap(),
+                    PhysicalPoint {
+                        x: application.portrait_anchor.x + 31,
+                        y: application.portrait_anchor.y - 47,
+                    }
+                );
+                let expanded = expand_application_preserving_anchor(
+                    &application,
+                    [126, 1000, 648, 220],
+                    contract.viewport.portrait_anchor,
+                )
+                .unwrap();
+                assert_eq!(expanded.portrait_anchor, application.portrait_anchor);
+                assert_eq!(
+                    expanded.physical_local_anchor,
+                    application.physical_local_anchor
+                );
+                assert_eq!(expanded.physical_placement.y, position.y);
+                assert!(expanded.physical_placement.height > application.physical_placement.height);
+            }
+        }
     }
 
     #[test]
