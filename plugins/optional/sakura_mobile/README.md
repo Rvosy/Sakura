@@ -5,7 +5,7 @@
 ## 安装与升级
 
 此插件单独分发，新用户不预装。在“设置 → 插件 → 市场”搜索“手机聊天”并安装，也可以从“更多 → 从 ZIP 安装…”导入插件包，然后启用插件。
-插件只依赖 Python 标准库和宿主公开服务，无需额外 Python 依赖。
+插件需要 Sakura 1.3.2 或更新版本，只依赖 Python 标准库和宿主公开服务，无需额外 Python 依赖。
 
 ```text
 runtime/bin/python tools/release/package_optional_plugin.py --source plugins/optional/sakura_mobile --output artifacts/plugins/sakura-mobile-1.0.0.zip
@@ -21,7 +21,7 @@ Windows 将上述 Python 路径替换为 `runtime\python.exe`。
 
 当前角色和主题通过 `sakura.host.character` 读取，历史使用 `sakura.host.timeline`，用户聊天使用
 `sakura.host.conversation`。聊天使用显式
-`begin/poll/cancel`，避免让一次模型回合占住短时 Plugin RPC；图片先写入现有
+`begin/poll`，超时后通过 `release` 放弃结果并请求取消，避免保留无人读取的任务；图片先写入现有
 `sakura.host.artifacts`，跨进程只传有界 descriptor。回复同时进入桌面字幕和 TTS 流程，语音在电脑播放；手机网页接收文字和段落结果。
 
 ## 激活后的能力边界

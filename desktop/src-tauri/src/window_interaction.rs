@@ -1583,7 +1583,6 @@ pub fn apply_native_hit_regions(
     let gdk_scale = f64::from(gtk_window.scale_factor());
     let rectangles = linux_input_hit_rectangles(model)?;
     let region = cairo::Region::create();
-    let mut unions = 0usize;
     let fallback_region = || -> Result<cairo::Region, String> {
         let Some(envelope) = linux_envelope_hit_rectangle(model.envelope) else {
             return Ok(cairo::Region::create());
@@ -1602,54 +1601,25 @@ pub fn apply_native_hit_regions(
         Ok(region)
     };
     for rect in rectangles {
-        let rows = if rect.corner_radius == 0 {
-            vec![rect]
-        } else {
-            (0..rect.height)
-                .filter_map(|offset_y| {
-                    let y = rect.y.checked_add(i32::try_from(offset_y).ok()?)?;
-                    let first = (0..rect.width).find(|offset_x| {
-                        rect.contains([rect.x.saturating_add(*offset_x as i32), y])
-                    })?;
-                    let last = (first..rect.width).rfind(|offset_x| {
-                        rect.contains([rect.x.saturating_add(*offset_x as i32), y])
-                    })?;
-                    Some(PhysicalHitRect {
-                        x: rect.x.saturating_add(first as i32),
-                        y,
-                        width: last - first + 1,
-                        height: 1,
-                        corner_radius: 0,
-                    })
-                })
-                .collect()
-        };
-        if unions.saturating_add(rows.len()) > LINUX_MAX_INPUT_RECTANGLES {
+        let rect = linux_cairo_rectangle_for_physical_hit(rect, gdk_scale)?;
+        let width = i32::try_from(rect.width).map_err(|source_error| {
+            crate::runtime_log::diagnostic_error(
+                "native hit region width exceeds GTK limits",
+                source_error,
+            )
+        })?;
+        let height = i32::try_from(rect.height).map_err(|source_error| {
+            crate::runtime_log::diagnostic_error(
+                "native hit region height exceeds GTK limits",
+                source_error,
+            )
+        })?;
+        if region
+            .union_rectangle(&cairo::RectangleInt::new(rect.x, rect.y, width, height))
+            .is_err()
+        {
             gtk_window.input_shape_combine_region(Some(&fallback_region()?));
             return Ok(());
-        }
-        for row in rows {
-            let row = linux_cairo_rectangle_for_physical_hit(row, gdk_scale)?;
-            let width = i32::try_from(row.width).map_err(|source_error| {
-                crate::runtime_log::diagnostic_error(
-                    "native hit region width exceeds GTK limits",
-                    source_error,
-                )
-            })?;
-            let height = i32::try_from(row.height).map_err(|source_error| {
-                crate::runtime_log::diagnostic_error(
-                    "native hit region height exceeds GTK limits",
-                    source_error,
-                )
-            })?;
-            if region
-                .union_rectangle(&cairo::RectangleInt::new(row.x, row.y, width, height))
-                .is_err()
-            {
-                gtk_window.input_shape_combine_region(Some(&fallback_region()?));
-                return Ok(());
-            }
-            unions = unions.saturating_add(1);
         }
     }
     gtk_window.input_shape_combine_region(Some(&region));

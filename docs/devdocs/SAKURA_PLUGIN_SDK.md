@@ -1268,10 +1268,13 @@ conversation = context.get("sakura.host.conversation")
 job = conversation.begin(character_id, text, artifact_descriptor_or_none)
 state = conversation.poll(job["jobId"])
 # state 为 {"status": "running"} 或 {"status": "completed", "result": {...}}
-# 用户取消等待时调用 conversation.cancel(job["jobId"])
+# 需要取消后继续读取终态时，调用 conversation.cancel(job["jobId"])
+# 超时或不再读取结果时，调用 conversation.release(job["jobId"])
 ```
 
-`begin()` 返回 `jobId` 和本次 `operationId`。插件自行轮询和设置等待期限，超时或退出时取消未完成任务；完成结果只取一次。
+`begin()` 返回 `jobId` 和本次 `operationId`。插件自行轮询和设置等待期限；完成结果只取一次。
+`cancel()` 仅请求取消，仍需轮询并消费终态。`release()` 用于放弃结果，同时请求取消尚未结束的任务；
+释放后不能再轮询该 job。使用 `release()` 的插件需声明 `min_app_version: 1.3.2`。
 不传插件 ID，调用者由 Runtime 的认证实例确定。图片使用本插件已提交的 artifact descriptor。
 `result` 保留 `character_id/reply/reply_raw/segments/actions`，并携带 `operationId`；其中 `reply` 是显示文本，
 `reply_raw` 是回复原文。已写入历史且宿主提供该身份时，另有 `historyEntryId`，供历史条目定位使用。

@@ -2183,6 +2183,13 @@ def test_idle_fill_caches_a_missing_line_without_playback_and_pauses_at_peak(tmp
         "idleFill": True,
     }), encoding="utf-8")
     worker = _ImmediatePluginApplication(tmp_path)
+    begin_options = []
+    call_service = worker.call_service
+    def capture_options(service, method, payload):
+        if method == 'begin':
+            begin_options.append(payload['options'])
+        return call_service(service, method, payload)
+    worker.call_service = capture_options
     events = []
     boundary = TTSBoundary(
         GENERATION, CREDENTIAL, tmp_path,
@@ -2194,6 +2201,7 @@ def test_idle_fill_caches_a_missing_line_without_playback_and_pauses_at_peak(tmp
     try:
         assert boundary.fill_once() is True
         assert worker.calls.count("begin") == 1
+        assert begin_options[0]['background'] is True
         assert events == []
         assert not list((tmp_path / "data/cache/tts/runtime-v2" / GENERATION).glob("*.wav"))
         cached = boundary._recordings.for_segment("sakura", "saved-reply", 0)
@@ -2212,6 +2220,50 @@ def test_idle_fill_caches_a_missing_line_without_playback_and_pauses_at_peak(tmp
         assert boundary.fill_once() is True
         assert boundary._recordings.for_segment("sakura", "saved-reply", 1) is not None
         assert worker.calls.count("begin") == 3
+    finally:
+        boundary.close()
+
+
+def test_idle_fill_deferral_backs_off_without_publishing_a_synthesis_failure(tmp_path, monkeypatch):
+    from app.core import runtime_log
+    _history_entry(tmp_path)
+    config = tmp_path / "config"
+    config.mkdir()
+    (config / "voice_cache.json").write_text(json.dumps({
+        "schemaVersion": 1, "directory": "", "maxBytes": 512 * 1024 * 1024, "idleFill": True,
+    }), encoding="utf-8")
+    now = [100.0]
+    requests, events, logs = [], [], []
+
+    def call_service(service, method, payload):
+        if method == "begin":
+            requests.append(payload)
+            return {"state": "running", "requestId": payload["requestId"], "providerId": "fixture"}
+        assert method == "poll"
+        return {"state": "failed", "requestId": payload, "providerId": "fixture",
+                "errorCode": "TTS_BACKGROUND_DEFERRED"}
+
+    monkeypatch.setattr(tts_boundary_module, "monotonic", lambda: now[0])
+    monkeypatch.setattr(tts_boundary_module, "device_below_peak", lambda: True)
+    monkeypatch.setattr(runtime_log, "_EXTERNAL_SINK", logs.append)
+    boundary = TTSBoundary(
+        GENERATION, CREDENTIAL, tmp_path,
+        session_provider=lambda: SimpleNamespace(character=SimpleNamespace(id="sakura")),
+        plugin_application_provider=lambda: SimpleNamespace(call_service=call_service),
+        event_publisher=events.append,
+    )
+    try:
+        assert boundary.fill_once() is False
+        assert boundary.fill_once() is False
+        assert len(requests) == 1
+        now[0] += tts_boundary_module.IDLE_FILL_BACKOFF_SECONDS
+        assert boundary.fill_once() is False
+        assert len(requests) == 2
+        assert events == []
+        assert boundary._recordings.for_segment("sakura", "saved-reply", 0) is None
+        terminals = [record.event for record in logs if record.event.startswith("tts.synthesis.")]
+        assert terminals.count("tts.synthesis.skipped") == 2
+        assert "tts.synthesis.failed" not in terminals
     finally:
         boundary.close()
 

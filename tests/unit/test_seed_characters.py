@@ -4,6 +4,8 @@ import json
 import zipfile
 from pathlib import Path
 
+import pytest
+
 from app.config.character_archive import (
     ARCHIVE_FORMAT,
     ARCHIVE_VERSION,
@@ -81,7 +83,7 @@ def test_import_seed_characters_loads_char_and_voice_into_settings(
     )
 
 
-def test_split_seed_pack_replaces_combined_archive_with_the_same_identity(
+def test_split_seed_pack_adds_voice_without_replacing_installed_character(
     tmp_path: Path,
 ) -> None:
     from app.config.character_archive import import_character_archive
@@ -101,13 +103,40 @@ def test_split_seed_pack_replaces_combined_archive_with_the_same_identity(
 
     imported = import_seed_characters(distribution, user, issue_sink=_silent)
 
-    assert [item.character_id for item in imported] == ["Sakura"]
+    assert [item.character_id for item in imported] == ["sakura"]
     assert imported[0].imported_voice is True
     registry = CharacterRegistry(user)
-    assert list(registry.profiles) == ["Sakura"]
-    assert registry.get("Sakura").display_name == "夜乃桜"
-    assert registry.get("Sakura").voice is not None
-    assert AppSettingsService(user).load_current_character_id(registry) == "Sakura"
+    assert list(registry.profiles) == ["sakura"]
+    assert registry.get("sakura").display_name == "夜乃桜"
+    assert registry.get("sakura").voice is not None
+    assert AppSettingsService(user).load_current_character_id(registry) == "sakura"
+
+
+@pytest.mark.parametrize('valid', [True, False])
+def test_same_name_seed_cannot_remove_custom_character(tmp_path, valid):
+    from app.config.character_archive import import_character_archive
+    user, distribution = tmp_path / 'user', tmp_path / 'repo'
+    custom = _write_character_archive(tmp_path / 'custom.char', 'custom', display_name='同名角色')
+    import_character_archive(custom, user)
+    profile = CharacterRegistry(user).get('custom')
+    original = {path.relative_to(profile.package_dir): path.read_bytes()
+                for path in profile.package_dir.rglob('*') if path.is_file()}
+    settings = AppSettingsService(user)
+    settings.save_current_character_id(CharacterRegistry(user), 'custom')
+    selection = settings.characters_config_path.read_bytes()
+    seed = _write_character_archive(distribution / 'base_characters/demo/demo.card.char',
+                                    'seed', display_name='同名角色')
+    if not valid:
+        with zipfile.ZipFile(seed) as archive:
+            manifest = archive.read('manifest.json')
+        with zipfile.ZipFile(seed, 'w') as archive:
+            archive.writestr('manifest.json', manifest)
+    imported = import_seed_characters(distribution, user, issue_sink=_silent)
+    assert [item.character_id for item in imported] == (['seed'] if valid else [])
+    assert {path.relative_to(profile.package_dir): path.read_bytes()
+            for path in profile.package_dir.rglob('*') if path.is_file()} == original
+    assert settings.characters_config_path.read_bytes() == selection
+    assert settings.load_current_character_id(CharacterRegistry(user)) == 'custom'
 
 
 def test_split_seed_pack_wins_over_a_combined_copy_in_the_same_tree(

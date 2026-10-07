@@ -289,13 +289,13 @@ def test_character_switch_closes_speech_admission_until_the_new_character_is_pub
 
 
 def test_real_runtime_scope_stop_can_interrupt_export_copy_without_lock_inversion(system, tmp_path, monkeypatch):
-    from app.plugins.runtime_v4 import PluginRuntimeManager
+    from app.plugins.runtime_v4 import PluginRuntimeManager, _RuntimeRecord
     from app.core_host import plugin_host_services
 
     copying, release_copy, process_stopped = threading.Event(), threading.Event(), threading.Event()
     manager = PluginRuntimeManager(tmp_path, "speech-generation", [])
     process = SimpleNamespace(scope_id="original", close=lambda **_kwargs: process_stopped.set())
-    manager._records["remote"] = SimpleNamespace(process=process, pid=1, state="active", reason_code="READY",
+    manager._records["remote"] = _RuntimeRecord(process=process, pid=1, state="active", reason_code="READY",
         spec=SimpleNamespace(plugin_id="remote", name="Remote", provides=(), requires=()))
     manager.install_host_service("sakura.host.artifacts", system.artifacts, exports=())
     manager.install_host_service("sakura.host.speech", system.host, exports=("begin", "poll", "cancel"))

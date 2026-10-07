@@ -1795,7 +1795,7 @@ await listenAppEvent("sakura://control-surface-gesture", async (event) => {
   const ready = layoutGestureReady;
   void endLayoutPreviewSession(revision, ready, endTrace).then(() => {
     void interactionLatencyTrace.flush();
-  }).catch(() => {
+  }).catch((error) => {
     if (!disposed && revision === layoutPreviewRevision) {
       showRecoverableError(errorText(error));
     }

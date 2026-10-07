@@ -141,6 +141,7 @@ def test_bundled_plugin_manifests_are_all_v4_defaults() -> None:
         "sakura.portrait",
         "sakura.screen_awareness",
         "sakura.tts",
+        "sakura.tts.sakuratts",
         "sakura.web",
     }
     assert all(spec.api_version == 4 for spec in bundled)

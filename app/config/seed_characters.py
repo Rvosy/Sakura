@@ -14,7 +14,6 @@ ship empty ``user_root/characters``.
 
 from __future__ import annotations
 
-import shutil
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -27,7 +26,6 @@ from app.config.character_archive import (
 )
 from app.config.character_loader import CharacterConfigError, CharacterProfile, CharacterRegistry
 from app.config.settings_service import AppSettingsService
-from app.config.yaml_config import load_yaml_mapping, save_yaml_mapping
 from app.core.runtime_log import log_event
 
 
@@ -103,39 +101,29 @@ def import_seed_characters(
     """Import missing current-format seed packs into ``user_root/characters``.
 
     Combined pre-0.9.5 ``.char`` copies lose to a split card+voice pack with the
-    same logical identity. Already-installed IDs stay in place unless they are
-    that outdated identity of a split pack being imported. Explicitly deleted
+    same logical identity. Already-installed IDs stay in place. Explicitly deleted
     IDs remain excluded from automatic imports; manual imports are unaffected.
     """
 
     user = Path(user_root)
     imported: list[SeedCharacterImport] = []
-    seen_ids: set[str] = set()
     settings = AppSettingsService(user)
     excluded_ids = {value.casefold() for value in settings.load_seed_import_exclusions()}
     current_was = settings.load_current_character_id(CharacterRegistry(user))
-    select_after: str | None = None
 
     for candidate in _preferred_seed_packs(distribution_root, issue_sink):
         if candidate.character_id.casefold() in excluded_ids:
             continue
-        result, replaced_current = _import_candidate(
+        result = _import_candidate(
             candidate,
             user,
-            seen_ids=seen_ids,
-            current_character_id=current_was,
             issue_sink=issue_sink,
         )
         if result is None:
             continue
-        seen_ids.add(result.character_id.casefold())
         imported.append(result)
-        if replaced_current:
-            select_after = result.character_id
 
-    if select_after is not None:
-        _select_character(user, select_after, issue_sink)
-    elif imported:
+    if imported:
         registry = CharacterRegistry(user)
         if current_was is None or current_was not in registry.profiles:
             _select_character(user, imported[0].character_id, issue_sink)
@@ -147,23 +135,16 @@ def _preferred_seed_packs(
     issue_sink: IssueSink,
 ) -> tuple[SeedPackCandidate, ...]:
     winners: dict[str, SeedPackCandidate] = {}
-    name_to_id: dict[str, str] = {}
     for seed_root in discover_seed_roots(distribution_root):
         for pack_dir in discover_seed_pack_directories(seed_root):
             candidate = _candidate_from_directory(pack_dir, issue_sink)
             if candidate is None:
                 continue
             identity = candidate.character_id.casefold()
-            display_key = candidate.display_name.casefold()
-            existing_identity = name_to_id.get(display_key, identity)
-            current = winners.get(existing_identity)
+            current = winners.get(identity)
             if current is not None and current.score >= candidate.score:
                 continue
-            if current is not None and existing_identity != identity:
-                winners.pop(existing_identity, None)
             winners[identity] = candidate
-            if display_key:
-                name_to_id[display_key] = identity
     return tuple(winners.values())
 
 
@@ -206,52 +187,21 @@ def _import_candidate(
     candidate: SeedPackCandidate,
     user_root: Path,
     *,
-    seen_ids: set[str],
-    current_character_id: str | None,
     issue_sink: IssueSink,
-) -> tuple[SeedCharacterImport | None, bool]:
-    identity = candidate.character_id.casefold()
-    if identity in seen_ids:
-        return None, False
+) -> SeedCharacterImport | None:
     registry = CharacterRegistry(user_root)
     existing = _installed_for_candidate(registry, candidate)
-    replaced_current = False
     if existing is not None:
-        if existing.id != candidate.character_id and candidate.score >= 2:
-            replaced_current = current_character_id == existing.id
-            try:
-                _remove_installed_character(user_root, existing)
-            except (OSError, CharacterConfigError, ValueError) as error:
-                _report(
-                    issue_sink,
-                    "过期种子角色无法替换",
-                    "SEED_CHARACTER_REPLACE_FAILED",
-                    candidate.directory,
-                    error,
-                )
-                return None, False
-            existing = None
-        else:
-            if candidate.voice is None or existing.voice is not None:
-                return None, False
-            imported_voice = _import_voice(
-                candidate.voice,
-                user_root,
-                existing.id,
-                candidate.directory,
-                issue_sink,
-            )
-            if not imported_voice:
-                return None, False
-            return (
-                SeedCharacterImport(
-                    source_dir=candidate.directory,
-                    character_id=existing.id,
-                    display_name=existing.display_name,
-                    imported_voice=True,
-                ),
-                False,
-            )
+        if candidate.voice is None or existing.voice is not None:
+            return None
+        if not _import_voice(candidate.voice, user_root, existing.id, candidate.directory, issue_sink):
+            return None
+        return SeedCharacterImport(
+            source_dir=candidate.directory,
+            character_id=existing.id,
+            display_name=existing.display_name,
+            imported_voice=True,
+        )
 
     try:
         character = import_character_archive(candidate.archive, user_root)
@@ -263,7 +213,7 @@ def _import_candidate(
             candidate.directory,
             error,
         )
-        return None, False
+        return None
 
     imported_voice = False
     if candidate.voice is not None:
@@ -285,14 +235,11 @@ def _import_candidate(
             "imported_voice": imported_voice,
         },
     )
-    return (
-        SeedCharacterImport(
-            source_dir=candidate.directory,
-            character_id=character.character_id,
-            display_name=character.display_name,
-            imported_voice=imported_voice,
-        ),
-        replaced_current,
+    return SeedCharacterImport(
+        source_dir=candidate.directory,
+        character_id=character.character_id,
+        display_name=character.display_name,
+        imported_voice=imported_voice,
     )
 
 
@@ -303,30 +250,10 @@ def _installed_for_candidate(
     if candidate.character_id in registry.profiles:
         return registry.profiles[candidate.character_id]
     identity = candidate.character_id.casefold()
-    display = candidate.display_name.casefold()
     for profile in registry.profiles.values():
         if profile.id.casefold() == identity:
             return profile
-        if display and profile.display_name.casefold() == display:
-            return profile
     return None
-
-
-def _remove_installed_character(user_root: Path, profile: CharacterProfile) -> None:
-    settings = AppSettingsService(user_root)
-    data = load_yaml_mapping(settings.characters_config_path)
-    if data.get("current_character_id") == profile.id:
-        data["current_character_id"] = ""
-    selections = data.get("visual_selections")
-    if isinstance(selections, dict):
-        selections.pop(profile.id, None)
-        data["visual_selections"] = selections
-    save_yaml_mapping(settings.characters_config_path, data)
-    characters_dir = (user_root / "characters").resolve()
-    package_dir = profile.package_dir.resolve()
-    if package_dir.parent != characters_dir:
-        raise CharacterConfigError(f"角色目录不在 characters 下：{package_dir}")
-    shutil.rmtree(package_dir)
 
 
 def _import_voice(

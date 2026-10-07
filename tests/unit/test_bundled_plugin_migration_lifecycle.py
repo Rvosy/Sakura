@@ -60,6 +60,8 @@ def offline_migration(monkeypatch):
 def roots_for(tmp_path, monkeypatch, plugins):
     monkeypatch.setattr(migration, "MIGRATIONS", plugins)
     roots = RuntimeRoots(tmp_path / "distribution", tmp_path / "user")
+    roots.distribution_root.mkdir(parents=True)
+    shutil.copyfile(OPTIONAL.parents[1] / "VERSION", roots.distribution_root / "VERSION")
     (roots.user_root / "config").mkdir(parents=True)
     return roots
 

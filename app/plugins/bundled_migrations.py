@@ -61,12 +61,12 @@ def _user_plugin(roots: RuntimeRoots, plugin_id: str):
 def _dependency_root(dependencies, code: Path, root: Path) -> Path | None:
     from app.plugins.dependencies import PluginDependencyError
 
-    verified = dependencies.verified_path(code, root)
+    declaration = dependencies.declaration(code)
+    verified = dependencies.verified_path(declaration, root)
     if verified is None:
         return None
     if any(path.name not in {".sakura-dependencies.json", "__pycache__"} for path in verified.iterdir()):
         return verified
-    declaration = dependencies.declaration(code)
     # A leftover marker alone is not an installed environment. Empty requirements
     # are valid, however, and need no packages at all.
     requires_packages = declaration.kind not in {"requirements.txt", "requirements.lock"} or any(

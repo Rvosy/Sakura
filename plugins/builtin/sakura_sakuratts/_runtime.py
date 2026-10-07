@@ -31,6 +31,11 @@ def environment(cache):
     return dict(os.environ, SAKURATTS_CACHE_DIR=str(cache))
 
 
+def runtime_key(bundle, config, voice):
+    return (bundle[0], config['backend'], config['cudaProfile'] if config['backend'] == 'cuda' else None,
+            config['idleSeconds'], voice['gpt'], voice['sovits'])
+
+
 def probe(root, release, cancel, backend=None, cache=None):
     backend = backend or release['backend']
     log = root / 'logs/plugin-check.log'
@@ -84,9 +89,7 @@ class Runtime:
             self.key = None
 
     def start(self, bundle, config, voice, cancel):
-        root, _release = bundle
-        key = (root, config['backend'], config['cudaProfile'] if config['backend'] == 'cuda' else None,
-               config['idleSeconds'], voice['gpt'], voice['sovits'])
+        key = runtime_key(bundle, config, voice)
         with self.lock:
             if cancel.is_set():
                 raise Cancelled()
@@ -97,6 +100,12 @@ class Runtime:
             self.device_checked = True
         with operation(self.emit, 'engine_start', cancel=cancel, report_error=False):
             self._start(bundle, config, voice, cancel, key)
+
+    def can_synthesize_in_background(self, bundle, config, voice):
+        with self.lock:
+            if self.key != runtime_key(bundle, config, voice):
+                return False
+        return self.status() in {'awake', 'ready'}
 
     def _start(self, bundle, config, voice, cancel, key):
         started = time.monotonic()

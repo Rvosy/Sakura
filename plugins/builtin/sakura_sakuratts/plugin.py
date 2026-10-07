@@ -207,13 +207,23 @@ class Provider:
 
     def _synthesize(self, job, request, voice):
         try:
+            background = request.get('options', {}).get('background', False)
+            if (background
+                    and not self.runtime.can_synthesize_in_background(self.bundle.current(), self.config, voice)):
+                with self.lock:
+                    if job['cancel'].is_set():
+                        raise Cancelled()
+                    job['failure'] = {'errorCode': 'TTS_BACKGROUND_DEFERRED'}
+                    job['state'] = 'failed'
+                return
             with operation(self.log, 'synthesis', cancel=job['cancel']):
                 with self.lock:
                     if job['cancel'].is_set():
                         raise Cancelled()
                     self.active = job
                 queue_ms = round((time.monotonic() - job['queued_at']) * 1000, 1)
-                self.runtime.start(self.bundle.current(), self.config, voice, job['cancel'])
+                if not background:
+                    self.runtime.start(self.bundle.current(), self.config, voice, job['cancel'])
                 payload = {key: voice[key] for key in ('text_lang', 'ref_audio_path', 'prompt_lang', 'prompt_text')}
                 payload.update(text=request['text'], parallel_infer=False, streaming_mode=False, media_type='wav')
                 self.log('info', 'SakuraTTS 开始合成', backend=self.runtime.backend, text_chars=len(request['text']),

@@ -216,11 +216,10 @@ class PluginDependencyRoots:
             root = self._paths.plugin_dependency_root_for(plugin_id)
         else:
             raise PluginDependencyError("PLUGIN_DEPENDENCY_SOURCE_INVALID")
-        return self.verified_path(plugin_root, root)
+        return self.verified_path(declaration, root)
 
-    def verified_path(self, plugin_root: Path, root: Path) -> Path | None:
+    def verified_path(self, declaration: DependencyDeclaration | None, root: Path) -> Path | None:
         """Check an installed dependency root, including an offline migration payload."""
-        declaration = self.declaration(plugin_root)
         if declaration is None:
             return None
         marker_path = root / _MARKER

@@ -148,6 +148,7 @@ def test_late_visual_apply_cannot_parse_or_publish_after_scope_clear(tmp_path, m
     )
     visual = HostVisualService(binding_provider=lambda: ("character", binding),
         emit_callback=lambda *args: events.append(args), is_idle=lambda: True,
+        list_callback=lambda _character_id: {},
         select_callback=lambda *args: None,
         commit_scope=lambda owner, commit: manager.commit_plugin_scope(*owner, commit))
     manager.install_host_service("sakura.host.visual", visual, exports=("apply",))

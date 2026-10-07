@@ -31,8 +31,9 @@ def test_dependency_check_preserves_actual_filesystem_or_parse_failure(tmp_path,
                 raise PermissionError(13, "permission denied", str(path))
             return original(path, *args, **kwargs)
         monkeypatch.setattr(Path, "read_text", denied)
+    roots = PluginDependencyRoots(tmp_path)
     with pytest.raises(PluginDependencyError) as caught:
-        PluginDependencyRoots(tmp_path).verified_path(tmp_path, root)
+        roots.verified_path(roots.declaration(tmp_path), root)
     assert caught.value.code == code
     assert marker.name in str(caught.value)
     assert isinstance(caught.value.__cause__, cause)

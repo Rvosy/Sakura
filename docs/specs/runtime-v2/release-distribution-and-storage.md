@@ -56,7 +56,7 @@ ID 已被其他可访问角色占用，则为遗留副本分配带序号的新 I
 回写清单；导入或保存主题时写入当前来源标记。只有旧式
 `voice`、没有插件资源 `extensions` 的角色补齐语音资源扩展；已有资源字段保留。此过程不启用语音或选择引擎，
 运行选择仅保存在应用用户根的 `data/plugins/sakura.tts/config.json` 中。
-不存在默认 `sakura` 角色、首角色 fallback 或默认角色 prompt。开发仓库根目录下的 `base_characters/`（以及历史拼写 `base_charaters/`）不是发行内容：仅当这些目录存在时，Core 启动会扫描其中直接含有 `.char` / `.card.char` 的文件夹（含嵌套目录），把尚未安装的逻辑 ID 导入 `user_root/characters`，同目录 `.voice` 一并导入。同一角色同时存在 0.9.5 之前的整包 `.char` 和拆分后的 `.card.char` + `.voice` 时，只导入拆分包，并替换已安装的同名过期整包。已安装且 ID 完全相同的包不重复导入。当前角色仍只在用户尚未选择、或刚被过期整包替换时，按与手动首次导入相同的规则选中。发行包不得复制该目录。
+不存在默认 `sakura` 角色、首角色 fallback 或默认角色 prompt。开发仓库根目录下的 `base_characters/`（以及历史拼写 `base_charaters/`）不是发行内容：仅当这些目录存在时，Core 启动会扫描其中直接含有 `.char` / `.card.char` 的文件夹（含嵌套目录），把尚未安装的逻辑 ID 导入 `user_root/characters`，同目录 `.voice` 一并导入。候选按逻辑 ID 忽略大小写去重；同一 ID 同时存在 0.9.5 之前的整包 `.char` 和拆分后的 `.card.char` + `.voice` 时，优先导入拆分包。已安装的同 ID 角色保留原包，只补充缺失的语音；显示名称相同不构成替换关系。仅在没有有效当前角色时，按与手动首次导入相同的规则选中首个成功导入的角色。发行包不得复制种子目录。
 
 在设置中删除角色后，该逻辑 ID 不再参与种子自动导入，重启 Core 也不会将其恢复；其他新种子和手动导入不受影响。
 排除记录由 [`AppSettingsService.forget_character`](../../../app/config/settings_service.py) 保存在

@@ -34,6 +34,7 @@ def roots_for(tmp_path, *, old=True):
     roots = RuntimeRoots(tmp_path / "distribution", tmp_path / "user")
     shutil.copytree(SOURCE, roots.distribution_root / "plugins/builtin" / PLUGIN)
     shutil.copytree(SOURCE, roots.distribution_root / PAYLOAD_PATH / "plugins" / PLUGIN)
+    shutil.copyfile(SOURCE.parents[2] / "VERSION", roots.distribution_root / "VERSION")
     if old:
         (roots.user_root / "config").mkdir(parents=True)
     return roots
@@ -250,14 +251,15 @@ def test_retired_api_repair_prepares_before_moving_original(tmp_path, monkeypatc
         assert all(event["state"] != "failed" for event in events)
 
 
-def test_120_interrupted_repair_recovers_backup_without_distribution(tmp_path):
+def test_120_interrupted_repair_recovers_backup_without_distribution_sources(tmp_path):
     roots = roots_for(tmp_path)
     assert migrate_bundled_plugins(roots) == {}
     backup = roots.user_root / "plugins/migration-backups/interrupted/sakura_mobile"
     backup.parent.mkdir(parents=True)
     installed(roots).rename(backup)
     (backup / "local-notes.txt").write_text("preserve backup")
-    shutil.rmtree(roots.distribution_root)
+    shutil.rmtree(roots.distribution_root / "plugins")
+    shutil.rmtree(roots.distribution_root / PAYLOAD_PATH)
     marker(roots).write_text(json.dumps({PLUGIN: "repairing"}))
     assert migrate_bundled_plugins(roots) == {}
     assert (installed(roots) / "local-notes.txt").read_text() == "preserve backup"

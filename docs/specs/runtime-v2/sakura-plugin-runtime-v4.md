@@ -184,10 +184,13 @@ Runtime 不检查插件 ID，也不解释 Memory、TTS 等领域内容。插件�
 
 ### 用户聊天入口
 
-`sakura.host.conversation` 提供 `begin(character_id, text, artifact_descriptor=None)`、`poll(job_id)` 和
-`cancel(job_id)`，用于用户通过插件输入的普通对话。调用实例由 Runtime 认证，不能由参数指定。
+`sakura.host.conversation` 提供 `begin(character_id, text, artifact_descriptor=None)`、`poll(job_id)`、
+`cancel(job_id)` 和 `release(job_id)`，用于用户通过插件输入的普通对话。调用实例由 Runtime 认证，不能由参数指定。
 `begin` 受理后返回 `{jobId, operationId}`，`poll` 返回 `running` 或一次性的 `completed/result`；失败保留稳定错误码。
-`cancel` 返回 `{accepted}`，只能操作同一实例的任务，插件重载后不能读取或取消前一实例的 job。
+`cancel` 返回 `{accepted}`，请求取消后仍可轮询终态。调用方超时或不再读取结果时，使用 `release`：它立即移除保留记录，
+请求取消尚未结束的任务并返回 `{released: true}`，此后不能再轮询该 job。运行中的工作线程仍负责收尾和图片回收，
+已发布 started 的操作继续交付 RealChat 决定的唯一终态。所有方法只能操作同一实例的任务；插件重载后不能访问前一实例的 job。
+`release` 从 Sakura 1.3.2 起提供，使用它的插件需声明相应的 `min_app_version`。
 
 文字和可选图片进入同一 RealChat 排他通道。受理时重新校验当前角色、角色会话和调用实例；
 空角色 ID 表示受理时的当前角色。已切换的角色返回 `CHAT_CHARACTER_NOT_CURRENT`，过期会话返回
@@ -466,6 +469,10 @@ Hub 保存 descriptor，在创建任务前通过 `context.bind(serviceKey)` 取�
 Provider 调用 `sakura.tts.unregisterProvider(providerId, serviceKey)`。Provider 崩溃后，即使没有执行 unregister、
 用户又重载同 ID Provider，旧任务仍因绑定失效而失败，不能查询或取消新进程中的同名 `jobId`。
 新的任务可以重新显式绑定；Runtime 不自动重启 Provider、不重绑或重放旧任务。
+
+Core 的空闲历史语音补齐在 `request.options.background` 中传入 `true`，主动朗读不设置此标记；Hub 原样转交。
+Provider 可按自身引擎状态暂缓补齐，返回失败结果 `TTS_BACKGROUND_DEFERRED`。Core 将其记录为跳过，沿用空闲补齐的
+退避调度，不播放音频。SakuraTTS 的受理条件见 [SakuraTTS 运行边界](sakuratts-plugin.md#交互与运行边界)。
 
 Hub 按 `state` 读取任务结果，保留失败诊断并忽略未消费的附加字段，不因 Provider 增加进度或耗时字段而拒绝结果。音频描述中的附加字段同样不影响接收；Core 在消费音频时核对必要字段、已提交资源及实际文件，Hub 不重复检查描述字段集合。
 

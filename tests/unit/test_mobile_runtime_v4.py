@@ -29,6 +29,7 @@ def _roots(tmp_path: Path, port: int) -> RuntimeRoots:
     distribution = tmp_path / "distribution"
     bundled = distribution / "plugins" / "builtin"
     bundled.mkdir(parents=True)
+    (distribution / "VERSION").write_bytes((repository / "VERSION").read_bytes())
     user = tmp_path / "user"
     roots = RuntimeRoots(distribution, user)
     character = user / "characters" / "sakura"

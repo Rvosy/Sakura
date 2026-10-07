@@ -115,7 +115,7 @@ def test_reloaded_scope_cannot_poll_or_cancel_previous_job(tmp_path, monkeypatch
         with caller():
             accepted = turn.host.begin("sakura", "hello")
         with caller(scope="replacement"):
-            for action in (turn.host.poll, turn.host.cancel):
+            for action in (turn.host.poll, turn.host.cancel, turn.host.release):
                 with pytest.raises(ConversationHostError, match="CHAT_JOB_NOT_FOUND"):
                     action(accepted["jobId"])
         turn.host.invalidate_session()
@@ -143,6 +143,38 @@ def test_role_session_changed_between_check_and_reservation_is_rejected(tmp_path
         assert turn.events == []
         assert turn.boundary.current_host_state()["idle"]
     finally:
+        turn.host.close()
+        turn.boundary.close()
+
+
+@pytest.mark.parametrize('gate_at', ['inference', 'release'])
+def test_mobile_timeout_releases_jobs_without_changing_realchat_terminal(tmp_path, monkeypatch, gate_at):
+    from plugins.optional.sakura_mobile import server
+    turn = setup_host(tmp_path, gate_at=gate_at)
+    jobs = []
+    def begin(*args):
+        accepted = turn.host.begin(*args)
+        jobs.append(turn.host._jobs[accepted['jobId']])
+        assert turn.entered.wait(3)
+        return accepted
+    mobile = server.MobilePluginService(tmp_path,
+        SimpleNamespace(begin=begin, poll=turn.host.poll, release=turn.host.release), None, None, None)
+    try:
+        for _ in range(3):
+            turn.entered.clear()
+            turn.resume.clear()
+            times = iter([0, 0, 60])
+            monkeypatch.setattr(server, 'time', SimpleNamespace(monotonic=lambda: next(times), sleep=lambda _: None))
+            with caller(), pytest.raises(RuntimeError, match='MOBILE_CHAT_TIMEOUT'):
+                mobile.chat('sakura', 'hello')
+            assert not turn.host._jobs
+            turn.resume.set()
+            assert jobs[-1].done.wait(3)
+        terminal = 'completed' if gate_at == 'release' else 'cancelled'
+        assert [name for name, _ in turn.events].count('host.chat.' + terminal) == 3
+        assert turn.boundary.current_host_state()['idle']
+    finally:
+        turn.resume.set()
         turn.host.close()
         turn.boundary.close()
 

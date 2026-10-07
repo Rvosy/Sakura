@@ -7,13 +7,15 @@ RuntimeLocator never downloads or repairs a Runtime at application startup.
 from __future__ import annotations
 
 import argparse
+import http.client
 import json
 import os
 from pathlib import Path
-import shutil
+import socket
 import sys
 import tarfile
 import time
+import urllib.error
 import urllib.request
 import zipfile
 
@@ -25,6 +27,28 @@ DOWNLOAD_RETRY_DELAY_SECONDS = 5
 
 class ArchiveVerificationError(RuntimeError):
     pass
+
+
+class _TransientDownloadError(RuntimeError):
+    pass
+
+
+def _network_call(operation, *args, **kwargs):
+    """Only network operations can make a download eligible for retry."""
+    try:
+        return operation(*args, **kwargs)
+    except urllib.error.URLError as error:
+        if isinstance(error, urllib.error.HTTPError):
+            retryable = error.code in {408, 429, 500, 502, 503, 504}
+            error.close()
+        else:
+            retryable = isinstance(error.reason, (TimeoutError, ConnectionError)) or (
+                isinstance(error.reason, socket.gaierror) and error.reason.errno == socket.EAI_AGAIN)
+        if retryable:
+            raise _TransientDownloadError(str(error)) from error
+        raise
+    except (TimeoutError, ConnectionError, http.client.IncompleteRead) as error:
+        raise _TransientDownloadError(str(error)) from error
 
 
 def load_archive_manifest(
@@ -97,10 +121,11 @@ def download_and_verify(
             request = urllib.request.Request(
                 str(archive["url"]), headers={"User-Agent": "Sakura-Runtime-v2-CI"}
             )
-            with urllib.request.urlopen(request, timeout=60) as response, temporary.open(
+            with _network_call(urllib.request.urlopen, request, timeout=60) as response, temporary.open(
                 "xb"
             ) as destination:
-                shutil.copyfileobj(response, destination, CHUNK_SIZE)
+                while chunk := _network_call(response.read, CHUNK_SIZE):
+                    destination.write(chunk)
             result = verify_archive(archive, temporary)
             temporary.replace(output_path)
             return result
@@ -109,7 +134,7 @@ def download_and_verify(
             raise
         except Exception as exc:
             temporary.unlink(missing_ok=True)
-            if attempt >= MAX_DOWNLOAD_ATTEMPTS:
+            if not isinstance(exc, _TransientDownloadError) or attempt >= MAX_DOWNLOAD_ATTEMPTS:
                 raise ArchiveVerificationError(
                     f"runtime archive download failed after {attempt} attempts: {exc}"
                 ) from exc

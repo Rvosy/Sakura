@@ -203,7 +203,7 @@ class PluginRuntimeApplication:
             emit_callback=self._emit_desktop_event, commit_scope=commit_scope,
         )
         self._manager.install_host_service(HOST_CONVERSATION_SERVICE, self.conversation,
-            exports=("begin", "poll", "cancel"))
+            exports=("begin", "poll", "cancel", "release"))
         self._manager.install_host_service(
             HOST_MOBILE_SERVICE,
             MobileHostService(roots.user_root, session_provider=lambda: self._session,

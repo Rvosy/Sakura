@@ -158,6 +158,15 @@ class ConversationHostService:
             job = self._job(owner, job_id)
         return {"accepted": job.boundary.cancel_host_message(job.operation_id)}
 
+    def release(self, job_id: str) -> dict[str, bool]:
+        """Stop retaining a result the caller no longer intends to consume."""
+        owner = caller_identity()
+        with self._lock:
+            job = self._job(owner, job_id)
+            self._jobs.pop(job_id)
+        self._revoke([job])
+        return {"released": True}
+
     def _job(self, owner: tuple[str, str], job_id: str) -> _ConversationJob:
         job = self._jobs.get(str(job_id))
         if job is None or job.owner != owner:

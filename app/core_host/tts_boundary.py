@@ -150,6 +150,8 @@ class _PluginSynthesisHandle:
         diagnostics = {"cause_code": code, **(diagnostics if isinstance(diagnostics, Mapping) else {})}
         if code == "TTS_DISABLED":
             raise TTSBoundaryError("TTS_DISABLED", "角色语音已关闭")
+        if code == "TTS_BACKGROUND_DEFERRED":
+            raise TTSBoundaryError(code, "后台语音补齐等待引擎加载。", retryable=True)
         if code in {
             "TTS_PROVIDER_NOT_SELECTED",
             "TTS_PROVIDER_UNAVAILABLE",
@@ -706,7 +708,7 @@ class TTSBoundary:
             return recording if recording_only else descriptor
         except TTSBoundaryError as error:
             self._mark_failed(authorization)
-            if error.code == "TTS_DISABLED":
+            if error.code in {"TTS_DISABLED", "TTS_BACKGROUND_DEFERRED"}:
                 self._log_synthesis_terminal(
                     authorization, error.code, started_at, "skipped",
                 )
@@ -844,6 +846,7 @@ class TTSBoundary:
                     "options": {
                         "tone": authorization.tone,
                         "portrait": authorization.portrait,
+                        **({"background": True} if authorization.operation_id.startswith("idle-") else {}),
                     },
                 },
             )

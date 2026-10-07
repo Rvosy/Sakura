@@ -4,6 +4,7 @@ name: 手机聊天
 author: pa1n9
 description: 在局域网或 Tailscale 中，用手机网页和 Sakura 聊天。
 version: 1.0.0
+min_app_version: 1.3.2
 entry: plugin:SakuraMobilePlugin
 # 外部安装后由用户显式启用。
 enabled: false

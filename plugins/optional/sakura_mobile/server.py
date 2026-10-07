@@ -149,7 +149,7 @@ class MobilePluginService:
                         raise RuntimeError("MOBILE_CHAT_RESULT_INVALID")
                     return result
                 time.sleep(CHAT_POLL_SECONDS)
-            self.conversation.cancel(job_id)
+            self.conversation.release(job_id)
             raise RuntimeError("MOBILE_CHAT_TIMEOUT")
         except Exception as error:
             if getattr(error, "code", "") == "CHAT_EXECUTION_LIMIT_EXCEEDED":

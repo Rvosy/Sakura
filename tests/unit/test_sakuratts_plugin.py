@@ -160,6 +160,61 @@ def test_prewake_only_for_selected_enabled_conversation(tmp_path, monkeypatch, i
         p.close()
 
 
+@pytest.mark.parametrize('state', ['sleeping', 'stopped', 'awake', 'ready', 'other-character'])
+def test_background_synthesis_reuses_only_the_loaded_character(tmp_path, monkeypatch, state):
+    from plugins.builtin.sakura_sakuratts._runtime import runtime_key
+    p, released = provider(tmp_path, monkeypatch)
+    voice = {'gpt': 'gpt', 'sovits': 'sovits'}
+    p.runtime.key = runtime_key(p.bundle.current(), p.config, voice)
+    if state == 'other-character':
+        p.runtime.key = runtime_key(p.bundle.current(), p.config, {**voice, 'gpt': 'other'})
+    calls = []
+    monkeypatch.setattr(p.runtime, 'status', lambda: 'awake' if state == 'other-character' else state)
+    monkeypatch.setattr(p.runtime, 'start', lambda *_: calls.append('start'))
+    monkeypatch.setattr(p.runtime, 'request', lambda *_: calls.append('tts') or b'audio')
+    try:
+        job = p.begin({'characterId': 'character', 'text': 'history', 'options': {'background': True}})
+        p.executor.submit(lambda: None).result(3)
+        result = p.poll(job)
+        if state in {'awake', 'ready'}:
+            assert result['state'] == 'succeeded'
+            assert calls == ['tts']
+        else:
+            assert result['errorCode'] == 'TTS_BACKGROUND_DEFERRED'
+            assert calls == [] and released == ['audio']
+            job = p.begin({'characterId': 'character', 'text': 'user replay'})
+            p.executor.submit(lambda: None).result(3)
+            assert p.poll(job)['state'] == 'succeeded'
+            assert calls == ['start', 'tts']
+    finally:
+        p.close()
+
+
+def test_background_state_check_preserves_cancellation(tmp_path, monkeypatch):
+    from plugins.builtin.sakura_sakuratts._runtime import runtime_key
+    p, released = provider(tmp_path, monkeypatch)
+    p.runtime.key = runtime_key(p.bundle.current(), p.config, {'gpt': 'gpt', 'sovits': 'sovits'})
+    checking, resume = threading.Event(), threading.Event()
+
+    def status():
+        checking.set()
+        assert resume.wait(3)
+        return 'sleeping'
+
+    monkeypatch.setattr(p.runtime, 'status', status)
+    try:
+        job = p.begin({'characterId': 'character', 'text': 'history', 'options': {'background': True}})
+        assert checking.wait(3)
+        assert p.cancel(job) is True
+        resume.set()
+        p.executor.submit(lambda: None).result(3)
+        assert p.poll(job)['state'] == 'cancelled'
+        assert released == ['audio']
+    finally:
+        resume.set()
+        p.close()
+
+
 def test_cancel_stops_writer_before_releasing_artifact_without_poll(tmp_path, monkeypatch):
     p, released = provider(tmp_path, monkeypatch)
     writing, stop = threading.Event(), threading.Event()

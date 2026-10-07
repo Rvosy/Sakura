@@ -210,7 +210,6 @@ function playbackErrorMessage(error) {
 }
 
 function applyPage(page) {
-  validateHistoryPage(page);
   if (
     identity
     && (page.coreGenerationId !== identity.coreGenerationId || page.characterId !== identity.characterId)
@@ -281,11 +280,15 @@ async function loadInitial() {
       void revealCurrentInitialLoad(revision).catch(() => {});
     }
   } finally {
-    setLoading(false);
-    if (initialReloadPending) {
-      initialReloadPending = false;
-      void loadInitial();
-    }
+    finishLoading();
+  }
+}
+
+function finishLoading() {
+  setLoading(false);
+  if (initialReloadPending) {
+    initialReloadPending = false;
+    void loadInitial();
   }
 }
 
@@ -328,7 +331,7 @@ async function loadEarlier() {
     status.textContent = "更早记录未加载";
     errors.show({ title: "无法读取更早记录", message: errorMessage(error), error });
   } finally {
-    setLoading(false);
+    finishLoading();
   }
 }
 

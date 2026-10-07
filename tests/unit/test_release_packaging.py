@@ -145,6 +145,42 @@ def test_runtime_archive_retries_transient_download_failures(
     assert delays == [5, 5]
 
 
+@pytest.mark.parametrize('failure', ['disk-full', 'rename', 'http-404'])
+def test_runtime_archive_does_not_retry_local_or_permanent_failures(tmp_path, monkeypatch, failure):
+    import errno
+    import urllib.error
+    content = _runtime_zip()
+    archive = tmp_path / 'python-runtime.zip'
+    manifest = tmp_path / 'manifest.json'
+    manifest.write_text(json.dumps({'archive': {'fileName': archive.name,
+        'url': 'https://example.test/python-runtime.zip', 'size': len(content)}}))
+    requests, delays = [], []
+    def download(*_args, **_kwargs):
+        requests.append(True)
+        if failure == 'http-404':
+            raise urllib.error.HTTPError('https://example.test/runtime.zip', 404, 'Not Found', {}, io.BytesIO())
+        return io.BytesIO(content)
+    monkeypatch.setattr(runtime_v2_archive.urllib.request, 'urlopen', download)
+    monkeypatch.setattr(runtime_v2_archive.time, 'sleep', delays.append)
+    original_open, original_replace = Path.open, Path.replace
+    def open_file(path, mode='r', *args, **kwargs):
+        if failure == 'disk-full' and mode == 'xb':
+            raise OSError(errno.ENOSPC, 'no space left')
+        return original_open(path, mode, *args, **kwargs)
+    def replace_file(path, target):
+        if failure == 'rename' and target == archive:
+            raise PermissionError('archive destination locked')
+        return original_replace(path, target)
+    monkeypatch.setattr(Path, 'open', open_file)
+    monkeypatch.setattr(Path, 'replace', replace_file)
+    with pytest.raises(runtime_v2_archive.ArchiveVerificationError) as caught:
+        runtime_v2_archive.download_and_verify(manifest, archive)
+    assert len(requests) == 1 and delays == []
+    assert caught.value.__cause__ is not None
+    assert not archive.exists()
+    assert not list(tmp_path.glob('.*.partial-*'))
+
+
 def test_bootstrap_runtime_stages_linux_layout_from_pinned_archive(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
