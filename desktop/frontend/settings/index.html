@@ -280,7 +280,7 @@
               <legend>角色语音</legend>
               <div class="setting-row">
                 <label class="setting-row-text" for="ttsEnabled">
-                  <span class="setting-title">开口说话</span>
+                  <span class="setting-title">启用语音</span>
                 </label>
                 <span class="setting-toggle"><input id="ttsEnabled" type="checkbox" /></span>
               </div>
@@ -288,11 +288,29 @@
                 <label class="setting-row-text" for="ttsProvider">
                   <span class="setting-title">语音引擎</span>
                 </label>
-                <select id="ttsProvider"></select>
+                <div class="voice-engine-controls">
+                  <select id="ttsProvider"></select>
+                  <button id="ttsPluginSettings" type="button" class="voice-engine-settings" aria-label="打开角色语音插件设置" data-tooltip="插件设置" disabled><span class="sakura-icon icon-settings" aria-hidden="true"></span></button>
+                </div>
               </div>
               <div id="ttsProviderSettings"></div>
             </fieldset>
           </div>
+          <fieldset id="asrSettings" class="settings-group">
+            <legend>语音输入</legend>
+            <div class="setting-row">
+              <label class="setting-row-text" for="asrProvider">
+                <span class="setting-title">识别引擎</span>
+                <span class="setting-desc">用于所有角色。</span>
+              </label>
+              <div class="voice-engine-controls">
+                <select id="asrProvider"></select>
+                <button id="asrPluginSettings" type="button" class="voice-engine-settings" aria-label="打开语音输入插件设置" data-tooltip="插件设置" disabled><span class="sakura-icon icon-settings" aria-hidden="true"></span></button>
+              </div>
+            </div>
+            <p id="asrLocation" class="setting-desc"></p>
+            <p id="asrStatus" class="error" role="alert" hidden></p>
+          </fieldset>
           <fieldset class="settings-group" id="voiceCacheSettings">
             <legend>语音缓存</legend>
             <div class="setting-row">
@@ -579,19 +597,6 @@
       </section>
     </main>
 
-    <div id="asrSettingsHome" hidden>
-      <div id="asrSettings" class="settings-group">
-        <div class="setting-row">
-          <label class="setting-row-text" for="asrProvider">
-            <span class="setting-title">识别引擎</span>
-            <span class="setting-desc">用于所有角色。</span>
-          </label>
-          <select id="asrProvider"></select>
-        </div>
-        <p id="asrLocation" class="setting-desc"></p>
-        <p id="asrStatus" class="error" role="alert" hidden></p>
-      </div>
-    </div>
     <div id="asrInputControlsHome" hidden>
       <div id="asrInputControls" class="asr-input-controls">
         <div class="setting-row">

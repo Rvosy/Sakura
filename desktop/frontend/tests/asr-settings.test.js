@@ -12,13 +12,14 @@ function element() {
     async fire(name) { await events.get(name)?.(); },
   };
 }
-function fixture(snapshot, { devices = [], defaultDeviceId = null } = {}) {
+function fixture(snapshot, { devices = [], defaultDeviceId = null, openPlugin = () => {}, getPlugins = () => [] } = {}) {
   const controls = Object.fromEntries(["asrProvider", "asrStatus", "asrLocation",
     "asrSettings", "asrSettingsHome", "asrInputDevice", "asrRefreshDevices",
-    "asrInputControls", "asrInputControlsHome"].map((key) => [key, element()]));
+    "asrInputControls", "asrInputControlsHome", "asrPluginSettings"].map((key) => [key, element()]));
   const calls = [];
   const controller = createAsrSettingsController({
     document: { getElementById: (key) => controls[key], createElement: element },
+    openPlugin, getPlugins,
     invoke: async (name, args) => {
       calls.push([name, args]);
       if (name === "settings_asr_devices") return typeof devices === "function" ? devices() : { devices, defaultDeviceId };
@@ -89,19 +90,20 @@ test("microphone changes save independently while Hub is disabled and retain its
   } finally { controller.dispose(); }
 });
 
-test("Hub controls belong to its runtime plugin identity and cancelled edits restore the entire draft", async () => {
+test("Hub links to the voice page while only providers mount microphone controls", async () => {
   const f = fixture({ hubPluginId: "thirdparty.hub", providers: [
     { providerId: "thirdparty.asr", label: "Local", processingLocation: "local", available: true },
   ], selectedProviderId: "thirdparty.asr", language: "auto", inputDeviceId: "saved-mic" });
   await f.controller.refresh();
-  assert.equal(f.controller.hasPluginControls("thirdparty.hub"), true);
+  assert.equal(f.controller.isHubPlugin("thirdparty.hub"), true);
+  assert.equal(f.controller.hasPluginControls("thirdparty.hub"), false);
   assert.equal(f.controller.hasPluginControls("unrelated.plugin"), false);
   const initial = f.controller.pluginDraft();
   const dialog = element();
   f.controller.mountPluginControls("unrelated.plugin", dialog);
   assert.equal(dialog.children.length, 0);
   f.controller.mountPluginControls("thirdparty.hub", dialog);
-  assert.deepEqual(dialog.children, [f.controls.asrSettings]);
+  assert.deepEqual(dialog.children, []);
   assert.equal(f.calls.some(([name]) => name === "settings_asr_devices"), false);
   f.controls.asrProvider.value = "";
   await f.controls.asrProvider.fire("change");
@@ -113,7 +115,7 @@ test("Hub controls belong to its runtime plugin identity and cancelled edits res
   assert.equal(f.controls.asrProvider.value, "thirdparty.asr");
   assert.equal(Object.hasOwn(f.controller.pluginDraft(), "language"), false);
   f.controller.unmountPluginControls();
-  assert.equal(f.controls.asrSettingsHome.children.at(-1), f.controls.asrSettings);
+
   assert.equal(f.calls.some(([name]) => name === "settings_asr_save"), false);
   f.controller.dispose();
 });
@@ -173,3 +175,51 @@ test("device enumeration preserves edits made while waiting and rejects out-of-o
   assert.equal(f.controls.asrInputDevice.value, "chosen-while-waiting");
   f.controller.dispose();
 });
+
+
+test("voice input shortcut opens the draft engine and an empty list shows an installation hint", async () => {
+  const opened = [];
+  const state = { hubPluginId: "hub", selectedProviderId: "first", providers: [
+    { providerId: "first", label: "First" }, { providerId: "second", label: "Second" },
+  ] };
+  const f = fixture(state, { openPlugin: id => opened.push(id) });
+  await f.controller.refresh();
+  f.controls.asrProvider.value = "second";
+  await f.controls.asrProvider.fire("change");
+  await f.controls.asrPluginSettings.fire("click");
+  assert.deepEqual(opened, ["second"]);
+  assert.equal(f.controller.isDirty(), true);
+  state.providers = []; state.selectedProviderId = null;
+  await f.controller.refresh();
+  assert.equal(f.controls.asrProvider.children[0].textContent, "未安装语音输入插件");
+  assert.equal(f.controls.asrPluginSettings.disabled, true);
+  assert.equal(f.controller.isDirty(), false);
+  f.controller.dispose();
+});
+
+
+test("an absent saved ASR engine shows the installation hint without clearing its configuration", async () => {
+  const f = fixture({ selectedProviderId: "sakura.asr.sensevoice", providers: [], inputDeviceId: "saved-mic" });
+  await f.controller.refresh();
+  assert.equal(f.controls.asrProvider.value, "sakura.asr.sensevoice");
+  const selected = f.controls.asrProvider.children.find(option => option.value === f.controls.asrProvider.value);
+  assert.equal(selected.textContent, "未安装语音输入插件");
+  assert.equal(f.controls.asrPluginSettings.disabled, true);
+  assert.equal(f.controller.isDirty(), false);
+  await f.controller.save();
+  assert.equal(f.calls.some(([name]) => name === "settings_asr_save"), false);
+  f.controller.dispose();
+});
+
+for (const installed of [false, true]) {
+  test(`ASR missing selection diagnostics distinguish absent and failed installed engines (${installed})`, async () => {
+    const f = fixture({ selectedProviderId: "saved.asr", providers: [], stage: "provider_selection",
+      errorCode: "ASR_PROVIDER_UNAVAILABLE", diagnostics: { diagnostic: "selected provider diagnostic" } },
+      { getPlugins: () => installed ? [{ pluginId: "saved.asr", enabled: true, state: "failed" }] : [] });
+    await f.controller.refresh();
+    assert.equal(f.controls.asrStatus.hidden, !installed);
+    assert.equal(f.controls.asrProvider.value, "saved.asr");
+    assert.equal(f.controller.isDirty(), false);
+    f.controller.dispose();
+  });
+}

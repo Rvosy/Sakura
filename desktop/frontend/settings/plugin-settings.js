@@ -2393,20 +2393,20 @@ export function createPluginSettingsFeature({
     title.append(pluginNode('h2', '', plugin.name || plugin.id), pluginNode('p', 'plugin-detail-tags', `${pluginPresentation.pluginCategories[metadata.category]} · ${plugin.source === 'user' ? '用户安装' : '内置'}`));
     identity.append(pluginIcon(plugin), title);
     const aside = pluginNode('div', 'plugin-detail-aside');
-    if (pluginSettingsSections(plugin).some((section) => !sectionDestination(section))) {
+    if (hasPrivateSettings(plugin)) {
       const configure = pluginNode('button', 'secondary-button plugin-configure', '插件设置');
       configure.prepend(createIcon(document, 'settings'));
       configure.type = 'button'; configure.setAttribute('aria-haspopup', 'dialog');
       configure.addEventListener('click', () => openPluginSettingsDialog(plugin)); aside.append(configure);
     }
     const destinations = new Set(pluginSettingsSections(plugin).map(sectionDestination).filter(Boolean));
-    if (getVoiceController()?.hasPluginSections(plugin.plugin_id) || getAsrController()?.hasPluginControls(plugin.plugin_id)) destinations.add("host:voice");
+    if (getVoiceController()?.hasPluginSections(plugin.plugin_id) || getAsrController()?.isHubPlugin?.(plugin.plugin_id)) destinations.add("host:voice");
     const labels = { providers: "模型服务", model: "模型", voice: "语音", memory: "记忆", interaction: "交互" };
     for (const destination of destinations) {
       const target = destination.startsWith("host:") ? destination.slice(5) : destination;
       const title = labels[target] || pluginView.items.flatMap(p => p.pages || []).find(p => p.pageId === destination)?.title;
       const available = pluginSettingsSections(plugin).some(s => sectionDestination(s) === destination && s.placement?.available !== false)
-        || (destination === "host:voice" && (getVoiceController()?.hasPluginSections(plugin.plugin_id) || getAsrController()?.hasPluginControls(plugin.plugin_id)));
+        || (destination === "host:voice" && (getVoiceController()?.hasPluginSections(plugin.plugin_id) || getAsrController()?.isHubPlugin?.(plugin.plugin_id)));
       const link = pluginNode("button", "secondary-button plugin-settings-link", title && available ? `打开${title}设置` : "设置页面不可用");
       link.type = "button"; link.disabled = !title || !available;
       link.addEventListener("click", () => showPage(target)); aside.append(link);
@@ -2874,6 +2874,12 @@ export function createPluginSettingsFeature({
     if (reveal) card?.scrollIntoView({ block: 'nearest' });
   }
 
+  function hasPrivateSettings(plugin) {
+    return pluginSettingsSections(plugin).some(section => !sectionDestination(section))
+      || Boolean(getAsrController()?.hasPluginControls(plugin.plugin_id))
+      || Boolean(getVoiceController()?.hasPluginSections(plugin.plugin_id));
+  }
+
   function pluginDialogSchema(plugin) {
     return JSON.stringify(pluginSettingsSections(plugin).filter((section) => !sectionDestination(section))
       .map((section) => [section.section_id, section.instance_id, section.presentation, section.surface, section.fields.map((field) => [field.key, field.type, field.readonly])]));
@@ -2891,7 +2897,7 @@ export function createPluginSettingsFeature({
     }
     editor.general.components?.forEach(component => component.update?.());
     const draftHint = editor.dialog.querySelector(".plugin-draft-hint");
-    if (draftHint) draftHint.hidden = !pluginSettingsSections(plugin).some(section =>
+    if (draftHint) draftHint.hidden = !editor.asr && !editor.voice && !pluginSettingsSections(plugin).some(section =>
       !sectionDestination(section) && (!section.presentation?.visibleField || pluginSectionValues(plugin.id, section.section_id)[section.presentation.visibleField])
       && section.fields.some(pluginFieldEditable));
     const focused = document.activeElement;
@@ -2962,6 +2968,20 @@ export function createPluginSettingsFeature({
     const body = pluginNode('div', 'plugin-dialog-body');
     const general = renderPluginSettings(plugin);
     body.append(general);
+    const asr = getAsrController()?.hasPluginControls(plugin.plugin_id) ? getAsrController() : null;
+    const initialAsr = asr ? clonePlain(asr.pluginDraft()) : null;
+    if (asr) {
+      const controls = pluginNode('div', 'plugin-dialog-asr');
+      body.append(controls);
+      asr.mountPluginControls(plugin.plugin_id, controls);
+    }
+    const voice = getVoiceController()?.hasPluginSections(plugin.plugin_id) ? getVoiceController() : null;
+    const initialVoice = voice ? clonePlain(voice.pluginDraft(plugin.plugin_id)) : null;
+    if (voice) {
+      const controls = pluginNode('div', 'plugin-dialog-voice');
+      body.append(controls);
+      voice.mountPluginSections(plugin.plugin_id, controls);
+    }
     const footer = pluginNode('footer', 'plugin-dialog-footer');
     footer.append(pluginNode('span', 'plugin-draft-hint', '应用设置后生效'));
     const actions = pluginNode('div', '');
@@ -2969,7 +2989,7 @@ export function createPluginSettingsFeature({
     const done = pluginNode('button', '', '完成'); done.type = 'submit'; actions.append(cancel, done); footer.append(actions);
     form.append(header, body, footer); dialog.append(form);
     const editor = {
-      dialog, general, installId: plugin.id, generation: runtimePluginController?.snapshot()?.coreGenerationId,
+      dialog, general, asr, voice, installId: plugin.id, generation: runtimePluginController?.snapshot()?.coreGenerationId,
       schema: pluginDialogSchema(plugin), closing: false,
       initial: Object.fromEntries(pluginSettingsSections(plugin).filter((section) => !sectionDestination(section))
         .map((section) => [section.section_id, clonePlain(editablePluginSectionValues(section, pluginSectionValues(plugin.id, section.section_id)))])),
@@ -2977,7 +2997,11 @@ export function createPluginSettingsFeature({
         if (editor.closing) return;
         editor.closing = true; closeSelects(dialog);
         dialog.inert = true;
+        asr?.unmountPluginControls();
+        voice?.unmountPluginSections();
         if (!accept && restore && runtimePluginController?.snapshot()?.coreGenerationId === editor.generation) {
+          if (asr) asr.restorePluginDraft(initialAsr);
+          if (voice) voice.restorePluginDraft(initialVoice);
           for (const [sectionId, values] of Object.entries(editor.initial)) {
             const current = pluginState.settingsValues[plugin.id]?.[sectionId];
             if (current) Object.assign(current, values);
@@ -3032,7 +3056,7 @@ export function createPluginSettingsFeature({
       showPage("plugins");
       if (!plugin) return;
       selectManagedPlugin(installId, { reveal: true });
-      if (configure && pluginSettingsSections(plugin).some(section => !sectionDestination(section))) openPluginSettingsDialog(plugin);
+      if (configure && hasPrivateSettings(plugin)) openPluginSettingsDialog(plugin);
     },
     isDirty: () => runtimePluginController.isDirty() || hasCollectionDrafts(),
     hasCollectionDrafts,
@@ -3104,6 +3128,10 @@ export function createPluginSettingsFeature({
       const editor = pluginSettingsDialog;
       pluginSettingsDialog = null;
       if (editor) {
+        if (!editor.closing) {
+          editor.asr?.unmountPluginControls();
+          editor.voice?.unmountPluginSections();
+        }
         editor.closing = true;
         closeSelects(editor.dialog);
         editor.general.components?.forEach(component => component.dispose());

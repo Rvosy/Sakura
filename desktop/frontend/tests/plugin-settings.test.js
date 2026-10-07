@@ -885,7 +885,7 @@ test("About component actions use the owning plugin section and refresh its rend
   feature.dispose();
 });
 
-test("private settings never borrow or restore functional voice controls", async () => {
+test("voice plugin settings mount available sections and restore cancelled edits", async () => {
   let voice = null;
   const calls = [];
   const ui = featureFixture(async () => snapshot(), { getVoiceController: () => voice });
@@ -907,7 +907,8 @@ test("private settings never borrow or restore functional voice controls", async
   await ui.document.querySelector(".plugin-dialog-close").fire("click");
   await ui.openSettings();
   await ui.document.querySelector(".plugin-dialog-close").fire("click");
-  assert.deepEqual(calls, []);
+  assert.deepEqual(calls, [["mount", "fixture_plugin"], ["unmount"],
+    ["restore", { pluginId: "fixture_plugin", values: { timeout: 60 } }]]);
   ui.feature.dispose();
 });
 
@@ -929,23 +930,38 @@ test("disposing during dialog exit releases it once and ignores the late animati
   assert.equal(ui.timers.size, 0);
 });
 
-test("private settings leave microphone controls and capture ownership on the voice page", async () => {
-  const calls = [];
-  const asr = {
-    refresh: async () => {}, hasPluginControls: (id) => id === "fixture_plugin",
-    pluginDraft: () => ({ inputDeviceId: "saved-mic" }),
-    restorePluginDraft: (draft) => calls.push(["restore", draft]),
-    mountPluginControls: (id, container) => {
-      calls.push(["mount", id]); container.append(ui.document.createElement("select"));
-    },
-    cancelTest: () => calls.push(["cancel"]),
-    unmountPluginControls: () => calls.push(["unmount"]),
-  };
-  const ui = featureFixture(async () => snapshot(), { getAsrController: () => asr });
-  ui.feature.initialize(snapshot());
-  await ui.openSettings();
-  assert.equal(ui.document.querySelector(".plugin-dialog-asr select"), null);
-  await ui.document.querySelector(".plugin-dialog-close").fire("click");
-  assert.deepEqual(calls, []);
-  ui.feature.dispose();
-});
+for (const exit of ["cancel", "accept", "dispose"]) {
+  test(`ASR plugin settings mount controls and ${exit} releases capture with correct drafts`, async () => {
+    let draft = { inputDeviceId: "saved-mic" };
+    let mounted = false;
+    let releases = 0;
+    const asr = {
+      refresh: async () => {}, hasPluginControls: (id) => id === "fixture_plugin",
+      pluginDraft: () => ({ ...draft }),
+      restorePluginDraft: (value) => { draft = value; },
+      mountPluginControls: (_id, container) => {
+        mounted = true;
+        container.append(ui.document.createElement("select"));
+      },
+      unmountPluginControls: () => { mounted = false; releases++; },
+    };
+    const data = snapshot();
+    data.plugins[0].sections = data.plugins[0].sections.filter(section => !section.surface);
+    const ui = featureFixture(async () => data, { getAsrController: () => asr });
+    ui.feature.initialize(data);
+    assert.equal(ui.document.querySelector(".plugin-settings-link"), null);
+    ui.feature.openPlugin(data.plugins[0].installId, true);
+    assert.equal(mounted, true);
+    assert.ok(ui.document.querySelector(".plugin-dialog-asr select"));
+    draft.inputDeviceId = "new-mic";
+    if (exit === "dispose") ui.feature.dispose();
+    else if (exit === "accept") await ui.document.querySelector(".plugin-settings-dialog form").fire("submit");
+    else await ui.document.querySelector(".plugin-dialog-close").fire("click");
+    await settle();
+    assert.equal(mounted, false);
+    assert.equal(releases, 1);
+    assert.equal(draft.inputDeviceId, exit === "cancel" ? "saved-mic" : "new-mic");
+    if (exit !== "dispose") ui.feature.dispose();
+    assert.equal(releases, 1);
+  });
+}

@@ -3,12 +3,11 @@ import { errorText } from "../core/error-display.js";
 
 export function createAsrSettingsController({ document, invoke, enhanceSelect = () => {},
   refreshSelect = () => {}, onDirty = () => {}, onStatus = () => {},
-  listen = null }) {
+  listen = null, openPlugin = () => {}, getPlugins = () => [] }) {
   const provider = document.getElementById("asrProvider");
   const status = document.getElementById("asrStatus");
   const location = document.getElementById("asrLocation");
-  const settings = document.getElementById("asrSettings");
-  const settingsHome = document.getElementById("asrSettingsHome");
+  const pluginSettings = document.getElementById("asrPluginSettings");
   const device = document.getElementById("asrInputDevice");
   const inputControls = document.getElementById("asrInputControls");
   const inputControlsHome = document.getElementById("asrInputControlsHome");
@@ -61,9 +60,13 @@ export function createAsrSettingsController({ document, invoke, enhanceSelect = 
 
   function renderStatus() {
     const selected = snapshot?.providers.find((item) => item.providerId === provider.value);
+    if (pluginSettings) pluginSettings.disabled = !selected;
     const failure = selected?.diagnostics ? selected
       : provider.value === (snapshot?.selectedProviderId || "") ? snapshot : null;
-    status.textContent = failure?.diagnostics ? errorText({ ...failure, code: failure.errorCode || failure.reasonCode }) : "";
+    const absentSelection = !snapshot?.providers.length && !selected
+      && failure?.stage === "provider_selection" && failure.errorCode === "ASR_PROVIDER_UNAVAILABLE"
+      && !getPlugins().some(plugin => plugin.pluginId === snapshot.selectedProviderId && plugin.enabled);
+    status.textContent = failure?.diagnostics && !absentSelection ? errorText({ ...failure, code: failure.errorCode || failure.reasonCode }) : "";
     status.hidden = !status.textContent;
     location.textContent = selected?.processingLocation === "remote"
       ? "录音将发送至该引擎配置的远端服务。" : "";
@@ -77,10 +80,10 @@ export function createAsrSettingsController({ document, invoke, enhanceSelect = 
       const savedDraft = preserveDraft && baseline && JSON.stringify(draft()) !== baseline ? draft() : null;
       snapshot = value;
       provider.replaceChildren();
-      if (!value.selectedProviderId) {
+      if (!value.selectedProviderId || !value.providers.length) {
         const none = document.createElement("option");
         none.value = ""; none.disabled = true;
-        none.textContent = value.providers.length ? "选择引擎" : "暂无可用引擎";
+        none.textContent = value.providers.length ? "选择引擎" : "未安装语音输入插件";
         provider.append(none);
       }
       for (const item of value.providers) {
@@ -94,7 +97,9 @@ export function createAsrSettingsController({ document, invoke, enhanceSelect = 
       for (const selectedId of new Set([value.selectedProviderId, savedDraft?.selectedProviderId])) {
         if (!selectedId || value.providers.some((item) => item.providerId === selectedId)) continue;
         const missing = document.createElement("option");
-        missing.value = selectedId; missing.textContent = `${selectedId}（未加载）`; provider.append(missing);
+        missing.value = selectedId;
+        missing.textContent = value.providers.length ? `${selectedId}（未加载）` : "未安装语音输入插件";
+        provider.append(missing);
       }
       provider.value = value.selectedProviderId || "";
       selectDevice(value.inputDeviceId || "");
@@ -112,15 +117,16 @@ export function createAsrSettingsController({ document, invoke, enhanceSelect = 
       }
     }
   }
+  pluginSettings?.addEventListener("click", () => openPlugin(provider.value));
   provider.addEventListener("change", () => { void inputTest?.cancel(); renderStatus(); onDirty(); });
   device?.addEventListener("change", () => { void inputTest?.cancel(); onDirty(); });
   document.getElementById("asrRefreshDevices")?.addEventListener("click", refreshDevices);
-  const hasPluginControls = (pluginId) => Boolean(pluginId && (pluginId === snapshot?.hubPluginId
-    || snapshot?.providers.some((item) => item.providerId === pluginId)));
+  const hasPluginControls = (pluginId) => Boolean(pluginId && snapshot?.providers.some((item) => item.providerId === pluginId));
   return Object.freeze({
     refresh,
     refreshDevices,
     hasPluginControls,
+    isHubPlugin: (pluginId) => Boolean(pluginId && pluginId === snapshot?.hubPluginId),
     pluginDraft: draft,
     restorePluginDraft(value) {
       provider.value = value?.selectedProviderId || "";
@@ -131,19 +137,18 @@ export function createAsrSettingsController({ document, invoke, enhanceSelect = 
       if (!hasPluginControls(pluginId)) return;
       if (pluginProvider !== pluginId) void inputTest?.cancel();
       pluginProvider = pluginId;
-      if (pluginId === snapshot.hubPluginId) {
-        container.append(settings); renderStatus(); void refresh({ preserveDraft: true });
-      } else {
-        container.append(inputControls); void refreshDevices();
-      }
+      container.append(inputControls); void refreshDevices();
     },
     unmountPluginControls() {
       if (!pluginProvider) return;
       void inputTest?.cancel(); pluginProvider = null;
-      settingsHome?.append(settings); inputControlsHome?.append(inputControls);
+      inputControlsHome?.append(inputControls);
     },
     cancelTest: () => inputTest?.cancel(),
-    onPageChanged(page) { if (page !== "plugins") void inputTest?.cancel(); },
+    onPageChanged(page) {
+      if (page !== "plugins") void inputTest?.cancel();
+      if (page === "voice") void refresh({ preserveDraft: true });
+    },
     isDirty: () => Boolean(snapshot) && JSON.stringify(draft()) !== baseline,
     async save() {
       if (!snapshot || disposed) throw new Error("ASR_SETTINGS_NOT_READY");

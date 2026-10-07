@@ -2312,3 +2312,21 @@ def test_tts_failure_preserves_diagnostics_in_response_log_and_event(tmp_path, m
             assert 'private-key' not in str(diagnostic)
     finally:
         boundary.close()
+
+
+def test_voice_settings_preserve_missing_provider_stage(tmp_path: Path) -> None:
+    status = {"configured": True, "enabled": True, "providerId": "saved.tts",
+              "available": False, "providers": [], "reasonCode": "TTS_PROVIDER_UNAVAILABLE",
+              "stage": "provider_selection", "diagnostics": {"diagnostic": "provider not registered"}}
+    worker = SimpleNamespace(call_service=lambda *args: status, settings_sections=lambda surface: [])
+    boundary = TTSBoundary(
+        GENERATION, CREDENTIAL, tmp_path,
+        session_provider=lambda: SimpleNamespace(character=SimpleNamespace(id="alpha", display_name="Alpha")),
+        plugin_application_provider=lambda: worker,
+    )
+    result = boundary.handle(_request("tts.settings.get", {}, request_id="missing-provider-stage"))
+    assert result["ok"] is True
+    selection = result["payload"]["selection"]
+    assert selection["stage"] == "provider_selection"
+    assert selection["reasonCode"] == status["reasonCode"]
+    assert selection["diagnostics"] == status["diagnostics"]

@@ -1796,10 +1796,15 @@ async function startSettingsFrontend() {
   manifest = applyCapabilityManifest(document, manifest);
   runtimeCapabilityManifest = manifest;
   runtimeVisualEffectModes = inputVisualEffectModes(manifest);
+  const openVoicePlugin = (pluginId) => {
+    const plugin = runtimePluginController?.installedPlugins().find(item => item.pluginId === pluginId);
+    if (plugin) runtimePluginController.openPlugin(plugin.installId, true);
+  };
   await initializeRuntimeSettingsSection(async () => {
     const { createAsrSettingsController } = await import("./asr-runtime.js");
     runtimeAsrController = createAsrSettingsController({
-      document, invoke, enhanceSelect, refreshSelect,
+      document, invoke, enhanceSelect, refreshSelect, openPlugin: openVoicePlugin,
+      getPlugins: () => runtimePluginController?.installedPlugins() || [],
       listen: (eventName, handler) => window.__TAURI__.event.listen(eventName, handler),
       onDirty: refreshDirty, onStatus: notify,
     });
@@ -1948,6 +1953,7 @@ async function startSettingsFrontend() {
         refreshSelect,
         refreshAvailability: async () => { await runtimePluginController?.refreshCurrent(); },
         openPlugins: () => showPage("plugins"),
+        openPlugin: openVoicePlugin,
         onDirty: refreshDirty,
         onStatus: notify,
         onSectionsRendered: () => runtimePluginController?.onVoiceSectionsRendered(),

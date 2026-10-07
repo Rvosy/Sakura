@@ -36,6 +36,7 @@ export function createVoiceController({
   getPlugins = () => [],
   refreshAvailability = async () => {},
   openPlugins = () => {},
+  openPlugin = () => {},
   enhanceSelect = () => {},
   refreshSelect = () => {},
   onDirty = () => {},
@@ -49,6 +50,7 @@ export function createVoiceController({
     unavailable: document.getElementById("voiceUnavailable"),
     enabled: document.getElementById("ttsEnabled"),
     provider: document.getElementById("ttsProvider"),
+    pluginSettings: document.getElementById("ttsPluginSettings"),
     sections: document.getElementById("ttsProviderSettings"),
   };
   const characterNotice = document.createElement("p");
@@ -73,6 +75,7 @@ export function createVoiceController({
 
   function renderFailure() {
     const selected = snapshot?.providers.find(item => item.providerId === fields.provider.value);
+    if (fields.pluginSettings) fields.pluginSettings.disabled = !selected;
     const failure = selected?.diagnostics ? selected
       : fields.provider.value === snapshot?.selection?.providerId ? snapshot.selection : null;
     failureNotice.textContent = failure?.diagnostics ? errorText({ ...failure, code: failure.reasonCode }) : "";
@@ -305,7 +308,7 @@ export function createVoiceController({
 
   function showUnavailable(availability) {
     fields.page.dataset.voiceState = availability.state;
-    fields.settings.hidden = true;
+    fields.settings.hidden = false;
     fields.unavailable.hidden = false;
     fields.unavailable.textContent = "";
     characterNotice.hidden = true;
@@ -357,13 +360,27 @@ export function createVoiceController({
     sectionInputs.clear();
     sectionAvailability.clear();
     if (sectionHost) sectionHost.container.textContent = "";
+    characterNotice.hidden = true;
+    failureNotice.hidden = true;
+    failureNotice.textContent = "";
     fields.enabled.checked = false;
     fields.enabled.disabled = true;
     fields.provider.textContent = "";
     fields.provider.disabled = true;
+    const option = document.createElement("option");
+    option.value = "";
+    option.textContent = { missing: "未安装语音插件", unavailable: "未安装语音插件",
+      disabled: "语音插件已停用", starting: "语音插件正在启动", failed: "语音插件启动失败",
+      error: "语音设置读取失败" }[availability.state] || "语音插件暂不可用";
+    fields.provider.append(option);
+    fields.provider.value = "";
+    if (fields.pluginSettings) fields.pluginSettings.disabled = true;
     fields.sections.textContent = "";
     refreshSelect(fields.provider);
-    showUnavailable(availability);
+    if (["missing", "unavailable"].includes(availability.state) && !availability.diagnostics) {
+      showSettings();
+      fields.page.dataset.voiceState = availability.state;
+    } else showUnavailable(availability);
     onDirty();
     onSectionsRendered();
   }
@@ -376,8 +393,11 @@ export function createVoiceController({
       if (previousDraft && draftSignature(previousDraft) !== baseline) {
         throw new Error("语音引擎暂不可用，请稍后重试。");
       }
+      const absentSelection = next.selection?.stage === "provider_selection"
+        && next.selection.reasonCode === "TTS_PROVIDER_UNAVAILABLE"
+        && !getPlugins().some(plugin => plugin.pluginId === next.selection.providerId && plugin.enabled);
       renderUnavailable(next.availability && next.availability.state !== "active" ? next.availability
-        : { state: "unavailable", diagnostics: next.selection?.diagnostics, reasonCode: next.selection?.reasonCode });
+        : { state: "unavailable", diagnostics: absentSelection ? null : next.selection?.diagnostics, reasonCode: next.selection?.reasonCode });
       return;
     }
     snapshot = next;
@@ -465,6 +485,7 @@ export function createVoiceController({
     }
   }
 
+  fields.pluginSettings?.addEventListener("click", () => openPlugin(fields.provider.value));
   fields.enabled.addEventListener("input", markDirty);
   fields.enabled.addEventListener("change", markDirty);
   const handleProviderChange = () => {

@@ -78,7 +78,7 @@ function element(tagName = "div") {
 
 function fixture() {
   const controls = Object.fromEntries([
-    "page-voice", "voiceSettings", "voiceUnavailable", "ttsEnabled", "ttsProvider", "ttsProviderSettings",
+    "page-voice", "voiceSettings", "voiceUnavailable", "ttsEnabled", "ttsProvider", "ttsProviderSettings", "ttsPluginSettings",
   ].map((id) => [id, element()]));
   controls["page-voice"].dataset = {};
   controls.voiceSettings.hidden = false;
@@ -345,7 +345,7 @@ test("disabled TTS Hub skips voice IPC and can recover after the Hub is enabled"
   assert.equal(calls, 0);
   assert.equal(controls.ttsEnabled.disabled, true);
   assert.equal(controls.ttsProvider.disabled, true);
-  assert.equal(controls.voiceSettings.hidden, true);
+  assert.equal(controls.voiceSettings.hidden, false);
   assert.equal(controls.voiceUnavailable.hidden, false);
   assert.equal(controls["page-voice"].dataset.voiceState, "disabled");
   assert.equal(created.some((item) => item.textContent === "语音管理暂不可用"), true);
@@ -414,7 +414,7 @@ test("settings startup connects the voice controller to the installed plugin sna
       refreshCurrent: async () => { plugins = [hub()]; },
       onVoiceSectionsRendered() {},
     },
-    enhanceSelect() {}, refreshSelect() {}, refreshDirty() {}, notify() {}, showPage() {},
+    enhanceSelect() {}, refreshSelect() {}, refreshDirty() {}, notify() {}, showPage() {}, openVoicePlugin() {},
     runtimeDiagnostics: { reportError() {} },
   };
   await vm.runInNewContext(`(async () => { let runtimeVoiceController; ${source.slice(start, end)} })()`, context);
@@ -425,7 +425,7 @@ test("settings startup connects the voice controller to the installed plugin sna
   assert.equal(controls["page-voice"].dataset.voiceState, "available");
 });
 
-test("enabled TTS Hub without an enabled voice engine shows the page-level unavailable state", async () => {
+test("empty voice engine list keeps the selector visible with an installation hint", async () => {
   const { controls, document, created } = fixture();
   const controller = createVoiceController({
     document,
@@ -437,9 +437,10 @@ test("enabled TTS Hub without an enabled voice engine shows the page-level unava
   });
 
   assert.equal(await controller.refreshCurrent(), null);
-  assert.equal(controls.voiceSettings.hidden, true);
-  assert.equal(controls.voiceUnavailable.hidden, false);
-  assert.equal(created.some((item) => item.textContent === "语音管理暂不可用"), true);
+  assert.equal(controls.voiceSettings.hidden, false);
+  assert.equal(controls.voiceUnavailable.hidden, true);
+  assert.equal(controls.ttsProvider.children.at(-1).textContent, "未安装语音插件");
+  assert.equal(controls.ttsPluginSettings.disabled, true);
   assert.equal(controller.isDirty(), false);
 });
 
@@ -687,3 +688,41 @@ test("refreshing after other plugin changes preserves pending voice edits for th
   assert.equal(controller.pluginDraft("com.example.neural-voice").sections[0].values.timeoutSeconds, 60);
   assert.equal(controller.isDirty(), false);
 });
+
+
+test("voice plugin shortcut follows the selected engine before settings are applied", async () => {
+  const { controls, document } = fixture();
+  const opened = [];
+  const controller = createVoiceController({ document, invoke: async () => snapshot(),
+    openPlugin: id => opened.push(id) });
+  controller.initialize(snapshot({ providers: [
+    { providerId: "first", label: "First", available: true },
+    { providerId: "second", label: "Second", available: true },
+  ], selection: { enabled: true, providerId: "first" }, sections: [] }));
+  assert.equal(controls.ttsPluginSettings.disabled, false);
+  controls.ttsProvider.value = "second";
+  controls.ttsProvider.fire("change");
+  controls.ttsPluginSettings.fire("click");
+  assert.deepEqual(opened, ["second"]);
+  assert.equal(controller.isDirty(), true);
+  controller.dispose();
+});
+
+for (const installed of [false, true]) {
+  test(`TTS absent saved engine uses the empty selector while installed failure retains diagnostics (${installed})`, async () => {
+    const { document, controls, created } = fixture();
+    const controller = createVoiceController({ document,
+      getPlugins: () => [hub(), ...(installed ? [{ pluginId: "saved.tts", enabled: true, state: "failed", provides: [] }] : [])],
+      invoke: async () => snapshot({ providers: [], sections: [], selection: {
+        providerId: "saved.tts", enabled: true, stage: "provider_selection", reasonCode: "TTS_PROVIDER_UNAVAILABLE",
+        diagnostics: { diagnostic: "selected provider diagnostic" },
+      } }),
+    });
+    await controller.refreshCurrent();
+    assert.equal(controls.voiceUnavailable.hidden, !installed);
+    assert.equal(controls.voiceSettings.hidden, false);
+    if (installed) assert.ok(created.some(item => item.textContent.includes("selected provider diagnostic")));
+    assert.equal(controller.isDirty(), false);
+    controller.dispose();
+  });
+}

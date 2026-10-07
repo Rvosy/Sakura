@@ -4135,6 +4135,48 @@ button:focus-visible,
   max-width: none;
 }
 
+.voice-engine-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: clamp(240px, 30vw, 380px);
+  min-width: 0;
+  max-width: 100%;
+  justify-self: end;
+}
+.voice-engine-controls > select,
+.voice-engine-controls > .custom-select {
+  flex: 1;
+  min-width: 0;
+  max-width: none;
+}
+.voice-engine-settings {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 32px;
+  min-width: 32px;
+  min-height: 32px;
+  padding: 6px;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  color: var(--sakura-muted-text);
+}
+.voice-engine-settings .sakura-icon { width: 18px; height: 18px; }
+.voice-engine-settings:disabled { opacity: 0.4; cursor: default; }
+.voice-engine-settings:hover:not(:disabled),
+.voice-engine-settings:focus-visible {
+  background: var(--surface-raised);
+  color: var(--sakura-primary);
+  transform: none;
+  box-shadow: none;
+}
+.voice-engine-settings:focus-visible {
+  outline: 2px solid var(--sakura-primary);
+  outline-offset: 2px;
+}
+
 /* 数字输入 + 单位后缀。 */
 .field-unit {
   display: inline-flex;
