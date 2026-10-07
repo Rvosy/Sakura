@@ -784,19 +784,15 @@ fn is_hex_color(value: &str) -> bool {
 mod tests {
     use super::*;
     use std::fs;
-    use std::time::{SystemTime, UNIX_EPOCH};
 
     struct Fixture(PathBuf);
 
     impl Fixture {
         fn new() -> Self {
-            let nonce = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos();
+            let nonce = uuid::Uuid::new_v4();
             let path = std::env::temp_dir()
                 .join(format!("sakura-wp-3u-02-{}-{nonce}", std::process::id()));
-            fs::create_dir_all(&path).unwrap();
+            fs::create_dir(&path).unwrap();
             Self(path)
         }
 
@@ -1104,18 +1100,26 @@ mod tests {
     }
 
     #[test]
-    fn parent_permission_shape_failure_does_not_create_data_or_temp_files() {
+    fn parent_path_is_file_failure_preserves_original_file_without_temp_files() {
         let fixture = Fixture::new();
         let parent_as_file = fixture.0.join("blocked");
         fs::write(&parent_as_file, b"not a directory").unwrap();
         let target = parent_as_file.join("ui.json");
+        let original_error = fs::create_dir_all(&parent_as_file).unwrap_err();
+        let error = atomic_write(&target, b"replacement").unwrap_err();
         assert_eq!(
-            crate::runtime_log::diagnostic_code(
-                &atomic_write(&target, b"replacement").unwrap_err()
-            ),
-            "APPEARANCE_PERMISSION_DENIED"
+            crate::runtime_log::diagnostic_code(&error),
+            "APPEARANCE_DIRECTORY_CREATE_FAILED"
         );
-        assert_eq!(fs::read(parent_as_file).unwrap(), b"not a directory");
+        assert!(error.contains(&original_error.to_string()));
+        assert_eq!(fs::read(&parent_as_file).unwrap(), b"not a directory");
+        assert_eq!(
+            fs::read_dir(&fixture.0)
+                .unwrap()
+                .map(|entry| entry.unwrap().path())
+                .collect::<Vec<_>>(),
+            vec![parent_as_file]
+        );
     }
 }
 #[cfg(test)]
