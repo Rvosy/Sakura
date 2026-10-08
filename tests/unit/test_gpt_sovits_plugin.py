@@ -74,7 +74,7 @@ def test_resource_update_is_notified_when_running_task_finishes(tmp_path, monkey
         assert release.wait(3)
     monkeypatch.setattr(coordinator, "_execute_warmup", execute)
     original_wait = coordinator._idle.wait
-    def wait(timeout):
+    def wait(timeout=None):
         waiting.set()
         result = original_wait(timeout)
         notified.append(result)
@@ -264,14 +264,13 @@ def _request(name: str, payload: dict[str, object]) -> dict[str, object]:
     }
 
 
-def _worker(root: Path, *, call_timeout: float) -> PluginRuntimeApplication:
+def _worker(root: Path) -> PluginRuntimeApplication:
     roots = RuntimeRoots(root, root)
     return PluginRuntimeApplication(
         roots,
         GENERATION,
         ToolRegistry(),
         PluginInventory(roots).scan().runtime_specs,
-        call_timeout=call_timeout,
     )
 
 
@@ -317,7 +316,7 @@ def test_real_gpt_sovits_provider_is_character_scoped_serial_and_core_consumed(
     root = _root(tmp_path, endpoint)
     server_thread = threading.Thread(target=server.serve_forever, daemon=True)
     server_thread.start()
-    worker = _worker(root, call_timeout=0.5)
+    worker = _worker(root)
     session = SimpleNamespace(character=SimpleNamespace(id="alpha"))
     boundary = TTSBoundary(
         GENERATION,
@@ -614,7 +613,7 @@ def test_managed_runtime_restarts_after_child_exit(monkeypatch) -> None:  # type
     assert runtime._weights_ready is False
 
 
-def test_managed_runtime_reports_timeout_and_weight_failure_stage(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+def test_managed_runtime_waits_for_readiness_and_reports_weight_failure(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     from plugins.optional.sakura_gpt_sovits import _support
 
     diagnostics: list[tuple[str, str, dict[str, str]]] = []
@@ -643,14 +642,12 @@ def test_managed_runtime_reports_timeout_and_weight_failure_stage(monkeypatch) -
 
     monkeypatch.setattr(runtime, "_start", start)
     monkeypatch.setattr(_support, "_probe_tcp", lambda *_args: False)
+    readiness = iter([False, False, True])
+    monkeypatch.setattr(_support, "_probe_http", lambda *_args: next(readiness))
     errors: list[str] = []
-    assert runtime.ensure_available(errors.append) is False
-    assert errors == ["TTS_RUNTIME_TIMEOUT"]
-    failed = diagnostics[-1]
-    assert failed[0] == "tts.service.failed"
-    assert failed[2]["reason_code"] == "TTS_RUNTIME_TIMEOUT"
-    assert failed[2]["status"] == "failed"
-    assert failed[2]["elapsed_ms"]
+    assert runtime.ensure_available(errors.append) is True
+    assert errors == []
+    assert diagnostics[-1][0] == "tts.service.ready"
 
     runtime._service_ready = True
     runtime._server_process = Process()
@@ -674,8 +671,7 @@ def test_managed_runtime_reports_timeout_and_weight_failure_stage(monkeypatch) -
 
 @pytest.mark.parametrize(
     ("reason_code", "error_type", "exit_code"),
-    [("TTS_RUNTIME_TIMEOUT", "TimeoutError", None),
-     ("TTS_RUNTIME_EXITED", "ChildProcessExit", 23)],
+    [("TTS_RUNTIME_EXITED", "ChildProcessExit", 23)],
 )
 def test_managed_failure_keeps_evidence_through_diagnostics_and_core_log(
     tmp_path: Path, reason_code: str, error_type: str, exit_code: int | None,
@@ -738,14 +734,10 @@ def test_managed_failure_keeps_evidence_through_diagnostics_and_core_log(
     assert attributes["event"] == "tts.service.failed"
     assert attributes["provider"] == provider_module.PROVIDER_ID
     assert attributes["reason_code"] == reason_code
-    assert attributes["timeout_ms"] == 5000
     assert float(attributes["elapsed_ms"]) >= 0
     assert attributes["error_type"] == error_type
-    if exit_code is None:
-        assert attributes["probe_outcome"] == "timeout"
-    else:
-        assert attributes["child_exited"] is True
-        assert attributes["exit_code"] == exit_code
+    assert attributes["child_exited"] is True
+    assert attributes["exit_code"] == exit_code
     assert "model initialization failed" in attributes["diagnostic"]
     assert 'engine/load.py' in attributes["exception_stack"]
     assert "private-engine-token" not in stream.getvalue().decode("utf-8")
@@ -761,7 +753,7 @@ def test_disabling_provider_cancels_active_job_releases_artifact_and_can_restore
     root = _root(tmp_path, f"http://127.0.0.1:{server.server_port}")
     server_thread = threading.Thread(target=server.serve_forever, daemon=True)
     server_thread.start()
-    worker = _worker(root, call_timeout=1.5)
+    worker = _worker(root)
     try:
         worker.start()
         worker.wait_until_loaded(timeout=5)
@@ -806,7 +798,7 @@ def test_invalid_provider_config_stays_active_but_reports_unavailable(tmp_path: 
         "http://127.0.0.1:1",
         config_patch={"timeoutSeconds": True},
     )
-    worker = _worker(root, call_timeout=0.5)
+    worker = _worker(root)
     try:
         worker.start()
         assert worker.wait_until_loaded(timeout=5)
@@ -829,7 +821,7 @@ def test_invalid_provider_config_stays_active_but_reports_unavailable(tmp_path: 
             "field": "endpointMode",
             "equals": "custom",
         }
-        assert fields["timeoutSeconds"]["enabledWhen"] is None
+        assert fields["timeoutSeconds"]["enabledWhen"] == {"field": "endpointMode", "equals": "custom"}
         assert worker.settings_sections("about") == []
         component = worker.settings_sections("plugin")
         assert len(component) == 1
@@ -973,7 +965,7 @@ def test_installed_managed_bundle_with_stale_paths_is_available_after_startup(
     runtime.mkdir(parents=True)
     (work_dir / "api_v2.py").write_text("", encoding="utf-8")
     (runtime / "python.exe").write_bytes(b"runtime")
-    worker = _worker(root, call_timeout=0.5)
+    worker = _worker(root)
     try:
         worker.start()
         assert worker.wait_until_loaded(timeout=5)
@@ -1284,7 +1276,7 @@ def test_gpt_provider_cancels_queued_job_and_rejects_character_escape(tmp_path: 
     )
     server_thread = threading.Thread(target=server.serve_forever, daemon=True)
     server_thread.start()
-    worker = _worker(root, call_timeout=0.5)
+    worker = _worker(root)
     try:
         worker.start()
         worker.wait_until_loaded(timeout=5)
@@ -1348,3 +1340,98 @@ def test_gpt_provider_cancels_queued_job_and_rejects_character_escape(tmp_path: 
         server.shutdown()
         server.server_close()
         server_thread.join(1)
+
+
+def test_bundle_status_reads_reuse_recommendation_and_clear_download_progress(tmp_path):
+    from plugins.optional.sakura_gpt_sovits import _bundle
+
+    selected = []
+    extracting = threading.Event()
+    release = threading.Event()
+    def entry():
+        selected.append(True)
+        return _bundle.GPT_SOVITS_NVIDIA50
+    def install(_entry, _root, **callbacks):
+        callbacks["on_status"]("download")
+        callbacks["on_progress"](60)
+        callbacks["on_download_progress"](_bundle.TTSBundleDownloadProgress(100, 100))
+        callbacks["on_status"]("extract")
+        extracting.set()
+        assert release.wait(3)
+        callbacks["check_cancel"]()
+        raise AssertionError("installation must be cancelled")
+    resource = _bundle.TTSBundleResource(
+        user_root=tmp_path, config_get=lambda: {}, config_update=lambda _value: None,
+        entry=entry, custom_endpoint=lambda _value: False, installer=install,
+    )
+    try:
+        resource.load()
+        resource.load()
+        resource.start({})
+        assert extracting.wait(3)
+        snapshot = resource.load()["bundleResource"]
+        assert snapshot["taskState"] == "running"
+        assert "解压" in snapshot["message"]
+        assert snapshot["progress"] is None
+        assert snapshot["detail"] == ""
+        assert selected == [True]
+    finally:
+        resource.cancel({})
+        release.set()
+        resource.close()
+
+
+def test_external_synthesis_timeout_accepts_long_running_service():
+    from plugins.optional.sakura_gpt_sovits import plugin
+
+    config = plugin._parse_config({"endpointMode": "custom", "customBaseUrl": "http://localhost:9880",
+                                   "timeoutSeconds": 3600})
+    assert config.timeout_seconds == 3600
+
+
+@pytest.mark.parametrize("engine", ["gpt_sovits", "genie"])
+def test_http_cancellation_does_not_wait_for_blocked_response_close(engine, monkeypatch):
+    from plugins.optional.sakura_gpt_sovits import _support as gpt
+    from plugins.optional.sakura_genie import _support as genie
+
+    reading, release, finished, closed = (threading.Event() for _ in range(4))
+    outcomes = []
+    class Response:
+        status = 200
+        def __enter__(self):
+            return self
+        def read(self, _size):
+            reading.set()
+            release.wait()
+            return b""
+        def close(self):
+            release.wait()
+            closed.set()
+        def __exit__(self, *_args):
+            self.close()
+    def opener(*_args, **_kwargs):
+        return Response()
+    def check_cancel():
+        if reading.is_set():
+            raise RuntimeError("cancelled blocked read")
+    def request():
+        try:
+            if engine == "gpt_sovits":
+                gpt._read_url("http://localhost/tts", timeout=None, cancel_checker=check_cancel)
+            else:
+                genie.read_url_cancellable(opener, "http://localhost/tts", timeout=None, cancel_checker=check_cancel)
+        except RuntimeError as error:
+            outcomes.append(str(error))
+        finally:
+            finished.set()
+    monkeypatch.setattr(gpt, "_open_url", opener)
+    caller = threading.Thread(target=request)
+    caller.start()
+    try:
+        assert reading.wait(3)
+        assert finished.wait(3), "cancel must return so the owner can terminate its service"
+        assert outcomes == ["cancelled blocked read"]
+    finally:
+        release.set()
+        caller.join(3)
+        assert closed.wait(3)

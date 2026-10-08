@@ -249,7 +249,7 @@ Collection 只公开 `content/layer/category/source/importance/confidence/update
 - 在隔离 v2 根直接比较受测文件内容与数据库记录：Qdrant、SQLite、core profiles 和已安装的固定
   FastEmbed/ONNX snapshot 在只读设置/搜索路径保持不变；completed chat 只允许当前 curation-state
   语义变化，不为验收额外扫描真实模型或用户目录。
-- 正常退出、插件停用、reload、插件调用/cleanup timeout、Core crash 后线程、callback、Effect、pipe、文件锁与后代
+- 正常退出、插件停用、reload、插件调用失败/cleanup timeout、Core crash 后线程、callback、Effect、pipe、文件锁与后代
   进程有界归零。
 - Frontend、Rust、Python focused tests，以及 `runtime-v2-memory-tests` 与当前产品 smoke journey 通过；
   无法本地执行的平台/真实模型门明确记录风险。

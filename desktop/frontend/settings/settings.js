@@ -1701,9 +1701,6 @@ detailCard?.addEventListener("input", (event) => {
     });
     window.__TAURI__?.event?.listen?.("sakura://settings-close-requested", requestCancelClose);
     window.__TAURI__?.event?.listen?.("sakura://settings-exit-requested", requestAppExitClose);
-    window.__TAURI__?.event?.listen?.("sakura://settings-exit-timeout", () => {
-      notify("退出请求已取消：设置窗口未在 5 秒内响应。", "info");
-    });
     const current = window.__TAURI__?.window?.getCurrentWindow?.();
     if (!current?.onCloseRequested) {
       return;

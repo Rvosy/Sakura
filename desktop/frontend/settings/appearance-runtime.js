@@ -638,23 +638,11 @@ export function createRuntimeAppearanceController({
         onDirty();
         return;
       }
-      const deadline = Date.now() + 10_000;
-      let lastError = null;
-      while (!disposed && Date.now() < deadline) {
-        try {
-          const next = validateAppearanceSnapshot(await invoke("settings_character_appearance_get"));
-          if (next.presentation.generationId === targetGeneration
-              && next.presentation.characterId === targetCharacterId) {
-            applySnapshot(next, { preserveDraft: true });
-            restorePreview = Boolean(baseline && stable(draft) !== stable(baseline));
-            return;
-          }
-        } catch (error) {
-          lastError = error;
-        }
-        await wait(100);
-      }
-      throw new Error(`APPEARANCE_CORE_REBIND_NOT_READY${lastError ? `: ${String(lastError)}` : ""}`, { cause: lastError });
+      const next = validateAppearanceSnapshot(await invoke("settings_character_appearance_get"));
+      if (disposed || next.presentation.generationId !== targetGeneration
+          || next.presentation.characterId !== targetCharacterId) return;
+      applySnapshot(next, { preserveDraft: true });
+      restorePreview = Boolean(baseline && stable(draft) !== stable(baseline));
     })().catch((error) => {
       onError(error, "正在恢复外观设置，请稍后重试。");
       throw error;

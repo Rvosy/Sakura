@@ -293,12 +293,7 @@ class RealChatBoundary:
         except BaseException:
             self._drop_execution(operation_id)
             raise
-        if not started.wait(CHAT_CLOSE_TIMEOUT_SECONDS):
-            self.cancel_all()
-            raise RealChatRejection(
-                "CHAT_START_TIMEOUT",
-                "chat start acknowledgement timed out",
-            )
+        started.wait()
         if kickoff_errors:
             raise kickoff_errors[0]
         return self._accepted_send_response(request, operation_id)

@@ -47,7 +47,7 @@ class Plugin:
 ''', encoding="utf-8",
         )
     roots = RuntimeRoots(distribution, user)
-    return PluginRuntimeManager(roots, "bound-lifecycle-test", PluginInventory(roots).scan().runtime_specs, call_timeout=0.3)
+    return PluginRuntimeManager(roots, "bound-lifecycle-test", PluginInventory(roots).scan().runtime_specs)
 
 
 @pytest.mark.parametrize("first_operation", ["disable", "close"])
@@ -318,7 +318,6 @@ class Plugin:
     roots = RuntimeRoots(distribution, user)
     manager = PluginRuntimeManager(
         roots, "exit-tail-test", PluginInventory(roots).scan().runtime_specs,
-        call_timeout=0.3,
     )
     registrations = Registrations()
     manager.install_host_service(host_service, registrations, exports=("register", "unregister"))

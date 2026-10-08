@@ -20,7 +20,6 @@ DEFAULT_HOST = "0.0.0.0"
 DEFAULT_PORT = 8765
 MAX_REQUEST_BYTES = 12 * 1024 * 1024
 SOCKET_TIMEOUT_SECONDS = 30
-CHAT_TIMEOUT_SECONDS = 55.0
 CHAT_POLL_SECONDS = 0.2
 MAX_CONCURRENT_REQUESTS = 8
 MAX_REQUESTS_PER_MINUTE = 60
@@ -140,8 +139,7 @@ class MobilePluginService:
             job_id = str(started.get("jobId") if isinstance(started, dict) else "")
             if not job_id:
                 raise RuntimeError("MOBILE_CHAT_JOB_INVALID")
-            deadline = time.monotonic() + CHAT_TIMEOUT_SECONDS
-            while time.monotonic() < deadline:
+            while True:
                 state = self.conversation.poll(job_id)
                 if isinstance(state, dict) and state.get("status") == "completed":
                     result = state.get("result")
@@ -149,8 +147,6 @@ class MobilePluginService:
                         raise RuntimeError("MOBILE_CHAT_RESULT_INVALID")
                     return result
                 time.sleep(CHAT_POLL_SECONDS)
-            self.conversation.release(job_id)
-            raise RuntimeError("MOBILE_CHAT_TIMEOUT")
         except Exception as error:
             if getattr(error, "code", "") == "CHAT_EXECUTION_LIMIT_EXCEEDED":
                 raise MobileChatBusyError("另一个对话正在进行，请稍后重试。") from error
@@ -589,17 +585,8 @@ function api(path) {{ return path + (path.includes('?') ? '&' : '?') + 'token=' 
 function setStatus(value) {{ statusLine.textContent = value || ''; }}
 function thinkingText() {{ return assistantName + ' 正在思考...'; }}
 function sleep(ms) {{ return new Promise(resolve => setTimeout(resolve, ms)); }}
-async function fetchWithTimeout(url, options = {{}}) {{
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 60000);
-  try {{
-    return await fetch(url, {{ ...options, signal: controller.signal }});
-  }} finally {{
-    clearTimeout(timer);
-  }}
-}}
 async function fetchJson(path, options = {{}}) {{
-  const res = await fetchWithTimeout(api(path), options);
+  const res = await fetch(api(path), options);
   let data = {{}};
   try {{
     data = await res.json();
@@ -608,7 +595,6 @@ async function fetchJson(path, options = {{}}) {{
   return data;
 }}
 function errorText(err) {{
-  if (err && err.name === 'AbortError') return '请求超时，请稍后再试。';
   return String(err && err.message ? err.message : err);
 }}
 function cleanAssistantText(value) {{

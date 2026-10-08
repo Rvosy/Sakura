@@ -169,6 +169,7 @@ def test_application_close_reclaims_inputs_after_manager_cleanup(cleanup_fails):
     application.conversation, application.speech = Mock(), Mock()
     application.unbind_session = Mock()
     application._loaded = threading.Event()
+    application._bound = threading.Event()
 
     def cleanup():
         application.speech.close.assert_called_once_with()

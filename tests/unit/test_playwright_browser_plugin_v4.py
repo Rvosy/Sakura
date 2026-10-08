@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import shutil
+import threading
 import time
 import zipfile
 from pathlib import Path
@@ -261,3 +262,53 @@ def test_browser_failures_log_metadata_and_preserve_business_result() -> None:
     for _ in range(20):
         assert callback({}) == "private page"
     assert logger.mock_calls == []
+
+
+@pytest.mark.parametrize("blocked", ["operation", "cleanup"])
+def test_browser_shutdown_timeout_retains_the_same_cleanup_until_it_finishes(monkeypatch, blocked):
+    entered, release, finished = threading.Event(), threading.Event(), threading.Event()
+    errors, closed = [], []
+
+    def hold():
+        entered.set()
+        release.wait()
+
+    def close_browser():
+        if blocked == "cleanup":
+            hold()
+        closed.append("browser")
+
+    owned_browser = Mock(close=close_browser)
+    browser._browser = owned_browser
+    executor = browser._ensure_executor()
+    if blocked == "operation":
+        executor.submit(hold)
+        assert entered.wait(1)
+    monkeypatch.setattr(browser, "_SHUTDOWN_TIMEOUT_SECONDS", .05)
+
+    def stop():
+        try:
+            browser.shutdown_browser()
+        except BaseException as error:
+            errors.append(error)
+        finally:
+            finished.set()
+
+    worker = threading.Thread(target=stop)
+    worker.start()
+    try:
+        assert entered.wait(1)
+        assert finished.wait(1), "shutdown must return after its cleanup budget expires"
+        assert len(errors) == 1 and isinstance(errors[0], TimeoutError)
+        assert browser._browser is owned_browser
+        with pytest.raises(RuntimeError, match="已关闭"):
+            browser._run_browser_task(lambda: "new browser operation")
+        release.set()
+        browser.shutdown_browser()
+        assert closed == ["browser"]
+        assert browser._bg_executor is None
+        assert browser._browser is None
+    finally:
+        release.set()
+        worker.join(1)
+        browser.shutdown_browser()

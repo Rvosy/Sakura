@@ -15,7 +15,7 @@ function transitionError(error) {
 function uncertainManagementError(error) {
   const message = String(error?.message || error || "");
   return transitionError(error) || [
-    "CONFIG_REVISION_CONFLICT", "REQUEST_DEADLINE_EXCEEDED", "SETTINGS_REQUEST_ABORTED",
+    "CONFIG_REVISION_CONFLICT", "SETTINGS_REQUEST_ABORTED",
     "TRANSPORT_", "PLUGIN_INSTALL_ROLLBACK_FAILED", "PLUGIN_INSTALL_RECOVERY_FAILED",
     "PLUGIN_UNINSTALL_ROLLBACK_FAILED", "PLUGIN_UNINSTALL_RECOVERY_FAILED",
     "PLUGIN_UNINSTALL_CLEANUP_FAILED",

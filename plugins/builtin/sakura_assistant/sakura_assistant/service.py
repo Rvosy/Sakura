@@ -60,7 +60,7 @@ class RemoteTools(ToolRegistry):
         catalog = self.remote.catalog()
         super().__init__([Tool(name=row["name"], description=row["description"], parameters=row["parameters"],
             group=row["group"], risk=row["risk"], capability=row.get("capability"), source=row["source"],
-            registration_id=row["registrationId"], timeout_seconds=row["timeoutSeconds"]) for row in catalog])
+            registration_id=row["registrationId"]) for row in catalog])
 
     def execute(self, name, arguments, **kwargs):
         self.operation.check()
@@ -86,7 +86,7 @@ class RemoteTools(ToolRegistry):
 
     def _execute(self, tool, arguments):
         name = tool.name
-        result = self.remote.execute(tool.registration_id, name, arguments, timeout_seconds=tool.timeout_seconds)
+        result = self.remote.execute(tool.registration_id, name, arguments)
         content = result.get("content")
         if isinstance(content, dict) and set(content) == {"content", "artifact"}:
             descriptor = content["artifact"]

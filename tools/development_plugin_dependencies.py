@@ -87,7 +87,6 @@ def prepare(repo: Path, python: Path) -> None:
                 check=True,
                 cwd=plugin_root,
                 env=uv_download_environment(plugin_root, environment),
-                timeout=600,
             )
             marker = {
                 "schemaVersion": 1,
@@ -123,7 +122,6 @@ def prepare(repo: Path, python: Path) -> None:
                     env=environment,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
-                    timeout=30,
                 )
         if final.exists():
             os.replace(final, backup)

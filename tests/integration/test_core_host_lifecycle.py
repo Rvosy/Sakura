@@ -54,7 +54,7 @@ def request(request_id: str, name: str, payload: dict[str, object] | None = None
             if name == "system.hello"
             else {}
         ),
-        "deadlineMs": 3000,
+
         "priority": "control",
     }
 

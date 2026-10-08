@@ -1,15 +1,12 @@
+import { settleOnAbort } from "../core/settle-on-abort.js";
 // Private editor data never passes through common snake/camel-case conversion.
-export function createVisualEditorHost({ container, loadModule = (url) => import(url), onChange, importFiles, assetUrl, onPreview = () => {}, onError = () => {}, timeoutMs = 10000 }) {
+export function createVisualEditorHost({ container, loadModule = (url) => import(url), onChange, importFiles, assetUrl, onPreview = () => {}, onError = () => {} }) {
   let instance = null;
   let lifetime = null;
   let revision = 0;
   let staged = null;
   let viewKey = null;
   const views = new Map();
-  const bounded = (promise) => new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error("VISUAL_EDITOR_TIMEOUT")), timeoutMs);
-    Promise.resolve(promise).then(resolve, reject).finally(() => clearTimeout(timer));
-  });
   function cleanup(target) {
     const failed = error => { if (error?.name !== "AbortError") onError(error, "studio.visual.destroy"); };
     try { Promise.resolve(target?.destroy?.()).catch(failed); } catch (error) { failed(error); }
@@ -63,7 +60,7 @@ export function createVisualEditorHost({ container, loadModule = (url) => import
     container.append(target);
     let stage = "studio.visual.module";
     try {
-    const module = await bounded(loadModule(descriptor.presentation.visual.editor));
+    const module = await settleOnAbort(loadModule(descriptor.presentation.visual.editor), signal);
     if (signal.aborted) return false;
     if (typeof module.mountEditor !== "function") throw new Error("VISUAL_EDITOR_INVALID");
     stage = "studio.visual.mount";
@@ -88,7 +85,7 @@ export function createVisualEditorHost({ container, loadModule = (url) => import
       },
     } }));
     pending.then((late) => { if (signal.aborted) cleanup(late); }, () => {});
-    const candidate = await bounded(pending);
+    const candidate = await settleOnAbort(pending, signal);
     if (signal.aborted) return false;
     if (!candidate || typeof candidate.collect !== "function" || typeof candidate.validate !== "function" || typeof candidate.destroy !== "function") throw new Error("VISUAL_EDITOR_INVALID");
     let retired = false;
@@ -99,7 +96,7 @@ export function createVisualEditorHost({ container, loadModule = (url) => import
     };
     signal.addEventListener("abort", retire, { once: true });
     stage = "studio.visual.ready";
-    await bounded(candidate.ready);
+    await settleOnAbort(candidate.ready, signal);
     if (signal.aborted) return false;
     if (views.has(nextViewKey) && typeof candidate.restoreView === 'function') {
       try { candidate.restoreView(structuredClone(views.get(nextViewKey))); }
@@ -134,18 +131,17 @@ export async function renderVisualThumbnail(descriptor, signal, doc = document) 
   const abort = new AbortController();
   const cancel = () => abort.abort();
   signal.addEventListener('abort', cancel, { once: true });
-  const timer = setTimeout(cancel, 10000);
   const container = doc.createElement('div');
   Object.assign(container.style, { position: 'fixed', left: '-10000px', width: '192px', height: '256px', visibility: 'hidden', pointerEvents: 'none' });
   doc.body.append(container);
   try {
     if (signal.aborted) return null;
-    const module = await import(descriptor.presentation.visual.editor);
+    const module = await settleOnAbort(import(descriptor.presentation.visual.editor), abort.signal);
     if (abort.signal.aborted || typeof module.renderThumbnail !== 'function') return null;
-    const url = await module.renderThumbnail({ container, data: structuredClone(descriptor.data), signal: abort.signal,
-      host: { assetUrl: path => descriptor.assetBaseUrl + Array.from(new TextEncoder().encode(path), byte => byte.toString(16).padStart(2, '0')).join('') } });
+    const url = await settleOnAbort(module.renderThumbnail({ container, data: structuredClone(descriptor.data), signal: abort.signal,
+      host: { assetUrl: path => descriptor.assetBaseUrl + Array.from(new TextEncoder().encode(path), byte => byte.toString(16).padStart(2, '0')).join('') } }), abort.signal);
     return abort.signal.aborted || url === null ? null : validateThumbnail(url);
   } finally {
-    abort.abort(); clearTimeout(timer); signal.removeEventListener('abort', cancel); container.remove();
+    abort.abort(); signal.removeEventListener('abort', cancel); container.remove();
   }
 }

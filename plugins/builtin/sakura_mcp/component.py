@@ -14,7 +14,6 @@ import uuid
 from urllib.parse import urlsplit
 
 
-CALL_TIMEOUT_SECONDS = 10
 CLOSE_TIMEOUT_SECONDS = 10
 
 
@@ -137,16 +136,7 @@ class Component:
             future = asyncio.run_coroutine_threadsafe(getattr(self, method)(*args), self.loop)
             self._calls.add(future)
         future.add_done_callback(self._call_finished)
-        try:
-            return future.result(timeout=CALL_TIMEOUT_SECONDS)
-        except TimeoutError as error:
-            if future.done():
-                raise
-            # A timed-out control call can still own a connection or task.
-            # Keep that future for close; never replace the loop or replay it.
-            with self._lifecycle_lock:
-                self.failure = "MCP_COMPONENT_CALL_TIMEOUT"
-            raise MCPComponentError(self.failure) from error
+        return future.result()
 
     def _call_finished(self, future):
         with self._lifecycle_lock:
@@ -273,14 +263,7 @@ class Component:
                 if "roots" in config:
                     kwargs["list_roots_callback"] = roots
                 client = Client(transport, **kwargs)
-                # wait_for would enter the SDK's cancel scopes in another task.
-                # A timer cancels this owner task only while connection is pending.
-                task = asyncio.current_task()
-                timer = self.loop.call_later(config["connectTimeout"], task.cancel)
-                try:
-                    await stack.enter_async_context(client)
-                finally:
-                    timer.cancel()
+                await stack.enter_async_context(client)
                 conn.update(client=client, state="ready", protocolVersion=client.protocol_version,
                             serverInfo=wire(client.server_info), capabilities=wire(client.server_capabilities),
                             instructions=client.instructions)
@@ -290,9 +273,7 @@ class Component:
                 await conn["stop"].wait()
                 await self._cancel_operations(conn["handle"])
         except asyncio.CancelledError:
-            if conn["state"] == "connecting":
-                conn["error"] = "MCP_CONNECT_TIMEOUT"
-                self._log("error", "MCP 服务连接超时", conn, reason_code=conn["error"])
+            pass
         except Exception as error:
             conn["error"] = "MCP_CONNECTION_FAILED"
             self._log("error", "MCP 服务连接失败", conn, reason_code=conn["error"],
@@ -356,46 +337,45 @@ class Component:
             from mcp import types
             from pydantic import TypeAdapter
 
-            async with asyncio.timeout(conn["config"]["requestTimeout"]):
-                await conn["ready"].wait()
-                client = conn["client"]
-                if conn["state"] != "ready" or client is None:
-                    raise MCPComponentError("MCP_CONNECTION_NOT_READY")
-                if options.get("raw"):
-                    result = await client.session.send_request(types.Request(method=method, params=params),
-                        TypeAdapter(dict[str, object]), progress_callback=progress)
-                elif method == "subscriptions/listen":
-                    async with client.listen(**params) as subscription:
-                        op["subscription"] = wire(subscription.honored)
-                        async for event in subscription:
-                            self._event(conn, "subscription", event)
-                    result = {}
-                elif method == "tools/call":
-                    result = await client.call_tool(progress_callback=progress, **self._params(params))
-                elif method in {"resources/read", "prompts/get"}:
-                    callback = client.read_resource if method == "resources/read" else client.get_prompt
-                    result = await callback(**self._params(params))
-                elif method in {"tools/list", "resources/list", "resources/templates/list", "prompts/list"}:
-                    callback = {"tools/list": client.list_tools, "resources/list": client.list_resources,
-                                "resources/templates/list": client.list_resource_templates, "prompts/list": client.list_prompts}[method]
-                    result = await callback(**self._params(params))
-                else:
-                    # Official low-level escape hatch preserves extension methods and JSON fields.
-                    result = await client.session.send_request(types.Request(method=method, params=params),
-                        TypeAdapter(dict[str, object]), progress_callback=progress)
-                value = wire(result)
-                data = json.dumps(value, ensure_ascii=False, allow_nan=False)
-                op["length"] = len(data)
-                if len(data.encode("utf-8")) <= 32768:
-                    op["result"] = value
-                else:
-                    stream = tempfile.TemporaryFile(mode="w+t", encoding="utf-8", newline="")
-                    stream.write(data)
-                    stream.seek(0)
-                    op["stream"] = stream
-                op["state"] = "completed"
-                if isinstance(value, dict) and value.get("isError") is True:
-                    self._log("error", "MCP 工具返回失败", conn, operationId=op["operationId"], reason_code="MCP_TOOL_ERROR")
+            await conn["ready"].wait()
+            client = conn["client"]
+            if conn["state"] != "ready" or client is None:
+                raise MCPComponentError("MCP_CONNECTION_NOT_READY")
+            if options.get("raw"):
+                result = await client.session.send_request(types.Request(method=method, params=params),
+                    TypeAdapter(dict[str, object]), progress_callback=progress)
+            elif method == "subscriptions/listen":
+                async with client.listen(**params) as subscription:
+                    op["subscription"] = wire(subscription.honored)
+                    async for event in subscription:
+                        self._event(conn, "subscription", event)
+                result = {}
+            elif method == "tools/call":
+                result = await client.call_tool(progress_callback=progress, **self._params(params))
+            elif method in {"resources/read", "prompts/get"}:
+                callback = client.read_resource if method == "resources/read" else client.get_prompt
+                result = await callback(**self._params(params))
+            elif method in {"tools/list", "resources/list", "resources/templates/list", "prompts/list"}:
+                callback = {"tools/list": client.list_tools, "resources/list": client.list_resources,
+                            "resources/templates/list": client.list_resource_templates, "prompts/list": client.list_prompts}[method]
+                result = await callback(**self._params(params))
+            else:
+                # Official low-level escape hatch preserves extension methods and JSON fields.
+                result = await client.session.send_request(types.Request(method=method, params=params),
+                    TypeAdapter(dict[str, object]), progress_callback=progress)
+            value = wire(result)
+            data = json.dumps(value, ensure_ascii=False, allow_nan=False)
+            op["length"] = len(data)
+            if len(data.encode("utf-8")) <= 32768:
+                op["result"] = value
+            else:
+                stream = tempfile.TemporaryFile(mode="w+t", encoding="utf-8", newline="")
+                stream.write(data)
+                stream.seek(0)
+                op["stream"] = stream
+            op["state"] = "completed"
+            if isinstance(value, dict) and value.get("isError") is True:
+                self._log("error", "MCP 工具返回失败", conn, operationId=op["operationId"], reason_code="MCP_TOOL_ERROR")
         except asyncio.CancelledError:
             op["state"] = "cancelled"
         except TimeoutError:
@@ -465,8 +445,7 @@ class Component:
         future = self.loop.create_future()
         conn["pending"][request_id] = {"type": kind, "params": params, "future": future}
         try:
-            async with asyncio.timeout(conn["config"]["requestTimeout"]):
-                return await future
+            return await future
         finally:
             conn["pending"].pop(request_id, None)
 

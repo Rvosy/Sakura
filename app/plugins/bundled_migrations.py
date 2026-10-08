@@ -118,10 +118,6 @@ def _needs_repair(roots: RuntimeRoots, plugin_id: str, details: dict | None = No
             runtime_imports=SOURCES[plugin_id].get("runtimeImports", ()),
         )
     except (ValueError, PluginDependencyError) as error:
-        if isinstance(error, PluginDependencyError) and error.code == "PLUGIN_ENTRY_IMPORT_TIMEOUT":
-            details["outcome"] = "retained_after_import_timeout"
-            _event("validation_deferred", "插件导入校验超时，保留已有安装", details, plugin_id)
-            return False
         _candidate_rejected(error, plugin_id, details)
         return True
     return False
@@ -335,8 +331,7 @@ def migrate_bundled_plugins(roots: RuntimeRoots, *, progress: Callable[[dict], N
     count = 0
     handled = False
     for plugin_id in pending:
-        # Include existing-copy import checks in the migration phase, outside
-        # the Core's ordinary initialization deadline.
+        # Report existing-copy import checks as part of migration progress.
         report("running", count, len(pending), plugin_id)
         state = completed.get(plugin_id)
         plugin_started = time.monotonic()

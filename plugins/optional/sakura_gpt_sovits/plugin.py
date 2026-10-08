@@ -352,6 +352,9 @@ class _Coordinator:
                 else:
                     self._execute(item)
             finally:
+                if isinstance(item, (_Job, _Warmup)) and item.cancelled and self._resolver is not None:
+                    self._resolver.close()
+                    self._loaded_weights = None
                 with self._lock:
                     if self._active is item:
                         self._active = None
@@ -364,8 +367,6 @@ class _Coordinator:
                     self._idle.notify_all()
 
     def prepare_resources(self) -> bool:
-        from time import monotonic
-        deadline = monotonic() + 2.0
         with self._idle:
             self._paused = True
             if self._active is not None:
@@ -381,11 +382,7 @@ class _Coordinator:
                     item.cancel()
                 self._queue.task_done()
             while self._queue.unfinished_tasks:
-                remaining = deadline - monotonic()
-                if remaining <= 0:
-                    self._paused = False
-                    raise RuntimeError("TTS_RESOURCE_UPDATE_BUSY")
-                self._idle.wait(remaining)
+                self._idle.wait()
         return True
 
     def finish_resources(self) -> bool:
@@ -728,7 +725,6 @@ class GPTSoVITSProvider:
                 "accepted": False,
                 "reasonCode": reason_code,
                 "stage": stage,
-                "errorType": "RuntimeConfigurationError",
                 **({"diagnostics": self._configuration_diagnostics} if self._configuration_diagnostics else {}),
             }
         if config is None or config.custom_base_url is not None:
@@ -863,7 +859,7 @@ class GPTSoVITSPlugin:
                     {"key": "workDir", "label": "内置服务工作目录", "type": "string", "default": "", "placement": "advanced", "enabledWhen": {"field": "endpointMode", "equals": "custom"}},
                     {"key": "pythonPath", "label": "Python 解释器", "type": "string", "default": "", "description": "留空时从内置运行环境自动查找。", "placement": "advanced", "enabledWhen": {"field": "endpointMode", "equals": "custom"}},
                     {"key": "ttsConfigPath", "label": "推理配置文件（可选）", "type": "string", "default": "", "placement": "advanced", "enabledWhen": {"field": "endpointMode", "equals": "custom"}},
-                    {"key": "timeoutSeconds", "label": "合成超时（秒）", "type": "integer", "default": 60, "minimum": 1, "maximum": 300, "step": 1, "placement": "advanced"},
+                    {"key": "timeoutSeconds", "label": "请求超时（秒）", "type": "integer", "default": 60, "minimum": 1, "step": 1, "placement": "advanced", "enabledWhen": {"field": "endpointMode", "equals": "custom"}},
                 ],
             },
             load=lambda: _settings_values(context.config.get()),
@@ -914,7 +910,7 @@ def _parse_config(value: Mapping[str, Any]) -> _ProviderConfig:
     if not tts_path.startswith("/"):
         tts_path = f"/{tts_path}"
     timeout = value.get("timeoutSeconds", 60)
-    if isinstance(timeout, bool) or not isinstance(timeout, int) or not 1 <= timeout <= 300:
+    if isinstance(timeout, bool) or not isinstance(timeout, int) or timeout < 1:
         raise ValueError("TTS_CONFIG_INVALID")
     return _ProviderConfig(
         enabled=True,

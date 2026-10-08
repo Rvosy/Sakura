@@ -2605,14 +2605,12 @@ fn commit_dragged_window_position_on_main_thread(
         .map_err(|error| format!("PET_DRAG_COMMIT_DISPATCH_FAILED: {error}"))?;
     interaction_latency::stage_elapsed("drag-commit-main-thread-dispatch-return", dispatch_started);
     let wait_started = std::time::Instant::now();
-    let result = receiver
-        .recv_timeout(std::time::Duration::from_secs(5))
-        .map_err(|source_error| {
-            crate::runtime_log::diagnostic_error(
-                "PET_DRAG_COMMIT_MAIN_THREAD_TIMEOUT",
-                source_error,
-            )
-        })?;
+    let result = receiver.recv().map_err(|source_error| {
+        crate::runtime_log::diagnostic_error(
+            "PET_DRAG_COMMIT_MAIN_THREAD_UNAVAILABLE",
+            source_error,
+        )
+    })?;
     interaction_latency::stage_elapsed("drag-commit-main-thread-return", wait_started);
     result
 }
@@ -3476,14 +3474,8 @@ async fn visual_control_parse(
         .available_generation_id()
         .map_err(|error| error.to_string())?
         .ok_or_else(|| "STALE_GENERATION".to_string())?;
-    let response = dispatch_settings_request(
-        handle.clone(),
-        None,
-        "visual.control.parse",
-        payload,
-        std::time::Duration::from_secs(10),
-    )
-    .await?;
+    let response =
+        dispatch_settings_request(handle.clone(), None, "visual.control.parse", payload).await?;
     if handle
         .available_generation_id()
         .map_err(|error| error.to_string())?
@@ -3618,12 +3610,8 @@ async fn start_screen_capture(
 }
 
 fn screen_session_id(handle: &shell_lifecycle::ShellLifecycleHandle) -> Result<String, String> {
-    let payload = settings_response_payload(handle.settings_request(
-        None,
-        "screen.session",
-        json!({}),
-        std::time::Duration::from_secs(5),
-    )?)?;
+    let payload =
+        settings_response_payload(handle.settings_request(None, "screen.session", json!({}))?)?;
     payload
         .get("sessionId")
         .and_then(Value::as_str)
@@ -3666,7 +3654,6 @@ async fn capture_selected_region(
             None,
             "screen.attach",
             json!({"resource": descriptor, "sessionId": task_claim.character_session_id}),
-            std::time::Duration::from_secs(10),
         );
         manager.release(&token, &task_generation_id);
         let payload = settings_response_payload(response?)?;
@@ -3815,7 +3802,6 @@ async fn release_screen_attachment(
             None,
             "screen.release",
             json!({"attachmentId": payload.attachment_id}),
-            std::time::Duration::from_secs(3),
         )
     })
     .await
@@ -3855,7 +3841,6 @@ async fn remove_screen_attachment_item(
                 "attachmentId": request_attachment_id,
                 "itemId": request_item_id,
             }),
-            std::time::Duration::from_secs(3),
         )
     })
     .await
@@ -3991,14 +3976,8 @@ async fn composer_tools_get(
         .available_generation_id()
         .map_err(|error| error.to_string())?
         .ok_or_else(|| "COMPOSER_TOOLS_NOT_READY".to_string())?;
-    let response = dispatch_settings_request(
-        handle.clone(),
-        None,
-        "ui.composer_tools.get",
-        json!({}),
-        std::time::Duration::from_secs(4),
-    )
-    .await?;
+    let response =
+        dispatch_settings_request(handle.clone(), None, "ui.composer_tools.get", json!({})).await?;
     if handle.available_generation_id().ok().flatten().as_deref() != Some(generation_id.as_str()) {
         return Err("GENERATION_INVALIDATED".to_string());
     }
@@ -4025,7 +4004,6 @@ async fn composer_tool_invoke(
         None,
         "ui.composer_tools.invoke",
         json!({"toolId": tool_id}),
-        std::time::Duration::from_secs(15),
     )
     .await?;
     let payload = settings_response_payload(response)?;
@@ -4229,7 +4207,6 @@ async fn settings_character_visual_preview(
         None,
         "studio.character.presentation",
         json!({"characterId": character_id.trim()}),
-        std::time::Duration::from_secs(15),
     )
     .await?;
     let source = character_presentation::CharacterPresentation::from_value(
@@ -4653,7 +4630,6 @@ async fn character_settings_payload_request(
     lifecycle: &ShellLifecycleState,
     name: &'static str,
     payload: Value,
-    deadline: std::time::Duration,
 ) -> Result<(Value, shell_lifecycle::ShellLifecycleHandle), String> {
     product_shell::validate_settings_window(window)?;
     let handle = lifecycle
@@ -4665,7 +4641,7 @@ async fn character_settings_payload_request(
         .available_generation_id()
         .map_err(|error| error.to_string())?
         .ok_or_else(|| "SETTINGS_CORE_UNAVAILABLE".to_string())?;
-    let response = dispatch_settings_request(handle.clone(), None, name, payload, deadline).await?;
+    let response = dispatch_settings_request(handle.clone(), None, name, payload).await?;
     assert_settings_identity(shell, &handle, window_generation, &core_generation_id)?;
     let payload = settings_response_payload(response)?;
     Ok((payload, handle))
@@ -4677,11 +4653,9 @@ async fn character_settings_request(
     lifecycle: &ShellLifecycleState,
     name: &'static str,
     payload: Value,
-    deadline: std::time::Duration,
 ) -> Result<(Value, shell_lifecycle::ShellLifecycleHandle), String> {
     let (snapshot, handle) =
-        character_settings_payload_request(window, shell, lifecycle, name, payload, deadline)
-            .await?;
+        character_settings_payload_request(window, shell, lifecycle, name, payload).await?;
     Ok((snapshot, handle))
 }
 
@@ -4691,7 +4665,6 @@ async fn character_settings_change_request(
     lifecycle: &ShellLifecycleState,
     name: &'static str,
     payload: Value,
-    deadline: std::time::Duration,
 ) -> Result<
     (
         Value,
@@ -4714,7 +4687,7 @@ async fn character_settings_change_request(
         .available_generation_identity()
         .map_err(|error| error.to_string())?
         .ok_or_else(|| "SETTINGS_CORE_UNAVAILABLE".to_string())?;
-    let response = dispatch_settings_request(handle.clone(), None, name, payload, deadline).await?;
+    let response = dispatch_settings_request(handle.clone(), None, name, payload).await?;
     assert_settings_identity(shell, &handle, window_generation, &core_generation_id)?;
     let change = settings_response_payload(response)?;
     let (snapshot, change_plan, requirements) = validate_character_settings_change(change)?;
@@ -4803,7 +4776,6 @@ async fn settings_character_visuals_get(
         &lifecycle,
         "characters.visuals.get",
         json!({"characterId": character_id}),
-        std::time::Duration::from_secs(5),
     )
     .await?;
     validate_character_visuals_snapshot(&snapshot, &character_id)?;
@@ -4829,7 +4801,6 @@ async fn settings_characters_get(
         &lifecycle,
         "characters.settings.get",
         json!({}),
-        std::time::Duration::from_secs(3),
     )
     .await
     .map(|(snapshot, _)| snapshot)
@@ -4922,7 +4893,6 @@ async fn settings_character_import(
         &lifecycle,
         "characters.settings.import",
         json!({"path": path}),
-        std::time::Duration::from_secs(120),
     )
     .await?;
     let mut receipt = finish_character_settings_change(
@@ -4962,7 +4932,6 @@ async fn settings_character_import_voice(
         &lifecycle,
         "characters.settings.import_voice",
         json!({"path": path, "characterId": character_id}),
-        std::time::Duration::from_secs(120),
     )
     .await?;
     let mut receipt = finish_character_settings_change(
@@ -4993,7 +4962,6 @@ async fn settings_character_export(
         &lifecycle,
         "characters.settings.export",
         json!({"path": path, "characterId": character_id, "kind": kind}),
-        std::time::Duration::from_secs(120),
     )
     .await?;
     Ok(receipt)
@@ -5022,7 +4990,6 @@ async fn settings_character_delete(
         &lifecycle,
         "characters.settings.delete",
         json!({"characterId": character_id}),
-        std::time::Duration::from_secs(120),
     )
     .await?;
     finish_character_settings_change(
@@ -5064,7 +5031,6 @@ async fn settings_character_select(
         &lifecycle,
         "characters.settings.select",
         payload,
-        std::time::Duration::from_secs(60),
     )
     .await?;
     if let Some(target_character_id) = target_character_id {
@@ -5127,14 +5093,7 @@ async fn storage_settings_request(
         .available_generation_id()
         .map_err(|error| error.to_string())?
         .ok_or_else(|| "SETTINGS_CORE_UNAVAILABLE".to_string())?;
-    let response = dispatch_settings_request(
-        handle.clone(),
-        None,
-        name,
-        payload,
-        std::time::Duration::from_secs(5),
-    )
-    .await?;
+    let response = dispatch_settings_request(handle.clone(), None, name, payload).await?;
     assert_settings_identity(shell, &handle, window_generation, &core_generation_id)?;
     let snapshot = settings_response_payload(response)?;
     Ok(snapshot)
@@ -5273,7 +5232,6 @@ async fn settings_provider_model_get(
         None,
         "settings.provider_model.get",
         json!({}),
-        std::time::Duration::from_secs(10),
     )
     .await?;
     assert_settings_identity(&shell, &handle, window_generation, &core_generation_id)?;
@@ -5311,7 +5269,6 @@ async fn settings_provider_model_save(
         None,
         "settings.provider_model.save",
         json!({"draft": draft}),
-        std::time::Duration::from_secs(15),
     )
     .await?;
     let payload = settings_response_payload(response)?;
@@ -6621,7 +6578,6 @@ async fn studio_bootstrap(
         None,
         "studio.bootstrap",
         json!({"initialCharacterId": initial_character_id}),
-        std::time::Duration::from_secs(15),
     )
     .await?;
     let mut payload = settings_response_payload(response)?;
@@ -6657,19 +6613,7 @@ async fn studio_request(
         .map_err(|error| error.to_string())?
         .ok_or_else(|| "STUDIO_CORE_UNAVAILABLE".to_string())?;
     state.bind_generation(&previous_generation_id)?;
-    let deadline = if matches!(
-        name,
-        "studio.character.publish"
-            | "studio.asset.import"
-            | "studio.archive.export"
-            | "studio.visual.import"
-            | "studio.visual.export"
-    ) {
-        std::time::Duration::from_secs(30 * 60)
-    } else {
-        std::time::Duration::from_secs(30)
-    };
-    let response = dispatch_settings_request(handle.clone(), None, name, params, deadline).await?;
+    let response = dispatch_settings_request(handle.clone(), None, name, params).await?;
     let mut payload = settings_response_payload(response)?;
 
     if name == "studio.visual.open" || name == "studio.visual.thumbnail" {
@@ -7335,38 +7279,6 @@ fn request_app_exit(
             state.cancel_exit_request();
             return Err(error.to_string());
         }
-        let timeout_app = app_handle.clone();
-        let exit_timeout = std::thread::Builder::new()
-            .name("studio-exit-timeout".to_string())
-            .spawn(move || {
-                std::thread::sleep(std::time::Duration::from_secs(5));
-                let check_app = timeout_app.clone();
-                let _ = timeout_app.run_on_main_thread(move || {
-                    let Some(studio) =
-                        check_app.get_webview_window(character_studio_window::STUDIO_WINDOW_LABEL)
-                    else {
-                        return;
-                    };
-                    let state =
-                        check_app.state::<character_studio_window::CharacterStudioWindowState>();
-                    state.mark_exiting();
-                    let _ = studio.destroy();
-                    if let Some(settings) =
-                        check_app.get_webview_window(product_shell::SETTINGS_WINDOW_LABEL)
-                    {
-                        let _ = settings.show();
-                        let _ = settings.set_focus();
-                    }
-                    let lifecycle = check_app.state::<ShellLifecycleState>();
-                    if let Err(error) = request_app_exit(&check_app, &lifecycle) {
-                        product_shell::emit_product_menu_error(&check_app, error);
-                    }
-                });
-            });
-        if let Err(error) = exit_timeout {
-            state.cancel_exit_request();
-            return Err(format!("failed to start bounded Studio exit wait: {error}"));
-        }
         return Ok(());
     }
     let Some(settings) = app_handle.get_webview_window(product_shell::SETTINGS_WINDOW_LABEL) else {
@@ -7383,28 +7295,6 @@ fn request_app_exit(
         return Err(error.to_string());
     }
 
-    let timeout_app = app_handle.clone();
-    std::thread::Builder::new()
-        .name("settings-exit-timeout".to_string())
-        .spawn(move || {
-            std::thread::sleep(std::time::Duration::from_secs(5));
-            let check_app = timeout_app.clone();
-            let _ = timeout_app.run_on_main_thread(move || {
-                let state = check_app.state::<product_shell::ProductShellState>();
-                if state.cancel_unanswered_exit(revision).unwrap_or(false) {
-                    if let Some(window) =
-                        check_app.get_webview_window(product_shell::SETTINGS_WINDOW_LABEL)
-                    {
-                        let _ = window.emit(product_shell::SETTINGS_EXIT_TIMEOUT_EVENT, ());
-                        let _ = product_shell::restore_and_focus_window(&window);
-                    }
-                }
-            });
-        })
-        .map_err(|error| {
-            let _ = state.resolve_exit();
-            format!("failed to start bounded settings exit wait: {error}")
-        })?;
     Ok(())
 }
 

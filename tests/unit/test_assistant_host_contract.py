@@ -44,36 +44,34 @@ def test_context_catalog_does_not_rebind_an_old_turn_to_a_same_name_replacement(
     assert host.call("collect", [replacement, {}])[0]["content"] == "cb_" + "2" * 32
 
 
-def test_advertised_long_tool_deadline_reaches_both_rpc_and_callback_without_replay():
+def test_tool_execution_returns_result_and_does_not_replay_lost_acknowledgement():
     from app.plugins.plugin_runner_v4 import PluginRunner
 
-    deadlines = []
+    calls = []
     registry = ToolRegistry()
-    def callback(_handle, _method, _arguments, *, timeout):
-        deadlines.append(("callback", timeout))
+    def callback(_handle, _method, _arguments):
+        calls.append("callback")
         return "done"
     host = _ToolsHostService(registry, callback)
-    host.call("register", [{"name": "long_tool", "description": "Long running tool", "timeoutSeconds": 90}, "cb_" + "3" * 32])
+    host.call("register", [{"name": "long_tool", "description": "Long running tool"}, "cb_" + "3" * 32])
     row = host.call("catalog", [])[0]
-    def remote(name, payload, *, timeout):
-        deadlines.append(("rpc", timeout))
+    def remote(name, payload):
+        calls.append("rpc")
         assert name == "service.call"
         return host.call(payload["method"], payload["args"])
-    # Exercise the real runner methods without opening its process stdio peer.
     runner = PluginRunner.__new__(PluginRunner)
     runner._peer = SimpleNamespace(request=remote)
     runner._startup_lock = threading.Lock()
     runner._startup_thread = None
-    context = SimpleNamespace(_remote_request=runner._call_remote_request)
+    context = SimpleNamespace(_remote_call=runner._call_remote_service)
     proxy = _HostRegistrationProxy(context, "sakura.host.tools", "tools.handler")
-    assert proxy.execute(row["registrationId"], "long_tool", {}, timeout_seconds=row["timeoutSeconds"])["content"] == "done"
-    assert deadlines == [("rpc", 92.0), ("callback", 90.0)]
+    assert proxy.execute(row["registrationId"], "long_tool", {})["content"] == "done"
+    assert calls == ["rpc", "callback"]
 
     def fail_request(*args, **kwargs):
-        deadlines.append(("failure", kwargs["timeout"]))
-        raise TimeoutError("side effect acknowledgement was lost")
+        calls.append("failure")
+        raise ConnectionError("side effect acknowledgement was lost")
     runner._peer.request = fail_request
-    with pytest.raises(TimeoutError):
-        proxy.execute(row["registrationId"], "long_tool", {}, timeout_seconds=row["timeoutSeconds"])
-    assert deadlines[-1] == ("failure", 92.0)
-    assert len(deadlines) == 3
+    with pytest.raises(ConnectionError):
+        proxy.execute(row["registrationId"], "long_tool", {})
+    assert calls == ["rpc", "callback", "failure"]

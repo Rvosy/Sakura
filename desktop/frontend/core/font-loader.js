@@ -1,5 +1,3 @@
-export const DEFAULT_FONT_LOAD_TIMEOUT_MS = 2_000;
-
 const FONT_REQUESTS = Object.freeze({
   sc: Object.freeze({
     descriptor: '400 1em "Sakura Noto Sans SC"',
@@ -21,9 +19,6 @@ function applyFontState(documentRef, status) {
 export async function waitForRuntimeFonts({
   documentRef = globalThis.document,
   families = ["sc", "jp"],
-  timeoutMs = DEFAULT_FONT_LOAD_TIMEOUT_MS,
-  setTimer = globalThis.setTimeout,
-  clearTimer = globalThis.clearTimeout,
 } = {}) {
   const fontSet = documentRef?.fonts;
   if (!fontSet || typeof fontSet.load !== "function") {
@@ -37,11 +32,7 @@ export async function waitForRuntimeFonts({
     return request;
   });
 
-  let timeoutId;
-  const timeout = new Promise((resolve) => {
-    timeoutId = setTimer(() => resolve("fallback"), Math.max(0, timeoutMs));
-  });
-  const loading = Promise.all(
+  const status = await Promise.all(
     requests.map(({ descriptor, sample }) => fontSet.load(descriptor, sample)),
   ).then(async (loadedFaces) => {
     if (loadedFaces.some((faces) => !faces || faces.length === 0)) return "fallback";
@@ -49,8 +40,6 @@ export async function waitForRuntimeFonts({
     return "loaded";
   }).catch(() => "fallback");
 
-  const status = await Promise.race([loading, timeout]);
-  clearTimer(timeoutId);
   applyFontState(documentRef, status);
   return status;
 }

@@ -78,7 +78,6 @@ export function createToolsController({
   document,
   invoke,
   onDirty,
-  wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
 }) {
   const controls = {
     maxAgentStepsPerTurn: document.getElementById("agentSteps"),
@@ -126,24 +125,13 @@ export function createToolsController({
     onDirty();
   }
 
-  async function bindCurrent(previousGeneration, { requireChange, preserveDraft }) {
+  async function bindCurrent({ preserveDraft }) {
     if (rebindPromise) return rebindPromise;
-    const deadline = Date.now() + 10_000;
     rebindPromise = (async () => {
-      let lastError = null;
-      while (!disposed && Date.now() < deadline) {
-        try {
-          const next = validateToolsSnapshot(await invoke("settings_tools_get"));
-          if (!requireChange || next.coreGenerationId !== previousGeneration) {
-            initialize(next, { preserveDraft });
-            return next;
-          }
-        } catch (error) {
-          lastError = error;
-        }
-        await wait(100);
-      }
-      throw new Error(`TOOLS_CORE_RESTART_NOT_READY${lastError ? `: ${String(lastError)}` : ""}`, { cause: lastError });
+      const next = validateToolsSnapshot(await invoke("settings_tools_get"));
+      if (disposed) return;
+      initialize(next, { preserveDraft });
+      return next;
     })().finally(() => { rebindPromise = null; });
     return rebindPromise;
   }
@@ -176,14 +164,14 @@ export function createToolsController({
         }
       } catch (error) {
         if (transitionError(error)) {
-          await bindCurrent(previousGeneration, { requireChange: false, preserveDraft: true });
+          await bindCurrent({ preserveDraft: true });
         }
         throw error;
       }
-      return bindCurrent(previousGeneration, { requireChange: false, preserveDraft: false });
+      return bindCurrent({ preserveDraft: false });
     },
     async refreshCurrent() {
-      return bindCurrent(snapshot?.coreGenerationId || "", { requireChange: false, preserveDraft: true });
+      return bindCurrent({ preserveDraft: true });
     },
     discard() {
       if (baseline) fill(baseline);

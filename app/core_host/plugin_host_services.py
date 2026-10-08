@@ -35,7 +35,6 @@ HOST_TOOLS_SERVICE = "sakura.host.tools"
 HOST_COMPOSER_TOOLS_V0_SERVICE = "sakura.host.ui.composer-tools-v0"
 HOST_TIMELINE_SERVICE = "sakura.host.timeline"
 _TIMELINE_RESPONSE_ENTRY_BYTES = 700 * 1024
-_TOOL_CALLBACK_TIMEOUT_SECONDS = 15.0
 _TOOL_NAME = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 _IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,199}$")
 _COMPOSER_TOOL_PUBLIC_ID = re.compile(
@@ -622,7 +621,7 @@ class _ToolsHostService:
             return [{"registrationId": tool.registration_id, "name": tool.name,
                      "description": tool.description, "parameters": tool.parameters,
                      "group": tool.group, "risk": tool.risk, "capability": tool.capability,
-                     "source": tool.source, "timeoutSeconds": tool.timeout_seconds}
+                     "source": tool.source}
                     for tool in self._tool_registry.all()]
         if method == "execute" and len(args) == 3:
             registration_id, name, arguments = args
@@ -643,12 +642,6 @@ class _ToolsHostService:
         name = descriptor.get("name")
         description = descriptor.get("description")
         parameters = descriptor.get("parameters", {})
-        timeout = descriptor.get("timeoutSeconds", _TOOL_CALLBACK_TIMEOUT_SECONDS)
-        if (
-            isinstance(timeout, bool) or not isinstance(timeout, (int, float))
-            or not math.isfinite(timeout) or not 0 < timeout <= 120
-        ):
-            raise HostServiceError("TOOL_DESCRIPTOR_INVALID")
         if (
             not isinstance(name, str)
             or not _TOOL_NAME.fullmatch(name)
@@ -680,7 +673,6 @@ class _ToolsHostService:
                     handle,
                     "tools.handler",
                     arguments,
-                    timeout=float(timeout),
                 ),
                 source_plugin_id=source_plugin_id,
             )
@@ -694,7 +686,6 @@ class _ToolsHostService:
             risk=risk,
             capability=capability,
             source="plugin",
-            timeout_seconds=float(timeout),
         )
         registration_id = _new_registration_id(self._registrations)
         try:
@@ -1010,7 +1001,7 @@ class _ModelSlotsHostService:
             registrations = sorted(
                 self._registrations.values(),
                 key=lambda item: (item.order, item.plugin_id, item.slot_id),
-            )[:32]
+            )
         result: list[dict[str, Any]] = []
         for item in registrations:
             reason_code = "READY"
@@ -1446,7 +1437,7 @@ class _SettingsHostService:
                     if registration.plugin_id == plugin_id
                 ),
                 key=lambda item: (item.order, item.section_id),
-            )[:16]
+            )
         return [self._section_snapshot(registration) for registration in registrations]
 
     def sections_for_surface(self, surface: str) -> list[dict[str, Any]]:
@@ -1466,7 +1457,7 @@ class _SettingsHostService:
                     if (registration.plugin_id, registration.section_id) in surfaced
                 ),
                 key=lambda item: (item.order, item.plugin_id, item.section_id),
-            )[:32]
+            )
         return [
             {"pluginId": registration.plugin_id, **self._section_snapshot(registration)}
             for registration in registrations
@@ -1520,7 +1511,7 @@ class _SettingsHostService:
                 in self._collection_registrations.values()
                 if plugin_id == registration.plugin_id
                 and section_id == registration.section_id
-            ][:4]
+            ]
             instance_id = next((key for key, item in self._registrations.items() if item is registration), None)
         return {
             "sectionId": registration.section_id,
@@ -1896,7 +1887,7 @@ class _ComposerToolsV0HostService:
                 "icon": item.icon,
                 "order": item.order,
             }
-            for item in ordered[:64]
+            for item in ordered
         ]
 
     def invoke(self, public_id: str) -> dict[str, str]:
@@ -2038,7 +2029,7 @@ class PluginHostServices:
             plugin["sections"] = [
                 *sections,
                 *self._settings.sections_for_plugin(plugin["pluginId"]),
-            ][:16]
+            ]
         return result
 
     def settings_save(

@@ -888,8 +888,7 @@ impl ResponseFrameReader {
                 }
                 ManagedPipeReadOutcome::TimedOut => {
                     return Err(
-                        "REQUEST_DEADLINE_EXCEEDED: Core Host response exceeded its deadline"
-                            .to_string(),
+                        "PIPE_READ_TIMEOUT: Core Host response read poll elapsed".to_string()
                     )
                 }
             }
@@ -1156,14 +1155,8 @@ pub struct ConcurrentRequestHandle {
 }
 
 impl ConcurrentRequestHandle {
-    pub fn request(
-        &self,
-        request_id: &str,
-        name: &str,
-        payload: Value,
-        deadline: Duration,
-    ) -> Result<Value, String> {
-        self.request_with_scheduling(request_id, name, payload, deadline, "interactive")
+    pub fn request(&self, request_id: &str, name: &str, payload: Value) -> Result<Value, String> {
+        self.request_with_scheduling(request_id, name, payload, "interactive")
     }
 
     pub(crate) fn request_with_scheduling(
@@ -1171,46 +1164,8 @@ impl ConcurrentRequestHandle {
         request_id: &str,
         name: &str,
         payload: Value,
-        deadline: Duration,
         scheduling: &'static str,
     ) -> Result<Value, String> {
-        self.request_with_completion(request_id, name, payload, deadline, scheduling, false)
-    }
-
-    pub(crate) fn request_until_complete(
-        &self,
-        request_id: &str,
-        name: &str,
-        payload: Value,
-        queue_deadline: Duration,
-    ) -> Result<Value, String> {
-        self.request_with_completion(
-            request_id,
-            name,
-            payload,
-            queue_deadline,
-            "interactive",
-            true,
-        )
-    }
-
-    fn request_with_completion(
-        &self,
-        request_id: &str,
-        name: &str,
-        payload: Value,
-        deadline: Duration,
-        scheduling: &'static str,
-        until_complete: bool,
-    ) -> Result<Value, String> {
-        if request_id.trim().is_empty()
-            || name.trim().is_empty()
-            || deadline.is_zero()
-            || !payload.is_object()
-            || !matches!(scheduling, "control" | "interactive")
-        {
-            return Err("Core Host concurrent request is invalid".to_string());
-        }
         let started = Instant::now();
         self.log_request(
             Severity::Debug,
@@ -1222,7 +1177,6 @@ impl ConcurrentRequestHandle {
             None,
             0,
             None,
-            Some(deadline.as_millis()),
             None,
         );
         let message = json!({
@@ -1234,16 +1188,10 @@ impl ConcurrentRequestHandle {
             "id": request_id,
             "name": name,
             "payload": payload,
-            "deadlineMs": deadline.as_millis().min(u64::MAX as u128) as u64,
             "priority": scheduling,
         });
-        let result = if until_complete {
-            self.router.request_until_complete(message)
-        } else {
-            self.router.request(message, deadline)
-        };
-        let elapsed_ms = started.elapsed().as_millis();
-        self.log_request_result(request_id, name, &result, elapsed_ms, deadline);
+        let result = self.router.request(message);
+        self.log_request_result(request_id, name, &result, started.elapsed().as_millis());
         result
     }
 
@@ -1253,7 +1201,6 @@ impl ConcurrentRequestHandle {
         name: &str,
         result: &Result<Value, String>,
         elapsed_ms: u128,
-        deadline: Duration,
     ) {
         match result.as_ref() {
             Ok(response) if response.get("ok") == Some(&Value::Bool(false)) => {
@@ -1294,7 +1241,6 @@ impl ConcurrentRequestHandle {
                         .pointer("/error/details/diagnostics/diagnostic")
                         .and_then(Value::as_str)
                         .or_else(|| response.pointer("/error/message").and_then(Value::as_str)),
-                    Some(deadline.as_millis()),
                     response.pointer("/error/details/diagnostics"),
                 );
             }
@@ -1308,7 +1254,6 @@ impl ConcurrentRequestHandle {
                 None,
                 elapsed_ms,
                 None,
-                Some(deadline.as_millis()),
                 None,
             ),
             Err(error) => self.log_request(
@@ -1337,7 +1282,6 @@ impl ConcurrentRequestHandle {
                 Some(stable_error_code(error)),
                 elapsed_ms,
                 Some(error),
-                Some(deadline.as_millis()),
                 None,
             ),
         }
@@ -1355,7 +1299,6 @@ impl ConcurrentRequestHandle {
         code: Option<&str>,
         elapsed_ms: u128,
         diagnostic: Option<&str>,
-        deadline_ms: Option<u128>,
         failure_details: Option<&Value>,
     ) {
         let Some(runtime_log) = self.runtime_log.as_ref() else {
@@ -1426,9 +1369,6 @@ impl ConcurrentRequestHandle {
                 Value::String(diagnostic.to_string()),
             );
         }
-        if let (Some(target), Some(deadline_ms)) = (attributes.as_object_mut(), deadline_ms) {
-            target.insert("deadline_ms".to_string(), Value::from(deadline_ms as u64));
-        }
         let _ = runtime_log.submit(
             RuntimeLogEvent::rust(severity, "core.ipc", event, message)
                 .correlation(Correlation {
@@ -1447,8 +1387,6 @@ impl ConcurrentRequestHandle {
 fn stable_error_code(error: &str) -> &'static str {
     if error.contains("CANCEL") {
         "REQUEST_CANCELLED"
-    } else if error.contains("DEADLINE") || error.contains("TIMEOUT") {
-        "REQUEST_DEADLINE_EXCEEDED"
     } else if error.contains("GENERATION") {
         "GENERATION_INVALIDATED"
     } else if error.contains("TRANSPORT") || error.contains("ROUTER") {
@@ -1652,7 +1590,7 @@ impl CoreHostRuntime {
     }
 
     #[cfg(test)]
-    fn launch_script_for_test(
+    pub(crate) fn launch_script_for_test(
         python: &Path,
         repo_root: &Path,
         script: &Path,
@@ -1724,13 +1662,8 @@ impl CoreHostRuntime {
         self.shutdown_written_at = Some(observed);
     }
 
-    pub fn request(
-        &mut self,
-        request_id: &str,
-        name: &str,
-        deadline: Duration,
-    ) -> Result<Value, String> {
-        self.request_with_payload(request_id, name, json!({}), deadline)
+    pub fn request(&mut self, request_id: &str, name: &str) -> Result<Value, String> {
+        self.request_with_payload(request_id, name, json!({}))
     }
 
     pub fn request_with_payload(
@@ -1738,17 +1671,15 @@ impl CoreHostRuntime {
         request_id: &str,
         name: &str,
         payload: Value,
-        deadline: Duration,
     ) -> Result<Value, String> {
         if self.router.is_some() {
-            let (request, expectation, _) =
-                self.build_request_frame(request_id, name, payload, deadline)?;
+            let (request, expectation, _) = self.build_request_frame(request_id, name, payload)?;
             let response = self
                 .router
                 .as_ref()
                 .expect("router is present")
                 .handle()
-                .request(request, deadline)
+                .request(request)
                 .map_err(|error| {
                     self.router_failure_observed = true;
                     if error.starts_with("GENERATION_CREDENTIAL_MISMATCH:") {
@@ -1772,12 +1703,13 @@ impl CoreHostRuntime {
                 })?;
             return self.validate_response(response, expectation);
         }
-        let (expectation, written_at) =
-            self.write_request_frame(request_id, name, payload, deadline)?;
-        let response_deadline = written_at
-            .checked_add(deadline)
-            .ok_or_else(|| "Core Host control request deadline overflowed".to_string())?;
-        let response = self.read_response_until(response_deadline)?;
+        let (expectation, _) = self.write_request_frame(request_id, name, payload)?;
+        let response = loop {
+            match self.read_response_until(Instant::now() + STDERR_READ_SLICE) {
+                Err(error) if error.starts_with("PIPE_READ_TIMEOUT:") => continue,
+                result => break result?,
+            }
+        };
         self.validate_response(response, expectation)
     }
 
@@ -1786,10 +1718,9 @@ impl CoreHostRuntime {
         request_id: &str,
         name: &str,
         payload: Value,
-        deadline: Duration,
     ) -> Result<(RequestExpectation, Instant), String> {
         let (request, expectation, written_at) =
-            self.build_request_frame(request_id, name, payload, deadline)?;
+            self.build_request_frame(request_id, name, payload)?;
         let stdin = self
             .stdin
             .as_mut()
@@ -1821,9 +1752,8 @@ impl CoreHostRuntime {
         request_id: &str,
         name: &str,
         payload: Value,
-        deadline: Duration,
     ) -> Result<(Value, RequestExpectation, Instant), String> {
-        if request_id.trim().is_empty() || name.trim().is_empty() || deadline.is_zero() {
+        if request_id.trim().is_empty() || name.trim().is_empty() {
             return Err("Core Host control request is invalid".to_string());
         }
         if !payload.is_object() {
@@ -1857,7 +1787,6 @@ impl CoreHostRuntime {
             "id": request_id,
             "name": name,
             "payload": payload,
-            "deadlineMs": deadline.as_millis().min(u64::MAX as u128) as u64,
             "priority": CONTROL_PRIORITY,
         });
         let written_at = Instant::now();
@@ -1932,6 +1861,10 @@ impl CoreHostRuntime {
         self.negotiation.as_ref()
     }
 
+    pub(crate) fn cancellation_handle(&self) -> Option<CoreHostRouterHandle> {
+        self.router.as_ref().map(CoreHostRouter::handle)
+    }
+
     pub fn concurrent_request_handle(&self) -> Result<ConcurrentRequestHandle, String> {
         let negotiation = self
             .negotiation
@@ -1976,12 +1909,8 @@ impl CoreHostRuntime {
         }
     }
 
-    pub fn refresh_snapshot(
-        &mut self,
-        request_id: &str,
-        deadline: Duration,
-    ) -> Result<Value, String> {
-        let response = self.request(request_id, "core.snapshot", deadline)?;
+    pub fn refresh_snapshot(&mut self, request_id: &str) -> Result<Value, String> {
+        let response = self.request(request_id, "core.snapshot")?;
         if response.get("ok").and_then(Value::as_bool) != Some(true) {
             return Err("Core Host rejected core.snapshot".to_string());
         }
@@ -2043,7 +1972,6 @@ impl CoreHostRuntime {
                 "shutdown",
                 "system.shutdown",
                 json!({"appExiting": app_exiting}),
-                policy.graceful,
             );
             let (primary, graceful_deadline, absolute_deadline) = match request {
                 Ok((message, expectation, written_at)) => {
@@ -2058,7 +1986,7 @@ impl CoreHostRuntime {
                         .as_ref()
                         .expect("router is present")
                         .handle()
-                        .request(message, policy.graceful);
+                        .request_shutdown(message, policy.graceful);
                     #[cfg(test)]
                     if let Some(observed) = &self.shutdown_written_at {
                         *observed.lock().expect("shutdown write instant") = Some(written_at);
@@ -2094,7 +2022,6 @@ impl CoreHostRuntime {
             "shutdown",
             "system.shutdown",
             json!({"appExiting": app_exiting}),
-            policy.graceful,
         );
         let (primary, graceful_deadline, absolute_deadline) = match write_result {
             Ok((expectation, written_at)) => {
@@ -2111,6 +2038,13 @@ impl CoreHostRuntime {
                     .min(absolute_deadline);
                 let response_result = self
                     .read_response_until(graceful_deadline)
+                    .map_err(|error| {
+                        if error.starts_with("PIPE_READ_TIMEOUT:") {
+                            "SHUTDOWN_TIMEOUT: Core did not finish shutdown".to_string()
+                        } else {
+                            error
+                        }
+                    })
                     .and_then(|response| self.validate_response(response, expectation));
                 let primary = match response_result {
                     Ok(response) if response.get("ok").and_then(Value::as_bool) == Some(true) => {
@@ -2158,16 +2092,6 @@ impl CoreHostRuntime {
                 .read_until(stdout.as_mut(), deadline, &AtomicBool::new(false))
             {
                 Ok(response) => response,
-                Err(error) if error.starts_with("REQUEST_DEADLINE_EXCEEDED:") => {
-                    let tree = self.tree.as_mut().ok_or_else(|| {
-                        "Core Host response timeout cleanup lost the tree owner".to_string()
-                    })?;
-                    tree.terminate_tree(DEADLINE_EXIT_CODE).map_err(|error| {
-                        format!("Core Host response timeout cleanup failed: {error}")
-                    })?;
-                    self.deadline_forced = true;
-                    return Err(error);
-                }
                 Err(error) => return Err(error),
             };
         response.ok_or_else(|| {
@@ -2683,14 +2607,8 @@ mod tests {
     fn request_predecessor_hello(
         host: &mut CoreHostRuntime,
         request_id: &str,
-        deadline: Duration,
     ) -> Result<Value, String> {
-        host.request_with_payload(
-            request_id,
-            "system.hello",
-            predecessor_hello_payload(),
-            deadline,
-        )
+        host.request_with_payload(request_id, "system.hello", predecessor_hello_payload())
     }
 
     #[test]
@@ -3522,7 +3440,7 @@ mod tests {
         let error = host
             .read_response_until(Instant::now() + Duration::from_millis(10))
             .expect_err("injected response timeout must fail closed");
-        assert!(error.starts_with("REQUEST_DEADLINE_EXCEEDED:"));
+        assert!(error.starts_with("PIPE_READ_TIMEOUT:"));
         assert!(started.elapsed() >= delay);
         assert!(completed.load(Ordering::SeqCst));
         assert_eq!(active_readers.load(Ordering::SeqCst), 0);
@@ -4259,7 +4177,7 @@ mod tests {
             CoreHostRuntime::launch_script_for_test(&python, &root, &fixture, GENERATION_ID)
                 .expect("stderr flood fixture launches");
         let credential = host.generation_credential.clone();
-        request_predecessor_hello(&mut host, "hello-flood", Duration::from_secs(3))
+        request_predecessor_hello(&mut host, "hello-flood")
             .expect("stderr flood must not block hello");
         let exit = host.shutdown().expect("stderr flood fixture stops cleanly");
         assert!(exit.stderr_stats.eof);
@@ -4286,8 +4204,7 @@ mod tests {
         let mut host =
             CoreHostRuntime::launch_script_for_test(&python, &root, &fixture, GENERATION_ID)
                 .expect("slow shutdown fixture launches");
-        request_predecessor_hello(&mut host, "hello-slow", Duration::from_secs(3))
-            .expect("slow fixture hello negotiates");
+        request_predecessor_hello(&mut host, "hello-slow").expect("slow fixture hello negotiates");
         let shutdown_written_at = Arc::new(Mutex::new(None));
         host.observe_shutdown_write_for_test(Arc::clone(&shutdown_written_at));
 
@@ -4323,7 +4240,7 @@ mod tests {
         let mut host =
             CoreHostRuntime::launch_script_for_test(&python, &root, &fixture, GENERATION_ID)
                 .expect("stderr crash fixture launches");
-        let error = request_predecessor_hello(&mut host, "hello-crash", Duration::from_secs(3))
+        let error = request_predecessor_hello(&mut host, "hello-crash")
             .expect_err("crashed Core cannot answer hello");
         assert!(error.starts_with("CORE_CRASHED:"));
         let exit = host
@@ -4353,24 +4270,19 @@ mod tests {
                 .expect("real Core Host should launch in a managed Job");
         assert!(host.root_pid() > 0);
 
-        let hello = request_predecessor_hello(&mut host, "hello", Duration::from_secs(3))
-            .expect("hello should respond");
+        let hello = request_predecessor_hello(&mut host, "hello").expect("hello should respond");
         assert_eq!(hello["ok"], true);
         assert_eq!(hello["payload"]["hostState"], "transport_ready");
 
         for index in 0..2 {
             let health = host
-                .request(
-                    &format!("health-{index}"),
-                    "system.health",
-                    Duration::from_secs(3),
-                )
+                .request(&format!("health-{index}"), "system.health")
                 .expect("health should respond");
             assert_eq!(health["payload"]["status"], "healthy");
         }
 
         let unknown = host
-            .request("unknown", "system.unknown", Duration::from_secs(3))
+            .request("unknown", "system.unknown")
             .expect("unknown control should return a framed error");
         assert_eq!(unknown["ok"], false);
         assert_eq!(unknown["error"]["code"], "UNKNOWN_CONTROL");
@@ -4407,7 +4319,6 @@ mod tests {
                     ],
                     "optionalCapabilities": ["future.optional"]
                 }),
-                Duration::from_secs(3),
             )
             .expect("minor zero should negotiate");
         assert_eq!(hello["protocolMinor"], 0);
@@ -4433,17 +4344,11 @@ mod tests {
                     "requiredCapabilities": ["core.initialize"],
                     "optionalCapabilities": []
                 }),
-                Duration::from_secs(3),
             )
             .expect("Core returns a framed incompatibility");
         assert_eq!(hello["error"]["code"], "PROTOCOL_MAJOR_MISMATCH");
         let error = incompatible
-            .request_with_payload(
-                "initialize-after-failure",
-                "core.initialize",
-                json!({}),
-                Duration::from_secs(3),
-            )
+            .request_with_payload("initialize-after-failure", "core.initialize", json!({}))
             .expect_err("initialize must not continue after failed hello");
         assert!(error.starts_with("HANDSHAKE_FAILED:"));
         incompatible
@@ -4457,7 +4362,7 @@ mod tests {
         let layout = development_layout();
         let mut host =
             CoreHostRuntime::launch(&layout, GENERATION_ID).expect("real Core Host should launch");
-        let hello = request_predecessor_hello(&mut host, "router-hello", Duration::from_secs(3))
+        let hello = request_predecessor_hello(&mut host, "router-hello")
             .expect("router hello should negotiate");
         assert_eq!(hello["protocolMinor"], 2);
         assert!(hello["payload"]["capabilities"]
@@ -4472,22 +4377,10 @@ mod tests {
             .expect("router capability should be available");
         let first = handle.clone();
         let second = handle;
-        let first = thread::spawn(move || {
-            first.request(
-                "router-health-a",
-                "system.health",
-                json!({}),
-                Duration::from_secs(3),
-            )
-        });
-        let second = thread::spawn(move || {
-            second.request(
-                "router-health-b",
-                "system.health",
-                json!({}),
-                Duration::from_secs(3),
-            )
-        });
+        let first =
+            thread::spawn(move || first.request("router-health-a", "system.health", json!({})));
+        let second =
+            thread::spawn(move || second.request("router-health-b", "system.health", json!({})));
         assert_eq!(
             first
                 .join()
@@ -4506,7 +4399,7 @@ mod tests {
     }
 
     #[test]
-    fn polling_logs_are_debug_while_rejections_and_deadlines_remain_visible() {
+    fn polling_logs_are_debug_while_rejections_and_transport_failures_remain_visible() {
         use super::{ConcurrentRequestHandle, CoreHostRouter};
         use crate::runtime_log::{RuntimeLogConfig, Severity, Verbosity};
         let root =
@@ -4539,7 +4432,6 @@ mod tests {
                 "asr.input.availability",
                 &Ok(json!({"ok": true, "payload": {"enabled": false}})),
                 1,
-                Duration::from_secs(3),
             );
             // Exercise the same producer and real writer without opening a microphone.
             for command in [
@@ -4568,7 +4460,6 @@ mod tests {
                     None,
                     1,
                     None,
-                    Some(500),
                     None,
                 );
             }
@@ -4577,14 +4468,12 @@ mod tests {
                 "asr.input.poll",
                 &Ok(json!({"ok": false, "error": {"code": "ASR_RECORDING_NOT_FOUND"}})),
                 1,
-                Duration::from_secs(3),
             );
             handle.log_request_result(
-                "asr-log-deadline",
+                "asr-log-transport",
                 "asr.input.capture_status",
-                &Err("REQUEST_DEADLINE_EXCEEDED".into()),
+                &Err("TRANSPORT_UNAVAILABLE".into()),
                 500,
-                Duration::from_millis(500),
             );
             for command in [
                 "screen.session",
@@ -4598,7 +4487,6 @@ mod tests {
                     command,
                     &Ok(json!({"ok": false, "error": {"code": "SCREEN_CAPTURE_UNAVAILABLE"}})),
                     1,
-                    Duration::from_secs(3),
                 );
             }
             for code in ["ASR_CANCELLED", "CANCELLED"] {
@@ -4607,7 +4495,6 @@ mod tests {
                     "asr.input.capture_ready",
                     &Ok(json!({"ok": false, "error": {"code": code}})),
                     1,
-                    Duration::from_millis(500),
                 );
             }
             let records = log.viewer_snapshot(None).unwrap().records;
@@ -4645,7 +4532,6 @@ mod tests {
                     }}
                 }})),
                 3,
-                Duration::from_secs(1),
             );
             let original = log.viewer_snapshot(None).unwrap().records.pop().unwrap();
             assert!(original
@@ -4679,7 +4565,7 @@ mod tests {
                     "validation_field":"/settings/profiles/applicationState",
                     "section_id":"profiles", "result_type":"dict", "has_application_state":true,
                     "application_state_type":"list"
-                }}}})), 2, Duration::from_secs(3),
+                }}}})), 2,
             );
             let settings_error = log.viewer_snapshot(None).unwrap().records.pop().unwrap();
             for (label, value) in [
@@ -4704,7 +4590,7 @@ mod tests {
             let text = fs::read_to_string(&path).unwrap();
             assert_eq!(text.lines().filter(|line| line.contains("outcome=completed") && line.contains("asr.input.")).count(),
                 if level == Verbosity::Debug { 3 } else { 0 });
-            assert!(text.contains("REQUEST_DEADLINE_EXCEEDED"));
+            assert!(text.contains("TRANSPORT_UNAVAILABLE"));
             assert!(text.contains("ASR_RECORDING_NOT_FOUND"));
             for command in ["screen.session", "screen_awareness.step"] {
                 assert_eq!(
@@ -4763,22 +4649,17 @@ mod tests {
             .expect("provider fixture should resolve");
         let mut host = CoreHostRuntime::launch(&layout, GENERATION_ID)
             .expect("real provider settings Core should launch");
-        let hello = request_predecessor_hello(&mut host, "settings-hello", Duration::from_secs(3))
+        let hello = request_predecessor_hello(&mut host, "settings-hello")
             .expect("settings hello should negotiate");
         assert!(hello["payload"]["capabilities"]
             .as_array()
             .is_some_and(|items| items.iter().any(|item| item == "settings.provider-model")));
-        host.request_with_payload(
-            "settings-initialize",
-            "core.initialize",
-            json!({}),
-            Duration::from_secs(3),
-        )
-        .expect("settings initialization should start");
+        host.request_with_payload("settings-initialize", "core.initialize", json!({}))
+            .expect("settings initialization should start");
         let ready_deadline = Instant::now() + Duration::from_secs(10);
         loop {
             let snapshot = host
-                .refresh_snapshot("settings-ready", Duration::from_secs(3))
+                .refresh_snapshot("settings-ready")
                 .expect("settings readiness should be readable");
             if matches!(snapshot["readiness"].as_str(), Some("ready" | "degraded")) {
                 break;
@@ -4793,12 +4674,7 @@ mod tests {
             .concurrent_request_handle()
             .expect("settings router should be available");
         let get = handle
-            .request(
-                "settings-get",
-                "settings.provider_model.get",
-                json!({}),
-                Duration::from_secs(3),
-            )
+            .request("settings-get", "settings.provider_model.get", json!({}))
             .expect("provider settings get should complete");
         assert_eq!(get["ok"], true);
         assert_eq!(get["payload"]["schema_version"], 2);
@@ -4829,7 +4705,6 @@ mod tests {
                         "model_slots": slots
                     }
                 }),
-                Duration::from_secs(5),
             )
             .expect("provider settings save should complete");
         assert_eq!(
@@ -4874,23 +4749,16 @@ mod tests {
         let generation = "00000000-0000-4000-8000-000000003002";
         let mut host =
             CoreHostRuntime::launch(&layout, generation).expect("real Core should launch");
-        if let Err(error) =
-            request_predecessor_hello(&mut host, "real-chat-hello", Duration::from_secs(3))
-        {
+        if let Err(error) = request_predecessor_hello(&mut host, "real-chat-hello") {
             let exit = host.shutdown();
             panic!("real chat hello failed: {error}; Core shutdown: {exit:?}");
         }
-        host.request_with_payload(
-            "real-chat-initialize",
-            "core.initialize",
-            json!({}),
-            Duration::from_secs(3),
-        )
-        .expect("real chat initialize");
+        host.request_with_payload("real-chat-initialize", "core.initialize", json!({}))
+            .expect("real chat initialize");
         let ready_deadline = Instant::now() + Duration::from_secs(10);
         loop {
             let snapshot = host
-                .refresh_snapshot("real-chat-ready", Duration::from_secs(3))
+                .refresh_snapshot("real-chat-ready")
                 .expect("real chat readiness Snapshot");
             if matches!(snapshot["readiness"].as_str(), Some("ready" | "degraded")) {
                 break;
@@ -4973,10 +4841,9 @@ mod tests {
             CoreHostRuntime::launch(&layout, GENERATION_ID).expect("first Host launches");
         let first_credential = first.generation_credential.clone();
         assert!(!format!("{first:?}").contains(&first_credential));
-        request_predecessor_hello(&mut first, "hello-first", Duration::from_secs(3))
-            .expect("first hello");
+        request_predecessor_hello(&mut first, "hello-first").expect("first hello");
         let snapshot = first
-            .refresh_snapshot("snapshot-first", Duration::from_secs(3))
+            .refresh_snapshot("snapshot-first")
             .expect("first snapshot");
         assert!(!snapshot.to_string().contains(&first_credential));
         first.shutdown().expect("first Host stops");
@@ -5001,7 +4868,7 @@ mod tests {
             CoreHostRuntime::launch_script_for_test(&python, &root, &fixture, GENERATION_ID)
                 .expect("stale response fixture launches");
         let credential = host.generation_credential.clone();
-        let error = request_predecessor_hello(&mut host, "hello-stale", Duration::from_secs(3))
+        let error = request_predecessor_hello(&mut host, "hello-stale")
             .expect_err("stale credential response must fail");
         assert!(error.starts_with("GENERATION_CREDENTIAL_MISMATCH:"));
         assert!(!error.contains(&credential));
@@ -5057,23 +4924,17 @@ mod tests {
         let mut host = CoreHostRuntime::launch(layout, generation_id)
             .expect("bundled Python Core Host should launch");
         let credential = host.generation_credential.clone();
-        let hello = request_predecessor_hello(&mut host, "hello", golden_deadline(golden, "hello"))
-            .expect("hello should negotiate");
+        let hello = request_predecessor_hello(&mut host, "hello").expect("hello should negotiate");
         assert_eq!(hello["ok"], true);
         let initialize = host
-            .request_with_payload(
-                "initialize",
-                "core.initialize",
-                json!({}),
-                golden_deadline(golden, "initializeAcceptance"),
-            )
+            .request_with_payload("initialize", "core.initialize", json!({}))
             .expect("initialize should be accepted");
         assert_eq!(initialize["payload"]["readiness"], "initializing");
         let readiness_deadline =
             std::time::Instant::now() + golden_deadline(golden, "readinessWatchdog");
         loop {
             let snapshot = host
-                .refresh_snapshot("snapshot", golden_deadline(golden, "request"))
+                .refresh_snapshot("snapshot")
                 .expect("Snapshot should respond");
             if snapshot["readiness"] != "initializing" {
                 break;
@@ -5084,11 +4945,7 @@ mod tests {
             );
         }
         let health = host
-            .request(
-                "health",
-                "system.health",
-                golden_deadline(golden, "request"),
-            )
+            .request("health", "system.health")
             .expect("health should respond");
         assert_eq!(health["payload"]["status"], "healthy");
         let exit = host
@@ -5190,25 +5047,16 @@ mod tests {
         let mut final_readiness =
             CoreHostRuntime::launch(&layout, "00000000-0000-4000-8000-000000004003")
                 .expect("final-readiness generation launches");
-        request_predecessor_hello(
-            &mut final_readiness,
-            "hello-final",
-            golden_deadline(&golden, "hello"),
-        )
-        .expect("final-readiness hello negotiates");
+        request_predecessor_hello(&mut final_readiness, "hello-final")
+            .expect("final-readiness hello negotiates");
         final_readiness
-            .request_with_payload(
-                "initialize-final",
-                "core.initialize",
-                json!({}),
-                golden_deadline(&golden, "initializeAcceptance"),
-            )
+            .request_with_payload("initialize-final", "core.initialize", json!({}))
             .expect("real initialization is accepted");
         let readiness_deadline =
             std::time::Instant::now() + golden_deadline(&golden, "readinessWatchdog");
         loop {
             let snapshot = final_readiness
-                .refresh_snapshot("snapshot-final", golden_deadline(&golden, "request"))
+                .refresh_snapshot("snapshot-final")
                 .expect("final readiness Snapshot responds");
             if snapshot["readiness"] != "initializing" {
                 break;
@@ -5229,12 +5077,8 @@ mod tests {
             "00000000-0000-4000-8000-000000004004",
         )
         .expect("bundled Python crash fixture launches");
-        let error = request_predecessor_hello(
-            &mut crashed,
-            "hello-crash",
-            golden_deadline(&golden, "hello"),
-        )
-        .expect_err("crashed bundled Core cannot answer hello");
+        let error = request_predecessor_hello(&mut crashed, "hello-crash")
+            .expect_err("crashed bundled Core cannot answer hello");
         assert!(error.starts_with("CORE_CRASHED:"));
         let crash_exit = crashed
             .close_stdin_and_wait()
@@ -5253,9 +5097,7 @@ mod tests {
         let failure = ignoring
             .shutdown()
             .expect_err("ignored shutdown must preserve its protocol timeout diagnostic");
-        assert!(failure
-            .diagnostic()
-            .starts_with("REQUEST_DEADLINE_EXCEEDED:"));
+        assert!(failure.diagnostic().starts_with("SHUTDOWN_TIMEOUT:"));
         let diagnostic = failure.diagnostic().to_string();
         assert!(
             failure.into_recovery().is_none(),
@@ -5272,8 +5114,7 @@ mod tests {
         let mut host =
             CoreHostRuntime::launch_script_for_test(&python, &root, &fixture, GENERATION_ID)
                 .expect("trailing stdout fixture launches");
-        request_predecessor_hello(&mut host, "hello-trailing", Duration::from_secs(3))
-            .expect("fixture hello negotiates");
+        request_predecessor_hello(&mut host, "hello-trailing").expect("fixture hello negotiates");
         let error = host
             .shutdown()
             .expect_err("trailing stdout must be transport fatal");
@@ -5355,7 +5196,7 @@ mod tests {
     }
 
     #[test]
-    fn ignored_control_deadline_force_reclaims_the_managed_python_job() {
+    fn ignored_shutdown_reclaims_the_managed_python_job() {
         let _test_lock = lifecycle_test_lock();
         let root = repo_root();
         let python = development_layout().python_executable;
@@ -5378,9 +5219,7 @@ mod tests {
             "ignored shutdown exceeded its one total budget: {:?}",
             elapsed
         );
-        assert!(failure
-            .diagnostic()
-            .starts_with("REQUEST_DEADLINE_EXCEEDED:"));
+        assert!(failure.diagnostic().starts_with("SHUTDOWN_TIMEOUT:"));
         let diagnostic = failure.diagnostic().to_string();
         assert!(
             failure.into_recovery().is_none(),
@@ -5426,22 +5265,16 @@ mod tests {
         layout.user_root = crate::ensure_user_layout(&user_root).unwrap();
         let mut host =
             CoreHostRuntime::launch(&layout, GENERATION_ID).expect("real Core Host should launch");
-        request_predecessor_hello(&mut host, "hello", Duration::from_secs(3))
-            .expect("hello should negotiate");
+        request_predecessor_hello(&mut host, "hello").expect("hello should negotiate");
         let initialize = host
-            .request_with_payload(
-                "initialize",
-                "core.initialize",
-                json!({}),
-                Duration::from_secs(3),
-            )
+            .request_with_payload("initialize", "core.initialize", json!({}))
             .expect("initialize should be accepted");
         assert_eq!(initialize["payload"]["readiness"], "initializing");
 
         let deadline = std::time::Instant::now() + Duration::from_secs(2);
         loop {
             let snapshot = host
-                .refresh_snapshot("snapshot", Duration::from_secs(3))
+                .refresh_snapshot("snapshot")
                 .expect("snapshot should respond");
             if snapshot["readiness"] != "initializing" {
                 assert_eq!(host.cached_snapshot(), Some(&snapshot));
@@ -5468,22 +5301,12 @@ mod tests {
         layout.user_root = crate::ensure_user_layout(&user_root).unwrap();
         let mut host =
             CoreHostRuntime::launch(&layout, GENERATION_ID).expect("real Core Host should launch");
-        request_predecessor_hello(&mut host, "hello", Duration::from_secs(3))
-            .expect("hello should negotiate");
-        host.request_with_payload(
-            "initialize",
-            "core.initialize",
-            json!({}),
-            Duration::from_secs(3),
-        )
-        .expect("real initialize should be accepted quickly");
+        request_predecessor_hello(&mut host, "hello").expect("hello should negotiate");
+        host.request_with_payload("initialize", "core.initialize", json!({}))
+            .expect("real initialize should be accepted quickly");
         for index in 0..3 {
             let health = host
-                .request(
-                    &format!("health-hang-{index}"),
-                    "system.health",
-                    Duration::from_secs(3),
-                )
+                .request(&format!("health-hang-{index}"), "system.health")
                 .expect("health should remain responsive");
             assert_eq!(health["payload"]["status"], "healthy");
             assert!(matches!(

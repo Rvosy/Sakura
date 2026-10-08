@@ -26,7 +26,6 @@ class PluginApplicationHost(PluginRuntimeApplication):
         generation_id: str,
         tool_registry: object,
         *,
-        call_timeout: float | None = None,
         migration_progress=None,
     ) -> None:
         resolved = coerce_runtime_roots(roots)
@@ -36,7 +35,6 @@ class PluginApplicationHost(PluginRuntimeApplication):
             resolved,
             generation_id,
             tool_registry,
-            call_timeout=call_timeout,
             migration_progress=migration_progress,
         )
 
@@ -167,12 +165,12 @@ class PluginApplicationHost(PluginRuntimeApplication):
             "supported": record.supported,
             "provides": list(record.provides),
             "requires": list(record.requires),
-            "missingServices": list(runtime.get("missingServices", []))[:64] if runnable else [],
+            "missingServices": list(runtime.get("missingServices", [])) if runnable else [],
             "state": state,
             "reasonCode": reason,
             **({"diagnostics": dict(diagnostics)} if diagnostics else {}),
             "pages": list(runtime.get("pages", [])) if runnable else [],
-            "sections": list(runtime.get("sections", []))[:16] if runnable else [],
+            "sections": list(runtime.get("sections", [])) if runnable else [],
         }
 
     @staticmethod

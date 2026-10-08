@@ -130,12 +130,16 @@ Core 只开放 TTS synthesis、history prepare、动态 settings/status 和 play
 Settings sections，并以 `availability={state,reasonCode}` 表达 Hub 状态，不含音频路径、正文、凭据或 Provider
 私有字段。正常响应的状态为 `active`；服务缺失时，只有插件运行快照确认 Hub 未安装、已停用或正在启动，
 才返回 `missing`、`disabled` 或 `starting`，此时 `selection=null`、Provider 和 section 列表为空，不推断已保存的
-角色选择。已运行或启动失败的 Hub 丢失服务、调用超时和其他运行错误仍返回失败。Core 发布 synthesis 唯一终态；Rust
+角色选择。已运行或启动失败的 Hub 丢失服务和其他运行错误仍返回失败。Core 发布 synthesis 唯一终态；Rust
 开放准备、播放、停止和设置 commands，并发布 playback 唯一终态。旧 generation、重复消费、逃逸/symlink、
 超大或无效 WAV 必须拒绝。回退关闭 capability、停止服务和播放，但不得删除 recording、收藏、旧配置、
 已安装 bundle、新插件配置或下载分片。没有当前角色时 schema v1 的 `character` 与 `selection` 为 `null`，
 `providers` 与 `sections` 仍按 Hub 和通用 Settings surface 返回。已选角色但聊天 Provider 尚未配置时，TTS
 设置必须使用当前 generation 已发布的角色身份，不能因 Assistant Session 尚未创建而把角色误报为未选择。
+
+预热前由 Hub 读取 Provider 就绪状态。运行组件尚未安装或其他准备条件未满足时，返回 `accepted=false`、`status=skipped` 及原始原因，Core 记录跳过预热；已开始的预热失败保留错误与诊断。
+
+GPT-SoVITS 与 Genie 的本机服务启动、模型准备和合成等待实际结果，取消或关闭时回收所属进程；用户配置的请求超时只作用于连接已有 HTTP 服务，不限制本机模型加载，也不设统一最大值。GPT-SoVITS 运行组件在创建资源服务时确定推荐整合包，设置状态读取复用该选择；切换到解压、安装等没有可测进度的阶段时清除下载百分比和字节详情。
 
 `chat.completed.reply.historyEntryId` 标识已提交的 assistant Timeline 条目。`tts.history.prepare` 接收
 `{operationId, historyEntryId, segmentIndex}`，其中随机 `history-` operationId 仅用于本次请求取消，不参与

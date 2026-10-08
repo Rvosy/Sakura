@@ -32,7 +32,7 @@ class Context:
     def bind(self, key):
         assert key == SERVICE_KEY
         return SimpleNamespace(identity={"providerId": SERVICE_KEY, "scopeId": "fixture-scope"},
-                               invoke=lambda method, *args, timeout_seconds: getattr(self.service, method)(*args))
+                               invoke=lambda method, *args: getattr(self.service, method)(*args))
     def handle(self, callback):
         if callback is None:
             return None

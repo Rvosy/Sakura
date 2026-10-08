@@ -661,5 +661,5 @@ def _rewritten_tts_path(value: object, root: Path, default_child: str) -> Path:
 
 def _bounded_timeout(value: object, *, default: int = 60) -> int:
     if isinstance(value, int) and not isinstance(value, bool):
-        return min(300, max(1, value))
+        return max(1, value)
     return default

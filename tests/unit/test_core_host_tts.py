@@ -1506,10 +1506,10 @@ class InstantTTSPlugin:
         release_disable_handle = threading.Event()
         original_handle_result = tts_boundary_module._PluginSynthesisHandle.result
 
-        def wait_before_disable(handle, timeout):
+        def wait_before_disable(handle):
             disable_handle_ready.set()
             assert release_disable_handle.wait(5)
-            return original_handle_result(handle, timeout)
+            return original_handle_result(handle)
 
         monkeypatch.setattr(
             tts_boundary_module._PluginSynthesisHandle,
@@ -1929,6 +1929,7 @@ def test_hub_warmup_preserves_provider_readiness_diagnostic() -> None:
 
     assert hub.warmup("sakura") == {
         "accepted": False,
+        "status": "skipped",
         "providerId": "sakura.tts.gpt-sovits",
         "reasonCode": "TTS_RUNTIME_PYTHON_MISSING",
         "stage": "python",
@@ -1960,7 +1961,8 @@ def test_tts_boundary_queues_current_character_warmup(tmp_path: Path) -> None:
     assert calls == [("sakura.tts", "warmup", "sakura")]
 
 
-def test_tts_boundary_logs_warmup_failure_diagnostic(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+@pytest.mark.parametrize("skipped", [False, True])
+def test_tts_boundary_logs_warmup_failure_diagnostic(tmp_path: Path, monkeypatch, skipped) -> None:  # type: ignore[no-untyped-def]
     captured: list[tuple[tuple[object, ...], dict[str, object]]] = []
     monkeypatch.setattr(
         tts_boundary_module,
@@ -1977,6 +1979,7 @@ def test_tts_boundary_logs_warmup_failure_diagnostic(tmp_path: Path, monkeypatch
                 "stage": "python",
                 "errorType": "RuntimeConfigurationError",
                 "diagnostics": {"diagnostic": "fixture missing runtime", "exception_stack": "provider.py:prepare:10"},
+                **({"status": "skipped"} if skipped else {}),
             }
 
     boundary = TTSBoundary(
@@ -1989,12 +1992,12 @@ def test_tts_boundary_logs_warmup_failure_diagnostic(tmp_path: Path, monkeypatch
 
     boundary.warmup_current_selection()
 
-    assert captured[-1][1]["event"] == "tts.service.warmup_failed"
-    assert captured[-1][1]["severity"] == "warning"
+    assert captured[-1][1]["event"] == ("tts.service.warmup_skipped" if skipped else "tts.service.warmup_failed")
+    assert captured[-1][1]["severity"] == ("info" if skipped else "warning")
     assert captured[-1][0][2] == {
         "generation": GENERATION,
         "provider": "sakura.tts.gpt-sovits",
-        "status": "failed",
+        "status": "skipped" if skipped else "failed",
         "reason_code": "TTS_RUNTIME_PYTHON_MISSING",
         "stage": "python",
         "error_type": "RuntimeConfigurationError",

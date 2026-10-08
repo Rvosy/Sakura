@@ -56,7 +56,7 @@ def _legacy_text(value: object) -> str:
 def _legacy_profiles(raw: list, slots: Mapping, llm: Mapping) -> list[dict]:
     """Keep the old reader's normalization at the ownership handoff boundary."""
     timeout = llm.get("timeout_seconds")
-    if isinstance(timeout, bool) or not isinstance(timeout, int) or not 1 <= timeout <= 300:
+    if isinstance(timeout, bool) or not isinstance(timeout, int) or timeout < 1:
         timeout = 60
     result, identities = [], set()
     for old in raw:

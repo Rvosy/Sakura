@@ -6,7 +6,6 @@ use std::{
         Arc, Mutex,
     },
     thread,
-    time::Duration,
 };
 
 use serde::{Deserialize, Serialize};
@@ -15,16 +14,12 @@ use tauri::ipc::Channel;
 
 use crate::core_host_runtime::ConcurrentRequestHandle;
 
-const CHAT_SEND_DEADLINE: Duration = Duration::from_secs(30);
-const CHAT_CANCEL_DEADLINE: Duration = Duration::from_secs(1);
-
 pub(crate) trait ChatTransport: Send + Sync {
     fn request(
         &self,
         request_id: &str,
         name: &str,
         payload: Value,
-        deadline: Duration,
         scheduling: &'static str,
     ) -> Result<Value, String>;
 }
@@ -35,10 +30,9 @@ impl ChatTransport for ConcurrentRequestHandle {
         request_id: &str,
         name: &str,
         payload: Value,
-        deadline: Duration,
         scheduling: &'static str,
     ) -> Result<Value, String> {
-        self.request_with_scheduling(request_id, name, payload, deadline, scheduling)
+        self.request_with_scheduling(request_id, name, payload, scheduling)
     }
 }
 
@@ -256,7 +250,6 @@ impl ChatBridge {
                     &request_operation_id,
                     "chat.send",
                     payload,
-                    CHAT_SEND_DEADLINE,
                     "interactive",
                 );
                 bridge.dispatch_completed(&request_operation_id, result);
@@ -353,7 +346,6 @@ impl ChatBridge {
             &format!("chat-cancel-{}", uuid::Uuid::new_v4()),
             "chat.cancel",
             json!({"operationId": operation_id}),
-            CHAT_CANCEL_DEADLINE,
             "control",
         );
         if let Ok(mut state) = self.state.lock() {
@@ -686,7 +678,6 @@ mod tests {
             request_id: &str,
             name: &str,
             _payload: Value,
-            _deadline: Duration,
             _scheduling: &'static str,
         ) -> Result<Value, String> {
             Ok(match name {
@@ -959,7 +950,6 @@ mod tests {
             request_id: &str,
             name: &str,
             payload: Value,
-            _deadline: Duration,
             scheduling: &'static str,
         ) -> Result<Value, String> {
             let (reply, result) = mpsc::sync_channel(1);

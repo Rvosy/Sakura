@@ -47,7 +47,7 @@ class BrowserRouter:
         self.pending[request_id] = future
         self.input.put({"protocolMajor": 2, "protocolMinor": 2, "kind": "request", "id": request_id,
             "generationId": "g", "generationCredential": "c", "name": name, "payload": payload,
-            "deadlineMs": 30000, "priority": "interactive"})
+            "priority": "interactive"})
         result = await asyncio.wait_for(asyncio.wrap_future(future), 35)
         if "error" in result: raise RuntimeError(result["error"]["code"])
         return result["payload"]
@@ -201,7 +201,7 @@ async def run():
                     await page.get_by_role("radio", name="默认立绘", exact=True).nth(1).check()
                     assert state["opens"] == opens
                     assert await page.evaluate("window.firstPortrait === document.querySelector('.expression-thumbnail img') && window.firstPortrait.naturalWidth > 0")
-                    state["catalog_error"] = "REQUEST_DEADLINE_EXCEEDED"
+                    state["catalog_error"] = "TRANSPORT_UNAVAILABLE"
                     for _ in range(30):
                         if state["catalog_error"] is None: break
                         await asyncio.sleep(0.1)
@@ -264,7 +264,7 @@ async def run():
                     saved = json.loads((package / "character.json").read_text(encoding="utf-8"))
                     assert saved["visuals"]["resources"][0]["name"] == "保存后刷新"
                     await browser.close()
-                    print("PASS: both covers load before selection, unchanged cover nodes/requests across four switches, zero blank cover/save frames, desktop CSP, 40 portraits, no image RPC, transient catalog timeout, local publication without reload events, responsive layout")
+                    print("PASS: both covers load before selection, unchanged cover nodes/requests across four switches, zero blank cover/save frames, desktop CSP, 40 portraits, no image RPC, transient catalog failure, local publication without reload events, responsive layout")
             finally:
                 bridge.close()
                 application.close()

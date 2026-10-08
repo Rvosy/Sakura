@@ -393,7 +393,6 @@ def test_host_profile_runner_requires_structured_success(tmp_path: Path) -> None
         runner=runner,
     ) == generated.resolve()
     assert "--worker" in calls[0][0]
-    assert calls[0][1]["timeout"] == 90
 
 
 @pytest.mark.skipif(__import__("sys").platform != "win32", reason="verbatim paths are Windows-only")
@@ -649,3 +648,25 @@ def test_managed_runtime_does_not_spawn_when_accelerator_is_unavailable(
     )
     assert runtime._start(errors.append) is False
     assert errors == ["TTS_ACCELERATOR_UNAVAILABLE"]
+
+
+def test_profile_probe_cancellation_reaps_worker(tmp_path, monkeypatch):
+    import sys
+
+    ready = tmp_path / "ready"
+    processes = []
+    popen = subprocess.Popen
+    def spawn(*args, **kwargs):
+        process = popen(*args, **kwargs)
+        processes.append(process)
+        return process
+    monkeypatch.setattr(_runtime_profile.subprocess, "Popen", spawn)
+    def cancel_after_start():
+        if ready.exists():
+            raise RuntimeError("cancelled profile probe")
+    command = [sys.executable, "-c",
+               "import pathlib,sys,threading; pathlib.Path(sys.argv[1]).touch(); threading.Event().wait()",
+               str(ready)]
+    with pytest.raises(RuntimeError, match="cancelled profile probe"):
+        _runtime_profile._run_profile_worker(command, check_cancel=cancel_after_start, text=True)
+    assert processes[0].poll() is not None

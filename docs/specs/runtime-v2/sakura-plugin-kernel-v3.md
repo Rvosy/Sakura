@@ -124,7 +124,7 @@ Service key 指明缺少的组件；没有已安装提供者时至少显示 Serv
 3. 对同一失败 token，后台最多尝试重建一次。
 4. 重建失败后保持 `failed`，等待用户 reload 或 Core 重启。
 
-IPC 继续保留 generation/token 身份、单 writer、pending 上限、JSON/frame 大小限制和 deadline。Worker IPC
+IPC 继续保留 generation/token 身份、单 writer、pending 上限、JSON/frame 大小限制和退出回收期限。Worker IPC
 只包含 initialize/status、Service call、Host callback、Host event 和 close；没有局部 lifecycle 或 Session 命令。
 
 ## 7. Host Services 与 Legacy

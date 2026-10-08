@@ -87,12 +87,6 @@ pub fn validate_envelope(message: &Value) -> Result<(), IpcError> {
     }
 
     if kind == "request" {
-        if non_negative_integer(message, "deadlineMs")? == 0 {
-            return Err(IpcError::new(
-                "INVALID_ENVELOPE",
-                "deadlineMs must be positive",
-            ));
-        }
         let priority = non_empty_string(message, "priority")?;
         if !PRIORITIES.contains(&priority) {
             return Err(IpcError::new("INVALID_ENVELOPE", "unknown priority"));
@@ -132,7 +126,7 @@ pub fn validate_envelope(message: &Value) -> Result<(), IpcError> {
                 "event requires protocol minor 2.2",
             ));
         }
-        for forbidden in ["deadlineMs", "priority", "ok", "error"] {
+        for forbidden in ["priority", "ok", "error"] {
             if message.contains_key(forbidden) {
                 return Err(IpcError::new(
                     "INVALID_ENVELOPE",
@@ -333,7 +327,6 @@ mod tests {
             "id": id,
             "name": name,
             "payload": {},
-            "deadlineMs": 3000,
             "priority": "control"
         })
     }
@@ -418,7 +411,7 @@ mod tests {
     }
 
     #[test]
-    fn envelope_validation_rejects_boolean_deadline_and_oversized_payload() {
+    fn envelope_validation_rejects_missing_payload_and_oversized_payload() {
         let mut missing_payload = request("missing-payload", "system.hello");
         missing_payload
             .as_object_mut()
@@ -427,15 +420,6 @@ mod tests {
         assert_eq!(
             encode_frame(&missing_payload)
                 .expect_err("missing payload must fail")
-                .code,
-            "INVALID_ENVELOPE"
-        );
-
-        let mut invalid = request("bad", "system.hello");
-        invalid["deadlineMs"] = json!(true);
-        assert_eq!(
-            encode_frame(&invalid)
-                .expect_err("boolean deadline must fail")
                 .code,
             "INVALID_ENVELOPE"
         );
@@ -470,7 +454,6 @@ mod tests {
         for (key, value) in [
             ("protocolMinor", json!(1)),
             ("ok", json!(true)),
-            ("deadlineMs", json!(3000)),
             ("priority", json!("interactive")),
         ] {
             let mut invalid = message.clone();

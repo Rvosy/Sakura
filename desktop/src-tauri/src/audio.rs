@@ -825,7 +825,6 @@ pub(crate) fn close_playback_window(app: &tauri::AppHandle, owner: &str) {
                 None,
                 "tts.synthesis.cancel",
                 json!({"operationId": operation}),
-                Duration::from_secs(3),
             )
             .await;
         }
@@ -907,14 +906,7 @@ async fn prepare_segment(
     } else {
         "tts.synthesis.start"
     };
-    let response = dispatch_settings_request(
-        handle.clone(),
-        None,
-        request_name,
-        request,
-        std::time::Duration::from_secs(305),
-    )
-    .await?;
+    let response = dispatch_settings_request(handle.clone(), None, request_name, request).await?;
     if handle
         .available_generation_id()
         .map_err(|error| error.to_string())?
@@ -961,7 +953,6 @@ pub(crate) async fn tts_cancel_synthesis(
         None,
         "tts.synthesis.cancel",
         json!({"operationId": payload.operation_id}),
-        std::time::Duration::from_secs(3),
     )
     .await?;
     Ok(settings_response_payload(response)?
@@ -1152,14 +1143,8 @@ pub(crate) async fn settings_voice_get(
         .available_generation_id()
         .map_err(|error| error.to_string())?
         .ok_or_else(|| "SETTINGS_CORE_UNAVAILABLE".to_string())?;
-    let response = dispatch_settings_request(
-        handle.clone(),
-        None,
-        "tts.settings.get",
-        json!({}),
-        std::time::Duration::from_secs(3),
-    )
-    .await?;
+    let response =
+        dispatch_settings_request(handle.clone(), None, "tts.settings.get", json!({})).await?;
     assert_settings_identity(&shell, &handle, window_generation, &core_generation_id)?;
     let mut payload = settings_response_payload(response)?;
     let object = payload
@@ -1183,14 +1168,8 @@ pub(crate) async fn settings_voice_status_get(
         .available_generation_id()
         .map_err(|error| error.to_string())?
         .ok_or_else(|| "SETTINGS_CORE_UNAVAILABLE".to_string())?;
-    let response = dispatch_settings_request(
-        handle.clone(),
-        None,
-        "tts.status.get",
-        json!({}),
-        std::time::Duration::from_secs(4),
-    )
-    .await?;
+    let response =
+        dispatch_settings_request(handle.clone(), None, "tts.status.get", json!({})).await?;
     assert_settings_identity(&shell, &handle, window_generation, &core_generation_id)?;
     let mut payload = settings_response_payload(response)?;
     let object = payload
@@ -1218,7 +1197,6 @@ pub(crate) async fn settings_voice_save(
         None,
         "tts.settings.save",
         json!({"settings": draft}),
-        std::time::Duration::from_secs(5),
     )
     .await?;
     let payload = settings_response_payload(response)?;
@@ -1260,7 +1238,6 @@ async fn observe_tts_playback(
             "state": event.state,
             "errorCode": error_code,
         }),
-        std::time::Duration::from_secs(2),
     )
     .await;
 }

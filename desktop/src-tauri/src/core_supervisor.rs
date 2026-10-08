@@ -45,8 +45,8 @@ pub enum StopReason {
 pub enum FailureReason {
     UnexpectedExit,
     TemporarySpawnFailure,
-    HelloTimeout,
-    InitializeTimeout,
+    HelloFailed,
+    InitializeFailed,
     ConnectionLost,
     ProtocolMajorIncompatible,
     MissingRequiredCapability,

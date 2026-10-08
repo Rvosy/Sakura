@@ -73,7 +73,7 @@ def blocked_cleanup_keeps_its_loop_and_single_owner():
     assert component.closed and not component.thread.is_alive()
 
 
-def control_timeout_keeps_original_call_and_never_replays():
+def control_waits_for_original_call_and_never_replays():
     entered = threading.Event()
     release = asyncio.Event()
     completed = []
@@ -85,16 +85,20 @@ def control_timeout_keeps_original_call_and_never_replays():
             completed.append("once")
 
     component = HeldCall()
+    results = []
+    worker = threading.Thread(target=lambda: results.append(component.call("held")))
+    worker.start()
     try:
-        with short_deadline("CALL_TIMEOUT_SECONDS"):
-            expect_error("MCP_COMPONENT_CALL_TIMEOUT", lambda: component.call("held"))
-        assert entered.wait(1) and len(component._calls) == 1
-        expect_error("MCP_COMPONENT_CALL_TIMEOUT", lambda: component.call("held"))
-        with short_deadline("CLOSE_TIMEOUT_SECONDS"):
-            expect_error("MCP_CLEANUP_TIMEOUT", component.close)
-        assert component.thread.is_alive()
+        assert entered.wait(1)
+        # A slow call does not prevent independent control requests.
+        assert component.call("status", OWNER) == []
+        assert worker.is_alive()
+        component.loop.call_soon_threadsafe(release.set)
+        worker.join(1)
+        assert not worker.is_alive() and results == [None]
     finally:
         component.loop.call_soon_threadsafe(release.set)
+        worker.join(1)
         component.close()
     assert completed == ["once"]
 
@@ -187,7 +191,7 @@ def concurrent_release_closes_result_once():
 
 
 blocked_cleanup_keeps_its_loop_and_single_owner()
-control_timeout_keeps_original_call_and_never_replays()
+control_waits_for_original_call_and_never_replays()
 cancellation_becomes_terminal_only_after_the_operation_exits()
 concurrent_release_closes_result_once()
-print("owner cleanup, control timeout, and cancellation completion passed")
+print("owner cleanup, control completion, and cancellation completion passed")

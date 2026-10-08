@@ -533,9 +533,6 @@ async function bindWindowLifecycle() {
     invoke("resolve_settings_exit", { discard: true, revision: event.payload })
       .catch(error => showOperationError(startupStatus, "无法退出 Sakura。", error));
   });
-  await listen("sakura://settings-exit-timeout", () => {
-    setAnimatedText(startupStatus, "退出请求已取消，请重试。");
-  });
   await listen("sakura://legacy-import-progress", (event) => renderProgress(event.payload));
 }
 

@@ -22,7 +22,7 @@ Plugin Runtime v4 必须同时满足：
 2. 官方插件与第三方插件的唯一区别是分发来源。
 3. 每个插件独立进程、独立 dependency root，共享一份基础 CPython、标准库和 uv cache。
 4. Core 和插件消费者依赖 Service/Contribution 契约，不依赖提供者 ID、类或私有配置结构。
-5. 进程位置对插件源码中的 Service 方法调用透明，但跨进程数据、deadline 和失败保持显式、有界。
+5. 进程位置对插件源码中的 Service 方法调用透明，跨进程数据保持有界，失败明确返回；普通调用不设统一时限。
 
 以下内容不属于 v4：通用 CallbackRef/Remote Object、全局 async Plugin API、Worker Pool、兼容依赖自动
 分组、多基础 Python 版本、环境自动修复、HealthMonitor/RetryPolicy/RecoveryScheduler、长期 v3/v4 双栈、
@@ -402,9 +402,9 @@ result = service.some_method({"value": 1})
 ```
 
 位置透明只保证相同的方法名、参数合同、结果合同和稳定错误，不保证对象 identity、属性反射、共享内存、
-零延迟或无限调用时间。每次调用必须具有 deadline；超时或连接失效绝不自动重放。
+零延迟。普通调用等待结果、真实错误或进程断开；调用方指定的期限到期或连接失效时绝不自动重放。
 远端代理也可使用 `service.invoke("method", args, timeout_seconds=10)` 为单次调用指定期限；
-动态 `get()` 与固定进程 `bind()` 均支持。期限由调用方传入 RPC，领域客户端负责按操作 ID 清理超时后状态。
+动态 `get()` 与固定进程 `bind()` 均支持。期限为有限正数，不设统一上限；由调用方传入 RPC，领域客户端负责按操作 ID 清理超时后状态。
 
 Manifest 只声明 `provides/requires` Service key，不声明方法表。插件在 setup 中调用
 `context.provide(service_key, service, exports=...)`，`exports` 是唯一方法导出来源；Runtime 在 IPC 边界拒绝
@@ -522,8 +522,8 @@ Tools、Context contributors、Timeline observers、Settings sections 和模型�
 注册，可以由多个插件同时贡献。它们按现有 descriptor、Effect cleanup、数量和 payload 上限管理，不创建
 一个强制唯一的总 Service。
 
-工具 descriptor 可指定 `timeoutSeconds`（有限正数，最大 120 秒），省略时使用原有的 15 秒回调期限。
-该字段用于执行期限，不提供给模型作为工具参数。插件工具登记必须原子拒绝同名覆盖并报告
+工具回调不设统一执行时限，网络和设备操作使用所属服务的配置及取消机制。
+插件工具登记必须原子拒绝同名覆盖并报告
 `TOOL_NAME_CONFLICT`。插件返回含 `isError=true` 的对象时，ToolRegistry 将调用标记为失败，保留结果给模型，
 `reasonCode` 仅接受有界 ASCII 原因码后进入日志；正文与参数继续脱敏。
 
@@ -636,7 +636,8 @@ prepare/begin/poll/result/cancel/release、输入与结果 artifact、历史分�
 Runner 在 bootstrap、context、import、construct、setup、commit 完成时记录 `plugin.start.phase.completed`，
 附带插件身份、该阶段耗时和 Runner 累计耗时；`plugin.loaded` 记录宿主观测的进程启动总耗时。
 初始化等待插件完成、返回真实错误或进程生命周期结束，不设启动总时长上限。进程退出或 Core 关闭会解除等待；
-普通 Service RPC、网络请求及关闭回收仍保留各自期限。初始化中的 RPC 超时后，宿主在回收进程前请求一次
+普通 Service RPC、设置回调、配置应用与事件派发同样不设统一时限；网络请求由所属服务管理，关闭回收保留有界预算。
+初始化中调用方显式指定的 RPC 期限到期后，宿主在回收进程前请求一次
 `runtime.startup.snapshot`，记录当前子阶段、阶段耗时、PID、存活状态、正在等待或已经失败的宿主 RPC 名称和 Service key。
 `timeout_ms` 记录 Runner 自己等待 RPC 的实际期限；更深层服务返回超时但未提供期限时不猜测数值。失败 RPC 的信息不被随后的清理调用覆盖。
 线程快照只含文件、函数、行号，不含源码行、局部变量或请求参数。
@@ -644,9 +645,8 @@ Runner 在 bootstrap、context、import、construct、setup、commit 完成时�
 快照请求上限由 `app/plugins/runtime_v4.py` 的 `STARTUP_SNAPSHOT_TIMEOUT_SECONDS` 定义；
 快照不会重试初始化，也不会把失败启动改判为成功。
 
-安装或迁移中的离线入口导入校验保留独立子进程期限。超过期限返回 `PLUGIN_ENTRY_IMPORT_TIMEOUT`，
-不能据此认定已安装插件损坏或触发迁移修复、重装；保留已有副本及启用状态，实际启动由 Runtime 执行。
-导入子进程正常返回的真实异常仍为 `PLUGIN_ENTRY_IMPORT_FAILED`，继续执行原有失败和恢复处理。
+安装、迁移和离线入口导入校验等待各自子进程结束，不按总耗时判断失败。子进程退出失败时保留退出码和诊断；
+已有安装只会因实际校验失败进入修复。
 
 角色切换保持 Core generation，重建 Assistant Session。依赖当前角色服务、且不属于明确按角色参数工作的
 表现/TTS Provider 的旧插件局部重载，详见[安全角色切换](WP-5-03-safe-character-switch.md)。
@@ -737,7 +737,7 @@ Shell 按已加载目录中的最低版本声明和当前 Core 上下文在下�
 实际读写、解包或导入失败沿安装事务回滚，保留已有代码、依赖和配置。
 市场下载按发布目录声明的包大小检查完整性，不再另设固定包体积上限。
 Shell 在本地安装和市场安装中等待 Core 的实际终态或 generation 失效，保留临时包直到该等待结束。
-`deadlineMs` 仍约束执行前的队列等待；进入执行后由安装器管理依赖子进程与回滚期限，不再因 Shell 的通用响应超时提前报失败或删除 ZIP。
+安装请求等待安装器完成依赖准备及发布；失败时执行回滚，不按队列等待或总耗时提前报失败、删除 ZIP。
 插件设置保存和启停同样等待 Core 的实际结果或 generation 失效，避免在插件初始化仍进行时提前报保存失败；窗口与 generation 身份在响应后仍须核对。
 
 用户插件无论是否启用都可以直接更新；同版本提供“重新安装”，重建代码及私有依赖，保留配置、数据和启停选择。内置插件随应用更新，已有新版本不降级。

@@ -225,7 +225,6 @@ async fn request_history_page(
             "beforeCursor": before_cursor,
             "limit": HISTORY_PAGE_LIMIT,
         }),
-        std::time::Duration::from_secs(5),
     )
     .await?;
     validate_page(settings_response_payload(response)?)

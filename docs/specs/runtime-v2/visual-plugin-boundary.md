@@ -213,7 +213,7 @@ export function mount({ container, resource, host, signal }) {
 `snapshotState()` 同步返回可交给 `applyState` 的完整持续状态（可传输的 JSON，不另设状态大小门槛）。
 它不包含一次动作、计时器或 GPU 对象。未实现此方法的插件仍能播放新回复，回看只更新文字；
 快照失败不阻止本段动作执行。回看和返回实时状态的 context 使用独立 operation signal，`segmentIndex` 为 -1。
-RendererHost 限制模块加载、mount 和 ready 等待各为 10 秒，销毁迟到实例，并隔离旧回调及宿主服务调用。
+RendererHost 等待模块加载、mount 和 ready 实际完成；绑定撤销后销毁迟到实例，并隔离旧回调及宿主服务调用。
 切换 generation 或形态时先撤销旧控制，保留旧实例的静态画面；新实例完成资源加载和 ready 后，
 由 RendererHost 对两个容器交叉淡入淡出。静态立绘与动态形态使用同一路径，持续时间由
 `desktop/frontend/pet/renderer-host.js` 的 `transitionMs` 定义，默认 300 毫秒；系统要求减少动画时直接切换。
@@ -301,14 +301,14 @@ PNG data URL 上限 2 MiB，仅图片 CSP 允许 data URL，脚本授权不变�
 导入结果含资源相对 resourcePath、原 name；小型文本文件可提供 text，由插件解释。宿主不解析立绘标签文件。
 目录导入保留文件名、大小写和子目录关系，每次使用独立导入目录避免覆盖已有文件；拒绝符号链接和目录联接，
 不设文件数、目录数、目录深度和业务文件大小门槛。取消或失败清理本次导入，保留原草稿资源。
-`collect` 返回私有数据，修改时必须调用 changed；`validate` 返回布尔值或抛出可读错误。模块或挂载超时为 10 秒。
+`collect` 返回私有数据，修改时必须调用 changed；`validate` 返回布尔值或抛出可读错误。模块加载和挂载完成后才交接编辑器。
 `validate` 只检查当前活动编辑器；发布和完整角色导出的后端校验不依赖编辑器是否加载。
 后台返回可定位的资源错误时，工坊切回该形态，显示具体原因，并在恢复编辑后调用编辑器可选的 `focusField(field)`。
 字段含义和输入框定位由插件实现。内置立绘用 `expressionRows` 保留空标签或重复标签的未完成草稿，
 发布时报告具体行和标签问题；校验失败保留所有草稿行及原有已发布资源。
 桌面 CSP 不允许动态内联 `<style>`。插件可使用 `CSSStyleSheet.replaceSync` 与 `document.adoptedStyleSheets`
 安装有作用域的样式，在 destroy 时移除。signal 中止时停止异步工作，保留静态画面和样式，供宿主等待新实例就绪。
-编辑器可返回 `ready` Promise；宿主等待它完成后替换旧内容，模块、挂载和 ready 超时均为 10 秒。
+编辑器可返回 `ready` Promise；宿主等待它完成后替换旧内容，切换角色或关闭编辑器时通过 signal 撤销旧任务。
 
 工坊使用 `studio.visual.catalog/previews/open/create/import/export`。公共外壳管理资源列表、默认项、提供者选择、
 移除和保存；图片标签、导入目录中的 `立绘说明.txt`/`description.txt` 等由立绘编辑器处理。
@@ -326,9 +326,9 @@ PNG data URL 上限 2 MiB，仅图片 CSP 允许 data URL，脚本授权不变�
 忙碌期间暂停编辑器状态轮询，避免保存、重启和后台探测互相争用请求槽位。
 
 catalog 返回编辑器提供者的 scopeId，open 返回 providerScopeId。工坊在编辑器打开期间每秒检查状态；只有成功
-返回的 catalog 证明 scope 失效时才撤销编辑器及其原生授权。模块加载不再重复同步请求 catalog，查询超时或拥堵
+返回的 catalog 证明 scope 失效时才撤销编辑器及其原生授权。模块加载不再重复同步请求 catalog，查询失败或拥堵
 保留编辑区，等待后续检查。切换工作区、替换编辑器或关闭窗口撤销旧模块和资源授权。
-成功的目录状态查询只记入调试日志，不占用运行日志列表；失败和超时仍保留原日志级别。
+成功的目录状态查询只记入调试日志，不占用运行日志列表；失败仍保留原日志级别。
 检查不是内容摘要，也不改变资源文件。插件不可用时允许继续保存公共资料，并保留私有资源。
 
 私有草稿保存在 visualData；显式编辑旧内联立绘时才生成 `visuals/{resourceId}.json` 并更新该引用。

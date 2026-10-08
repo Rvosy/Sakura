@@ -194,7 +194,6 @@ def test_mobile_v4_runs_real_http_server_through_core_host_service(tmp_path: Pat
         "generation-mobile-v4",
         ToolRegistry(),
         PluginInventory(roots).scan().runtime_specs,
-        call_timeout=1.0,
     )
     application.bind_chat_boundary(ChatBoundary())
     session.assistant = object()
@@ -288,7 +287,6 @@ def test_mobile_v4_slow_chat_publishes_desktop_events_without_transferring_image
         "generation-mobile-real",
         ToolRegistry(),
         PluginInventory(roots).scan().runtime_specs,
-        call_timeout=1.0,
     )
     application.bind_chat_boundary(boundary)
     application.bind_session(session)

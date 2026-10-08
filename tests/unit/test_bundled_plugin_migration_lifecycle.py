@@ -126,24 +126,6 @@ def test_120_completed_copy_is_revalidated_once_then_belongs_to_user(tmp_path, m
     assert state_path(roots).read_bytes() == saved
 
 
-def test_slow_existing_import_does_not_repair_or_replace_a_completed_plugin(tmp_path, monkeypatch):
-    roots = roots_for(tmp_path, monkeypatch, {MOBILE: MOBILE})
-    target = copy_plugin(roots.user_root / "plugins/user" / MOBILE, MOBILE)
-    original = (target / "plugin.py").read_bytes()
-    PluginDesiredStateStore(roots.user_root).set(MOBILE, False)
-    state_path(roots).write_text(json.dumps({MOBILE: "completed"}))
-    def slow_import(*args, **kwargs):
-        raise PluginDependencyError("PLUGIN_ENTRY_IMPORT_TIMEOUT")
-    def no_repair(*args, **kwargs):
-        pytest.fail("a slow import does not establish that the installed plugin is broken")
-    monkeypatch.setattr(PluginDependencyRoots, "_validate_entry", slow_import)
-    monkeypatch.setattr(migration, "ensure_external_plugin", no_repair)
-    assert migration.migrate_bundled_plugins(roots) == {}
-    assert json.loads(state_path(roots).read_text(encoding="utf-8"))[MOBILE] == "completed"
-    assert (target / "plugin.py").read_bytes() == original
-    assert PluginDesiredStateStore(roots.user_root).read()[MOBILE] is False
-
-
 @pytest.mark.parametrize("failure", ["entry_import", "inspection"])
 def test_failed_revalidation_retries_only_the_unfinished_plugin(tmp_path, monkeypatch, failure):
     roots = roots_for(tmp_path, monkeypatch, {MOBILE: MOBILE, SPINE: "sakura_spine"})

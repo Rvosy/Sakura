@@ -64,7 +64,7 @@ updated: 2026-10-05
 确定，不能通过参数冒充。`release(resourceId)` 回收未消费的图片。
 
 底层 `capture({operationId, sessionId, resolution})` 必须携带调用者预先生成且不复用的操作 ID；
-缺少 ID 时拒绝受理。SDK 为每次调用生成 ID，使用 10 秒 RPC 期限覆盖 Host 的 8 秒截图期限，
+缺少 ID 时拒绝受理。SDK 为每次调用生成 ID，默认等待截图完成、取消或实例失效；调用者可显式指定期限。
 失败后通过 `release_capture(operationId)` 撤销在途请求或回收回复丢失后留下的句柄。
 清理未确认时保留该 ID，后续截图先确认清理，失败则返回 `SCREEN_CAPTURE_CLEANUP_PENDING`，不继续申请资源。
 插件退出时调用客户端 `close()`；宿主仍按实例退出边界回收所有状态。

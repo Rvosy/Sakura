@@ -270,27 +270,6 @@ def test_plugin_tool_declared_error_is_failed_and_reason_is_sanitized() -> None:
     assert result.reason_code == "PLUGIN_TOOL_EXECUTION_FAILED"
 
 
-@pytest.mark.parametrize("timeout", [0, -1, 121, True, float("inf")])
-def test_tool_deadline_rejects_invalid_limits(timeout) -> None:
-    from app.core_host.plugin_host_services import _ToolsHostService, HostServiceError
-    service = _ToolsHostService(ToolRegistry(), lambda *args, **kwargs: {})
-    with pytest.raises(HostServiceError, match="TOOL_DESCRIPTOR_INVALID"):
-        service.call("register", [{"name": "fixture", "description": "fixture", "timeoutSeconds": timeout}, "cb_" + "a" * 32])
-
-
-def test_tool_deadline_reaches_worker_callback() -> None:
-    from app.core_host.plugin_host_services import _ToolsHostService
-    registry = ToolRegistry()
-    calls = []
-    def invoke(*args, **kwargs):
-        calls.append(kwargs["timeout"])
-        return {}
-    service = _ToolsHostService(registry, invoke)
-    service.call("register", [{"name": "fixture", "description": "fixture", "timeoutSeconds": 25}, "cb_" + "a" * 32])
-    assert registry.execute("fixture", {}).success
-    assert calls == [25]
-
-
 def test_corrupt_plugin_config_does_not_fail_core_initialization(tmp_path: Path) -> None:
     runtime_roots = roots(tmp_path)
     config = runtime_roots.user_root / "data/plugins/sakura.web/config.json"

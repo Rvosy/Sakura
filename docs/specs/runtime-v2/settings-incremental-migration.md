@@ -218,7 +218,7 @@ WP-3-04 提供可由用户维护的真实聊天配置。
 - 保存 Core 与当前 active 插件注册的动态 Chat Completion 模型槽；引用不存在 Provider/模型或遗漏必选
   槽位时，在任何 owner 写入前拒绝。
 - Provider、Core-owned 槽与当前 PluginApplication 的插件槽在一次请求中保存，并按稳定 identity 顺序调用插件槽位
-  callback。Provider 模型 Snapshot 必须先在 PluginApplication 的有界初始化 deadline 内等待当前 generation
+  callback。Provider 模型 Snapshot 必须等待当前 generation
   完成槽位注册，不能把初始化中的空注册表发布成稳定槽位集合。不同 owner 不承诺跨文件事务；后序失败
   返回 `partial`、已保存槽位与失败 owner，
   并刷新真实快照，设置前端不得伪装成整体成功或整体失败。插件保存 callback 报错后不得自动重试写入；
@@ -230,13 +230,13 @@ WP-3-04 提供可由用户维护的真实聊天配置。
 ### 6.3 数据与安全边界
 
 - `user_root/config/api.yaml` 仍由 Python 配置领域拥有。WebView 不直接访问文件；Rust Gateway 注入
-  window/Core generation、request identity 和 deadline，不成为配置真相源。
+  window/Core generation 和 request identity，不成为配置真相源。
 - `system_config.yaml` 只接受 `config_version: 1`；其他版本、缺失版本和损坏文件均拒绝读写，不迁移。
 - 写入使用同目录临时文件、flush/sync 和原子替换；验证或替换失败不改变旧文件，不留下部分文件。
 - 新密钥允许作为专用 command 的瞬时 payload 经过 WebView/Rust/Core，但不得进入 capability manifest、
   Snapshot、event、response echo、普通日志、错误详情、测试快照或证据工件。
 - `list_models`/`test_connection` 是 Provider 设置的窄消费者，不提前冻结通用 Operation 平台；必须有
-  deadline、取消/关窗处理和唯一终态。
+  网络连接/读取期限、取消/关窗处理和唯一终态。
 
 ### 6.4 明确非目标
 

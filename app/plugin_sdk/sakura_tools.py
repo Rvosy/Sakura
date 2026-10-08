@@ -63,7 +63,6 @@ class Tool:
     capability: str | None = None
     source: str = "builtin"
     registration_id: str = field(default_factory=lambda: uuid.uuid4().hex)
-    timeout_seconds: float = 15.0
 
     @property
     def metadata(self) -> ToolMetadata:

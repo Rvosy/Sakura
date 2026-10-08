@@ -105,7 +105,7 @@ def test_visual_parse_uses_concurrent_lane_and_checks_generation(tmp_path, monke
     def request(request_id, name, payload=None, **overrides):
         return {"protocolMajor": 2, "protocolMinor": 2, "kind": "request", "id": request_id,
             "name": name, "payload": payload or {}, "generationId": GENERATION_ID,
-            "generationCredential": GENERATION_CREDENTIAL, "priority": "interactive", "deadlineMs": 5000, **overrides}
+            "generationCredential": GENERATION_CREDENTIAL, "priority": "interactive", **overrides}
     def run():
         try:
             run_host(io.BytesIO(), Output(), HostConfig(RuntimeRoots(tmp_path, tmp_path), GENERATION_ID, GENERATION_CREDENTIAL))

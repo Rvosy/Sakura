@@ -41,7 +41,6 @@ _use_bg_thread = True
 _launch_lock = threading.Lock()
 _plugin_root = Path(__file__).resolve().parent
 _config_loader: Callable[[], PlaywrightBrowserConfig] | None = None
-_BROWSER_TASK_TIMEOUT_SECONDS = 10.0
 _SHUTDOWN_TIMEOUT_SECONDS = 5.0
 
 
@@ -51,6 +50,8 @@ class _DaemonTaskRunner:
     def __init__(self) -> None:
         self._tasks: queue.Queue[tuple[Future[Any], Callable[[], Any]] | None] = queue.Queue()
         self._closed = False
+        self._lock = threading.Lock()
+        self._shutdown: Future[Any] | None = None
         self._thread = threading.Thread(
             target=self._run,
             name="sakura-playwright",
@@ -60,25 +61,31 @@ class _DaemonTaskRunner:
 
     def submit(self, func: Callable[[], T]) -> Future[T]:
         future: Future[T] = Future()
-        if self._closed:
-            future.set_exception(RuntimeError("Playwright 执行器已关闭。"))
-            return future
-        self._tasks.put((future, func))
+        with self._lock:
+            if self._closed:
+                future.set_exception(RuntimeError("Playwright 执行器已关闭。"))
+            else:
+                self._tasks.put((future, func))
         return future
 
-    def shutdown(self, *, cancel_futures: bool = True, wait: bool = True) -> None:
-        self._closed = True
-        if cancel_futures:
-            while True:
-                try:
-                    item = self._tasks.get_nowait()
-                except queue.Empty:
-                    break
-                if item is not None:
-                    item[0].cancel()
-        self._tasks.put(None)
+    def shutdown(self, *, finalizer: Callable[[], Any] | None = None, wait: bool = True) -> Future[Any]:
+        with self._lock:
+            if self._shutdown is None:
+                self._closed = True
+                while True:
+                    try:
+                        item = self._tasks.get_nowait()
+                    except queue.Empty:
+                        break
+                    if item is not None:
+                        item[0].cancel()
+                self._shutdown = Future()
+                self._tasks.put((self._shutdown, finalizer or (lambda: None)))
+                self._tasks.put(None)
+            completed = self._shutdown
         if wait and self._thread is not threading.current_thread():
             self._thread.join()
+        return completed
 
     def _run(self) -> None:
         while True:
@@ -212,18 +219,19 @@ def shutdown_browser() -> None:
 
     global _playwright, _browser, _context, _page, _bg_executor, _browser_thread_id
     executor = _bg_executor
-    _bg_executor = None
     if executor is not None and threading.get_ident() != _browser_thread_id:
+        cleanup = executor.shutdown(finalizer=_shutdown_browser_objects, wait=False)
         try:
-            executor.submit(_shutdown_browser_objects).result(timeout=_SHUTDOWN_TIMEOUT_SECONDS)
-        except FutureTimeoutError:
+            cleanup.result(timeout=_SHUTDOWN_TIMEOUT_SECONDS)
+        except FutureTimeoutError as error:
             _log("warning", "浏览器关闭超时", reason_code="BROWSER_SHUTDOWN_TIMEOUT")
-        finally:
-            executor.shutdown(cancel_futures=True)
+            raise TimeoutError("浏览器仍在关闭，请稍后重试。") from error
+        executor.shutdown()
     else:
         _shutdown_browser_objects()
         if executor is not None:
-            executor.shutdown(cancel_futures=True)
+            executor.shutdown(wait=False)
+    _bg_executor = None
     _playwright = None
     _browser = None
     _context = None
@@ -231,19 +239,11 @@ def shutdown_browser() -> None:
     _browser_thread_id = None
 
 
-def _run_browser_task(
-    func: Callable[[], T],
-    *,
-    timeout: float | None = _BROWSER_TASK_TIMEOUT_SECONDS,
-) -> T:
+def _run_browser_task(func: Callable[[], T]) -> T:
     if not _use_bg_thread or threading.get_ident() == _browser_thread_id:
         return func()
     executor = _ensure_executor()
-    try:
-        return executor.submit(func).result(timeout=timeout)
-    except FutureTimeoutError as exc:
-        _abandon_executor(executor)
-        raise TimeoutError("Playwright 页面操作超时，已放弃阻塞的浏览器线程。") from exc
+    return executor.submit(func).result()
 
 
 def _run_on_browser_thread(func: Callable[[], T]) -> T:
@@ -258,19 +258,6 @@ def _ensure_executor() -> _DaemonTaskRunner:
         if _bg_executor is None:
             _bg_executor = _DaemonTaskRunner()
         return _bg_executor
-
-
-def _abandon_executor(executor: _DaemonTaskRunner) -> None:
-    global _bg_executor, _playwright, _browser, _context, _page, _browser_thread_id
-    with _launch_lock:
-        if _bg_executor is executor:
-            _bg_executor = None
-    executor.shutdown(cancel_futures=True, wait=False)
-    _playwright = None
-    _browser = None
-    _context = None
-    _page = None
-    _browser_thread_id = None
 
 
 def _ensure_browser() -> Any:

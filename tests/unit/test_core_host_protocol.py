@@ -45,13 +45,12 @@ def request(request_id: str, name: str = "system.hello") -> dict[str, object]:
         "id": request_id,
         "name": name,
         "payload": {},
-        "deadlineMs": 3000,
         "priority": "control",
     }
 
 
 @pytest.mark.parametrize("stop_while_queued", [False, True])
-def test_router_queues_settings_bursts_without_blocking_control_or_executing_expired_writes(stop_while_queued):
+def test_router_queues_settings_bursts_without_blocking_control_and_cancels_queued_writes_on_close(stop_while_queued):
     incoming = queue.Queue()
     release = threading.Event()
     changed = threading.Condition()
@@ -103,9 +102,8 @@ def test_router_queues_settings_bursts_without_blocking_control_or_executing_exp
         for index in range(4): incoming.put(request(f"blocked-{index}", "fixture.blocking"))
         wait_for(lambda: active == 4)
         for index in range(7): incoming.put(request(f"settings-{index}", "characters.visuals.get"))
-        expired = request("expired-write", "characters.settings.select")
-        expired["deadlineMs"] = 10
-        incoming.put(expired)
+        queued = request("queued-write", "characters.settings.select")
+        incoming.put(queued)
         incoming.put(request("overflow", "characters.visuals.get"))
         incoming.put(request("health", "system.health"))
         wait_for(lambda: "health" in messages)
@@ -117,15 +115,14 @@ def test_router_queues_settings_bursts_without_blocking_control_or_executing_exp
             thread.join(4)
             assert not thread.is_alive()
             assert set(executed) == {f"blocked-{index}" for index in range(4)}
-            assert set(abandoned) == {"overflow", "expired-write", *(f"settings-{index}" for index in range(7))}
+            assert set(abandoned) == {"overflow", "queued-write", *(f"settings-{index}" for index in range(7))}
             return
-        time.sleep(0.02)
         release.set()
         wait_for(lambda: len(messages) == 14)
         assert all("error" not in messages[f"settings-{index}"] for index in range(7))
-        assert messages["expired-write"]["error"]["code"] == "REQUEST_DEADLINE_EXCEEDED"
-        assert "expired-write" not in executed
-        assert set(abandoned) == {"overflow", "expired-write"}
+        assert messages["queued-write"]["payload"] == {"ok": True}
+        assert "queued-write" in executed
+        assert set(abandoned) == {"overflow"}
         assert peak == 4
     finally:
         release.set()
@@ -198,7 +195,7 @@ def test_envelope_and_error_shape_are_strict_and_json_safe() -> None:
     assert raised.value.code == "INVALID_ENVELOPE"
 
     invalid = request("bad")
-    invalid["deadlineMs"] = True
+    invalid["priority"] = True
     with pytest.raises(ProtocolError) as raised:
         encode_frame(invalid)
     assert raised.value.code == "INVALID_ENVELOPE"
@@ -233,7 +230,6 @@ def test_protocol_22_event_is_distinct_from_21_request_response() -> None:
     for key, value in (
         ("protocolMinor", 1),
         ("ok", True),
-        ("deadlineMs", 3000),
         ("priority", "interactive"),
     ):
         invalid = dict(message)
@@ -523,7 +519,6 @@ def test_writer_queue_saturation_and_slow_write_fail_with_bounded_errors(
     writer = ResponseWriter(output)
     first = request("writer-slow")
     first["kind"] = "response"
-    first.pop("deadlineMs")
     first.pop("priority")
     first["ok"] = True
 

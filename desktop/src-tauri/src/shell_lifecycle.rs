@@ -18,6 +18,7 @@ use crate::{
     character_presentation,
     chat_bridge::{ChatBridge, ChatEventPublication},
     core_host_protocol::{PROTOCOL_MAJOR, PROTOCOL_MINOR},
+    core_host_router::CoreHostRouterHandle,
     core_host_runtime::{ConcurrentRequestHandle, CoreHostRuntime},
     core_supervisor::{
         CoreSupervisor, FailureReason, GenerationId, LifecycleAction, LifecycleIntent,
@@ -80,27 +81,9 @@ pub(crate) async fn dispatch_settings_request(
     request_id: Option<String>,
     name: &'static str,
     payload: Value,
-    deadline: std::time::Duration,
 ) -> Result<Value, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        handle.settings_request(request_id.as_deref(), name, payload, deadline)
-    })
-    .await
-    .map_err(|source_error| {
-        crate::runtime_log::diagnostic_error("SETTINGS_REQUEST_ABORTED", source_error)
-    })?
-}
-
-/// Lifecycle transactions own their work and rollback deadlines. Keep the caller
-/// alive until Core finishes or the generation ends.
-pub(crate) async fn dispatch_settings_transaction(
-    handle: ShellLifecycleHandle,
-    name: &'static str,
-    payload: Value,
-    queue_deadline: Duration,
-) -> Result<Value, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        handle.settings_request_with_completion(None, name, payload, queue_deadline, true)
+        handle.settings_request(request_id.as_deref(), name, payload)
     })
     .await
     .map_err(|source_error| {
@@ -130,9 +113,6 @@ pub(crate) fn load_current_character_presentation(
     resources.activate(presentation, &generation_id)
 }
 
-const HELLO_DEADLINE: Duration = Duration::from_secs(10);
-const INITIALIZE_DEADLINE: Duration = Duration::from_secs(5);
-const SNAPSHOT_DEADLINE: Duration = Duration::from_secs(3);
 const SNAPSHOT_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
 #[derive(Clone, Serialize)]
@@ -209,6 +189,7 @@ pub struct ShellLifecycleHandle {
     command: Sender<ShellCommand>,
     publication: Arc<Mutex<ShellLifecyclePublication>>,
     settings_transport: Arc<Mutex<Option<ConcurrentRequestHandle>>>,
+    request_router: Arc<Mutex<Option<CoreHostRouterHandle>>>,
     settings_request_number: Arc<AtomicU64>,
     chat_bridge: Arc<Mutex<Option<ChatBridge>>>,
 }
@@ -311,10 +292,21 @@ impl ShellLifecycleHandle {
         }
     }
 
-    pub fn stop_core(&self) -> Result<(), String> {
-        self.command.send(ShellCommand::Stop).map_err(|error| {
+    fn send_stopping_command(&self, command: ShellCommand) -> Result<(), String> {
+        let router = self.request_router.lock().map_err(|error| {
+            crate::runtime_log::diagnostic_error("LIFECYCLE_STATE_UNAVAILABLE", error)
+        })?;
+        self.command.send(command).map_err(|error| {
             crate::runtime_log::diagnostic_error("LIFECYCLE_COMMAND_UNAVAILABLE", error)
-        })
+        })?;
+        if let Some(router) = router.as_ref() {
+            router.cancel_requests();
+        }
+        Ok(())
+    }
+
+    pub fn stop_core(&self) -> Result<(), String> {
+        self.send_stopping_command(ShellCommand::Stop)
     }
 
     pub fn stop_and_wait(&self, timeout: Duration) -> Result<(), String> {
@@ -373,9 +365,7 @@ impl ShellLifecycleHandle {
     }
 
     pub fn restart(&self) -> Result<(), String> {
-        self.command.send(ShellCommand::Restart).map_err(|error| {
-            crate::runtime_log::diagnostic_error("LIFECYCLE_COMMAND_UNAVAILABLE", error)
-        })
+        self.send_stopping_command(ShellCommand::Restart)
     }
 
     pub fn settings_request(
@@ -383,18 +373,6 @@ impl ShellLifecycleHandle {
         request_id: Option<&str>,
         name: &str,
         payload: Value,
-        deadline: Duration,
-    ) -> Result<Value, String> {
-        self.settings_request_with_completion(request_id, name, payload, deadline, false)
-    }
-
-    fn settings_request_with_completion(
-        &self,
-        request_id: Option<&str>,
-        name: &str,
-        payload: Value,
-        deadline: Duration,
-        until_complete: bool,
     ) -> Result<Value, String> {
         let generated;
         let request_id = match request_id {
@@ -416,17 +394,11 @@ impl ShellLifecycleHandle {
             })?
             .clone()
             .ok_or_else(|| "SETTINGS_TRANSPORT_UNAVAILABLE".to_string())?;
-        if until_complete {
-            transport.request_until_complete(request_id, name, payload, deadline)
-        } else {
-            transport.request(request_id, name, payload, deadline)
-        }
+        transport.request(request_id, name, payload)
     }
 
     pub fn request_shutdown(&self) -> Result<(), String> {
-        self.command.send(ShellCommand::Shutdown).map_err(|error| {
-            crate::runtime_log::diagnostic_error("LIFECYCLE_COMMAND_UNAVAILABLE", error)
-        })
+        self.send_stopping_command(ShellCommand::Shutdown)
     }
 
     pub fn shutdown_and_wait(&self, timeout: Duration) -> Result<(), String> {
@@ -526,6 +498,8 @@ impl ShellLifecycleSession {
         };
         let publication = Arc::new(Mutex::new(initial));
         let settings_transport = Arc::new(Mutex::new(None));
+        let request_router = Arc::new(Mutex::new(None));
+        let worker_request_router = request_router.clone();
         let chat_bridge = Arc::new(Mutex::new(None));
         let (chat_event_sender, chat_events) = mpsc::channel();
         let worker_publication = publication.clone();
@@ -537,6 +511,7 @@ impl ShellLifecycleSession {
                 commands,
                 worker_publication,
                 worker_settings_transport,
+                worker_request_router,
                 worker_chat_bridge,
                 chat_event_sender,
                 runtime_log,
@@ -548,6 +523,7 @@ impl ShellLifecycleSession {
                 command,
                 publication,
                 settings_transport,
+                request_router,
                 settings_request_number: Arc::new(AtomicU64::new(0)),
                 chat_bridge,
             },
@@ -658,6 +634,7 @@ struct WorkerState {
     request_number: u64,
     cleanup_blocked: bool,
     settings_transport: Arc<Mutex<Option<ConcurrentRequestHandle>>>,
+    request_router: Arc<Mutex<Option<CoreHostRouterHandle>>>,
     shared_chat_bridge: Arc<Mutex<Option<ChatBridge>>>,
     runtime_log: Option<RuntimeLogService>,
 }
@@ -667,6 +644,7 @@ fn run_worker(
     commands: Receiver<ShellCommand>,
     publication: Arc<Mutex<ShellLifecyclePublication>>,
     settings_transport: Arc<Mutex<Option<ConcurrentRequestHandle>>>,
+    request_router: Arc<Mutex<Option<CoreHostRouterHandle>>>,
     shared_chat_bridge: Arc<Mutex<Option<ChatBridge>>>,
     chat_events: Sender<DesktopProjection>,
     runtime_log: Option<RuntimeLogService>,
@@ -689,6 +667,7 @@ fn run_worker(
         request_number: 0,
         cleanup_blocked: false,
         settings_transport,
+        request_router,
         shared_chat_bridge,
         runtime_log,
     };
@@ -733,6 +712,10 @@ fn run_worker(
                         &publication,
                         &chat_events,
                     ) {
+                        drain_commands(&commands, &mut state, &mut actions);
+                        if state.supervisor.snapshot().state == SupervisorState::Stopping {
+                            continue;
+                        }
                         log_lifecycle(
                             &state,
                             Severity::Warning,
@@ -816,6 +799,10 @@ fn run_worker(
                     match refresh_snapshot(&mut state) {
                         Ok(()) => publish(&state, &publication),
                         Err(()) => {
+                            drain_commands(&commands, &mut state, &mut actions);
+                            if state.supervisor.snapshot().state != SupervisorState::Running {
+                                continue;
+                            }
                             if let Some((generation_id, _)) = state.identity {
                                 invalidate_generation_surfaces(&mut state);
                                 actions.extend(state.supervisor.observe_generation_failed(
@@ -941,6 +928,9 @@ fn spawn_and_initialize(
         }
     };
     let core_pid = host.root_pid();
+    if let Ok(mut router) = state.request_router.lock() {
+        *router = host.cancellation_handle();
+    }
     state.host = Some(host);
     state.supervisor.observe_spawn_succeeded(generation_id);
     log_lifecycle(
@@ -952,14 +942,19 @@ fn spawn_and_initialize(
     );
     publish(state, publication);
 
+    drain_commands(commands, state, actions);
+    if state.supervisor.snapshot().state != SupervisorState::Running {
+        return Ok(());
+    }
+
     let hello = state
         .host
         .as_mut()
         .expect("spawned host remains owned")
-        .request("shell-hello", "system.hello", HELLO_DEADLINE)
+        .request("shell-hello", "system.hello")
         .map_err(|error| {
             state.failure_diagnostic = Some(error.clone());
-            classify_control_failure(&error, FailureReason::HelloTimeout)
+            classify_control_failure(&error, FailureReason::HelloFailed)
         })?;
     if hello.get("ok").and_then(Value::as_bool) != Some(true) {
         state.failure_diagnostic = Some(crate::runtime_log::error_details(&hello["error"]));
@@ -983,15 +978,10 @@ fn spawn_and_initialize(
         .host
         .as_mut()
         .expect("initialized host remains owned")
-        .request_with_payload(
-            "shell-initialize",
-            "core.initialize",
-            json!({}),
-            INITIALIZE_DEADLINE,
-        )
+        .request_with_payload("shell-initialize", "core.initialize", json!({}))
         .map_err(|error| {
             state.failure_diagnostic = Some(error.clone());
-            classify_control_failure(&error, FailureReason::InitializeTimeout)
+            classify_control_failure(&error, FailureReason::InitializeFailed)
         })?;
     if initialize.get("ok").and_then(Value::as_bool) != Some(true) {
         state.failure_diagnostic = Some(crate::runtime_log::error_details(&initialize["error"]));
@@ -1034,17 +1024,9 @@ fn spawn_and_initialize(
     if let Ok(mut target) = state.settings_transport.lock() {
         *target = settings_handle;
     }
-    let mut restart_after_readiness = false;
     let mut migration_window_requested = false;
     loop {
         match commands.try_recv() {
-            Ok(ShellCommand::Restart) => {
-                // Settings become writable as soon as Core transport is ready,
-                // while Assistant initialization may still be running.
-                // Coalesce restarts until readiness is stable so shutdown does
-                // not race the initializer and report SHUTDOWN_DURING_INITIALIZE.
-                restart_after_readiness = true;
-            }
             Ok(command) => {
                 actions.extend(submit_command(state, command));
                 return Ok(());
@@ -1083,9 +1065,6 @@ fn spawn_and_initialize(
                 "Core reached a stable readiness state",
                 json!({"host_state": readiness.unwrap_or("unknown"), "outcome": "completed"}),
             );
-            if restart_after_readiness {
-                actions.extend(submit_command(state, ShellCommand::Restart));
-            }
             return Ok(());
         }
         thread::sleep(SNAPSHOT_POLL_INTERVAL);
@@ -1164,8 +1143,11 @@ fn refresh_snapshot(state: &mut WorkerState) -> Result<(), ()> {
         .host
         .as_mut()
         .ok_or(())?
-        .refresh_snapshot(&request_id, SNAPSHOT_DEADLINE)
+        .refresh_snapshot(&request_id)
         .map_err(|error| {
+            if error == "GENERATION_INVALIDATED: Core generation is stopping" {
+                return;
+            }
             state.failure_diagnostic = Some(error.clone());
             log_lifecycle(
                 state,
@@ -1181,6 +1163,9 @@ fn refresh_snapshot(state: &mut WorkerState) -> Result<(), ()> {
 
 fn stop_generation(state: &mut WorkerState, reason: StopReason) -> bool {
     invalidate_generation_surfaces(state);
+    if let Ok(mut router) = state.request_router.lock() {
+        *router = None;
+    }
     let Some(host) = state.host.take() else {
         return true;
     };
@@ -1230,7 +1215,7 @@ fn clear_settings_transport(state: &WorkerState) {
     }
 }
 
-fn classify_control_failure(error: &str, timeout: FailureReason) -> FailureReason {
+fn classify_control_failure(error: &str, fallback: FailureReason) -> FailureReason {
     if error.starts_with("PROTOCOL_MAJOR_MISMATCH") {
         FailureReason::ProtocolMajorIncompatible
     } else if error.starts_with("MISSING_REQUIRED_CAPABILITY")
@@ -1240,7 +1225,7 @@ fn classify_control_failure(error: &str, timeout: FailureReason) -> FailureReaso
     } else if error.starts_with("GENERATION_CREDENTIAL_MISMATCH") {
         FailureReason::SecurityBoundary
     } else {
-        timeout
+        fallback
     }
 }
 
@@ -1374,8 +1359,8 @@ fn failure_reason(reason: FailureReason) -> &'static str {
     match reason {
         FailureReason::UnexpectedExit => "unexpected_exit",
         FailureReason::TemporarySpawnFailure => "temporary_spawn_failure",
-        FailureReason::HelloTimeout => "hello_timeout",
-        FailureReason::InitializeTimeout => "initialize_timeout",
+        FailureReason::HelloFailed => "hello_failed",
+        FailureReason::InitializeFailed => "initialize_failed",
         FailureReason::ConnectionLost => "connection_lost",
         FailureReason::ProtocolMajorIncompatible => "protocol_major_incompatible",
         FailureReason::MissingRequiredCapability => "missing_required_capability",
@@ -1389,8 +1374,8 @@ fn failure_message(reason: FailureReason) -> &'static str {
     match reason {
         FailureReason::UnexpectedExit => "Core 进程意外退出。",
         FailureReason::TemporarySpawnFailure => "Core 进程启动失败。",
-        FailureReason::HelloTimeout => "Core 启动握手超时。",
-        FailureReason::InitializeTimeout => "Core 初始化超时。",
+        FailureReason::HelloFailed => "Core 启动握手失败。",
+        FailureReason::InitializeFailed => "Core 初始化失败。",
         FailureReason::ConnectionLost => "与 Core 的连接已中断。",
         FailureReason::ProtocolMajorIncompatible => "Core 协议版本不兼容。",
         FailureReason::MissingRequiredCapability => "Core 缺少必需能力。",
@@ -1512,14 +1497,6 @@ mod tests {
         assert!(!migration_window_needed(&publication, "current"));
     }
 
-    #[test]
-    fn hello_deadline_matches_the_validated_cold_start_budget() {
-        // A Windows 10 release report observed the Core process reaching its
-        // first fixed log event after 5.2 seconds. Keep enough headroom for
-        // Python startup and real-time antivirus scanning on a cold cache.
-        assert_eq!(HELLO_DEADLINE, Duration::from_secs(10));
-    }
-
     fn copy_fixture_tree(source: &std::path::Path, target: &std::path::Path) {
         std::fs::create_dir_all(target).expect("temporary fixture directory");
         for entry in std::fs::read_dir(source).expect("read fixture directory") {
@@ -1619,6 +1596,7 @@ mod tests {
             command,
             publication: publication.clone(),
             settings_transport: Arc::new(Mutex::new(None)),
+            request_router: Arc::new(Mutex::new(None)),
             settings_request_number: Arc::new(AtomicU64::new(0)),
             chat_bridge: Arc::new(Mutex::new(None)),
         };
@@ -1662,6 +1640,7 @@ mod tests {
             command,
             publication: publication.clone(),
             settings_transport: Arc::new(Mutex::new(None)),
+            request_router: Arc::new(Mutex::new(None)),
             settings_request_number: Arc::new(AtomicU64::new(0)),
             chat_bridge: Arc::new(Mutex::new(None)),
         };
@@ -1712,6 +1691,7 @@ mod tests {
             command,
             publication: publication.clone(),
             settings_transport: Arc::new(Mutex::new(None)),
+            request_router: Arc::new(Mutex::new(None)),
             settings_request_number: Arc::new(AtomicU64::new(0)),
             chat_bridge: Arc::new(Mutex::new(None)),
         };
@@ -1752,6 +1732,7 @@ mod tests {
             command,
             publication: publication.clone(),
             settings_transport: Arc::new(Mutex::new(None)),
+            request_router: Arc::new(Mutex::new(None)),
             settings_request_number: Arc::new(AtomicU64::new(0)),
             chat_bridge: Arc::new(Mutex::new(None)),
         };
@@ -1779,6 +1760,100 @@ mod tests {
             .readiness()
             .unwrap_err()
             .starts_with("CORE_START_FAILED"));
+    }
+
+    #[test]
+    fn shutdown_cancels_a_real_core_stalled_in_hello_or_initialize() {
+        let _test_lock = crate::core_host_runtime::lifecycle_test_lock();
+        let repository = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .canonicalize()
+            .unwrap();
+        let layout = FilesystemRuntimeLocator
+            .locate(&RuntimeLocationRequest {
+                mode: crate::platform::RuntimeMode::ExplicitDevelopment,
+                target: crate::platform::current_platform_target().unwrap(),
+                executable_directory: std::env::current_exe()
+                    .unwrap()
+                    .parent()
+                    .unwrap()
+                    .to_path_buf(),
+                resource_directory: repository.clone(),
+                explicit_development_root: Some(repository.clone()),
+                user_root: repository.clone(),
+            })
+            .unwrap();
+        for phase in ["system.hello", "core.initialize"] {
+            let root = std::env::temp_dir()
+                .join(format!("sakura-startup-cancel-{}", uuid::Uuid::new_v4()));
+            std::fs::create_dir(&root).unwrap();
+            std::fs::write(root.join("phase.txt"), phase).unwrap();
+            let mut host = CoreHostRuntime::launch_script_for_test(
+                &layout.python_executable,
+                &root,
+                &repository.join("tests/fixtures/runtime_v2/startup_wait_host.py"),
+                "11111111111111111111111111111111",
+            )
+            .unwrap();
+            let router = host.cancellation_handle().unwrap();
+            let (command, commands) = mpsc::channel();
+            let handle = ShellLifecycleHandle {
+                command,
+                publication: Arc::new(Mutex::new(ShellLifecyclePublication {
+                    supervisor: SupervisorPublication {
+                        state: "running",
+                        generation_id: None,
+                        generation_number: 1,
+                        app_shutdown: false,
+                        failure: None,
+                    },
+                    snapshot: None,
+                    character_presentation: None,
+                    versions: VersionPublication {
+                        desktop_version: "1.0.0",
+                        core_version: "1.0.0".into(),
+                        protocol_version: "2.2".into(),
+                        log_location: "fixture",
+                    },
+                })),
+                settings_transport: Arc::new(Mutex::new(None)),
+                request_router: Arc::new(Mutex::new(Some(router))),
+                settings_request_number: Arc::new(AtomicU64::new(0)),
+                chat_bridge: Arc::new(Mutex::new(None)),
+            };
+            let (completed, completion) = mpsc::channel();
+            let worker = thread::spawn(move || {
+                if phase == "core.initialize" {
+                    host.request("hello", "system.hello").unwrap();
+                }
+                let result = host.request("blocked", phase);
+                assert!(matches!(commands.recv().unwrap(), ShellCommand::Shutdown));
+                let cleanup = host.shutdown_for_app_exit();
+                completed.send((result, cleanup)).unwrap();
+            });
+            let watchdog = Instant::now() + Duration::from_secs(10);
+            while !root.join("waiting").exists() && Instant::now() < watchdog {
+                thread::yield_now();
+            }
+            let waiting = root.join("waiting").exists();
+            handle.request_shutdown().unwrap();
+            let (result, cleanup) = completion.recv_timeout(Duration::from_secs(10)).unwrap();
+            worker.join().unwrap();
+            assert!(waiting, "fixture did not reach {phase}");
+            assert!(result.unwrap_err().starts_with("GENERATION_INVALIDATED:"));
+            let failure =
+                cleanup.expect_err("the deliberately stalled process cannot acknowledge shutdown");
+            assert!(
+                failure.diagnostic().starts_with("SHUTDOWN_TIMEOUT:"),
+                "{}",
+                failure.diagnostic()
+            );
+            assert!(
+                failure.into_recovery().is_none(),
+                "managed process tree must be fully reclaimed"
+            );
+            std::fs::remove_dir_all(root).unwrap();
+        }
     }
 
     fn wait_for_failed(
@@ -2022,7 +2097,6 @@ mod tests {
                 Some("wp-5-03-select-beta"),
                 "characters.settings.select",
                 json!({"characterId": "beta"}),
-                Duration::from_secs(5),
             )
             .expect("persist beta selection");
         assert_eq!(
@@ -2057,12 +2131,7 @@ mod tests {
                         "selected character must have a validated visual"
                     );
                     let bootstrap = handle
-                        .settings_request(
-                            None,
-                            "studio.bootstrap",
-                            json!({}),
-                            Duration::from_secs(5),
-                        )
+                        .settings_request(None, "studio.bootstrap", json!({}))
                         .expect("Studio remains available after switching");
                     assert_eq!(
                         bootstrap
@@ -2075,7 +2144,6 @@ mod tests {
                             None,
                             "studio.character.open",
                             json!({"characterId": role}),
-                            Duration::from_secs(5),
                         )
                         .expect("open selected character in Studio");
                     let workspace = opened
@@ -2087,17 +2155,11 @@ mod tests {
                             None,
                             "studio.workspace.release",
                             json!({"workspaceId": workspace}),
-                            Duration::from_secs(5),
                         )
                         .expect("close Studio workspace");
                     assert!(released.get("error").is_none(), "{released}");
                     let settings = handle
-                        .settings_request(
-                            None,
-                            "characters.settings.get",
-                            json!({}),
-                            Duration::from_secs(5),
-                        )
+                        .settings_request(None, "characters.settings.get", json!({}))
                         .expect("Settings remains available after closing Studio");
                     assert_eq!(
                         settings
@@ -2131,7 +2193,6 @@ mod tests {
                 Some("wp-5-03-select-sakura"),
                 "characters.settings.select",
                 json!({"characterId": "sakura"}),
-                Duration::from_secs(5),
             )
             .expect("persist sakura selection");
         assert_eq!(
@@ -2237,9 +2298,7 @@ mod tests {
         assert!(session.chat_events.as_ref().unwrap().try_iter().any(|event|
             matches!(event, DesktopProjection::GenerationInvalidated(ref id) if id == &first_id)));
         assert!(
-            diagnostic.contains("GENERATION_INVALIDATED")
-                || diagnostic.contains("CORE_PROCESS")
-                || diagnostic.contains("EOF"),
+            diagnostic.contains("CORE_CRASHED") || diagnostic.contains("EOF"),
             "{diagnostic}"
         );
         assert!(failed.snapshot.is_none());

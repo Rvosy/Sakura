@@ -212,7 +212,6 @@ def test_official_tts_v4_uses_three_processes_descriptor_and_job_ids(
         "generation-tts-v4",
         ToolRegistry(),
         PluginInventory(roots).scan().runtime_specs,
-        call_timeout=1.0,
     )
     try:
         application.start()
@@ -321,7 +320,6 @@ def test_tts_provider_crash_leaves_hub_and_unrelated_provider_running(
         "generation-tts-v4-crash",
         ToolRegistry(),
         PluginInventory(roots).scan().runtime_specs,
-        call_timeout=0.3,
     )
     cleanup_started, finish_cleanup = threading.Event(), threading.Event()
     try:
@@ -522,7 +520,6 @@ class Plugin:
         "generation-third-party-hub",
         ToolRegistry(),
         inventory.runtime_specs,
-        call_timeout=1.0,
     )
     session = SimpleNamespace(
         character=SimpleNamespace(id="genie-character"),

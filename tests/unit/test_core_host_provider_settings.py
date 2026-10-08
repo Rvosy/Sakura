@@ -14,7 +14,7 @@ CATALOG = [{"serviceKey": REF["serviceKey"], "pluginId": "vendor.plugin", "label
 def _request(name, payload=None, identity="request"):
     return {"protocolMajor": 2, "protocolMinor": 2, "kind": "request", "generationId": GENERATION,
             "generationCredential": CREDENTIAL, "id": identity, "name": "settings.provider_model." + name,
-            "payload": {} if payload is None else payload, "deadlineMs": 3000, "priority": "interactive"}
+            "payload": {} if payload is None else payload, "priority": "interactive"}
 
 
 def _boundary(root, *, application=None, apply=None):

@@ -265,6 +265,25 @@ def select_device_profile(
     return DeviceProfile(f"cuda:{selected.index}", use_half, selected.name)
 
 
+def _run_profile_worker(command, *, check_cancel=None, capture_output=True, check=False, **kwargs):
+    from sakura_process import terminate_process_tree
+
+    with subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                          start_new_session=os.name != "nt", **kwargs) as process:
+        try:
+            while True:
+                if check_cancel is not None:
+                    check_cancel()
+                try:
+                    stdout, stderr = process.communicate(timeout=0.1)
+                    return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+                except subprocess.TimeoutExpired:
+                    continue
+        except BaseException:
+            terminate_process_tree(process, timeout=0.5)
+            raise
+
+
 def prepare_managed_profile(
     work_dir: Path,
     *,
@@ -272,7 +291,8 @@ def prepare_managed_profile(
     configured_path: Optional[Path] = None,
     require_cuda: bool = False,
     platform: Optional[str] = None,
-    runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+    runner: Callable[..., subprocess.CompletedProcess[str]] | None = None,
+    check_cancel: Callable[[], None] | None = None,
 ) -> Optional[Path]:
     """Return an explicit config path, probing the device only once on Windows.
 
@@ -308,7 +328,7 @@ def prepare_managed_profile(
     env = {**os.environ, "PYTHONIOENCODING": "utf-8"}
     creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
     try:
-        completed = runner(
+        completed = (runner or _run_profile_worker)(
             command,
             cwd=_native_windows_path(work_dir),
             capture_output=True,
@@ -316,14 +336,10 @@ def prepare_managed_profile(
             encoding="utf-8",
             errors="replace",
             check=False,
-            timeout=90,
             env=env,
             creationflags=creationflags,
+            **({"check_cancel": check_cancel} if runner is None else {}),
         )
-    except subprocess.TimeoutExpired as error:
-        raise RuntimeProfileError(
-            "TTS_DEVICE_PROBE_FAILED", reason_code="TTS_DEVICE_PROBE_TIMEOUT"
-        ) from error
     except OSError as error:
         raise RuntimeProfileError(
             "TTS_DEVICE_PROBE_FAILED", reason_code="TTS_DEVICE_PROBE_START_FAILED"

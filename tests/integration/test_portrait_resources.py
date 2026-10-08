@@ -214,7 +214,7 @@ def test_portrait_resource_error_logs_target_and_original_cause(tmp_path, failur
             result = boundary.handle({
                 "protocolMajor": 2, "protocolMinor": 2, "kind": "request", "id": method,
                 "name": method, "payload": params, "generationId": "g", "generationCredential": "c",
-                "deadlineMs": 3000, "priority": "interactive",
+                "priority": "interactive",
             })
             assert not result["ok"]
             assert result["error"]["code"] == "VISUAL_RESOURCE_INVALID"

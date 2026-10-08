@@ -597,7 +597,6 @@ class MemoryStore:
     scope_id: str = DEFAULT_MEMORY_SCOPE
     memory_client: Any | None = None
     resource_registry: ResourceRegistry | None = None
-    request_timeout_seconds: float | None = None
     memory_dir: Path | None = None
     memory_cache_dir: Path | None = None
     _memory: Any | None = field(default=None, init=False, repr=False)

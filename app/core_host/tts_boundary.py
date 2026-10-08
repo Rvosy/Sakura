@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import concurrent.futures
 import hmac
 import threading
 import uuid
@@ -15,6 +14,7 @@ from typing import Any, Callable, Mapping
 from app.core_host.protocol import error_payload, event, response
 from app.core.runtime_log import log_event
 from app.core.diagnostics import exception_diagnostics
+from app.plugins.runtime_v4 import CLOSE_TIMEOUT_SECONDS
 from app.storage.tts_storage import TtsStorage, TtsStorageUnavailable
 from app.storage.paths import StoragePaths
 from app.storage.timeline import TimelineDataError, TimelineKind, TimelineStore
@@ -40,7 +40,6 @@ PLAYBACK_TTL_SECONDS = 300
 MAX_AUTHORIZATIONS = 32
 MAX_ACTIVE_SYNTHESIS = 2
 PLUGIN_JOB_POLL_INTERVAL_SECONDS = 0.05
-PLUGIN_JOB_HOST_TIMEOUT_SECONDS = 305.0
 
 
 class TTSBoundaryError(RuntimeError):
@@ -90,11 +89,8 @@ class _PluginSynthesisHandle:
         self.request_id = request_id
         self.provider_id = provider_id
 
-    def result(self, timeout: float) -> Mapping[str, Any]:
-        deadline = monotonic() + max(0.0, timeout)
+    def result(self) -> Mapping[str, Any]:
         while True:
-            if monotonic() >= deadline:
-                raise concurrent.futures.TimeoutError()
             try:
                 result = getattr(self._application, "call_service")(
                     "sakura.tts",
@@ -117,7 +113,7 @@ class _PluginSynthesisHandle:
             if result.get("providerId") != self.provider_id:
                 raise TTSBoundaryError("TTS_SYNTHESIS_FAILED", "TTS Provider identity changed")
             if state == "running":
-                sleep(min(PLUGIN_JOB_POLL_INTERVAL_SECONDS, max(0.0, deadline - monotonic())))
+                sleep(PLUGIN_JOB_POLL_INTERVAL_SECONDS)
                 continue
             if state == "cancelled":
                 raise TTSBoundaryError(
@@ -134,6 +130,7 @@ class _PluginSynthesisHandle:
                 "sakura.tts",
                 "cancel",
                 self.request_id,
+                timeout=CLOSE_TIMEOUT_SECONDS,
             )
         except Exception:
             return False
@@ -257,7 +254,7 @@ class TTSBoundary:
             if isinstance(result, Mapping)
             else "TTS_WARMUP_SKIPPED"
         )
-        skipped = reason_code in {
+        skipped = (isinstance(result, Mapping) and result.get("status") == "skipped") or reason_code in {
             "TTS_DISABLED",
             "TTS_PROVIDER_NOT_SELECTED",
             "TTS_WARMUP_SKIPPED",
@@ -759,6 +756,7 @@ class TTSBoundary:
                         "sakura.tts",
                         "cancel",
                         request_id,
+                        timeout=CLOSE_TIMEOUT_SECONDS,
                     )
                     accepted = bool(
                         isinstance(result, Mapping) and result.get("accepted")
@@ -853,15 +851,7 @@ class TTSBoundary:
             )
         if cancelled:
             handle.cancel()
-        try:
-            result = handle.result(PLUGIN_JOB_HOST_TIMEOUT_SECONDS)
-        except concurrent.futures.TimeoutError as error:
-            handle.cancel()
-            raise TTSBoundaryError(
-                "TTS_SYNTHESIS_TIMEOUT",
-                "TTS synthesis timed out",
-                retryable=True,
-            ) from error
+        result = handle.result()
         with self._lock:
             if self._closed:
                 closed = True

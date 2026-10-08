@@ -43,7 +43,7 @@ def system(tmp_path):
     session = SimpleNamespace(character=SimpleNamespace(id="sakura"))
     generated, facts, desktop = [], [], []
     jobs = {}
-    def service(key, method, *args):
+    def service(key, method, *args, timeout=None):
         assert key == "sakura.tts"
         if method == "begin":
             request = args[0]
@@ -148,7 +148,7 @@ def test_background_speech_is_cancelled_before_recording_commit(system, tmp_path
     polling, cancelled, release = threading.Event(), threading.Event(), threading.Event()
     idle_request = None
 
-    def service(key, method, *args):
+    def service(key, method, *args, timeout=None):
         nonlocal idle_request
         if method == "begin" and idle_request is None:
             idle_request = args[0]["requestId"]
@@ -157,7 +157,7 @@ def test_background_speech_is_cancelled_before_recording_commit(system, tmp_path
             assert release.wait(5)
         if method == "cancel" and args[0] == idle_request:
             cancelled.set()
-        return original(key, method, *args)
+        return original(key, method, *args, timeout=timeout)
 
     monkeypatch.setattr(application, "call_service", service)
     results = []
@@ -169,6 +169,7 @@ def test_background_speech_is_cancelled_before_recording_commit(system, tmp_path
     idle.start()
     try:
         assert polling.wait(5)
+        background_job = next(iter(system.host._jobs.values()))
         with caller():
             if preemption == "foreground":
                 system.entry("foreground")
@@ -182,6 +183,7 @@ def test_background_speech_is_cancelled_before_recording_commit(system, tmp_path
         release.set()
         idle.join(5)
     assert not idle.is_alive()
+    assert background_job.done.wait(5)
     assert results == [False]
     assert system.boundary._recordings.for_segment("sakura", "reply-one", 0) is None
     assert system.store.count == 0
@@ -228,11 +230,11 @@ def test_hub_idle_deferral_backs_off_and_resumes_without_failure_event(system, t
     monkeypatch.setattr(_idle_fill, "device_below_peak", lambda: True)
     application = system.boundary._plugin_application()
     original = application.call_service
-    def deferred(key, method, *args):
+    def deferred(key, method, *args, timeout=None):
         if method == "poll":
             return {"state": "failed", "requestId": args[0], "providerId": "voice-provider",
                     "errorCode": "TTS_BACKGROUND_DEFERRED"}
-        return original(key, method, *args)
+        return original(key, method, *args, timeout=timeout)
     monkeypatch.setattr(application, "call_service", deferred)
     warnings = []
     worker = _idle_fill.IdleFill(system.host, SimpleNamespace(warning=lambda *args, **kwargs: warnings.append((args, kwargs))))

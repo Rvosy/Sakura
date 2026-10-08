@@ -352,27 +352,6 @@ def test_plugin_atomic_write_retries_transient_windows_replace_lock(
 
 
 
-def test_prompt_wait_times_out_and_honors_cancellation(tmp_path: Path) -> None:
-    store = FakeMemoryStore(ready=False, model_missing=False)
-    boundary = _boundary(_root(tmp_path), store)
-    calls = 0
-
-    def cancel_checker() -> None:
-        nonlocal calls
-        calls += 1
-        if calls == 2:
-            raise RuntimeError("cancelled-for-test")
-
-    try:
-        started = time.monotonic()
-        assert boundary.wait_until_settled(0.02)["status"] == "loading"
-        assert time.monotonic() - started < 0.5
-        with pytest.raises(RuntimeError, match="cancelled-for-test"):
-            boundary.wait_until_settled(1.0, cancel_checker=cancel_checker)
-    finally:
-        boundary.close()
-
-
 def test_startup_preload_failure_is_degraded_without_escaping_private_error(tmp_path: Path) -> None:
     store = FakeMemoryStore(ready=False, model_missing=False)
     store.preload_error = True

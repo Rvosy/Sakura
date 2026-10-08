@@ -335,7 +335,7 @@ class _Coordinator:
                     "text": request.text,
                     "split_sentence": False,
                 },
-                timeout=max(self._config.timeout_seconds, 120),
+                timeout=self._config.timeout_seconds if self._config.endpoint_mode == "custom" else None,
                 cancel_checker=job.check_cancelled,
             )
             job.check_cancelled()
@@ -366,6 +366,7 @@ class _Coordinator:
         try:
             self._prepare_voice(warmup.voice, DEFAULT_TONE, warmup)
         except OperationCancelled:
+            self._reset_managed_runtime()
             return
         except Exception as error:
             # Warmup is best effort. The first synthesis retries the same
@@ -461,11 +462,11 @@ class _Coordinator:
         self._post_json(
             endpoint,
             payload,
-            timeout=min(self._config.timeout_seconds, 20),
-            cancel_checker=None,
+            timeout=self._config.timeout_seconds if self._config.endpoint_mode == "custom" else None,
+            cancel_checker=job.check_cancelled if self._server_process is not None else None,
         )
-        # State-changing calls deliberately finish before observing cancel so
-        # no late response can overwrite the next character's shared state.
+        # Cancellation stops an owned service before advancing to another
+        # character. Calls to other services finish before changing shared state.
         job.check_cancelled()
 
     def _post_json(
@@ -473,7 +474,7 @@ class _Coordinator:
         endpoint: str,
         payload: dict[str, object],
         *,
-        timeout: int,
+        timeout: int | None,
         cancel_checker: Callable[[], None] | None,
     ) -> bytes:
         request = urllib.request.Request(
@@ -496,7 +497,7 @@ class _Coordinator:
         job.check_cancelled()
         if not _probe_genie_api_url(
             self._config.api_url,
-            min(self._config.timeout_seconds, 3),
+            self._config.timeout_seconds,
         ):
             raise RuntimeError("TTS_RUNTIME_UNAVAILABLE")
         job.check_cancelled()
@@ -518,8 +519,7 @@ class _Coordinator:
             self._start_managed_runtime(host, port)
             process = self._server_process
         assert process is not None
-        deadline = time.monotonic() + max(3, min(self._config.timeout_seconds, 180))
-        while time.monotonic() < deadline:
+        while True:
             job.check_cancelled()
             exit_code = process.poll()
             if exit_code is not None:
@@ -529,7 +529,6 @@ class _Coordinator:
                 self._report("tts.service.ready", "info", {})
                 return
             job.wait_or_cancel(0.05)
-        raise self._process_failure("TTS_RUNTIME_TIMEOUT", self._log_path, self._log_start_offset)
 
     @staticmethod
     def _process_failure(code: str, path: Path, start_offset: int = 0) -> RuntimeError:
@@ -1006,7 +1005,7 @@ class GeniePlugin:
                         ],
                     },
                     {"key": "apiUrl", "label": "已有服务地址", "type": "string", "default": "http://127.0.0.1:9881/", "enabledWhen": {"field": "endpointMode", "equals": "custom"}},
-                    {"key": "timeoutSeconds", "label": "合成超时（秒）", "type": "integer", "default": 60, "minimum": 1, "maximum": 300, "step": 1, "placement": "advanced"},
+                    {"key": "timeoutSeconds", "label": "请求超时（秒）", "type": "integer", "default": 60, "minimum": 1, "step": 1, "placement": "advanced", "enabledWhen": {"field": "endpointMode", "equals": "custom"}},
                 ],
             },
             load=lambda: _settings_values(context.config.get()),
@@ -1044,7 +1043,7 @@ def _parse_config(value: Mapping[str, Any]) -> _ProviderConfig:
     ).rstrip("/") + "/"
     _endpoint_host_port(api_url)
     timeout = value.get("timeoutSeconds", 60)
-    if isinstance(timeout, bool) or not isinstance(timeout, int) or not 1 <= timeout <= 300:
+    if isinstance(timeout, bool) or not isinstance(timeout, int) or timeout < 1:
         raise ValueError("TTS_CONFIG_INVALID")
     # Custom endpoints are operator-owned; stale managed paths are ignored.
     work_dir = _absolute_path(value.get("workDir")) if mode == "managed" else None

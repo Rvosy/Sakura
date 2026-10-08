@@ -119,7 +119,6 @@ class PluginRuntimeApplication:
         tool_registry: object,
         specs: Sequence[RuntimePluginSpec] | None = None,
         *,
-        call_timeout: float | None = None,
         migration_progress=None,
     ) -> None:
         self._roots = roots
@@ -154,13 +153,11 @@ class PluginRuntimeApplication:
             log_event("Plugin", "模型配置迁移失败", diagnostics, event="model.configuration.failed", severity="error")
         self._inventory = PluginInventory(roots, migration_failures=migration_failures)
         self._inventory_snapshot = self._inventory.scan()
-        manager_options = {} if call_timeout is None else {"call_timeout": call_timeout}
         self._manager = PluginRuntimeManager(
             roots,
             generation_id,
             self._inventory_snapshot.runtime_specs if specs is None else specs,
             before_start=self._prepare_plugin,
-            **manager_options,
         )
         self.visuals = VisualHost(self._manager, inventory=self.inventory)
         self._visual_character = None
@@ -355,8 +352,8 @@ class PluginRuntimeApplication:
         services = {ref["serviceKey"] for ref in self.active_models().values() if ref}
         self._manager.start(services=(*sorted(services), "sakura.assistant"))
 
-    def wait_until_loaded(self, *, timeout: float = 8.0) -> bool:
-        return self._loaded.wait(max(0.0, timeout)) and not self._closed
+    def wait_until_loaded(self, *, timeout: float | None = None) -> bool:
+        return self._loaded.wait(timeout) and not self._closed
 
     def public_snapshot(self) -> dict[str, Any]:
         snapshot = self._manager.snapshot()
@@ -379,8 +376,8 @@ class PluginRuntimeApplication:
     def settings_snapshot(self) -> dict[str, Any]:
         return self._host_services.decorate_settings_snapshot(self._manager.snapshot())
 
-    def call_service(self, service_key: str, method: str, *args: object) -> object:
-        return self._voice_result(service_key, self._manager.call_service(service_key, method, *args))
+    def call_service(self, service_key: str, method: str, *args: object, timeout: float | None = None) -> object:
+        return self._voice_result(service_key, self._manager.call_service(service_key, method, *args, timeout=timeout))
 
     def call_bound_service(self, service_key, identity, method, *args, timeout=None):
         return self._voice_result(service_key, self._manager.call_bound_service(service_key, identity, method, *args, timeout=timeout))
@@ -657,8 +654,8 @@ class PluginRuntimeApplication:
         if hasattr(registry, "set_event_emitter"):
             registry.set_event_emitter(None)
 
-    def wait_until_bound(self, *, timeout: float = 8.0) -> bool:
-        return self._bound.wait(max(0.0, timeout)) and not self._closed
+    def wait_until_bound(self, *, timeout: float | None = None) -> bool:
+        return self._bound.wait(timeout) and not self._closed
 
     def bind_chat_boundary(self, boundary: object) -> None:
         self._chat_boundary = boundary
@@ -862,6 +859,7 @@ class PluginRuntimeApplication:
         self.audio_input.close()
         self._host_services.clear()
         self._loaded.set()
+        self._bound.set()
 
     def _current_character_id(self) -> str | None:
         character_id = getattr(getattr(self._session, "character", None), "id", None)

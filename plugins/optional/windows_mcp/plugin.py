@@ -7,7 +7,6 @@ from pathlib import Path
 import re
 import sys
 import threading
-import time
 
 
 class WindowsMCPPlugin:
@@ -44,7 +43,6 @@ class WindowsMCPPlugin:
             "args": ["-I", "-S", str(Path(__file__).with_name("server.py")), dependencies, str(server_config)],
             "cwd": str(work),
             "env": {"ANONYMIZED_TELEMETRY": "false", "POSTHOG_API_KEY": ""},
-            "connectTimeout": 60, "requestTimeout": 100,
         })["handle"]
         context.get("sakura.host.tools").register({
             "name": "windows_mcp_result", "description": "读取、取消或释放 Windows 操作返回的大结果；offset 按字符计，读完后 release。",
@@ -91,7 +89,7 @@ class WindowsMCPPlugin:
                 aliases.add(alias)
                 registrations.append(self.context.get("sakura.host.tools").register({
                     "name": alias, "description": (tool.get("description") or name)[:500],
-                    "parameters": tool["inputSchema"], "timeoutSeconds": 110,
+                    "parameters": tool["inputSchema"],
                     "risk": "low" if name in {"Snapshot", "Screenshot", "Wait"} else "high",
                 }, lambda args, name=name: self._tool(name, args)))
             with self.lock:
@@ -108,7 +106,6 @@ class WindowsMCPPlugin:
                 self.reason = getattr(error, "code", "WINDOWS_MCP_DISCOVERY_FAILED")
 
     def _wait(self, operation):
-        deadline = time.monotonic() + 105
         while not self.stopping.is_set():
             status = self.mcp.inspect(operation)
             if status["state"] == "completed":
@@ -124,9 +121,6 @@ class WindowsMCPPlugin:
                 return status["result"]
             if status["state"] in {"error", "cancelled"}:
                 raise RuntimeError("WINDOWS_MCP_OPERATION_FAILED")
-            if time.monotonic() >= deadline:
-                self.mcp.cancel(operation)
-                raise TimeoutError("WINDOWS_MCP_OPERATION_TIMEOUT")
             self.stopping.wait(0.05)
         raise RuntimeError("WINDOWS_MCP_CLOSED")
 

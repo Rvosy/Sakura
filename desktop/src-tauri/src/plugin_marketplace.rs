@@ -3,8 +3,8 @@ use crate::{
     download_sources::{self, DownloadSources},
     product_shell,
     shell_lifecycle::{
-        dispatch_settings_request, dispatch_settings_transaction, settings_core_handle,
-        settings_response_payload, ShellLifecycleState,
+        dispatch_settings_request, settings_core_handle, settings_response_payload,
+        ShellLifecycleState,
     },
 };
 use serde_json::{json, Value};
@@ -260,19 +260,13 @@ pub(crate) async fn settings_marketplace_readme(
     if let Some(document) = market.cached_readme(&url) {
         return Ok(document);
     }
-    let data = tokio::time::timeout(
-        std::time::Duration::from_secs(45),
-        download_sources::fetch(
-            &download_sources::https_url(&raw)?,
-            &sources.load()?,
-            256 * 1024,
-            |_, _, _| {},
-        ),
+    let data = download_sources::fetch(
+        &download_sources::https_url(&raw)?,
+        &sources.load()?,
+        256 * 1024,
+        |_, _, _| {},
     )
-    .await
-    .map_err(|source_error| {
-        crate::runtime_log::diagnostic_error("项目说明加载超时。", source_error)
-    })??;
+    .await?;
     let markdown = String::from_utf8(data).map_err(|source_error| {
         crate::runtime_log::diagnostic_error("项目说明编码无效。", source_error)
     })?;
@@ -320,7 +314,6 @@ pub(crate) async fn settings_marketplace_catalog(
             None,
             "plugins.marketplace.context",
             json!({}),
-            std::time::Duration::from_secs(4),
         )
         .await?,
     )?;
@@ -401,7 +394,6 @@ pub(crate) async fn settings_marketplace_install(
             None,
             "plugins.marketplace.context",
             json!({}),
-            std::time::Duration::from_secs(4),
         )
         .await?,
     )?;
@@ -417,14 +409,7 @@ pub(crate) async fn settings_marketplace_install(
     };
     validate_app_version(&context, &release)?;
     let current = settings_response_payload(
-        dispatch_settings_request(
-            handle.clone(),
-            None,
-            "plugins.settings.get",
-            json!({}),
-            std::time::Duration::from_secs(4),
-        )
-        .await?,
+        dispatch_settings_request(handle.clone(), None, "plugins.settings.get", json!({})).await?,
     )?;
     validate_install_version(&current, &revision, &plugin_id, &version)?;
     let sources = sources.load()?;
@@ -475,13 +460,13 @@ pub(crate) async fn settings_marketplace_install(
         crate::runtime_log::diagnostic_error("无法写入临时安装包。", source_error)
     })?;
     let _ = progress.send(json!({"phase":"installing","progress":100}));
-    let response = dispatch_settings_transaction(
+    let response = dispatch_settings_request(
         handle.clone(),
+        None,
         "plugins.marketplace.install",
         json!({
             "revision":revision,"sourcePath":file.0,"pluginId":plugin_id,"version":version,
         }),
-        std::time::Duration::from_secs(300),
     )
     .await?;
     let payload = settings_response_payload(response)?;

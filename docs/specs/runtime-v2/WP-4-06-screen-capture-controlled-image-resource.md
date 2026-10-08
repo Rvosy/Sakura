@@ -37,7 +37,7 @@ updated: 2026-09-21
 - 每个捕获资源写入系统临时目录下当前 Core generation 的私有目录。跨 Rust/Python IPC 只传
   `generationId + resourceToken + mimeType + width + height + byteLength + capturedAt + screenName`；路径由
   两端在同一固定根下独立解析，不能进入 DTO、事件、日志或 WebView。
-- token 使用不可预测随机值，只允许当前 generation 单次消费，TTL 为 120 秒。Core 必须重新校验 token
+- token 使用不可预测随机值，只允许当前 generation 单次消费。消费结束显式释放临时文件，generation 退出和 CaptureManager 销毁时清理剩余资源。Core 必须重新校验 token
   形状、generation、路径 containment、常规文件、大小、MIME、JPEG 结构/SOF 尺寸和图片上限，读取后立即删除。
   Rust 在成功、拒绝、取消、过期、generation 变化和应用退出时均清理剩余文件。
 - Core 只在内存中保留一个待发送手动附件组；组内含一至六个有序 `ScreenObservation`。`screen.attach`

@@ -813,7 +813,7 @@ def test_visual_plugin_failures_retain_remote_diagnostics(tmp_path, method, sign
                 if method == "previewImage":
                     assert boundary._dispatch("studio.visual.previews", {"workspaceId": "character"})["items"] == [{"resourceId": resource.id, "relativePath": None}]
                 else:
-                    result = boundary.handle({"protocolMajor": 2, "protocolMinor": 2, "kind": "request", "id": "test-editor", "name": "studio.visual.open", "generationId": "g", "generationCredential": "0123456789abcdef0123456789abcdef", "priority": "interactive", "deadlineMs": 3000, "payload": {"workspaceId": "character", "resourceId": resource.id}})
+                    result = boundary.handle({"protocolMajor": 2, "protocolMinor": 2, "kind": "request", "id": "test-editor", "name": "studio.visual.open", "generationId": "g", "generationCredential": "0123456789abcdef0123456789abcdef", "priority": "interactive", "payload": {"workspaceId": "character", "resourceId": resource.id}})
                     assert not result["ok"]
                     diagnostic = result["error"]["details"]["diagnostics"]
     finally:

@@ -40,15 +40,6 @@ def test_dependency_check_preserves_actual_filesystem_or_parse_failure(tmp_path,
     assert str(caught.value.__cause__) in str(caught.value)
 
 
-def test_entry_import_timeout_is_not_reported_as_a_broken_entry(tmp_path, monkeypatch):
-    def slow_import(*args, **kwargs):
-        raise subprocess.TimeoutExpired(args[0], kwargs["timeout"])
-    monkeypatch.setattr(subprocess, "run", slow_import)
-    with pytest.raises(PluginDependencyError, match="PLUGIN_ENTRY_IMPORT_TIMEOUT"):
-        PluginDependencyRoots(tmp_path / "user")._validate_entry(
-            "fixture", tmp_path, None, "plugin:Plugin")
-
-
 @pytest.mark.skipif(os.name != "nt", reason="Windows verbatim path semantics")
 @pytest.mark.parametrize("probe", ["working_directory", "relative_native_resource"])
 def test_entry_validation_accepts_windows_verbatim_roots(tmp_path: Path, probe: str) -> None:

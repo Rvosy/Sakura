@@ -53,12 +53,11 @@ class _Resource:
 class ScreenHost:
     def __init__(self, generation_id: str, *, session_provider: Callable,
                  emit_callback: Callable, resource_consumer: Callable = consume_screen_resource,
-                 capture_timeout: float = 8.0, commit_scope: Callable | None = None) -> None:
+                 commit_scope: Callable | None = None) -> None:
         self._generation_id = generation_id
         self._session_provider = session_provider
         self._emit = emit_callback
         self._consume = resource_consumer
-        self._timeout = capture_timeout
         self._commit_scope = commit_scope or (lambda owner, commit: commit())
         self._lock = threading.RLock()
         self._pending: dict[str, _Capture] = {}
@@ -123,8 +122,7 @@ class ScreenHost:
                     raise ScreenHostError("SCREEN_CAPTURE_CANCELLED")
                 self._emit("host.screen.capture", {"requestId": request_id, "sessionId": session_id,
                                                     "resolution": request["resolution"]})
-            if not pending.done.wait(self._timeout):
-                raise ScreenHostError("SCREEN_CAPTURE_TIMEOUT")
+            pending.done.wait()
             if pending.error:
                 raise ScreenHostError(pending.error, pending.diagnostic)
             current_epoch = self._session_snapshot(session_id)

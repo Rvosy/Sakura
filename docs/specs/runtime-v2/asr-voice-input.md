@@ -216,7 +216,7 @@ Hub 状态返回 `providerId`、`serviceKey`、`configVersion`、`state`、`avai
 `state: "ready", available: true`。可选 `providerId` 用于继续准备已绑定的引擎。Provider 在私有配置
 失效时更新 `configVersion`；全局切换选择不修改旧 Provider 的配置版本。
 
-`begin` 快速接受任务，推理在插件内后台执行；`poll` 是短调用。沿用 v4 的有限 JSON、调用 deadline 和显式
+`begin` 快速接受任务，推理在插件内后台执行；`poll` 是短调用。沿用 v4 的有限 JSON、实例失效和显式
 失败，不跨边界传 Python 对象、音频数组、callback 或整段 base64 音频。
 Core 的 `begin` 请求携带 `requestId`、`providerId`、`configVersion`、`audio` 和 `language`。
 

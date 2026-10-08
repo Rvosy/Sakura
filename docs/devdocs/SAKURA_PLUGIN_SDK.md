@@ -378,7 +378,7 @@ dispose = context.provide(
 ```
 
 插件不需要知道 Service 在 Core 还是另一个插件进程里。这个透明层只保证方法名和 JSON 合同一致，不保证
-Python 对象 identity、共享内存或无限调用时间。远端调用有 deadline，超时、提供者退出或旧 generation
+Python 对象 identity 或共享内存。普通调用等待结果、真实错误或进程断开；提供者退出或旧 generation
 都会明确失败，而且不会自动重放。
 
 `exports` 是唯一的方法导出表。不要指望未导出方法、属性访问、反射或 `__getattr__` 穿过进程边界。
@@ -411,7 +411,7 @@ state = provider.poll(job_id)
 普通调用持有代理即可；跨任务 Artifact 交付可读取 `provider.identity` 的副本，不自行构造或复用旧 scope。
 
 需要限定一次 RPC 的等待时间时使用 `provider.invoke("cancel", job_id, timeout_seconds=1.0)`。
-截止时间贯穿调用两端，取值须大于 0、至多 122 秒；它不代表后台任务已经停止。清理多个步骤时共用一份剩余预算，
+显式期限须为有限正数，不设统一上限；到期不代表后台任务已经停止。清理多个步骤时共用一份剩余预算，
 不要让每个步骤重新获得完整期限。
 
 现有 TTS Hub 在 `begin` 前绑定 Provider，就绪查询 `status`、受理以及该任务的全部 `poll/cancel` 使用同一代理。
@@ -939,8 +939,8 @@ tools.register(
 ```
 
 工具名只能包含字母、数字、下划线和连字符，最多 64 个字符，而且必须全局唯一。描述要告诉模型什么时候
-调用，以及参数含义；不要写宣传文案。回调有 15 秒 deadline，长任务应设计成 `begin/poll/cancel`，不要让
-一次回调长时间阻塞。
+调用，以及参数含义；不要写宣传文案。工具执行不设统一时限。需要报告进度或支持取消的长任务使用
+`begin/poll/cancel`。
 
 工具结果通常是 JSON。如果需要返回图片，先用 artifact Service 提交文件，再返回：
 
@@ -1069,7 +1069,6 @@ catalog = tools.catalog()
 tool = catalog[0]
 result = tools.execute(
     tool["registrationId"], tool["name"], arguments,
-    timeout_seconds=tool["timeoutSeconds"],
 )
 
 contexts = context.get("sakura.host.context")
@@ -1077,7 +1076,7 @@ contributors = contexts.catalog()
 fragments = contexts.collect(contributors[0]["registrationId"], request)
 ```
 
-工具目录保留 name、description、parameters、group、risk、capability、source 与 timeoutSeconds；
+工具目录保留 name、description、parameters、group、risk、capability 与 source；
 Context 目录保留 providerId、description、order、enabled、scope、failurePolicy 与实际 pluginId。
 调用方必须保留 registrationId，不能在失败后按同名重新查找并重放调用。登记失效时 Host 明确报错，
 同名新登记不会接管旧请求。副作用已经开始后的取消不保证撤销。
@@ -1410,8 +1409,8 @@ class Plugin:
         logger.info("索引插件已初始化")
 ```
 
-这段代码展示记录和清理方式，`self.resource_manager` 需由插件初始化。普通 Host 回调有 deadline，耗时刷新
-应在后台执行，不能直接阻塞设置 Action。公共类型提示可从 `sakura_plugin_api` 导入 `PluginLogger`，无需
+这段代码展示记录和清理方式，`self.resource_manager` 需由插件初始化。耗时刷新可在后台执行，以便设置页
+显示进度并提供取消操作。公共类型提示可从 `sakura_plugin_api` 导入 `PluginLogger`，无需
 导入 SDK 私有代理或 Core 日志模块。
 
 ### 接口与分级

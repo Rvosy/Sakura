@@ -17,6 +17,42 @@ const container = ({ animate = () => ({ finished: Promise.resolve(), cancel() {}
 };
 const deferred = () => { let resolve; const promise = new Promise((r) => { resolve = r; }); return { promise, resolve }; };
 
+test("retiring a renderer releases pending readiness without waiting for the plugin", async () => {
+  const ready = deferred();
+  const mounted = deferred();
+  let destroyed = 0;
+  const host = createRendererHost({ container: container(), loadModule: async () => ({
+    mount: () => { mounted.resolve(); return { ready: ready.promise, applyState() {}, destroy() { destroyed++; } }; },
+  }) });
+  const loading = host.bind(binding());
+  await mounted.promise;
+  host.freeze();
+  assert.equal(await loading, false);
+  assert.equal(destroyed, 1);
+  ready.resolve();
+  host.destroy();
+});
+
+test("slow renderer readiness keeps the current binding until loading completes", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const ready = deferred();
+  const mounted = deferred();
+  const errors = [];
+  const root = container();
+  const host = createRendererHost({ container: root, onUnavailable: (...args) => errors.push(args),
+    loadModule: async () => ({ mount: () => { mounted.resolve(); return { ready: ready.promise, applyState() {}, destroy() {} }; } }),
+  });
+  const loading = host.bind(binding());
+  await mounted.promise;
+  await Promise.resolve();
+  t.mock.timers.tick(30_000);
+  ready.resolve();
+  assert.equal(await loading, true);
+  assert.deepEqual(errors, []);
+  assert.equal(root.children.length, 1);
+  host.destroy();
+});
+
 test("form transitions retain both renderers until animation completion and cancel on rapid replacement", async () => {
   const animations = [], destroyed = [], started = deferred();
   const root = container({ animate() {

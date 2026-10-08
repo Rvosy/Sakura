@@ -1,7 +1,6 @@
 use std::{
     collections::HashMap,
     sync::{mpsc, Mutex},
-    time::Duration,
 };
 
 use serde::Deserialize;
@@ -14,8 +13,6 @@ use uuid::Uuid;
 use xcap::Monitor;
 
 use crate::capture::{self, CaptureMonitor};
-
-const PICK_TIMEOUT: Duration = Duration::from_secs(2 * 60);
 
 struct ActivePicker {
     session_id: String,
@@ -282,11 +279,9 @@ pub fn capture_color(monitor_id: u32, x: u32, y: u32) -> Result<String, String> 
 }
 
 pub fn wait_for_result(receiver: mpsc::Receiver<Result<String, String>>) -> Result<String, String> {
-    receiver
-        .recv_timeout(PICK_TIMEOUT)
-        .map_err(|source_error| {
-            crate::runtime_log::diagnostic_error("STUDIO_COLOR_TIMEOUT", source_error)
-        })?
+    receiver.recv().map_err(|source_error| {
+        crate::runtime_log::diagnostic_error("STUDIO_COLOR_CANCELLED", source_error)
+    })?
 }
 
 #[cfg(test)]

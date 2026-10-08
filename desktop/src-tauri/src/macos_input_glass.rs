@@ -1,7 +1,6 @@
 use std::{
     ffi::c_void,
     sync::{mpsc::sync_channel, Arc, Mutex},
-    time::Duration,
 };
 
 use objc2::{rc::Retained, runtime::AnyClass, MainThreadMarker, MainThreadOnly};
@@ -25,7 +24,6 @@ const INPUT_CORNER_RADIUS: f64 = 28.0;
 // surface. A full-strength HUD material reads as a second dark panel underneath the composer.
 const GAUSSIAN_GLASS_ALPHA: f64 = 0.22;
 const LIQUID_THEME_TINT_ALPHA: f64 = 32.0 / 255.0;
-const NATIVE_OPERATION_TIMEOUT: Duration = Duration::from_secs(2);
 const LIQUID_REQUIRES_MACOS_26: &str = "LIQUID_GLASS_REQUIRES_MACOS_26";
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -411,11 +409,9 @@ where
             let _ = sender.send(result);
         })
         .map_err(|error| format!("MACOS_INPUT_GLASS_DISPATCH_FAILED:{error}"))?;
-    receiver
-        .recv_timeout(NATIVE_OPERATION_TIMEOUT)
-        .map_err(|source_error| {
-            crate::runtime_log::diagnostic_error("MACOS_INPUT_GLASS_DISPATCH_TIMEOUT", source_error)
-        })?
+    receiver.recv().map_err(|source_error| {
+        crate::runtime_log::diagnostic_error("MACOS_INPUT_GLASS_DISPATCH_UNAVAILABLE", source_error)
+    })?
 }
 
 fn apply_visibility(

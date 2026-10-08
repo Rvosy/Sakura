@@ -112,7 +112,6 @@ pub async fn fetch(
     let client = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(10))
         .read_timeout(Duration::from_secs(20))
-        .timeout(Duration::from_secs(600))
         .user_agent("Sakura")
         .build()
         .map_err(|e| e.to_string())?;

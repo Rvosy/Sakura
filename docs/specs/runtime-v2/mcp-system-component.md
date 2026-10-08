@@ -40,8 +40,8 @@ Core 不导入 MCP，普通启动不下载依赖或服务器程序。旧边界�
 | `env`、`cwd` | 显式环境变量、工作目录；默认环境继承遵循 SDK 允许列表 |
 | `encoding`、`encoding_error_handler` | stdio 编码与错误策略，交给 SDK 验证 |
 | `url`、`headers`、`proxy` | HTTP/SSE 地址、静态认证头及代理；TLS 校验保持启用 |
-| `connectTimeout` | 首次连接与授权期限，默认 60 秒，可调整 |
-| `requestTimeout` | 操作总期限，默认 300 秒，可调整 |
+| `connectTimeout` | HTTP/SSE 传输连接等待，默认 60 秒，可调整；不限制本地进程启动或用户授权 |
+| `requestTimeout` | HTTP/SSE 传输读取空闲等待，默认 300 秒，可调整；不限制工具操作、订阅或待答请求的总时长 |
 | `mode` | 默认 auto，由 SDK 探测新协议并兼容旧握手 |
 | `oauth` | true 或配置对象，启用 SDK 授权码流程 |
 | `elicitation`、`sampling` | 默认不声明，启用后由消费插件处理待答请求 |
@@ -77,7 +77,7 @@ HTTP 认证失败不触发切换传输或自定义重试。版本协商、游标
 raw=true 允许手动处理扩展结果和输入往返，不设第三方方法白名单。
 
 非 raw 的 subscriptions/listen 使用 SDK 持续订阅，参数沿用 SDK snake_case，是否可用取决于协议和服务器。
-旧通知通过 SDK message handler 进入队列。订阅也是可取消操作，受配置期限约束。
+旧通知通过 SDK message handler 进入队列。订阅持续到取消、连接关闭或服务端结束，不设总时长限制。
 
 ## 所有权与回收
 
@@ -93,8 +93,8 @@ scope 撤销先确认访问已失效，耗时清理由组件保留的任务完�
 取消操作只提出取消请求，`inspect` 在执行任务实际退出后才返回 `cancelled`。释放结果与 scope 清理并发时，
 只有移除操作记录的协程负责关闭结果文件。
 
-同步控制调用超时后，组件报告 `MCP_COMPONENT_CALL_TIMEOUT` 并拒绝新业务，保留仍在执行的原调用，
-不重放请求或建立新 loop。关闭超时报告 `MCP_CLEANUP_TIMEOUT`；未退出的任务继续由原 loop 持有，
+同步控制调用等待原任务完成或组件关闭，不叠加固定时长限制，也不重放请求或建立新 loop。
+关闭超时报告 `MCP_CLEANUP_TIMEOUT`；未退出的任务继续由原 loop 持有，
 待清理真正结束才停止 loop。宿主沿用有期限的插件进程树回收作为最终兜底，不把超时当作清理成功。
 清理抛错保留原异常组；MCP 传输错误日志带原始异常类型和脱敏原因。
 

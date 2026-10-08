@@ -43,7 +43,7 @@ def test_published_session_and_confirmed_app_exit_write_character_history(tmp_pa
     def request(name, payload):
         return {"protocolMajor": 2, "protocolMinor": 1, "kind": "request",
                 "generationId": config.generation_id, "generationCredential": config.generation_credential,
-                "id": name, "name": name, "payload": payload, "deadlineMs": 3000, "priority": "control"}
+                "id": name, "name": name, "payload": payload, "priority": "control"}
 
     try:
         hello, _ = dispatcher.dispatch(request("system.hello", {

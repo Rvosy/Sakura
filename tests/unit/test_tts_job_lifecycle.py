@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import concurrent.futures
 import threading
 from pathlib import Path
 from types import SimpleNamespace
@@ -50,7 +49,7 @@ def jobs(request: pytest.FixtureRequest, tmp_path: Path):
         "label": "Fixture",
     })
     application = SimpleNamespace(
-        call_service=lambda _key, method, *args: getattr(hub, method)(*args)
+        call_service=lambda _key, method, *args, **_kwargs: getattr(hub, method)(*args)
     )
 
     def start(request_id="request"):
@@ -75,14 +74,12 @@ def jobs(request: pytest.FixtureRequest, tmp_path: Path):
         store.clear()
 
 
-def test_repeated_waiter_timeout_releases_queued_artifacts_before_terminal_poll(jobs) -> None:
+def test_repeated_cancel_releases_queued_artifacts_before_terminal_poll(jobs) -> None:
     count = MAX_ARTIFACTS_PER_PLUGIN + 4
     for index in range(count):
         request_id = f"request_{index}"
         jobs.start(request_id)
         handle = _PluginSynthesisHandle(jobs.application, request_id, jobs.provider_id)
-        with pytest.raises(concurrent.futures.TimeoutError):
-            handle.result(0)
         assert handle.cancel()
         assert jobs.store.count == 0
         assert jobs.context._effects == []

@@ -204,7 +204,7 @@ test("failed plugin startup retains the saved revision and allows disabling agai
   assert.equal(controller.snapshot().plugins[0].enabled, false);
 });
 
-for (const code of ["CONFIG_REVISION_CONFLICT", "REQUEST_DEADLINE_EXCEEDED", "PLUGIN_LIFECYCLE_FAILED"]) {
+for (const code of ["CONFIG_REVISION_CONFLICT", "TRANSPORT_UNAVAILABLE", "PLUGIN_LIFECYCLE_FAILED"]) {
   test(`plugin enable ${code} refreshes the revision while retaining the draft`, async () => {
     let draft = { enabledById: {}, settingsById: {} };
     let attempts = 0;

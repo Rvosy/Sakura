@@ -4,8 +4,8 @@ use tauri::{State, WebviewWindow};
 use crate::{
     product_shell::{self, assert_settings_identity},
     shell_lifecycle::{
-        dispatch_settings_request, dispatch_settings_transaction, settings_core_handle,
-        settings_response_payload, ShellLifecycleState,
+        dispatch_settings_request, settings_core_handle, settings_response_payload,
+        ShellLifecycleState,
     },
 };
 
@@ -109,7 +109,6 @@ pub(crate) async fn plugin_frontend_module(
         None,
         "plugins.frontend.get",
         json!({"serviceKey":service_key,"moduleName":module_name}),
-        std::time::Duration::from_secs(4),
     )
     .await?;
     if handle
@@ -136,14 +135,8 @@ pub(crate) async fn settings_plugins_get(
         .available_generation_id()
         .map_err(|error| error.to_string())?
         .ok_or_else(|| "SETTINGS_CORE_UNAVAILABLE".to_string())?;
-    let response = dispatch_settings_request(
-        handle.clone(),
-        None,
-        "plugins.settings.get",
-        json!({}),
-        std::time::Duration::from_secs(4),
-    )
-    .await?;
+    let response =
+        dispatch_settings_request(handle.clone(), None, "plugins.settings.get", json!({})).await?;
     assert_settings_identity(&shell, &handle, window_generation, &core_generation_id)?;
     let mut payload = settings_response_payload(response)?;
     let object = payload
@@ -169,11 +162,11 @@ pub(crate) async fn settings_plugins_save(
     validate_settings_save_request(&plugin_id, &section_id, &values)?;
     let handle = settings_core_handle(&lifecycle)?;
     assert_settings_identity(&shell, &handle, window_generation, &core_generation_id)?;
-    let response = dispatch_settings_transaction(
+    let response = dispatch_settings_request(
         handle.clone(),
+        None,
         "plugins.settings.save",
         json!({"pluginId": plugin_id, "sectionId": section_id, "values": values}),
-        std::time::Duration::from_secs(8),
     )
     .await?;
     let payload = settings_response_payload(response)?;
@@ -196,11 +189,11 @@ pub(crate) async fn settings_plugins_enabled_set(
     validate_enabled_request(&revision, &install_id)?;
     let handle = settings_core_handle(&lifecycle)?;
     assert_settings_identity(&shell, &handle, window_generation, &core_generation_id)?;
-    let response = dispatch_settings_transaction(
+    let response = dispatch_settings_request(
         handle.clone(),
+        None,
         "plugins.enabled.set",
         json!({"revision": revision, "installId": install_id, "enabled": enabled}),
-        std::time::Duration::from_secs(12),
     )
     .await?;
     let mut payload = settings_response_payload(response)?;
@@ -267,7 +260,6 @@ pub(crate) async fn settings_plugins_action(
         None,
         "plugins.settings.action",
         json!({"pluginId": plugin_id, "sectionId": section_id, "actionId": action_id, "values": values}),
-        std::time::Duration::from_secs(5),
     )
     .await?;
     let payload = settings_response_payload(response)?;
@@ -316,15 +308,15 @@ pub(crate) async fn settings_plugins_install(
     {
         return Err("PLUGIN_INSTALL_SOURCE_INVALID".to_string());
     }
-    let response = dispatch_settings_transaction(
+    let response = dispatch_settings_request(
         handle.clone(),
+        None,
         "plugins.install",
         json!({
             "revision": revision,
             "sourceKind": source_kind,
             "sourcePath": source_path,
         }),
-        std::time::Duration::from_secs(30),
     )
     .await?;
     let mut payload = settings_response_payload(response)?;
@@ -358,7 +350,6 @@ pub(crate) async fn settings_plugins_uninstall(
         None,
         "plugins.uninstall",
         json!({"revision": revision, "installId": install_id}),
-        std::time::Duration::from_secs(30),
     )
     .await?;
     let mut payload = settings_response_payload(response)?;
@@ -418,7 +409,6 @@ pub(crate) async fn settings_plugins_collection(
         None,
         request_name,
         Value::Object(request_payload),
-        std::time::Duration::from_secs(5),
     )
     .await?;
     let result = settings_response_payload(response)?;

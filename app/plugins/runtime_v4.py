@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import math
 import secrets
 import signal
 import subprocess
@@ -28,7 +29,6 @@ from app.storage.paths import StoragePaths
 from app.storage.runtime_roots import RuntimeRoots, coerce_runtime_roots
 
 
-CALL_TIMEOUT_SECONDS = 3.0
 CLOSE_TIMEOUT_SECONDS = 0.8
 TERMINATE_TIMEOUT_SECONDS = 2.0
 STARTUP_SNAPSHOT_TIMEOUT_SECONDS = 0.2
@@ -189,7 +189,6 @@ class _PluginProcess:
         dependency_root: Path | None,
         request_handler: Callable[[str, Mapping[str, Any]], object],
         on_exit: Callable[[str, "_PluginProcess"], None],
-        call_timeout: float,
     ) -> None:
         assert spec.plugin_root is not None
         self._roots = roots
@@ -199,7 +198,6 @@ class _PluginProcess:
         self._dependency_root = dependency_root
         self._request_handler = request_handler
         self._on_exit = on_exit
-        self._call_timeout = call_timeout
         self._process: subprocess.Popen[bytes] | None = None
         self._peer: RpcPeer | None = None
         self._windows_job: int | None = None
@@ -360,7 +358,7 @@ class _PluginProcess:
             self._stderr_reader.start()
             watcher.start()
         try:
-            result = peer.request_until_complete(
+            result = peer.request(
                 "runtime.initialize",
                 {},
             )
@@ -462,7 +460,7 @@ class _PluginProcess:
                     "callerId": caller_id,
                     "callerScope": caller_scope,
                 },
-                timeout=self._call_timeout if timeout is None else timeout,
+                timeout=timeout,
             )
         except PluginApiError as error:
             raise PluginRuntimeError.from_api(error) from error
@@ -475,7 +473,6 @@ class _PluginProcess:
             peer.request(
                 "event.emit",
                 {"name": name, "payload": payload},
-                timeout=self._call_timeout,
             )
         except PluginApiError as error:
             raise PluginRuntimeError.from_api(error) from error
@@ -504,7 +501,7 @@ class _PluginProcess:
             return peer.request(
                 "callback.invoke",
                 {"handle": handle, "shape": shape, "args": list(args)},
-                timeout=self._call_timeout if timeout is None else timeout,
+                timeout=timeout,
             )
         except PluginApiError as error:
             raise PluginRuntimeError.from_api(error) from error
@@ -517,7 +514,6 @@ class _PluginProcess:
             result = peer.request(
                 "config.apply",
                 {"values": dict(values)},
-                timeout=self._call_timeout,
             )
         except PluginApiError as error:
             raise PluginRuntimeError.from_api(error) from error
@@ -670,6 +666,11 @@ class _PluginProcess:
                 return
             self._exit_reported = True
             closing = self._closing
+            peer = self._peer
+        # A descendant can still hold stdout open after the runner exits.
+        # Notify callers immediately; process-tree cleanup owns resource release.
+        if peer is not None:
+            peer.close("PLUGIN_PROCESS_EOF")
         if not closing:
             self._on_exit(self._spec.plugin_id, self)
 
@@ -696,14 +697,12 @@ class PluginRuntimeManager:
         generation_id: str,
         specs: Sequence[PluginSpec | RuntimePluginSpec],
         *,
-        call_timeout: float = CALL_TIMEOUT_SECONDS,
         before_start: Callable[[PluginSpec], None] | None = None,
     ) -> None:
         if not isinstance(generation_id, str) or not generation_id:
             raise ValueError("generation_id must not be empty")
         self._roots = coerce_runtime_roots(roots)
         self._generation_id = generation_id
-        self._call_timeout = max(0.05, float(call_timeout))
         self._before_start = before_start
         self._dependencies = PluginDependencyRoots(
             self._roots.user_root,
@@ -1490,7 +1489,6 @@ class PluginRuntimeManager:
                 calling_process=process,
             ),
             on_exit=self._plugin_exited,
-            call_timeout=self._call_timeout,
         )
         with self._lock:
             if self._closed:
@@ -1657,7 +1655,7 @@ class PluginRuntimeManager:
         identity = payload.get("binding")
         timeout = payload.get("timeoutSeconds")
         if timeout is not None and (
-            isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or not 0 < timeout <= 122
+            isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or not math.isfinite(timeout) or timeout <= 0
         ):
             raise PluginApiError("PLUGIN_DEADLINE_INVALID", plugin_id=caller_id)
         if "binding" in payload and (
@@ -1737,7 +1735,7 @@ class PluginRuntimeManager:
                 remaining = draining.deadline - time.monotonic()
                 if remaining <= 0:
                     raise PluginRuntimeError("PLUGIN_CALL_TIMEOUT", service_key=service_key)
-                timeout = min(self._call_timeout if timeout is None else timeout, remaining)
+                timeout = remaining if timeout is None else min(timeout, remaining)
             if expected_identity is not None and (
                 binding is None or binding.process is None
                 or {"providerId": binding.provider_id, "scopeId": binding.process.scope_id}

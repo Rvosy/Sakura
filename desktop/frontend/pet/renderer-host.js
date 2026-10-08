@@ -1,6 +1,7 @@
+import { settleOnAbort } from "../core/settle-on-abort.js";
 import { normalizeVisualControl } from "./visual-control.js";
 
-export function createRendererHost({ container, loadModule = (url) => import(url), resolveControl, services = {}, onUnavailable = () => {}, onError = () => {}, timeoutMs = 10000,
+export function createRendererHost({ container, loadModule = (url) => import(url), resolveControl, services = {}, onUnavailable = () => {}, onError = () => {},
   transitionMs = 300, reducedMotion = () => container.ownerDocument.defaultView.matchMedia("(prefers-reduced-motion: reduce)").matches }) {
   let binding = null;
   let instance = null;
@@ -20,10 +21,6 @@ export function createRendererHost({ container, loadModule = (url) => import(url
     const failed = error => { if (error?.name !== "AbortError") onError("VISUAL_RENDERER_CLEANUP_FAILED", error, `visual.renderer.${method}`); };
     try { Promise.resolve(target?.[method]?.(...args)).catch(failed); } catch (error) { failed(error); }
   }
-  const bounded = (promise) => new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error("VISUAL_RENDERER_TIMEOUT")), timeoutMs);
-    Promise.resolve(promise).then(resolve, reject).finally(() => clearTimeout(timer));
-  });
   function cancel(reason = "interrupted", { restoreSurface = true } = {}) {
     const hadOperation = operation !== null;
     operation?.abort.abort();
@@ -94,13 +91,13 @@ export function createRendererHost({ container, loadModule = (url) => import(url
       let candidate;
       let stage = "visual.renderer.module";
       try {
-        const module = await bounded(loadModule(target.renderer));
+        const module = await settleOnAbort(loadModule(target.renderer), signal);
         if (signal.aborted) return false;
         if (typeof module.mount !== "function") throw new Error("VISUAL_RENDERER_INVALID");
         stage = "visual.renderer.mount";
         const pending = Promise.resolve(module.mount({ container: surface, resource: structuredClone(target), host: guarded, signal }));
         pending.then((late) => { if (signal.aborted) cleanup(late, "destroy"); }, () => {});
-        candidate = await bounded(pending);
+        candidate = await settleOnAbort(pending, signal);
         if (signal.aborted) return false;
         if (!candidate || typeof candidate.applyState !== "function" || typeof candidate.destroy !== "function") throw new Error("VISUAL_RENDERER_INVALID");
         let retired = false;
@@ -111,7 +108,7 @@ export function createRendererHost({ container, loadModule = (url) => import(url
         };
         signal.addEventListener("abort", retire, { once: true });
         stage = "visual.renderer.ready";
-        await bounded(candidate.ready);
+        await settleOnAbort(candidate.ready, signal);
         if (signal.aborted) return false;
         signal.removeEventListener("abort", retire);
         const previous = instance;

@@ -45,10 +45,10 @@ def _url(value):
 
 
 def _timeout(value, *, strict=True):
-    if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 300:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
         if not strict:
             return 60
-        raise ProfileError("FIELD_INVALID", "请求超时须为 1 到 300 秒。")
+        raise ProfileError("FIELD_INVALID", "请求超时须为正整数秒。")
     return value
 
 
@@ -149,10 +149,10 @@ class ProviderProfiles:
             bound = self._context.bind(SERVICE_KEY)
             try:
                 bound.invoke("begin_probe", {"operationId": operation_id, "operation": operation,
-                                             "profileId": values.get("profileId", ""), "values": {key: value for key, value in values.items() if key in {"modelId", "base_url", "credential", "timeout_seconds"}}}, timeout_seconds=5)
+                                             "profileId": values.get("profileId", ""), "values": {key: value for key, value in values.items() if key in {"modelId", "base_url", "credential", "timeout_seconds"}}})
             except Exception:
                 try:
-                    bound.invoke("release", operation_id, timeout_seconds=1)
+                    bound.invoke("release", operation_id)
                 except Exception:
                     pass
                 raise
@@ -168,12 +168,12 @@ class ProviderProfiles:
                 sequence = 0
                 while True:
                     if self._probe_cancel.is_set():
-                        bound.invoke("cancel", operation_id, timeout_seconds=1)
-                    result = bound.invoke("poll", operation_id, sequence, 500, timeout_seconds=2)
+                        bound.invoke("cancel", operation_id)
+                    result = bound.invoke("poll", operation_id, sequence, 500)
                     sequence = result["sequence"]
                     if result["state"] != "running":
                         break
-                completed = bound.invoke("result", operation_id, timeout_seconds=5)
+                completed = bound.invoke("result", operation_id)
                 result = decode_model_result(completed, self._context.get("sakura.host.artifacts"), bound.identity, operation_id)
                 if operation == "list_models":
                     result = {"models": _models(result["models"])}
@@ -190,7 +190,7 @@ class ProviderProfiles:
                 state = {"state": "error", "label": "模型测试失败", "message": failure_message}
             finally:
                 try:
-                    bound.invoke("release", operation_id, timeout_seconds=1)
+                    bound.invoke("release", operation_id)
                 except Exception as error:
                     cleanup = provider_failure("MODEL_PROBE_CLEANUP_FAILED", error, secrets=secrets)["diagnostics"]
                     if failure_code:
@@ -359,5 +359,5 @@ class ProviderProfiles:
         settings.register({"sectionId": "request", "title": "高级参数", "order": 20,
             "presentation": {"component": "form", "group": "model-advanced", "collapsible": True},
             "fields": [{"key": "timeout_seconds", "label": "请求超时时间", "type": "integer", "default": 60,
-                        "minimum": 1, "maximum": 300, "unit": "秒"}]}, load=self.load_timeout, save=self.save_timeout)
+                        "minimum": 1, "unit": "秒"}]}, load=self.load_timeout, save=self.save_timeout)
         settings.place("request", page_id="host:model", order=20)

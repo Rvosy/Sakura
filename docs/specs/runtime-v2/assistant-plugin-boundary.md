@@ -126,7 +126,7 @@ Core 在调用 Assistant 前的历史读取、输入保存或 Session 描述失�
 插件读完大页后释放 artifact。轮次取消或插件 scope 结束会回收仍登记的历史页资源。
 排序、快照与 TTL 详见[类型化时间线](WP-4-07R-typed-timeline-adaptive-context.md)。
 
-工具目录的 timeoutSeconds 默认 15 秒、最大 120 秒。超时不表示外部副作用已停止，消费者不得自动重试。
+工具回调等待完成、取消或插件退出，不设统一时长上限。传输断开不表示外部副作用已停止，消费者不得自动重试。
 工具图片仍以 `{content, artifact}` 交付，Host 验证提交状态和格式并授权接收方；默认 Assistant 在自身进程中
 读取、编码和组装模型图像，避免把 base64 再次塞过 RPC 尺寸上限。
 交付时在接收者 scope 的短临界区内转交资源所有权，使用接收者的 artifact 额度，不复制或移动文件正文。

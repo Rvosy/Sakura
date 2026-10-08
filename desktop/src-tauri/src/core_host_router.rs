@@ -27,7 +27,7 @@ pub const PENDING_LIMIT: usize = 64;
 pub const WRITER_QUEUE_LIMIT: usize = 32;
 pub const EVENT_QUEUE_LIMIT: usize = 32;
 pub const CRITICAL_EVENT_QUEUE_LIMIT: usize = 8;
-const TIMED_OUT_ID_LIMIT: usize = PENDING_LIMIT * 4;
+const RETIRED_ID_LIMIT: usize = PENDING_LIMIT * 4;
 const READ_SLICE: Duration = Duration::from_millis(25);
 const CLOSE_TIMEOUT: Duration = Duration::from_millis(500);
 
@@ -46,21 +46,21 @@ struct Pending {
 #[derive(Default)]
 struct RequestRegistry {
     pending: HashMap<String, Pending>,
-    timed_out: VecDeque<String>,
+    retired: VecDeque<String>,
     active_chat_events: HashSet<String>,
     chat_terminals_before_response: HashSet<String>,
 }
 
 impl RequestRegistry {
-    fn contains_timed_out(&self, id: &str) -> bool {
-        self.timed_out.iter().any(|timed_out_id| timed_out_id == id)
+    fn contains_retired(&self, id: &str) -> bool {
+        self.retired.iter().any(|retired_id| retired_id == id)
     }
 
-    fn mark_timed_out(&mut self, id: String) {
-        if self.timed_out.len() == TIMED_OUT_ID_LIMIT {
-            self.timed_out.pop_front();
+    fn mark_retired(&mut self, id: String) {
+        if self.retired.len() == RETIRED_ID_LIMIT {
+            self.retired.pop_front();
         }
-        self.timed_out.push_back(id);
+        self.retired.push_back(id);
     }
 }
 
@@ -81,6 +81,7 @@ struct Shared {
     event_count: AtomicUsize,
     critical_event_count: AtomicUsize,
     stopped: AtomicBool,
+    retiring: AtomicBool,
     event_capable: AtomicBool,
     fatal: Mutex<Option<String>>,
 }
@@ -127,6 +128,7 @@ impl CoreHostRouter {
             event_count: AtomicUsize::new(0),
             critical_event_count: AtomicUsize::new(0),
             stopped: AtomicBool::new(false),
+            retiring: AtomicBool::new(false),
             event_capable: AtomicBool::new(false),
             fatal: Mutex::new(None),
         });
@@ -306,18 +308,20 @@ impl Drop for CoreHostRouter {
 }
 
 impl CoreHostRouterHandle {
-    pub fn request(&self, message: Value, deadline: Duration) -> Result<Value, String> {
-        if deadline.is_zero() {
-            return Err("Core Host request deadline must be positive".to_string());
-        }
-        self.request_with_timeout(message, Some(deadline))
+    pub fn cancel_requests(&self) {
+        self.shared.retiring.store(true, Ordering::Release);
+        invalidate_all(
+            &self.shared,
+            "GENERATION_INVALIDATED: Core generation is stopping",
+        );
     }
 
-    /// Wait for a transaction's terminal response or generation retirement.
-    /// The envelope's deadline still limits queue admission in Core; once
-    /// admitted, the transaction owns execution and rollback timeouts.
-    pub fn request_until_complete(&self, message: Value) -> Result<Value, String> {
+    pub fn request(&self, message: Value) -> Result<Value, String> {
         self.request_with_timeout(message, None)
+    }
+
+    pub fn request_shutdown(&self, message: Value, timeout: Duration) -> Result<Value, String> {
+        self.request_with_timeout(message, Some(timeout))
     }
 
     fn request_with_timeout(
@@ -363,19 +367,21 @@ impl CoreHostRouterHandle {
             // Check under the registry lock so close/failure cannot drain the
             // generation just before a new completion waiter is registered.
             if self.shared.stopped.load(Ordering::Acquire) {
-                return Err("GENERATION_INVALIDATED: Router is closed".to_string());
+                return Err(self
+                    .fatal()
+                    .unwrap_or_else(|| "GENERATION_INVALIDATED: Router is closed".to_string()));
+            }
+            if self.shared.retiring.load(Ordering::Acquire) && name != "system.shutdown" {
+                return Err("GENERATION_INVALIDATED: Core generation is stopping".to_string());
             }
             if requests.pending.len() + requests.active_chat_events.len() >= PENDING_LIMIT {
                 return Err("PENDING_LIMIT_EXCEEDED: pending request capacity is full".to_string());
             }
             if requests.pending.contains_key(&id)
                 || requests.active_chat_events.contains(&id)
-                || requests.contains_timed_out(&id)
+                || requests.contains_retired(&id)
             {
-                return Err(
-                    "DUPLICATE_REQUEST_ID: request id is pending or retained after timeout"
-                        .to_string(),
-                );
+                return Err("DUPLICATE_REQUEST_ID: request id is pending or retired".to_string());
             }
             requests.pending.insert(
                 id.clone(),
@@ -405,8 +411,8 @@ impl CoreHostRouterHandle {
         match received {
             Ok(result) => result,
             Err(RecvTimeoutError::Timeout) => {
-                mark_pending_timed_out(&self.shared, &id)?;
-                Err("REQUEST_DEADLINE_EXCEEDED: request exceeded its deadline".to_string())
+                mark_pending_retired(&self.shared, &id)?;
+                Err("SHUTDOWN_TIMEOUT: Core did not finish shutdown".to_string())
             }
             Err(RecvTimeoutError::Disconnected) => Err(self
                 .fatal()
@@ -529,7 +535,7 @@ fn route_message(shared: &Arc<Shared>, message: Value) -> Result<(), String> {
             let mut requests = shared.requests.lock().map_err(|error| {
                 crate::runtime_log::diagnostic_error("ROUTER_PENDING_LOCK_FAILED", error)
             })?;
-            if requests.contains_timed_out(&id) {
+            if requests.contains_retired(&id) {
                 return Ok(());
             }
             if requests.chat_terminals_before_response.contains(&id) {
@@ -638,7 +644,7 @@ fn route_message(shared: &Arc<Shared>, message: Value) -> Result<(), String> {
             }
             if critical {
                 if requests.active_chat_events.remove(&id) {
-                    requests.mark_timed_out(id);
+                    requests.mark_retired(id);
                 } else if pending_chat {
                     requests.chat_terminals_before_response.insert(id);
                 }
@@ -654,7 +660,7 @@ fn route_message(shared: &Arc<Shared>, message: Value) -> Result<(), String> {
             let mut requests = shared.requests.lock().map_err(|error| {
                 crate::runtime_log::diagnostic_error("ROUTER_PENDING_LOCK_FAILED", error)
             })?;
-            if requests.contains_timed_out(id) {
+            if requests.contains_retired(id) {
                 return Ok(());
             }
             let pending = requests
@@ -696,7 +702,7 @@ fn route_message(shared: &Arc<Shared>, message: Value) -> Result<(), String> {
                 if accepted && !terminal_seen {
                     requests.active_chat_events.insert(id.to_string());
                 } else {
-                    requests.mark_timed_out(id.to_string());
+                    requests.mark_retired(id.to_string());
                 }
             }
             drop(requests);
@@ -714,7 +720,7 @@ fn remove_pending(shared: &Arc<Shared>, id: &str) {
         .map(|mut requests| requests.pending.remove(id));
 }
 
-fn mark_pending_timed_out(shared: &Arc<Shared>, id: &str) -> Result<(), String> {
+fn mark_pending_retired(shared: &Arc<Shared>, id: &str) -> Result<(), String> {
     let mut requests = shared.requests.lock().map_err(|source_error| {
         crate::runtime_log::diagnostic_error(
             "ROUTER_PENDING_LOCK_FAILED: pending registry unavailable",
@@ -722,7 +728,7 @@ fn mark_pending_timed_out(shared: &Arc<Shared>, id: &str) -> Result<(), String> 
         )
     })?;
     if requests.pending.remove(id).is_some() {
-        requests.mark_timed_out(id.to_string());
+        requests.mark_retired(id.to_string());
     }
     Ok(())
 }
@@ -760,12 +766,18 @@ fn invalidate_all(shared: &Arc<Shared>, error: impl Into<String>) {
         .requests
         .lock()
         .map(|mut requests| {
-            requests.active_chat_events.clear();
+            let active = requests.active_chat_events.drain().collect::<Vec<_>>();
+            let pending = requests.pending.drain().collect::<Vec<_>>();
             requests.chat_terminals_before_response.clear();
-            requests
-                .pending
-                .drain()
-                .map(|(_, pending)| pending.waiter)
+            for id in active {
+                requests.mark_retired(id);
+            }
+            pending
+                .into_iter()
+                .map(|(id, pending)| {
+                    requests.mark_retired(id);
+                    pending.waiter
+                })
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
@@ -843,7 +855,6 @@ mod tests {
             "id": id,
             "name": name,
             "payload": {},
-            "deadlineMs": 3000,
             "priority": "interactive"
         })
     }
@@ -1004,24 +1015,35 @@ mod tests {
     }
 
     #[test]
-    fn transaction_waits_for_completion_after_its_queue_deadline() {
+    fn new_requests_preserve_the_original_transport_failure_after_reader_exit() {
+        let (mut router, _) = router_with_messages(Vec::new());
+        super::fail_all(&router.shared, "STDOUT_EOF: fixture process exited");
+        assert_eq!(
+            router
+                .handle()
+                .request(request("late", "system.health"))
+                .unwrap_err(),
+            "STDOUT_EOF: fixture process exited"
+        );
+        assert!(router.close().unwrap_err().starts_with("STDOUT_EOF:"));
+    }
+
+    #[test]
+    fn request_waits_for_actual_completion() {
         let (mut router, released) =
             router_with_messages(vec![response("install", "plugins.marketplace.install")]);
         let handle = router.handle();
         let (completed, completion) = mpsc::channel();
         let worker = thread::spawn(move || {
-            let mut message = request("install", "plugins.marketplace.install");
-            message["deadlineMs"] = json!(1);
-            completed
-                .send(handle.request_until_complete(message))
-                .unwrap();
+            let message = request("install", "plugins.marketplace.install");
+            completed.send(handle.request(message)).unwrap();
         });
         let registration_deadline = Instant::now() + Duration::from_secs(1);
         while router.handle().pending_len() != 1 && Instant::now() < registration_deadline {
             thread::yield_now();
         }
         assert_eq!(router.handle().pending_len(), 1);
-        // Hold the response behind the reader gate past the admission deadline.
+        // Keep the response pending until the reader is released.
         // The actual Core terminal, not this elapsed time, releases the caller.
         assert!(matches!(
             completion.recv_timeout(Duration::from_millis(10)),
@@ -1047,7 +1069,7 @@ mod tests {
         let (completed, completion) = mpsc::channel();
         let worker = thread::spawn(move || {
             completed
-                .send(handle.request_until_complete(request("install", "plugins.install")))
+                .send(handle.request(request("install", "plugins.marketplace.install")))
                 .unwrap();
         });
         let registration_deadline = Instant::now() + Duration::from_secs(1);
@@ -1065,7 +1087,7 @@ mod tests {
         assert_eq!(router.handle().pending_len(), 0);
         assert!(router
             .handle()
-            .request_until_complete(request("later", "plugins.install"))
+            .request(request("later", "plugins.install"))
             .unwrap_err()
             .starts_with("GENERATION_INVALIDATED:"));
     }
@@ -1078,15 +1100,10 @@ mod tests {
         ]);
         let first_handle = router.handle();
         let second_handle = router.handle();
-        let first = thread::spawn(move || {
-            first_handle.request(request("first", "fixture.blocking"), Duration::from_secs(1))
-        });
-        let second = thread::spawn(move || {
-            second_handle.request(
-                request("second", "fixture.blocking"),
-                Duration::from_secs(1),
-            )
-        });
+        let first =
+            thread::spawn(move || first_handle.request(request("first", "fixture.blocking")));
+        let second =
+            thread::spawn(move || second_handle.request(request("second", "fixture.blocking")));
         let deadline = Instant::now() + Duration::from_secs(1);
         while router.handle().pending_len() != 2 && Instant::now() < deadline {
             thread::yield_now();
@@ -1113,9 +1130,7 @@ mod tests {
             router_with_messages(vec![event.clone(), response("one", "fixture.blocking")]);
         router.enable_events(true);
         let handle = router.handle();
-        let waiter = thread::spawn(move || {
-            handle.request(request("one", "fixture.blocking"), Duration::from_secs(1))
-        });
+        let waiter = thread::spawn(move || handle.request(request("one", "fixture.blocking")));
         let deadline = Instant::now() + Duration::from_secs(1);
         while router.handle().pending_len() != 1 && Instant::now() < deadline {
             thread::yield_now();
@@ -1156,12 +1171,7 @@ mod tests {
             router_with_messages(vec![accepted.clone(), completed.clone(), completed]);
         router.enable_events(true);
         let handle = router.handle();
-        let waiter = thread::spawn(move || {
-            handle.request(
-                request("chat-accepted", "chat.send"),
-                Duration::from_secs(1),
-            )
-        });
+        let waiter = thread::spawn(move || handle.request(request("chat-accepted", "chat.send")));
         let deadline = Instant::now() + Duration::from_secs(1);
         while router.handle().pending_len() != 1 && Instant::now() < deadline {
             thread::yield_now();
@@ -1213,12 +1223,8 @@ mod tests {
             router_with_messages(vec![completed.clone(), completed, accepted.clone()]);
         router.enable_events(true);
         let handle = router.handle();
-        let waiter = thread::spawn(move || {
-            handle.request(
-                request("chat-terminal-first", "chat.send"),
-                Duration::from_secs(1),
-            )
-        });
+        let waiter =
+            thread::spawn(move || handle.request(request("chat-terminal-first", "chat.send")));
         let deadline = Instant::now() + Duration::from_secs(1);
         while router.handle().pending_len() != 1 && Instant::now() < deadline {
             thread::yield_now();
@@ -1380,94 +1386,30 @@ mod tests {
     fn duplicate_and_stale_request_identity_are_rejected_before_write() {
         let (mut router, _released) = router_with_messages(Vec::new());
         let first_handle = router.handle();
-        let first = thread::spawn(move || {
-            first_handle.request(
-                request("duplicate", "fixture.blocking"),
-                Duration::from_millis(100),
-            )
-        });
+        let first =
+            thread::spawn(move || first_handle.request(request("duplicate", "fixture.blocking")));
         let deadline = Instant::now() + Duration::from_secs(1);
         while router.handle().pending_len() != 1 && Instant::now() < deadline {
             thread::yield_now();
         }
         let duplicate = router
             .handle()
-            .request(
-                request("duplicate", "fixture.blocking"),
-                Duration::from_millis(10),
-            )
+            .request(request("duplicate", "fixture.blocking"))
             .expect_err("duplicate id");
         assert!(duplicate.starts_with("DUPLICATE_REQUEST_ID:"));
         let mut stale = request("stale", "fixture.blocking");
         stale["generationCredential"] = json!("33333333333333333333333333333333");
         let stale = router
             .handle()
-            .request(stale, Duration::from_millis(10))
+            .request(stale)
             .expect_err("stale credential");
         assert!(stale.starts_with("GENERATION_CREDENTIAL_MISMATCH:"));
+        router.handle().cancel_requests();
         assert!(first
             .join()
             .unwrap()
             .unwrap_err()
-            .starts_with("REQUEST_DEADLINE_EXCEEDED:"));
-        router.close().expect("clean router close");
-    }
-
-    #[test]
-    fn timed_out_ids_drop_late_traffic_without_poisoning_later_requests() {
-        let late_event = json!({
-            "protocolMajor": 2,
-            "protocolMinor": 2,
-            "kind": "event",
-            "generationId": GENERATION,
-            "generationCredential": CREDENTIAL,
-            "id": "timed-out",
-            "name": "fixture.completed",
-            "payload": {"state": "completed"}
-        });
-        let (mut router, released) = router_with_messages(vec![
-            late_event,
-            response("timed-out", "fixture.blocking"),
-            response("next", "fixture.blocking"),
-        ]);
-        router.enable_events(true);
-
-        let timeout = router
-            .handle()
-            .request(
-                request("timed-out", "fixture.blocking"),
-                Duration::from_millis(10),
-            )
-            .expect_err("first request must time out");
-        assert!(timeout.starts_with("REQUEST_DEADLINE_EXCEEDED:"));
-        assert_eq!(router.handle().pending_len(), 0);
-        let reused = router
-            .handle()
-            .request(
-                request("timed-out", "fixture.blocking"),
-                Duration::from_millis(10),
-            )
-            .expect_err("timed-out id must remain quarantined");
-        assert!(reused.starts_with("DUPLICATE_REQUEST_ID:"));
-
-        let handle = router.handle();
-        let next = thread::spawn(move || {
-            handle.request(request("next", "fixture.blocking"), Duration::from_secs(1))
-        });
-        let deadline = Instant::now() + Duration::from_secs(1);
-        while router.handle().pending_len() != 1 && Instant::now() < deadline {
-            thread::yield_now();
-        }
-        released.store(true, std::sync::atomic::Ordering::Release);
-
-        assert_eq!(next.join().unwrap().unwrap()["payload"]["id"], "next");
-        assert_eq!(
-            router
-                .recv_event_timeout(Duration::from_millis(10))
-                .unwrap(),
-            None
-        );
-        assert!(router.fatal().is_none());
+            .starts_with("GENERATION_INVALIDATED:"));
         router.close().expect("clean router close");
     }
 
@@ -1476,9 +1418,7 @@ mod tests {
         let (mut router, released) =
             router_with_messages(vec![response("unknown", "fixture.blocking")]);
         let handle = router.handle();
-        let waiter = thread::spawn(move || {
-            handle.request(request("known", "fixture.blocking"), Duration::from_secs(1))
-        });
+        let waiter = thread::spawn(move || handle.request(request("known", "fixture.blocking")));
         let deadline = Instant::now() + Duration::from_secs(1);
         while router.handle().pending_len() != 1 && Instant::now() < deadline {
             thread::yield_now();
@@ -1499,9 +1439,7 @@ mod tests {
     fn wrong_response_name_fails_closed_without_completing_waiter() {
         let (mut router, released) = router_with_messages(vec![response("known", "fixture.wrong")]);
         let handle = router.handle();
-        let waiter = thread::spawn(move || {
-            handle.request(request("known", "fixture.blocking"), Duration::from_secs(1))
-        });
+        let waiter = thread::spawn(move || handle.request(request("known", "fixture.blocking")));
         let deadline = Instant::now() + Duration::from_secs(1);
         while router.handle().pending_len() != 1 && Instant::now() < deadline {
             thread::yield_now();
@@ -1523,7 +1461,7 @@ mod tests {
         assert!(PENDING_LIMIT > 0);
         assert!(WRITER_QUEUE_LIMIT > 0);
         assert!(EVENT_QUEUE_LIMIT > 0);
-        assert!(super::TIMED_OUT_ID_LIMIT > PENDING_LIMIT);
+        assert!(super::RETIRED_ID_LIMIT > PENDING_LIMIT);
     }
 
     #[test]
@@ -1546,10 +1484,7 @@ mod tests {
         }
         let error = router
             .handle()
-            .request(
-                request("overflow", "fixture.blocking"),
-                Duration::from_millis(10),
-            )
+            .request(request("overflow", "fixture.blocking"))
             .expect_err("pending overload must fail");
         assert!(error.starts_with("PENDING_LIMIT_EXCEEDED:"));
         assert_eq!(router.handle().pending_len(), PENDING_LIMIT);

@@ -65,9 +65,6 @@ def validate_envelope(message: Mapping[str, Any]) -> None:
         raise ProtocolError("INVALID_ENVELOPE", "payload must be an object")
 
     if kind == "request":
-        deadline = _require_non_negative_int(message, "deadlineMs")
-        if deadline == 0:
-            raise ProtocolError("INVALID_ENVELOPE", "deadlineMs must be positive")
         if _require_string(message, "priority") not in PRIORITIES:
             raise ProtocolError("INVALID_ENVELOPE", "unknown priority")
     elif kind == "response":
@@ -88,7 +85,7 @@ def validate_envelope(message: Mapping[str, Any]) -> None:
         minor = _require_non_negative_int(message, "protocolMinor")
         if minor < EVENT_PROTOCOL_MINOR:
             raise ProtocolError("INVALID_ENVELOPE", "event requires protocol minor 2.2")
-        for forbidden in ("deadlineMs", "priority", "ok", "error"):
+        for forbidden in ("priority", "ok", "error"):
             if forbidden in message:
                 raise ProtocolError("INVALID_ENVELOPE", f"event must not include {forbidden}")
 

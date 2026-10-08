@@ -38,7 +38,7 @@ def _settings_request(
         "id": f"request-{name}",
         "name": name,
         "payload": payload,
-        "deadlineMs": 3_000,
+
         "priority": "interactive",
     }
 

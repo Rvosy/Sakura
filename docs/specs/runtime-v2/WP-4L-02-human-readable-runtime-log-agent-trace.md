@@ -80,7 +80,7 @@ updated: 2026-10-05
 稳定事件族如下：
 
 - `shell.started`：每次桌面进程启动，并携带发行包的 `current_version`；
-- `plugin.start.phase.completed`：插件初始化阶段、该阶段耗时和累计耗时；`plugin.loaded` 表示初始化完成。启动超时保留最后阶段和有界现场栈，不能把尚未完成的阶段记为成功。
+- `plugin.start.phase.completed`：插件初始化阶段、该阶段耗时和累计耗时；`plugin.loaded` 表示初始化完成。启动失败保留最后阶段和原始异常诊断，不能把尚未完成的阶段记为成功。
 - `chat.request.received/completed/cancelled/failed`：用户请求进入、最终送达或终止；
 - `memory.recall.started/finished/failed`：召回状态、候选/选中数量和耗时；
 - `context.dependencies.ready/degraded`：Prompt 构建前依赖的实际就绪状态、等待耗时和稳定原因；

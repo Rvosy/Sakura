@@ -154,7 +154,7 @@ def _request(request_id: str, name: str, payload: dict[str, object]) -> dict[str
         "id": request_id,
         "name": name,
         "payload": payload,
-        "deadlineMs": 10_000,
+
         "priority": "control" if name != "chat.send" else "interactive",
     }
 

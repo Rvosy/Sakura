@@ -7,7 +7,7 @@ use crate::{
     },
 };
 use serde_json::{json, Value};
-use std::{sync::Arc, time::Duration};
+use std::sync::Arc;
 use tauri::{ipc::Channel, Emitter, Manager, State, WebviewWindow};
 
 #[tauri::command]
@@ -32,12 +32,7 @@ async fn request(
     }
     let handle = settings_core_handle(&lifecycle)?;
     tauri::async_runtime::spawn_blocking(move || {
-        settings_response_payload(handle.settings_request(
-            None,
-            name,
-            payload,
-            Duration::from_secs(5),
-        )?)
+        settings_response_payload(handle.settings_request(None, name, payload)?)
     })
     .await
     .map_err(|source_error| {
@@ -97,7 +92,6 @@ pub fn detach(handle: &ShellLifecycleHandle) {
             None,
             "host.interaction.detach",
             json!({"generationId":generation_id}),
-            Duration::from_secs(5),
         );
     });
 }
@@ -166,8 +160,7 @@ pub fn dispatch(app: &tauri::AppHandle, handle: &ShellLifecycleHandle, event: Va
         }
         // The payload retains the original generation even if the live transport
         // changes before dispatch. Core rejects that result rather than adopting it.
-        let _ =
-            handle.settings_request(None, "host.screen.result", response, Duration::from_secs(5));
+        let _ = handle.settings_request(None, "host.screen.result", response);
         if let Ok(resource) = result {
             manager.release_descriptors(&[resource], &generation_id);
         }

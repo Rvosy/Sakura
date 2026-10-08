@@ -83,8 +83,6 @@ class GPTSoVITSTTSSettings:
         endpoint = urlparse(self.api_url)
         if endpoint.scheme not in {"http", "https"} or not endpoint.hostname:
             raise ValueError("TTS_CONFIG_INVALID")
-        if not 1 <= self.timeout_seconds <= 300:
-            raise ValueError("TTS_CONFIG_INVALID")
         if not self.ref_text or not self.ref_lang or not self.text_lang:
             raise ValueError("TTS_CHARACTER_CONFIG_INVALID")
         references = [
@@ -118,7 +116,7 @@ def is_loopback_base_url(base_url: str) -> bool:
 def _open_url(
     url: str | urllib.request.Request,
     *,
-    timeout: float,
+    timeout: float | None,
 ) -> object:
     return urlopen_current_proxy(url, timeout=timeout)
 
@@ -126,7 +124,7 @@ def _open_url(
 def _read_url(
     request: str | urllib.request.Request,
     *,
-    timeout: float,
+    timeout: float | None,
     cancel_checker: Callable[[], None] | None = None,
 ) -> tuple[bytes, int | None]:
     if cancel_checker is None:
@@ -135,14 +133,11 @@ def _read_url(
     done = threading.Event()
     abort = threading.Event()
     state: dict[str, Any] = {}
-    lock = threading.Lock()
 
     def read() -> None:
         chunks: list[bytes] = []
         try:
             with _open_url(request, timeout=timeout) as response:
-                with lock:
-                    state["response"] = response
                 state["status"] = getattr(response, "status", None)
                 while not abort.is_set():
                     chunk = response.read(64 * 1024)
@@ -164,13 +159,6 @@ def _read_url(
         cancel_checker()
     except BaseException:
         abort.set()
-        with lock:
-            response = state.get("response")
-        try:
-            if response is not None:
-                response.close()
-        except Exception:
-            pass
         raise
     error = state.get("error")
     if isinstance(error, BaseException):
@@ -302,8 +290,7 @@ class _ManagedRuntime:
             "info",
             {"stage": "runtime_start", "status": "waiting"},
         )
-        deadline = time.monotonic() + self.settings.timeout_seconds
-        while time.monotonic() < deadline:
+        while True:
             if self._is_closed():
                 return False
             if process.poll() is not None:
@@ -327,8 +314,6 @@ class _ManagedRuntime:
                 )
                 return True
             time.sleep(0.05)
-        self._fail_service(fail, "TTS_RUNTIME_TIMEOUT", started_at, "TimeoutError")
-        return False
 
     def ensure_weights(
         self,
@@ -360,9 +345,11 @@ class _ManagedRuntime:
             try:
                 _read_url(
                     urllib.request.Request(url, method="GET"),
-                    timeout=self.settings.timeout_seconds,
+                    timeout=None,
                     cancel_checker=cancel_checker,
                 )
+            except OperationCancelled:
+                raise
             except Exception as error:
                 fail("TTS_WEIGHTS_UNAVAILABLE")
                 self._report(
@@ -402,17 +389,11 @@ class _ManagedRuntime:
             "warning",
             {
                 "stage": "runtime_start",
-                "source_file": "plugins/builtin/sakura_gpt_sovits/_support.py",
+                "source_file": "plugins/optional/sakura_gpt_sovits/_support.py",
                 "source_line": sys._getframe(1).f_lineno,
                 "status": "failed",
                 "code": reason_code,
                 "reason_code": reason_code,
-                "timeout_ms": round(self.settings.timeout_seconds * 1000),
-                **(
-                    {"probe_outcome": "timeout"}
-                    if reason_code == "TTS_RUNTIME_TIMEOUT"
-                    else {}
-                ),
                 **(
                     {"child_exited": True, "exit_code": self._server_process.poll()}
                     if reason_code == "TTS_RUNTIME_EXITED" and self._server_process
@@ -454,6 +435,10 @@ class _ManagedRuntime:
         self.close()
         return True
 
+    def _check_cancelled(self) -> None:
+        if self._is_closed():
+            raise OperationCancelled("TTS operation cancelled")
+
     def _start(self, fail: Callable[[str], None]) -> bool:
         self._start_diagnostic = {}
         work_dir = self.settings.work_dir
@@ -471,16 +456,14 @@ class _ManagedRuntime:
                 runtime_python=python,
                 configured_path=self.settings.tts_config_path,
                 require_cuda=work_dir.name.casefold() == "g50",
+                check_cancel=self._check_cancelled,
             )
         except RuntimeProfileError as error:
             self._start_diagnostic = {
                 "stage": "device_probe",
                 "reason_code": error.reason_code,
-                "timeout_ms": 90000,
-                "source_file": "plugins/builtin/sakura_gpt_sovits/_runtime_profile.py",
-                "probe_outcome": "timeout"
-                if error.reason_code == "TTS_DEVICE_PROBE_TIMEOUT"
-                else "spawn_failed"
+                "source_file": "plugins/optional/sakura_gpt_sovits/_runtime_profile.py",
+                "probe_outcome": "spawn_failed"
                 if error.reason_code == "TTS_DEVICE_PROBE_START_FAILED"
                 else "invalid_output"
                 if error.reason_code == "TTS_DEVICE_PROBE_OUTPUT_INVALID"
@@ -591,7 +574,7 @@ class GptSovitsEndpointResolver:
         parsed = urlparse(self.endpoint.base_url)
         host = parsed.hostname or ""
         port = parsed.port or (443 if parsed.scheme == "https" else 80)
-        timeout = min(self.settings.timeout_seconds, 3)
+        timeout = self.settings.timeout_seconds
         if not host or not _probe_tcp(host, port, timeout) or not _probe_http(self.endpoint.synthesis_url, timeout):
             fail("TTS_RUNTIME_UNAVAILABLE")
             return False
@@ -681,8 +664,9 @@ class GPTSoVITSSynthesisEngine:
                         "stage": stage,
                         "error_type": error_type,
                         "elapsed_ms": round((time.monotonic() - started_at) * 1000),
-                        "timeout_ms": round(settings.timeout_seconds * 1000),
-                        "source_file": "plugins/builtin/sakura_gpt_sovits/_support.py",
+                        **({"timeout_ms": round(settings.timeout_seconds * 1000)}
+                           if settings.custom_base_url is not None and reason == "TTS_HTTP_TIMEOUT" else {}),
+                        "source_file": "plugins/optional/sakura_gpt_sovits/_support.py",
                         "source_line": sys._getframe(1).f_lineno,
                     },
                 )
@@ -728,7 +712,7 @@ class GPTSoVITSSynthesisEngine:
             try:
                 audio, _status = _read_url(
                     http_request,
-                    timeout=settings.timeout_seconds,
+                    timeout=settings.timeout_seconds if settings.custom_base_url is not None else None,
                     cancel_checker=check_cancelled,
                 )
                 break

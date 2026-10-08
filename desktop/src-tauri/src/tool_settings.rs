@@ -87,14 +87,8 @@ pub(crate) async fn settings_tools_get(
         .available_generation_id()
         .map_err(|error| error.to_string())?
         .ok_or_else(|| "SETTINGS_CORE_UNAVAILABLE".to_string())?;
-    let response = dispatch_settings_request(
-        handle.clone(),
-        None,
-        "tools.settings.get",
-        json!({}),
-        std::time::Duration::from_secs(3),
-    )
-    .await?;
+    let response =
+        dispatch_settings_request(handle.clone(), None, "tools.settings.get", json!({})).await?;
     assert_settings_identity(&shell, &handle, window_generation, &core_generation_id)?;
     let mut payload = settings_response_payload(response)?;
     validate_snapshot(&payload, false)?;
@@ -124,7 +118,6 @@ pub(crate) async fn settings_tools_save(
         None,
         "tools.settings.save",
         json!({"settings": settings}),
-        std::time::Duration::from_secs(5),
     )
     .await?;
     let payload = settings_response_payload(response)?;

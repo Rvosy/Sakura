@@ -142,6 +142,120 @@ class Plugin:
         host.close()
 
 
+
+def test_service_and_settings_callbacks_wait_for_slow_host_work(tmp_path: Path) -> None:
+    roots = _roots(tmp_path)
+    _plugin_source(roots.distribution_root / "plugins/builtin", "fixture.slow", "fixture.slow",
+                   requires=("sakura.host.settings",), body='''
+class Plugin:
+    def run(self): return self.host.invoke("wait", "service", timeout_seconds=600)
+    def setup(self, context):
+        self.host = context.get("fixture.host")
+        context.provide("fixture.slow", self, exports=("run",))
+        context.get("sakura.host.settings").register(
+            {"sectionId": "general", "title": "Fixture",
+             "fields": [{"key": "result", "label": "Result", "type": "string"}]},
+            load=lambda: {"result": self.host.wait("settings")}, save=lambda values: None)
+''')
+    entered = {name: threading.Event() for name in ("service", "settings")}
+    release, finished = threading.Event(), threading.Event()
+    results, errors = {}, []
+
+    class Host:
+        def wait(self, name):
+            entered[name].set()
+            release.wait()
+            return name
+
+    application = PluginApplicationHost(roots, "slow-callbacks", ToolRegistry())
+    application._manager.install_host_service("fixture.host", Host(), exports=("wait",))
+    boundary = PluginSettingsBoundary("slow-callbacks", "a" * 32, roots,
+                                     application_provider=lambda: application)
+
+    def run(name, callback):
+        try:
+            results[name] = callback()
+        except BaseException as error:
+            errors.append(error)
+        finally:
+            finished.set()
+
+    workers = [
+        threading.Thread(target=run, args=("service", lambda: application.call_service("fixture.slow", "run"))),
+        threading.Thread(target=run, args=("settings", boundary.snapshot)),
+    ]
+    try:
+        application.start()
+        assert application.wait_until_loaded(timeout=5)
+        for worker in workers:
+            worker.start()
+        assert all(event.wait(3) for event in entered.values()), (errors, application.public_snapshot())
+        # Cross the former RPC deadline while both operations remain active.
+        assert not finished.wait(3.1)
+        release.set()
+        for worker in workers:
+            worker.join(3)
+            assert not worker.is_alive()
+        assert not errors
+        assert results["service"] == "service"
+        assert results["settings"]["plugins"][0]["sections"][0]["values"] == {"result": "settings"}
+    finally:
+        release.set()
+        application.close()
+        for worker in workers:
+            if worker.ident is not None:
+                worker.join(3)
+
+
+def test_tts_shutdown_can_finish_when_provider_cancel_is_blocked(tmp_path: Path) -> None:
+    from app.core_host.tts_boundary import TTSBoundary, _PluginSynthesisHandle
+
+    roots = _roots(tmp_path)
+    _plugin_source(roots.distribution_root / "plugins/builtin", "fixture.tts", "sakura.tts", body='''
+class Plugin:
+    def cancel(self, request): return self.host.wait()
+    def setup(self, context):
+        self.host = context.get("fixture.host")
+        context.provide("sakura.tts", self, exports=("cancel",))
+''')
+    entered, release, finished = threading.Event(), threading.Event(), threading.Event()
+
+    class Host:
+        def wait(self):
+            entered.set()
+            release.wait()
+            return {"accepted": True}
+
+    application = PluginApplicationHost(roots, "tts-shutdown", ToolRegistry())
+    application._manager.install_host_service("fixture.host", Host(), exports=("wait",))
+    boundary = TTSBoundary("tts-shutdown", "a" * 32, roots.user_root,
+                           session_provider=lambda: None, plugin_application_provider=lambda: application)
+    errors = []
+
+    def close():
+        try:
+            boundary.close()
+        except BaseException as error:
+            errors.append(error)
+        finally:
+            finished.set()
+
+    worker = threading.Thread(target=close)
+    try:
+        application.start()
+        assert application.wait_until_loaded(timeout=5)
+        boundary._handles["request"] = _PluginSynthesisHandle(application, "request", "fixture.tts")
+        worker.start()
+        assert entered.wait(3)
+        assert finished.wait(2), "blocked cancellation must not prevent generation shutdown"
+        assert not errors
+    finally:
+        release.set()
+        application.close()
+        if worker.ident is not None:
+            worker.join(3)
+        boundary.close()
+
 @pytest.mark.skipif(os.name != "nt", reason="Windows verbatim process cwd")
 def test_plugin_with_verbatim_user_root_can_probe_root_relative_paths(tmp_path: Path) -> None:
     roots = _roots(tmp_path)
@@ -1333,7 +1447,6 @@ class Plugin:
         roots,
         "generation-v4-proxy",
         PluginInventory(roots).scan().runtime_specs,
-        call_timeout=0.05,
     )
     try:
         manager.start()
@@ -1356,7 +1469,7 @@ class Plugin:
             manager.call_service("fixture.echo", "missing")
         assert hidden.value.code == "SERVICE_METHOD_NOT_EXPORTED"
         with pytest.raises(PluginRuntimeError) as timed_out:
-            manager.call_service("fixture.echo", "slow")
+            manager.call_service("fixture.echo", "slow", timeout=0.05)
         assert timed_out.value.code == "PLUGIN_CALL_TIMEOUT"
         time.sleep(0.25)
         assert manager.call_service("fixture.echo", "count") == 1
@@ -1471,7 +1584,6 @@ class Plugin:
         roots,
         "generation-v4-crash",
         PluginInventory(roots).scan().runtime_specs,
-        call_timeout=0.2,
     )
     try:
         manager.start()
@@ -1785,7 +1897,6 @@ class Plugin:
         roots,
         "generation-v4-event-isolation",
         ToolRegistry(),
-        call_timeout=0.05,
     )
     try:
         application.start()
@@ -1967,7 +2078,6 @@ class Plugin:
         roots,
         "generation-v4-protocol",
         PluginInventory(roots).scan().runtime_specs,
-        call_timeout=0.3,
     )
     try:
         manager.start()
@@ -2032,7 +2142,6 @@ class Plugin:
         roots,
         "generation-v4-root-exit",
         PluginInventory(roots).scan().runtime_specs,
-        call_timeout=0.3,
     )
     try:
         manager.start()
@@ -2349,7 +2458,6 @@ class Plugin:
         roots,
         "generation-v4-provider-dies-during-setup",
         PluginInventory(roots).scan().runtime_specs,
-        call_timeout=5.0,
     )
     thread = threading.Thread(target=manager.start, daemon=True)
     thread.start()
@@ -2523,8 +2631,7 @@ class Plugin:
         worker.join(timeout=3)
 
 
-@pytest.mark.parametrize("timeout_origin", ["runner", "callee"])
-def test_setup_rpc_timeout_keeps_actual_deadline_and_call_across_cleanup(tmp_path, monkeypatch, timeout_origin):
+def test_setup_rpc_error_keeps_callee_diagnostics_across_cleanup(tmp_path, monkeypatch):
     from app.core import runtime_log
 
     roots = _roots(tmp_path)
@@ -2539,10 +2646,7 @@ class Plugin:
 
     class Host:
         def block(self, value):
-            if timeout_origin == "callee":
-                # The callee owns this timeout; the runner cannot infer its limit.
-                raise PluginRuntimeError("PLUGIN_CALL_TIMEOUT", "callee deadline expired")
-            release.wait(10)
+            raise PluginRuntimeError("PLUGIN_CALL_TIMEOUT", "callee deadline expired")
 
         def cleanup(self):
             cleanup_called.set()
@@ -2559,13 +2663,9 @@ class Plugin:
         assert failure["detail_stage"] == "setup"
         assert failure["service_key"] == "fixture.host"
         assert failure["command"] == "service.call.block"
-        if timeout_origin == "runner":
-            assert failure["timeout_ms"] == 3000
-            assert "setup" in failure["exception_stack"]
-        else:
-            assert "timeout_ms" not in failure
-            assert "callee deadline expired" in failure["exception_chain"]
-            assert "test_plugin_runtime_v4:block" in failure["exception_stack"]
+        assert "timeout_ms" not in failure
+        assert "callee deadline expired" in failure["exception_chain"]
+        assert "test_plugin_runtime_v4:block" in failure["exception_stack"]
         assert "private setup argument" not in json.dumps(failure)
         _wait_pids_gone([failure["child_pid"]])
     finally:

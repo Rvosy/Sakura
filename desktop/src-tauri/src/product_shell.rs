@@ -20,7 +20,6 @@ use crate::{
 pub const SETTINGS_WINDOW_LABEL: &str = "settings";
 pub const SETTINGS_CLOSE_REQUESTED_EVENT: &str = "sakura://settings-close-requested";
 pub const SETTINGS_EXIT_REQUESTED_EVENT: &str = "sakura://settings-exit-requested";
-pub const SETTINGS_EXIT_TIMEOUT_EVENT: &str = "sakura://settings-exit-timeout";
 pub const PRODUCT_MENU_ERROR_EVENT: &str = "sakura://product-menu-error";
 pub const PRODUCT_TRAY_ID: &str = "sakura.product.tray";
 
@@ -304,7 +303,6 @@ struct SettingsWindowSession {
     reopen_after_close: bool,
     exit_pending: bool,
     exit_revision: u64,
-    exit_acknowledged: bool,
     app_exit_authorized: bool,
 }
 
@@ -450,12 +448,11 @@ impl ProductShellState {
         }
         session.exit_pending = true;
         session.exit_revision += 1;
-        session.exit_acknowledged = false;
         Ok(Some(session.exit_revision))
     }
 
     pub fn acknowledge_exit(&self, revision: u64) -> Result<(), String> {
-        let mut session = self.settings.lock().map_err(|source_error| {
+        let session = self.settings.lock().map_err(|source_error| {
             crate::runtime_log::diagnostic_error(
                 "settings window state is unavailable",
                 source_error,
@@ -464,22 +461,7 @@ impl ProductShellState {
         if !session.exit_pending || session.exit_revision != revision {
             return Err("SETTINGS_EXIT_REQUEST_STALE".to_string());
         }
-        session.exit_acknowledged = true;
         Ok(())
-    }
-
-    pub fn cancel_unanswered_exit(&self, revision: u64) -> Result<bool, String> {
-        let mut session = self.settings.lock().map_err(|source_error| {
-            crate::runtime_log::diagnostic_error(
-                "settings window state is unavailable",
-                source_error,
-            )
-        })?;
-        if !session.exit_pending || session.exit_revision != revision || session.exit_acknowledged {
-            return Ok(false);
-        }
-        session.exit_pending = false;
-        Ok(true)
     }
 
     pub fn resolve_exit(&self) -> Result<bool, String> {
@@ -1408,19 +1390,15 @@ mod tests {
     }
 
     #[test]
-    fn app_exit_timeout_does_not_cancel_a_visible_confirmation_or_a_new_request() {
+    fn app_exit_rejects_acknowledgements_for_an_older_request() {
         let state = ProductShellState::default();
         let first = state.begin_exit().unwrap().unwrap();
         state.acknowledge_exit(first).unwrap();
-        assert!(!state.cancel_unanswered_exit(first).unwrap());
         assert!(state.resolve_exit().unwrap());
-
         let second = state.begin_exit().unwrap().unwrap();
-        assert!(!state.cancel_unanswered_exit(first).unwrap());
         assert!(state.acknowledge_exit(first).is_err());
-        assert!(state.cancel_unanswered_exit(second).unwrap());
-        assert!(!state.resolve_exit().unwrap());
-        assert!(state.acknowledge_exit(second).is_err());
+        state.acknowledge_exit(second).unwrap();
+        assert!(state.resolve_exit().unwrap());
     }
 
     #[test]

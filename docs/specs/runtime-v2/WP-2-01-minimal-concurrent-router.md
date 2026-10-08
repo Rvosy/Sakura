@@ -24,7 +24,7 @@ Python 的 response 和 event 共用 `ResponseWriter` 的有界队列与写入�
 - event 支持使用新的 protocol minor 2.2，并通过 `transport.concurrent-router` capability 协商；不得静默改变 2.1 validator 的含义。
 - 2.0/2.1 peer 仍可完成已有 hello/health/initialize/snapshot/shutdown lifecycle；只有调用 Router/event 能力时才要求 2.2 capability。
 - event 最小字段为 `protocolMajor`、`protocolMinor`、`kind=event`、`generationId`、`generationCredential`、`id`、`name`、`payload`。`id` 关联产生事件的 request；本 WP 不另造通用 operationId。
-- event 不携带 request 的 `deadlineMs`/`priority`，也不携带 response 的 `ok`/`error`。
+- event 不携带 request 的 `priority`，也不携带 response 的 `ok`/`error`。
 - 本 WP 不增加 `sequence`。stdio 单 writer 已提供字节顺序；只有后续真实消费者证明需要检测应用层丢帧/重复时才能加入。
 
 ### 2.2 Rust Router
@@ -36,13 +36,13 @@ Python 的 response 和 event 共用 `ResponseWriter` 的有界队列与写入�
 - generation 失效、Core crash、stdout EOF、fatal transport、Retry、Exit 和窗口关闭都必须一次性完成或拒绝所有 pending waiter，并停止/join reader、writer。
 - 不在 pending/owner mutex 内做 pipe read/write、线程 join、进程等待或 UI 回调。
 - 保留现有 Supervisor、shutdown 5 秒总 deadline、generation 清理顺序和 stderr drainer；Router 不能成为第二生命周期根。
-- 显式插件安装使用终态等待：`deadlineMs` 仍限制 Core 队列等待，进入执行后由安装器拥有子进程及回滚期限。Shell 等待实际 response 或 generation 失效，期间保留临时 ZIP；不以通用 RPC 等待超时报成安装终态。其他请求保留原有响应期限。
+- 普通请求不携带执行或排队截止时间。Shell 等待实际 response、显式取消或 generation 失效；插件安装期间保留临时 ZIP，安装器负责子进程与失败回滚。只有 shutdown 使用进程退出期限。
 
 ### 2.3 Python Router
 
 - 一个常驻 reader 读取和校验帧，一个 dispatcher 分派 control 和请求；只有 `ResponseWriter` 的线程调用 `write_frame`。
 - 同步设置请求由 4 个 worker 执行，最多另有 8 个请求排队；执行槽已满但队列有空位时应正常接收。聊天由边界启动可取消任务，不让长模型请求占住 control。
-- 排队时间计入 `deadlineMs`，开始执行前已超时的请求返回 `REQUEST_DEADLINE_EXCEEDED`，释放预留的领域状态，不执行过期保存或其他写入。关闭时放弃尚未执行的排队请求。
+- 已接收请求等待执行槽，不因排队耗时被放弃。关闭时放弃尚未执行的排队请求并释放预留的领域状态。
 - response 和 event 都直接进入 `ResponseWriter` 的 32 项队列。发布者等待本条写入完成；队列饱和、写入失败或确认超时会使 generation 失败，不丢弃终态或重放写入。
 - Router 先停止接收请求并取消领域任务，再等待执行槽和聊天事件生产者收尾。收尾期间仍允许发布终态；排空后拒绝新事件，随后由 Host 关闭唯一的协议 writer。
 - Python `queue.Queue` 已提供并发入队和背压，不再额外维护事件 ticket、转发队列或专用事件线程。
@@ -68,7 +68,7 @@ Python 的 response 和 event 共用 `ResponseWriter` 的有界队列与写入�
 
 ### 3.2 真实 Host 与 lifecycle
 
-- 在聊天形状的 sleep fixture 和阻塞文件 I/O fixture 运行期间，health 能在既有 deadline 内返回，shutdown 能进入既有 5 秒完整树停止门。
+- 在聊天形状的 sleep fixture 和阻塞文件 I/O fixture 运行期间，health 能独立返回，shutdown 能进入既有 5 秒完整树停止门。
 - Router 正常关闭、Core crash、Retry 和窗口 Exit 后，Rust reader/writer、Python reader/dispatcher/writer/task、pending waiter、pipe/fd/handle、进程树和验收 temp 全部归零。
 - 第一代晚到 response/event 不能影响第二 generation；旧 waiter 得到稳定 generation-invalidated 结果。
 - protected credential、API key、Prompt、Provider endpoint、异常 repr 和私有绝对路径不进入 response/event、普通日志或测试证据。

@@ -75,7 +75,7 @@ class ModelClient:
         self._closed = False
         self._operations = set()
         self._artifact_cleanups = {}
-        self.description = self._service.invoke("describe", reference["profileId"], reference["modelId"], timeout_seconds=5)
+        self.description = self._service.invoke("describe", reference["profileId"], reference["modelId"])
 
     @property
     def identity(self):
@@ -111,13 +111,13 @@ class ModelClient:
                 descriptor["request"] = request
             check()
             begin_attempted = True
-            ack = self._service.invoke("begin", descriptor, timeout_seconds=5)
+            ack = self._service.invoke("begin", descriptor)
             if not isinstance(ack, Mapping) or ack.get("operationId") != operation_id:
                 raise ModelError("MODEL_ACK_INVALID")
             sequence = 0
             while True:
                 check()
-                state = self._service.invoke("poll", operation_id, sequence, 250, timeout_seconds=2)
+                state = self._service.invoke("poll", operation_id, sequence, 250)
                 sequence = state["sequence"]
                 if progress_callback is not None:
                     for event in state.get("progress", ()):
@@ -127,7 +127,7 @@ class ModelClient:
             check()
             if state["state"] == "cancelled":
                 raise OperationCancelled()
-            result = self._service.invoke("result", operation_id, timeout_seconds=5)
+            result = self._service.invoke("result", operation_id)
             response = decode_model_result(result, self._artifacts, self.identity, operation_id)
             check()
             return response

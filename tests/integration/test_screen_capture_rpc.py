@@ -10,7 +10,7 @@ import pytest
 from app.core_host.screen_host import ScreenHost, ScreenHostError, _CANCELLED_OPERATION_LIMIT
 from app.plugin_sdk.sakura_screen import ScreenClient, ScreenError
 from app.plugins.host_services import HOST_CALLER, HOST_CALLER_SCOPE
-from app.plugins.sakura_plugin_sdk import DEFAULT_CALL_TIMEOUT_SECONDS, PluginApiError, PluginContext, RpcPeer
+from app.plugins.sakura_plugin_sdk import PluginApiError, PluginContext, RpcPeer
 
 
 @contextmanager
@@ -42,7 +42,7 @@ class ScreenRpc:
         context = PluginContext("screen-client", tmp_path, tmp_path,
             lambda service, method, args: self.client_peer.request("service.call",
                 {"serviceKey": service, "method": method, "args": list(args)}),
-            lambda name, payload: self.client_peer.request(name, payload, timeout=payload.get("timeoutSeconds", 3)))
+            lambda name, payload: self.client_peer.request(name, payload, timeout=payload.get("timeoutSeconds")))
         self.client = ScreenClient(context.get("sakura.host.screen"), capture_timeout=0.15, cleanup_timeout=0.15)
 
     def emit(self, name, payload):
@@ -101,7 +101,7 @@ def rpc(tmp_path):
         fixture.close()
 
 
-def test_default_screen_deadline_survives_standard_rpc_timeout(rpc):
+def test_default_capture_waits_for_completion_without_rpc_deadline(rpc):
     emitted, finished = threading.Event(), threading.Event()
     pending, results, errors = [], [], []
     def emit(name, payload):
@@ -120,7 +120,7 @@ def test_default_screen_deadline_survives_standard_rpc_timeout(rpc):
     worker.start()
     try:
         assert emitted.wait(3)
-        assert not finished.wait(DEFAULT_CALL_TIMEOUT_SECONDS + 0.1)
+        assert not finished.wait(3.1)
         assert len(pending) == 1
         assert rpc.screen.complete({**pending[0], "resource": {}}) == {"accepted": True}
         assert finished.wait(3)

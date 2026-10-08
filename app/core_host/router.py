@@ -43,7 +43,6 @@ def _request_interaction_context(
 @dataclass
 class _Ticket:
     request: dict[str, Any]
-    received_at: float = dataclass_field(default_factory=monotonic)
     done: threading.Event = dataclass_field(default_factory=threading.Event)
     error: BaseException | None = None
 
@@ -253,18 +252,6 @@ class ConcurrentHostRouter:
                     self._abandon_fixture(item.request)
                     item.done.set()
                     return
-                deadline_ms = item.request.get("deadlineMs")
-                if isinstance(deadline_ms, int) and (monotonic() - item.received_at) * 1000 >= deadline_ms:
-                    self._abandon_fixture(item.request)
-                    self._send(response(
-                        item.request,
-                        generation_id=str(item.request["generationId"]),
-                        generation_credential=str(item.request["generationCredential"]),
-                        protocol_minor=int(item.request["protocolMinor"]),
-                        error={"code": "REQUEST_DEADLINE_EXCEEDED", "message": "请求等待超时，请重试。", "retryable": True, "details": {}},
-                    ))
-                    item.done.set()
-                    continue
                 try:
                     try:
                         with _request_interaction_context(item.request):

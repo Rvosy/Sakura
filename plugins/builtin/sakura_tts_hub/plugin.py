@@ -164,6 +164,7 @@ class SakuraTTSHub:
             return {
                 "accepted": False,
                 "providerId": provider_id,
+                "status": "skipped",
                 "reasonCode": reason_code,
                 "stage": stage,
                 **({"diagnostics": diagnostics} if diagnostics else {}),

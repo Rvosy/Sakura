@@ -16,7 +16,7 @@ from typing import Any, Mapping, Sequence
 _PRIVATE_RUNTIME_ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(_PRIVATE_RUNTIME_ROOT))
 from process_paths import process_path
-from sakura_plugin_sdk import DEFAULT_CALL_TIMEOUT_SECONDS, PluginApiError, PluginContext, RpcPeer, _diagnostic_text
+from sakura_plugin_sdk import PluginApiError, PluginContext, RpcPeer, _diagnostic_text
 sys.modules.pop("process_paths", None)
 sys.modules.pop("sakura_plugin_sdk", None)
 
@@ -313,8 +313,8 @@ class PluginRunner:
             if initializing:
                 with self._startup_lock:
                     error._startup_call = dict(self._startup_call)
-                if error.code == "PLUGIN_CALL_TIMEOUT" and not error.diagnostics:
-                    error._startup_call["timeout_ms"] = options.get("timeout", DEFAULT_CALL_TIMEOUT_SECONDS) * 1000
+                if error.code == "PLUGIN_CALL_TIMEOUT" and not error.diagnostics and options.get("timeout") is not None:
+                    error._startup_call["timeout_ms"] = options["timeout"] * 1000
             raise
         finally:
             if initializing:
@@ -342,8 +342,6 @@ class PluginRunner:
         payload: Mapping[str, Any],
     ) -> object:
         timeout = payload.get("timeoutSeconds")
-        if timeout is not None and (isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or not 0 < timeout <= 122):
-            raise PluginApiError("PLUGIN_DEADLINE_INVALID")
         return self._request_remote(name, payload, **({"timeout": float(timeout)} if timeout is not None else {}))
 
     def _require_context(self) -> PluginContext:

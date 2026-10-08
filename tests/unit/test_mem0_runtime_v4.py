@@ -211,7 +211,6 @@ def test_mem0_v4_isolated_process_and_replaceable_contributions(tmp_path: Path) 
         "generation-mem0-v4",
         registry,
         inventory.runtime_specs,
-        call_timeout=1.0,
     )
     try:
         application.start()

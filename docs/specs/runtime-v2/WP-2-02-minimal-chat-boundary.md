@@ -20,7 +20,7 @@ Router、Gateway 与领域实现共享既有 Core 生命周期和单 stdout writ
 
 ## 冻结边界与故障矩阵
 
-Rust Gateway 只允许 `chat.send` 和 `chat.cancel`；未知 command、错误窗口、非法/超限 payload 和任何调用方提交的 generation、credential、request ID、deadline、priority 或协议字段均拒绝。Rust 生成 request/operation identity、generation credential、受控 deadline 和最小调度类别。聊天只产生 `chat.started` 后的一个 `chat.completed`、`chat.failed` 或 `chat.cancelled` 终态；重复取消、完成/取消或失败/取消竞态、晚到事件均幂等。
+Rust Gateway 只允许 `chat.send` 和 `chat.cancel`；未知 command、错误窗口、非法/超限 payload 和任何调用方提交的 generation、credential、request ID、deadline、priority 或协议字段均拒绝。Rust 生成 request/operation identity、generation credential 和最小调度类别。聊天只产生 `chat.started` 后的一个 `chat.completed`、`chat.failed` 或 `chat.cancelled` 终态；重复取消、完成/取消或失败/取消竞态、晚到事件均幂等。
 
 当前产品在不增加 command 类型的前提下，把 `chat.send` 输入冻结为严格联合：
 
@@ -48,7 +48,7 @@ Rust 只读缓存；generation/revision 失配触发完整重取，Rust 不推�
 
 - send/cancel/complete、send/cancel/fail、完成/取消与失败/取消竞态、重复取消；
 - 半帧、EOF、未知 identity、旧 generation/credential、晚到 response/event、队列满、慢/失败 writer；
-- fixture 阻塞期间 health、cancel、shutdown 的既有 deadline；窗口关闭、Core crash、Retry、Exit 和 generation 切换后的 bounded cleanup；
+- fixture 阻塞期间 health、cancel 保持可响应，shutdown 遵守退出期限；窗口关闭、Core crash、Retry、Exit 和 generation 切换后的 bounded cleanup；
 - Snapshot 字段扩展、敏感字段拒绝、revision 单调性、generation 清空和失配完整重取；
 - protocol 2.1 lifecycle、protocol 2.2 request/response/event Router 回归。
 

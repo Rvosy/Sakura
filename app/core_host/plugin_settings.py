@@ -687,7 +687,7 @@ def _project_plugin(
         "reasonCode": "MODEL_API_UPDATE_REQUIRED" if model_update_required else _reason_code(raw.get("reasonCode"), "STATUS_INVALID"),
         **({"diagnostics": dict(raw["diagnostics"])} if isinstance(raw.get("diagnostics"), Mapping) else {}),
         "pages": raw.get("pages", []),
-        "sections": raw.get("sections", [])[:16] if isinstance(raw.get("sections"), list) else [],
+        "sections": raw.get("sections", []) if isinstance(raw.get("sections"), list) else [],
     }
 
 

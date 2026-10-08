@@ -146,7 +146,6 @@ def _python_version(executable: Path) -> str:
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
-        timeout=15,
     )
     return result.stdout.strip()
 
@@ -211,7 +210,6 @@ def stage_bundled_dependencies(stage: Path, target: str) -> None:
             check=True,
             cwd=plugin_root,
             env=uv_download_environment(plugin_root, environment),
-            timeout=600,
         )
         marker = {
             "schemaVersion": 1,
@@ -282,7 +280,6 @@ def smoke_bundled_entries(stage: Path, target: str) -> None:
                 env=environment,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                timeout=30,
             )
 
 
@@ -434,7 +431,7 @@ def smoke(stage: Path, target: str) -> None:
         f"assert all(importlib.util.find_spec(name) is None for name in [{plugin_only}]);"
         "import app.core_host,app.legacy_import,plugins.builtin"
     )
-    subprocess.run([str(executable), "-I", "-B", "-c", script], check=True, timeout=90)
+    subprocess.run([str(executable), "-I", "-B", "-c", script], check=True)
     smoke_bundled_entries(stage, target)
     smoke_plugin_upgrade(stage, target)
     suffix = ".exe" if target == "windows-x64" else ""
@@ -444,7 +441,6 @@ def smoke(stage: Path, target: str) -> None:
             check=True,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            timeout=15,
         )
 
 
@@ -463,7 +459,7 @@ def smoke_plugin_upgrade(stage: Path, target: str, *, historical_distribution: P
     if historical_distribution is not None:
         command.extend(["--historical-distribution", str(historical_distribution)])
     with tempfile.TemporaryDirectory(prefix="sakura-release-upgrade-smoke-") as work:
-        subprocess.run(command, check=True, cwd=work, env=environment, timeout=300)
+        subprocess.run(command, check=True, cwd=work, env=environment)
 
 
 def inventory(stage: Path, target: str) -> dict[str, object]:

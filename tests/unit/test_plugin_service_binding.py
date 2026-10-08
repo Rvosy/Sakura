@@ -111,7 +111,7 @@ class Plugin:
             requires=("sakura.tts",) if tts else ())
     roots = RuntimeRoots(distribution, user)
     manager = PluginRuntimeManager(roots, "service-binding-test",
-                                   PluginInventory(roots).scan().runtime_specs, call_timeout=1.0)
+                                   PluginInventory(roots).scan().runtime_specs)
     if tts:
         manager.install_host_service("sakura.host.speech",
             SimpleNamespace(cache_status=lambda _headroom: {"idleFill": False}), exports=("cache_status",))

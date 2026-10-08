@@ -403,6 +403,7 @@ def _install_archive(
             extracted,
             require_cuda=entry.key == GPT_SOVITS_NVIDIA50.key,
             platform="win32",
+            check_cancel=check_cancel,
         )
         check_cancel()
     _replace_directory(extracted, _install_dir(entry, user_root))
@@ -541,7 +542,7 @@ def install_bundle(
 class TTSBundleResource:
     def __init__(self, *, user_root: Path, config_get: Callable[[], Mapping[str, Any]], config_update: Callable[[Mapping[str, Any]], object], entry: Callable[[], TTSBundleEntry | None], custom_endpoint: Callable[[Mapping[str, Any]], bool], installer: Callable[..., TTSBundleInstallResult] = install_bundle, diagnostic: Callable[[str, str, Mapping[str, str]], None] | None = None) -> None:
         self._user_root, self._config_get, self._config_update = Path(user_root), config_get, config_update
-        self._entry, self._custom_endpoint, self._installer = entry, custom_endpoint, installer
+        self._entry, self._custom_endpoint, self._installer = entry(), custom_endpoint, installer
         self._diagnostic = diagnostic
         self._lock, self._cancel = threading.RLock(), threading.Event()
         self._thread: threading.Thread | None = None
@@ -555,7 +556,7 @@ class TTSBundleResource:
         return {"sectionId": section_id, "title": title, "order": 100, "fields": [{"key": "bundleResource", "label": label, "type": "resource", "actionIds": ["installBundle", "retryBundle", "cancelBundle"], "default": {"applicability": "required", "subtitle": "", "ready": False, "taskState": "idle", "message": "", "detail": "", "progress": None, "availableActionIds": []}}], "actions": [{"actionId": "installBundle", "label": "安装"}, {"actionId": "retryBundle", "label": "重试"}, {"actionId": "cancelBundle", "label": "取消"}]}
 
     def load(self) -> dict[str, object]:
-        entry = self._entry()
+        entry = self._entry
         if self._custom_endpoint(dict(self._config_get())):
             return {"bundleResource": self._value("not_required", "外部服务", True, "无需安装", "", [])}
         if entry is None:
@@ -567,17 +568,22 @@ class TTSBundleResource:
                 _failure_detail(error_code)
                 if state == "failed"
                 else f"已下载 {self._downloaded:,} / {self._total:,} 字节"
-                if self._downloaded and self._total
+                if self._stage == "download" and self._downloaded and self._total
                 else ""
             )
         if state in {"idle", "succeeded"} and _installed(entry, self._user_root):
             return {"bundleResource": self._value("required", f"{entry.label} · {_format_size(entry)}", True, "已安装", "", [], terminal="succeeded")}
         actions = ["cancelBundle"] if state in {"queued", "running"} else ["retryBundle"] if state in {"failed", "cancelled"} else ["installBundle"]
-        message = {"queued": "等待下载", "running": self._stage or "正在安装", "failed": "安装失败", "cancelled": "已取消"}.get(state, "尚未安装")
+        stage_message = {
+            "prepare": "正在准备", "verify": "正在检查文件", "download": "正在下载",
+            "extract": "正在解压", "install": "正在安装", "configure": "正在配置",
+            "cleanup": "正在清理临时文件",
+        }.get(self._stage, "正在安装")
+        message = {"queued": "等待安装", "running": stage_message, "failed": "安装失败", "cancelled": "已取消"}.get(state, "尚未安装")
         return {"bundleResource": self._value("required", f"{entry.label} · {_format_size(entry)}", False, message, detail, actions, terminal=state)}
 
     def start(self, _values: Mapping[str, object]) -> dict[str, object]:
-        entry = self._entry()
+        entry = self._entry
         if self._custom_endpoint(dict(self._config_get())) or entry is None:
             return {"values": self.load(), "message": "当前组件无需安装。"}
         with self._lock:
@@ -661,7 +667,7 @@ class TTSBundleResource:
             self._state, self._stage, self._progress = state, stage[:240], progress
 
     def _set_stage(self, stage: str) -> None:
-        self._set_state("running", str(stage), self._progress)
+        self._set_state("running", str(stage), None)
 
     def _set_progress(self, progress: int) -> None:
         self._set_state("running", self._stage, max(0, min(100, int(progress))))

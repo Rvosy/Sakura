@@ -6,7 +6,6 @@ use std::{
     io::Write,
     path::PathBuf,
     sync::Mutex,
-    time::{Duration, Instant},
 };
 
 use image::{codecs::jpeg::JpegEncoder, imageops::FilterType, ExtendedColorType, ImageEncoder};
@@ -24,7 +23,6 @@ pub const ATTACHED_EVENT: &str = "sakura://screen-attachment";
 pub const CANCELLED_EVENT: &str = "sakura://screen-capture-cancelled";
 pub const ERROR_EVENT: &str = "sakura://screen-capture-error";
 const RESOURCE_DIRECTORY: &str = "sakura-runtime-v2-screen-resources";
-const RESOURCE_TTL: Duration = Duration::from_secs(120);
 const MAX_CAPTURE_BYTES: usize = 24 * 1024 * 1024;
 const MAX_CAPTURE_PIXELS: u64 = 32_000_000;
 const MAX_CAPTURE_EDGE: u32 = 1280;
@@ -59,7 +57,6 @@ struct CaptureSession {
 struct CaptureResource {
     path: PathBuf,
     generation_id: String,
-    created_at: Instant,
 }
 
 #[derive(Clone, Debug)]
@@ -210,7 +207,6 @@ impl CaptureManager {
         if monitors.is_empty() {
             return Err("SCREEN_CAPTURE_NO_MONITORS".to_string());
         }
-        self.cleanup_expired();
         let mut state = self.state.lock().map_err(|source_error| {
             crate::runtime_log::diagnostic_error("SCREEN_CAPTURE_STATE_UNAVAILABLE", source_error)
         })?;
@@ -292,7 +288,6 @@ impl CaptureManager {
         claim: &CaptureClaim,
         local_rect: PhysicalRect,
     ) -> Result<ScreenResourceDescriptor, String> {
-        self.cleanup_expired();
         let monitor = Monitor::all()
             .map_err(|source_error| {
                 crate::runtime_log::diagnostic_error(
@@ -378,7 +373,6 @@ impl CaptureManager {
             CaptureResource {
                 path: canonical,
                 generation_id: claim.generation_id.clone(),
-                created_at: Instant::now(),
             },
         );
         Ok(ScreenResourceDescriptor {
@@ -454,7 +448,6 @@ impl CaptureManager {
         resolution: &str,
         screen_name: String,
     ) -> Result<ScreenResourceDescriptor, String> {
-        self.cleanup_expired();
         let image = resize_host_capture(image, resolution);
         if u64::from(image.width()) * u64::from(image.height()) > MAX_CAPTURE_PIXELS {
             return Err("SCREEN_CAPTURE_RESOURCE_LIMIT".to_string());
@@ -522,7 +515,6 @@ impl CaptureManager {
                 CaptureResource {
                     path: canonical,
                     generation_id: generation_id.to_string(),
-                    created_at: Instant::now(),
                 },
             );
             Ok(ScreenResourceDescriptor {
@@ -568,28 +560,6 @@ impl CaptureManager {
             return Err("SCREEN_CAPTURE_RESOURCE_ESCAPE".to_string());
         }
         Ok(root)
-    }
-
-    fn cleanup_expired(&self) {
-        let expired = self.state.lock().ok().map(|mut state| {
-            let now = Instant::now();
-            let tokens = state
-                .resources
-                .iter()
-                .filter(|(_, resource)| {
-                    now.checked_duration_since(resource.created_at)
-                        .is_some_and(|age| age >= RESOURCE_TTL)
-                })
-                .map(|(token, _)| token.clone())
-                .collect::<Vec<_>>();
-            tokens
-                .into_iter()
-                .filter_map(|token| state.resources.remove(&token))
-                .collect::<Vec<_>>()
-        });
-        for resource in expired.unwrap_or_default() {
-            let _ = fs::remove_file(resource.path);
-        }
     }
 }
 
@@ -1075,35 +1045,6 @@ mod tests {
         let claim = manager.claim_selection(&session, &labels[0], 7).unwrap();
         assert_eq!(claim.monitor_id, 7);
         assert!(manager.claim_selection(&session, &labels[0], 7).is_err());
-        drop(manager);
-        let _ = fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn expired_resources_are_removed_from_registry_and_disk() {
-        let root =
-            std::env::temp_dir().join(format!("sakura-capture-test-{}", Uuid::new_v4().simple()));
-        let manager = CaptureManager::with_base(root.clone()).unwrap();
-        let generation_id = "00000000-0000-4000-8000-000000004006";
-        let generation_root = manager.generation_root(generation_id).unwrap();
-        let token = "a".repeat(32);
-        let path = generation_root.join(format!("{token}.jpg"));
-        fs::write(&path, b"expired").unwrap();
-        manager.state.lock().unwrap().resources.insert(
-            token.clone(),
-            CaptureResource {
-                path: path.clone(),
-                generation_id: generation_id.to_string(),
-                created_at: Instant::now()
-                    .checked_sub(RESOURCE_TTL + Duration::from_secs(1))
-                    .unwrap(),
-            },
-        );
-
-        manager.cleanup_expired();
-
-        assert!(!path.exists());
-        assert!(!manager.state.lock().unwrap().resources.contains_key(&token));
         drop(manager);
         let _ = fs::remove_dir_all(root);
     }

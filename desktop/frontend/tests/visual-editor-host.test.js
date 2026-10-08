@@ -152,20 +152,42 @@ test("replaced editors cannot publish drafts or finish imports; late mounts are 
   assert.equal(destroyed, 1);
 });
 
-test("timed-out editor releases the container and revokes its services", async () => {
+test("closing an editor releases the pending open before a plugin finishes mounting", async () => {
+  const mounting = deferred();
+  const started = deferred();
+  let destroyed = 0;
+  const host = createVisualEditorHost({ container: container(), loadModule: async () => ({
+    mountEditor: () => { started.resolve(); return mounting.promise; },
+  }) });
+  const opening = host.open(descriptor);
+  await started.promise;
+  host.clear();
+  assert.equal(await opening, false);
+  mounting.resolve({ destroy() { destroyed++; } });
+  await Promise.resolve();
+  assert.equal(destroyed, 1);
+});
+
+test("slow editor mount waits for completion and keeps its services", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
   const pending = deferred();
+  const mounted = deferred();
   let scoped;
   let changes = 0;
   let destroyed = 0;
   const root = container();
-  const host = createVisualEditorHost({ container: root, timeoutMs: 10, onChange: () => changes++, loadModule: async () => ({ mountEditor: ({ host }) => { scoped = host; return pending.promise; } }) });
-  await assert.rejects(host.open(descriptor), /VISUAL_EDITOR_TIMEOUT/);
-  scoped.changed({ lost: true });
-  pending.resolve({ destroy() { destroyed++; } });
-  await new Promise((resolve) => setTimeout(resolve, 0));
-  assert.equal(changes, 0);
+  const host = createVisualEditorHost({ container: root, onChange: () => changes++, loadModule: async () => ({ mountEditor: ({ host }) => { scoped = host; mounted.resolve(); return pending.promise; } }) });
+  const opening = host.open(descriptor);
+  await mounted.promise;
+  t.mock.timers.tick(30_000);
+  scoped.changed({ retained: true });
+  pending.resolve({ collect: () => ({ retained: true }), validate: () => true, destroy() { destroyed++; } });
+  assert.equal(await opening, true);
+  assert.equal(changes, 1);
+  assert.equal(destroyed, 0);
+  assert.deepEqual(host.collect(), { retained: true });
+  host.clear();
   assert.equal(destroyed, 1);
-  assert.deepEqual(root.children, []);
 });
 
 

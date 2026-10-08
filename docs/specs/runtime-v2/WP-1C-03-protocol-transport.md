@@ -98,7 +98,7 @@ cleanup。stderr EOF 是可观测终止事实，不单独改变 Supervisor 状�
 | 超大帧 | `FRAME_TOO_LARGE` | transport fatal，8 MiB 上限 |
 | 半 header/payload EOF | `INCOMPLETE_FRAME` | transport fatal |
 | clean stdout/stderr EOF | `STDOUT_EOF` / `STDERR_EOF` | stdout 未满足响应时 fatal；stderr 只记录 |
-| request deadline | `REQUEST_DEADLINE_EXCEEDED` | 原 deadline 起算，强制完整树回收 |
+| shutdown deadline | `SHUTDOWN_TIMEOUT` | 退出期限耗尽后回收完整进程树 |
 | Core crash | `CORE_CRASHED` | 交回 Supervisor 当前 generation failure |
 | pipe read/write failure | `TRANSPORT_READ_FAILED` / `TRANSPORT_WRITE_FAILED` | transport fatal |
 | writer queue closed | `WRITER_QUEUE_CLOSED` | Core fatal |
@@ -114,7 +114,7 @@ handle/fd/signal/PID/PGID。错误 message、details、Debug 和测试断言均�
 
 ## 6. Timeout、资源上限与三平台责任
 
-- hello 与 initialize 接受保留协议请求期限；readiness 等待实际终态、显式停止或 generation 退出，不设整体启动倒计时。shutdown 3 秒；完整树停止 5 秒。
+- hello、initialize、readiness 与普通业务请求等待实际结果、显式停止或 generation 退出，不设固定执行或排队倒计时。shutdown 3 秒；完整树停止 5 秒。
 - frame payload 最大 8 MiB；writer queue 32；stderr read chunk/record 4096 bytes；缓存 64 KiB。
 - Windows x64、macOS arm64、Linux x64 在同一最新 HEAD 分别运行 native Rust/Python lifecycle，
   bundled Python、shared lock、RuntimeLocator、ManagedProcessTree、协商、credential、initialize/
@@ -168,11 +168,11 @@ Authorization、cookie、key/secret/password、prompt/message/content、聊天�
 
 transport 证据：双端 codec 覆盖任意 frame 分片/合并、空帧、8 MiB 上限、非法 UTF-8/JSON、
 半 header/payload EOF、pipe read/write failure 和 writer queue closed；真实 fixtures 覆盖 stdout 前缀/
-后缀污染、旧 credential response、request deadline、Core crash、stdin/stdout/stderr EOF 顺序、
+后缀污染、旧 credential response、shutdown deadline、Core crash、stdin/stdout/stderr EOF 顺序、
 忽略 shutdown 与强制整树回收。稳定分类包括 `PROTOCOL_MAJOR_MISMATCH`、
 `CAPABILITY_NEGOTIATION_FAILED`、`GENERATION_CREDENTIAL_MISMATCH`、
 `STDOUT_FRAMING_POLLUTION`、`INVALID_FRAME`、`INVALID_UTF8`、`INVALID_JSON`、
-`FRAME_TOO_LARGE`、`INCOMPLETE_FRAME`、`STDOUT_EOF`、`REQUEST_DEADLINE_EXCEEDED`、
+`FRAME_TOO_LARGE`、`INCOMPLETE_FRAME`、`STDOUT_EOF`、`SHUTDOWN_TIMEOUT`、
 `CORE_CRASHED`、`TRANSPORT_READ_FAILED`、`TRANSPORT_WRITE_FAILED`、`WRITER_QUEUE_CLOSED`、
 `SHUTDOWN_DURING_HANDSHAKE` 和 `SHUTDOWN_DURING_INITIALIZE`。
 

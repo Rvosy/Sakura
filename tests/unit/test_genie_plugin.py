@@ -3,7 +3,7 @@ from __future__ import annotations
 import io
 import json
 import os
-import os
+import subprocess
 import shutil
 import sys
 import threading
@@ -310,14 +310,13 @@ def _request(name: str, payload: dict[str, object]) -> dict[str, object]:
     }
 
 
-def _worker(root: Path, *, call_timeout: float) -> PluginRuntimeApplication:
+def _worker(root: Path) -> PluginRuntimeApplication:
     roots = RuntimeRoots(root, root)
     return PluginRuntimeApplication(
         roots,
         GENERATION,
         ToolRegistry(),
         PluginInventory(roots).scan().runtime_specs,
-        call_timeout=call_timeout,
     )
 
 
@@ -340,7 +339,7 @@ def test_custom_genie_provider_reaches_core_without_owning_or_mutating_endpoint(
     root = _root(tmp_path, endpoint)
     server_thread = threading.Thread(target=server.serve_forever, daemon=True)
     server_thread.start()
-    worker = _worker(root, call_timeout=0.5)
+    worker = _worker(root)
     session = SimpleNamespace(character=SimpleNamespace(id="alpha"))
     boundary = TTSBoundary(
         GENERATION,
@@ -424,7 +423,7 @@ def test_custom_genie_active_cancel_and_disable_leave_worker_healthy(tmp_path: P
     root = _root(tmp_path, f"http://127.0.0.1:{server.server_port}/")
     server_thread = threading.Thread(target=server.serve_forever, daemon=True)
     server_thread.start()
-    worker = _worker(root, call_timeout=1.5)
+    worker = _worker(root)
     try:
         worker.start()
         worker.wait_until_loaded(timeout=5)
@@ -467,7 +466,7 @@ def test_invalid_genie_config_stays_active_but_unavailable(tmp_path: Path) -> No
         "http://127.0.0.1:1/",
         config_patch={"timeoutSeconds": True},
     )
-    worker = _worker(root, call_timeout=0.5)
+    worker = _worker(root)
     try:
         worker.start()
         assert worker.wait_until_loaded(timeout=5)
@@ -489,7 +488,7 @@ def test_invalid_genie_config_stays_active_but_unavailable(tmp_path: Path) -> No
             "field": "endpointMode",
             "equals": "custom",
         }
-        assert fields["timeoutSeconds"]["enabledWhen"] is None
+        assert fields["timeoutSeconds"]["enabledWhen"] == {"field": "endpointMode", "equals": "custom"}
         assert worker.settings_sections("about") == []
         component = worker.settings_sections("plugin")
         assert len(component) == 1
@@ -512,7 +511,7 @@ def test_switching_to_managed_genie_hot_binds_installed_bundle(tmp_path: Path) -
     runtime = root / "tts" / "cpu" / "runtime"
     runtime.mkdir(parents=True)
     (runtime / "python.exe").write_bytes(b"runtime")
-    worker = _worker(root, call_timeout=0.5)
+    worker = _worker(root)
     try:
         worker.start()
         assert worker.wait_until_loaded(timeout=5)
@@ -560,7 +559,7 @@ def test_managed_genie_rejects_character_resource_escape_before_artifact(
         "onnxModelDir": "../outside-onnx",
     }
     (package / "character.json").write_text(json.dumps(manifest), encoding="utf-8")
-    worker = _worker(root, call_timeout=0.5)
+    worker = _worker(root)
     try:
         worker.start()
         worker.wait_until_loaded(timeout=5)
@@ -615,7 +614,7 @@ def test_genie_resource_errors_survive_provider_ipc(tmp_path: Path, missing: str
         **({"gptModel": "missing.ckpt", "sovitsModel": "missing.pth"} if missing != "models" else {}),
     }
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
-    worker = _worker(root, call_timeout=0.5)
+    worker = _worker(root)
     try:
         worker.start()
         worker.wait_until_loaded(timeout=5)
@@ -1292,3 +1291,50 @@ def test_legacy_conversion_requires_source_identity_or_explicit_onnx(tmp_path: P
         assert "gptSha256" not in current and "sovitsSha256" not in current
     finally:
         coordinator.close()
+
+
+def test_cancelling_managed_model_load_stops_owned_service(tmp_path, monkeypatch):
+    from plugins.optional.sakura_genie import plugin as provider_module
+
+    marker = tmp_path / "loading"
+    script = """import sys, pathlib, threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
+class Handler(BaseHTTPRequestHandler):
+    def do_POST(self):
+        pathlib.Path(sys.argv[1]).touch()
+        threading.Event().wait()
+server = HTTPServer(('127.0.0.1', 0), Handler)
+print(server.server_port, flush=True)
+server.serve_forever()
+"""
+    process = subprocess.Popen([sys.executable, '-u', '-c', script, str(marker)],
+                               stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                               text=True, start_new_session=os.name != 'nt')
+    port = int(process.stdout.readline())
+    config = provider_module._ProviderConfig(True, "managed", f"http://127.0.0.1:{port}/", 5, tmp_path)
+    coordinator = provider_module._Coordinator(config, tmp_path / "cache", tmp_path / "log")
+    coordinator._server_process = process
+    monkeypatch.setattr(coordinator, "_ensure_managed_endpoint", lambda _job: None)
+    model = tmp_path / "onnx"
+    model.mkdir()
+    (model / "model.onnx").write_bytes(b"onnx")
+    reference = tmp_path / "reference.wav"
+    reference.write_bytes(_wav_bytes())
+    voice = provider_module._CharacterVoice("alpha", "", "ja",
+        {"中性": [provider_module.ToneReference("中性", reference, "alpha", "ja")]}, model, None, None)
+    job = _direct_job(provider_module, _EffectContext(), _LocalArtifacts(tmp_path / "artifacts"), voice, "cancel-load")
+    try:
+        coordinator.submit(job)
+        deadline = time.monotonic() + 3
+        while not marker.exists():
+            assert time.monotonic() < deadline
+            time.sleep(0.01)
+        job.cancel()
+        assert _direct_terminal(job)["state"] == "cancelled"
+        assert process.poll() is not None
+    finally:
+        coordinator.close()
+        if process.poll() is None:
+            process.kill()
+        process.wait()
+        process.stdout.close()

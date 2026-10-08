@@ -54,7 +54,7 @@ RuntimeLocator、bundled Python 来源/布局、共享锁、ManagedProcessTree�
 readiness -> Snapshot -> health -> shutdown`、强制回收与 generation 资源清理；普通 Unit/UI checks
 也必须通过。
 
-故障测试：分别注入 Core crash、初始化失败或超时、忽略 shutdown、遗留后代、pipe/reader/writer
+故障测试：分别注入 Core crash、初始化失败或取消、忽略 shutdown、遗留后代、pipe/reader/writer
 清理、锁竞争与重获，证明不留下 root/后代、thread、handle/fd 或临时目录残留，且不修改用户数据。
 
 真实应用验收：分别在 Windows x64、macOS arm64、Linux x64 的真实 Tauri Shell 使用各自 bundled

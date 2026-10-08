@@ -26,7 +26,7 @@ def _request(request_id: str, name: str, payload: dict[str, object]) -> dict[str
         "id": request_id,
         "name": name,
         "payload": payload,
-        "deadlineMs": 3000,
+
         "priority": "control",
     }
 

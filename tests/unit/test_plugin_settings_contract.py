@@ -266,3 +266,25 @@ def test_installed_plugin_settings_module_source_survives_registration():
     section = settings.sections_for_plugin("fixture.module")[0]
     assert section["presentation"]["source"] == source
     assert section["presentation"]["standalone"] is True
+
+
+def test_registered_sections_remain_visible_beyond_old_snapshot_limits(tmp_path):
+    root = tmp_path / "plugins/builtin/fixture.sections"
+    root.mkdir(parents=True)
+    (root / "plugin.yaml").write_text(
+        "api: 4\nid: fixture.sections\nname: Sections\nversion: 1.0.0\n"
+        "entry: plugin:Plugin\nprovides: []\nrequires: [sakura.host.settings]\n", encoding="utf-8")
+    (root / "plugin.py").write_text('''class Plugin:
+    def setup(self, context):
+        settings = context.get("sakura.host.settings")
+        for index in range(40):
+            settings.register({"sectionId": f"section{index}", "title": f"Section {index}", "fields": []})
+''', encoding="utf-8")
+    application = PluginApplicationHost(tmp_path, "sections", ToolRegistry())
+    try:
+        application.start()
+        boundary = PluginSettingsBoundary("sections", "a" * 32, tmp_path, application_provider=lambda: application)
+        plugin, = boundary.snapshot()["plugins"]
+        assert {section["sectionId"] for section in plugin["sections"]} == {f"section{index}" for index in range(40)}
+    finally:
+        application.close()

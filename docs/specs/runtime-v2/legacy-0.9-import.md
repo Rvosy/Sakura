@@ -52,14 +52,12 @@ Timeline 按稳定 entry ID、Memory 按 point ID、history row ID 和 profile k
 目标 Memory 损坏等会危及数据一致性的条件不得因此放宽。
 所有 legacy-import Python 命令必须经同一个跨平台 managed process-tree runner 启动：stdout 按行流式解析机器协议，
 stderr 持续排空；正常结束释放托管关系，协议错误、异常退出、父进程退出或取消时终止整棵子进程树，不得留下 descendant。
-每次执行使用绝对 operation deadline：`inspect-data` 15 分钟，`inspect`、`recover`、`finalize`、
-`rollback`、`apply-data` 各 30 分钟，完整 `run` 2 小时。每次 pipe poll 后都必须同时检查 deadline；到期后
-取消 stdout/stderr reader，并在既有 10 秒 finalization deadline 内终止整棵进程树。安全终止返回
-`LEGACY_IMPORT_OPERATION_TIMEOUT`，先按 journal 完成并确认 recover/rollback，再允许重启 Core；进程树
-状态无法确认时返回 `LEGACY_IMPORT_PROCESS_TERMINATION_FAILED`，保持 Core 停止并保留 journal，禁止继续
-恢复或启动；如果此时也无法确认 Core 已停止，返回 `LEGACY_IMPORT_CORE_STOP_FAILED`，不得声称 Core 已关闭。
-前两个错误在首次导航、设置页和统一运行日志中使用固定中文投影；Core 停止失败在设置页使用单独的固定
-中文投影。任何投影都不得包含子进程输出或路径；
+导入、检查、恢复和提交等待实际完成，不按运行时长中止。pipe 按间隔读取并检查子进程是否退出；
+协议错误或异常退出后的进程回收期限由 `desktop/src-tauri/src/legacy_import.rs` 的
+`LEGACY_PROCESS_FINALIZE_DEADLINE` 定义。进程树状态无法确认时返回
+`LEGACY_IMPORT_PROCESS_TERMINATION_FAILED`，保持 Core 停止并保留 journal，禁止继续恢复或启动；
+如果此时也无法确认 Core 已停止，返回 `LEGACY_IMPORT_CORE_STOP_FAILED`，不得声称 Core 已关闭。
+这些错误在首次导航、设置页和统一运行日志中保留固定中文投影与原始诊断，用户文案不包含子进程输出或路径。
 不增加 heartbeat、自动重试或常驻 watchdog。
 
 完整 payload 写入目标同卷 `.legacy-import-staging-*`；`characters`、`tts`、`data/chat_history` 和

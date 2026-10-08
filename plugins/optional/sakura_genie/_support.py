@@ -67,7 +67,7 @@ def read_url_cancellable(
     opener: Callable[..., Any],
     request: str | urllib.request.Request,
     *,
-    timeout: float,
+    timeout: float | None,
     cancel_checker: Callable[[], None] | None = None,
 ) -> tuple[bytes, int | None]:
     if cancel_checker is None:
@@ -76,14 +76,11 @@ def read_url_cancellable(
     done = threading.Event()
     abort = threading.Event()
     state: dict[str, Any] = {}
-    lock = threading.Lock()
 
     def read() -> None:
         chunks: list[bytes] = []
         try:
             with opener(request, timeout=timeout) as response:
-                with lock:
-                    state["response"] = response
                 state["status"] = getattr(response, "status", None)
                 while not abort.is_set():
                     chunk = response.read(64 * 1024)
@@ -105,13 +102,6 @@ def read_url_cancellable(
         cancel_checker()
     except BaseException:
         abort.set()
-        with lock:
-            response = state.get("response")
-        try:
-            if response is not None:
-                response.close()
-        except Exception:
-            pass
         raise
     error = state.get("error")
     if isinstance(error, BaseException):

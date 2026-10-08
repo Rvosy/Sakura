@@ -39,7 +39,6 @@ class _Input:
     error_code: str = ""
     diagnostics: dict = field(default_factory=dict)
     submitted: bool = False
-    capture_started: float | None = None
     cancelled: threading.Event = field(default_factory=threading.Event)
     changed: threading.Event = field(default_factory=threading.Event)
     worker: threading.Thread | None = None
@@ -86,7 +85,6 @@ class InputController:
                 if task.state != "ready" or not task.resource_id:
                     raise InputError("ASR_STATE_INVALID")
                 task.state = "recording"
-                task.capture_started = monotonic()
                 task.changed.set()
                 return self._snapshot(task)
         if name == "submit":
@@ -163,7 +161,6 @@ class InputController:
                     raise InputError("ASR_PROVIDER_IDENTITY_INVALID")
                 task.scope_id = identity["scopeId"]
             call("warmup", task.provider_id)
-            deadline = monotonic() + 120
             while True:
                 self._require_context(task)
                 self._require_binding(task)
@@ -174,20 +171,14 @@ class InputController:
                     break
                 if status.get("state") not in {"preparing", "loading", "warming"}:
                     raise InputError(status.get("reasonCode", status.get("errorCode", "ASR_PROVIDER_UNAVAILABLE")), status.get("diagnostics"))
-                if monotonic() >= deadline:
-                    raise InputError("ASR_PREPARE_TIMEOUT")
                 task.cancelled.wait(0.1)
             with self._lock:
                 self._require_context(task)
                 task.state = "ready"
                 self._log_state(task, "ready")
-            deadline = monotonic() + 120
             while not task.submitted:
                 self._require_context(task)
                 self._require_binding(task)
-                capture_deadline = task.capture_started + 90 if task.capture_started is not None else deadline
-                if monotonic() >= capture_deadline:
-                    raise InputError("ASR_CAPTURE_TIMEOUT")
                 task.changed.wait(0.1)
                 task.changed.clear()
             self._require_context(task)
@@ -198,7 +189,6 @@ class InputController:
                                                    "audio": audio})
             if started.get("state") != "running":
                 raise InputError(started.get("errorCode", "ASR_PROVIDER_UNAVAILABLE"), started.get("diagnostics"))
-            deadline = monotonic() + 180
             while True:
                 self._require_context(task)
                 self._require_binding(task)
@@ -218,8 +208,6 @@ class InputController:
                     break
                 if state != "running":
                     raise InputError(result.get("errorCode", "ASR_CANCELLED" if state == "cancelled" else "ASR_RESULT_INVALID"), result.get("diagnostics"))
-                if monotonic() >= deadline:
-                    raise InputError("ASR_RECOGNITION_TIMEOUT")
                 task.cancelled.wait(0.1)
         except Exception as error:
             with self._lock:

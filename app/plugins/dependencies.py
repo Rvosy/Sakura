@@ -23,8 +23,6 @@ from app.storage.paths import StoragePaths
 from app.storage.runtime_roots import DistributionPaths
 
 
-INSTALL_TIMEOUT_SECONDS = 600.0
-INITIALIZE_IMPORT_TIMEOUT_SECONDS = 15.0
 _MARKER = ".sakura-dependencies.json"
 
 
@@ -147,7 +145,6 @@ class PluginDependencyRoots:
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
                     text=True,
-                    timeout=INSTALL_TIMEOUT_SECONDS,
                     check=False,
                 )
                 if result.returncode != 0:
@@ -164,8 +161,6 @@ class PluginDependencyRoots:
                 json.dumps(marker, ensure_ascii=False, sort_keys=True),
             )
             yield staging
-        except subprocess.TimeoutExpired as error:
-            raise PluginDependencyError("PLUGIN_DEPENDENCY_INSTALL_TIMEOUT") from error
         except OSError as error:
             raise PluginDependencyError("PLUGIN_DEPENDENCY_INSTALL_FAILED") from error
         finally:
@@ -286,7 +281,6 @@ class PluginDependencyRoots:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
-                timeout=INSTALL_TIMEOUT_SECONDS,
                 check=False,
             )
             if export.returncode != 0:
@@ -370,11 +364,8 @@ class PluginDependencyRoots:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
-                timeout=INITIALIZE_IMPORT_TIMEOUT_SECONDS,
                 check=False,
             )
-        except subprocess.TimeoutExpired as error:
-            raise PluginDependencyError("PLUGIN_ENTRY_IMPORT_TIMEOUT") from error
         except OSError as error:
             raise PluginDependencyError("PLUGIN_ENTRY_IMPORT_FAILED") from error
         if result.returncode != 0:

@@ -13,7 +13,7 @@ class ScreenError(RuntimeError):
 
 
 class ScreenClient:
-    def __init__(self, service, *, capture_timeout=10.0, cleanup_timeout=3.0):
+    def __init__(self, service, *, capture_timeout=None, cleanup_timeout=3.0):
         self._service = service
         self._capture_timeout = capture_timeout
         self._cleanup_timeout = cleanup_timeout

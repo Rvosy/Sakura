@@ -497,12 +497,7 @@ fn validate_prepare_origin(window_label: &str, payload: &Value) -> Result<(), St
     Ok(())
 }
 fn core_call(handle: &ShellLifecycleHandle, name: &str, payload: Value) -> Result<Value, String> {
-    settings_response_payload(handle.settings_request(
-        None,
-        name,
-        payload,
-        Duration::from_secs(5),
-    )?)
+    settings_response_payload(handle.settings_request(None, name, payload)?)
 }
 async fn proxy(
     lifecycle: &State<'_, ShellLifecycleState>,
@@ -510,9 +505,7 @@ async fn proxy(
     payload: Value,
 ) -> Result<Value, String> {
     let handle = settings_core_handle(lifecycle)?;
-    settings_response_payload(
-        dispatch_settings_request(handle, None, name, payload, Duration::from_secs(5)).await?,
-    )
+    settings_response_payload(dispatch_settings_request(handle, None, name, payload).await?)
 }
 
 #[tauri::command]
@@ -891,7 +884,6 @@ fn capture(
                         None,
                         "asr.input.capture_status",
                         json!({"recordingId":id}),
-                        Duration::from_millis(500),
                     )?)
                 },
             )?);

@@ -218,11 +218,11 @@ export function createState(scenario = "portrait") {
       ],
     });
   const timeout = () =>
-    field("timeoutSeconds", "合成超时（秒）", 60, "integer", {
+    field("timeoutSeconds", "请求超时（秒）", 60, "integer", {
       minimum: 1,
-      maximum: 300,
       step: 1,
       placement: "advanced",
+      ...custom,
     });
   const gpt = section(
     "runtime",

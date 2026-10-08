@@ -153,10 +153,10 @@ fn macos_atomic_frame(
         })
         .map_err(|error| format!("failed to dispatch atomic macOS window frame: {error}"))?;
     receiver
-        .recv_timeout(std::time::Duration::from_secs(5))
+        .recv()
         .map_err(|source_error| {
             crate::runtime_log::diagnostic_error(
-                "timed out applying atomic macOS window frame",
+                "macOS window frame operation disconnected before returning",
                 source_error,
             )
         })?
@@ -248,10 +248,10 @@ fn macos_atomic_resize_preserving_top_left(
         })
         .map_err(|error| format!("failed to dispatch macOS resize: {error}"))?;
     receiver
-        .recv_timeout(std::time::Duration::from_secs(5))
+        .recv()
         .map_err(|source_error| {
             crate::runtime_log::diagnostic_error(
-                "timed out applying macOS top-left-preserving resize",
+                "macOS resize operation disconnected before returning",
                 source_error,
             )
         })?

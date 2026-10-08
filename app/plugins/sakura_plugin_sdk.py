@@ -117,7 +117,6 @@ def prepare_log_payload(message: object, fields: object = None) -> tuple[str, di
 
 
 MAX_FRAME_BYTES = 1024 * 1024
-DEFAULT_CALL_TIMEOUT_SECONDS = 3.0
 MAX_PENDING_REQUESTS = 32
 
 
@@ -427,22 +426,13 @@ class RpcPeer:
         name: str,
         payload: Mapping[str, Any],
         *,
-        timeout: float = DEFAULT_CALL_TIMEOUT_SECONDS,
-    ) -> object:
-        return self._request_with_timeout(name, payload, timeout)
-
-    def request_until_complete(self, name: str, payload: Mapping[str, Any]) -> object:
-        """Wait for owned initialization work, an actual error, or peer retirement."""
-        return self._request_with_timeout(name, payload, None)
-
-    def _request_with_timeout(
-        self, name: str, payload: Mapping[str, Any], timeout: float | None,
+        timeout: float | None = None,
     ) -> object:
         if self.closed:
             raise PluginApiError("PLUGIN_PROCESS_UNAVAILABLE")
         if not self._outgoing_slots.acquire(blocking=False):
             raise PluginApiError("PLUGIN_QUEUE_FULL")
-        deadline = None if timeout is None else time.monotonic() + max(0.01, float(timeout))
+        deadline = None if timeout is None else time.monotonic() + timeout
         request_id = uuid.uuid4().hex
         pending = _Pending()
         try:
@@ -459,7 +449,6 @@ class RpcPeer:
                     "name": name,
                     "payload": dict(payload),
                 },
-                timeout=DEFAULT_CALL_TIMEOUT_SECONDS if deadline is None else max(0.0, deadline - time.monotonic()),
             )
             if not pending.done.wait(None if deadline is None else max(0.0, deadline - time.monotonic())):
                 raise PluginApiError("PLUGIN_CALL_TIMEOUT")
@@ -518,11 +507,11 @@ class RpcPeer:
     def wait(self, timeout: float | None = None) -> bool:
         return self._closed.wait(timeout)
 
-    def _write(self, value: Mapping[str, Any], *, timeout: float = 0.0) -> None:
+    def _write(self, value: Mapping[str, Any]) -> None:
         if self.closed:
             raise PluginApiError("PLUGIN_PROCESS_UNAVAILABLE")
         try:
-            self._outgoing.put(_encode_json(value), timeout=max(0.0, timeout))
+            self._outgoing.put_nowait(_encode_json(value))
         except queue.Full as error:
             raise PluginApiError("PLUGIN_QUEUE_FULL") from error
 
@@ -678,11 +667,6 @@ class ServiceProxy:
         method = _method(method)
         if self._timed_call is None:
             raise PluginApiError("SERVICE_BINDING_REQUIRED", service_key=self._service_key)
-        if timeout_seconds is not None and (
-            isinstance(timeout_seconds, bool) or not isinstance(timeout_seconds, (int, float))
-            or not 0 < timeout_seconds <= 122
-        ):
-            raise PluginApiError("PLUGIN_DEADLINE_INVALID", service_key=self._service_key)
         return self._timed_call(method, args, timeout_seconds)
 
     def __getattr__(self, method: str) -> Callable[..., object]:
@@ -865,14 +849,10 @@ class _HostRegistrationProxy:
     def collect(self, registration_id: str, request: Mapping[str, Any]) -> object:
         return self._context._remote_call(self._service_key, "collect", [registration_id, dict(request)])
 
-    def execute(self, registration_id: str, name: str, arguments: Mapping[str, Any], *, timeout_seconds: float = 15.0) -> object:
-        if not 0 < timeout_seconds <= 120:
-            raise PluginApiError("TOOL_DEADLINE_INVALID")
-        # The advertised tool deadline includes callback work. Never replay a timed-out side effect.
-        return self._context._remote_request("service.call", {
-            "serviceKey": self._service_key, "method": "execute",
-            "args": [registration_id, name, dict(arguments)], "timeoutSeconds": timeout_seconds + 2,
-        })
+    def execute(self, registration_id: str, name: str, arguments: Mapping[str, Any]) -> object:
+        return self._context._remote_call(
+            self._service_key, "execute", [registration_id, name, dict(arguments)]
+        )
 
     def register(
         self,
@@ -998,9 +978,6 @@ class _ArtifactsProxy:
     def _release_call(self, method, args, timeout_seconds):
         if timeout_seconds is None:
             return self._context._remote_call("sakura.host.artifacts", method, args)
-        if (isinstance(timeout_seconds, bool) or not isinstance(timeout_seconds, (int, float))
-                or not 0 < timeout_seconds <= 122):
-            raise PluginApiError("PLUGIN_DEADLINE_INVALID")
         return self._context._remote_request("service.call", {
             "serviceKey": "sakura.host.artifacts", "method": method, "args": args,
             "timeoutSeconds": timeout_seconds,
@@ -1859,7 +1836,6 @@ def _method(value: object) -> str:
 
 
 __all__ = [
-    "DEFAULT_CALL_TIMEOUT_SECONDS",
     "MAX_FRAME_BYTES",
     "PluginApiError",
     "PluginContext",

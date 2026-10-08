@@ -30,7 +30,6 @@ class WebPlugin:
         )
         allowed = config.get("allowed_tools", ["web_search", "fetch_url"])
         risks = config.get("tool_risks", {})
-        timeout = config.get("call_timeout", 20)
         tools = context.get("sakura.host.tools")
         logger = context.get("sakura.host.logging")
         for tool in web.TOOLS:
@@ -42,7 +41,6 @@ class WebPlugin:
                 "description": tool["description"],
                 "parameters": tool["inputSchema"],
                 "risk": risks.get(name, "low"),
-                "timeoutSeconds": timeout,
             }, _handler(name, logger, context.config.get, context.exception_diagnostics))
 
 

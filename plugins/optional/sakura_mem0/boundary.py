@@ -8,7 +8,6 @@ stable DTO.  It never imports the legacy application bootstrap or a Qt worker.
 from __future__ import annotations
 
 import threading
-import time
 import uuid
 from collections.abc import Mapping
 from pathlib import Path
@@ -61,7 +60,6 @@ except ImportError:
 
 
 MEMORY_STATUSES = frozenset({"ready", "loading", "degraded", "read_only", "failed", "stopped"})
-PLUGIN_MEMORY_REQUEST_TIMEOUT_SECONDS = 2.2
 MAX_MEMORY_CONTENT = 16_384
 MAX_MEMORY_QUERY = 4_000
 MAX_MEMORY_TEXT_FIELD = 256
@@ -115,7 +113,6 @@ class MemoryBoundary:
         self._character_id = _required_text(character_id, "character_id", 128)
         self._system_prompt = system_prompt.strip()
         self._lock = threading.RLock()
-        self._status_changed = threading.Condition(self._lock)
         self._write_lock = threading.Lock()
         self._closed = False
         self._status: Literal[
@@ -148,7 +145,6 @@ class MemoryBoundary:
             base_dir=self._app_root,
             scope_id=self._character_id,
             resource_registry=self._resources,
-            request_timeout_seconds=PLUGIN_MEMORY_REQUEST_TIMEOUT_SECONDS,
             memory_dir=self._memory_dir,
             memory_cache_dir=self._memory_cache_dir,
         )
@@ -264,7 +260,6 @@ class MemoryBoundary:
                 self._status = "ready"
                 self._message = ""
                 promoted = True
-                self._status_changed.notify_all()
             current = {"status": self._status, "message": self._message}
         if promoted:
             append_memory_initialization_diagnostic(
@@ -276,27 +271,6 @@ class MemoryBoundary:
                 status="ready",
             )
         return current
-
-    def wait_until_settled(
-        self,
-        timeout: float,
-        *,
-        cancel_checker: Callable[[], None] | None = None,
-    ) -> dict[str, str]:
-        """Wait boundedly for preload while keeping chat cancellation responsive."""
-
-        deadline = time.monotonic() + max(0.0, float(timeout))
-        while True:
-            if cancel_checker is not None:
-                cancel_checker()
-            snapshot = self.status()
-            if snapshot["status"] != "loading":
-                return snapshot
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                return snapshot
-            with self._status_changed:
-                self._status_changed.wait(timeout=min(0.05, remaining))
 
     def prompt_dependency_snapshot(self) -> dict[str, object]:
         """Expose only stable, body-free startup diagnostics for prompt logging."""
@@ -799,7 +773,6 @@ class MemoryBoundary:
             self._pending_timeline = None
             self._status = "stopped"
             self._message = "记忆能力已停止。"
-            self._status_changed.notify_all()
         self._curation_cancel.set()
         self._model_task_cancel.set()
         self._resources.stop_all(timeout_ms=10_000)
@@ -858,7 +831,6 @@ class MemoryBoundary:
             changed = self._status != safe
             self._status = safe  # type: ignore[assignment]
             self._message = message
-            self._status_changed.notify_all()
         if changed:
             append_memory_initialization_diagnostic(
                 self._app_root,

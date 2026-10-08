@@ -40,7 +40,7 @@ window.PLUGIN_DEMO = (() => {
       ...sections("Genie TTS 语音服务", [
       {"key": "endpointMode", "label": "服务来源", "type": "select", "default": "managed", "description": "内置服务由 Sakura 启动和停止；已有服务只负责连接。", "options": [{"label": "Sakura 内置（推荐）", "value": "managed"}, {"label": "连接已有服务", "value": "custom"}], "wide": true},
       {"key": "apiUrl", "label": "已有服务地址", "type": "string", "default": "http://127.0.0.1:9881/", "description": "仅在连接已有服务时使用。", "enabledWhen": {"field": "endpointMode", "equals": "custom"}, "wide": true},
-      {"key": "timeoutSeconds", "label": "合成超时", "type": "integer", "default": 60, "minimum": 1, "maximum": 300, "step": 1, "description": "等待一次语音合成完成的最长时间（秒）。", "placement": "advanced", "wide": false},
+      {"key": "timeoutSeconds", "label": "请求超时（秒）", "type": "integer", "default": 60, "minimum": 1, "step": 1, "description": "", "enabledWhen": {"field": "endpointMode", "equals": "custom"}, "placement": "advanced", "wide": false},
       ]),
     ],
     // plugins/optional/sakura_gpt_sovits/plugin.py
@@ -54,7 +54,7 @@ window.PLUGIN_DEMO = (() => {
       {"key": "workDir", "label": "内置服务工作目录", "type": "string", "default": "", "description": "Sakura 内置 GPT-SoVITS 的程序目录。", "placement": "advanced", "enabledWhen": {"field": "endpointMode", "equals": "custom"}, "wide": true},
       {"key": "pythonPath", "label": "Python 解释器", "type": "string", "default": "", "description": "留空时从内置运行环境自动查找。", "placement": "advanced", "enabledWhen": {"field": "endpointMode", "equals": "custom"}, "wide": true},
       {"key": "ttsConfigPath", "label": "推理配置", "type": "string", "default": "", "description": "可选的 GPT-SoVITS 推理配置文件。", "placement": "advanced", "enabledWhen": {"field": "endpointMode", "equals": "custom"}, "wide": true},
-      {"key": "timeoutSeconds", "label": "合成超时", "type": "integer", "default": 60, "minimum": 1, "maximum": 300, "step": 1, "description": "等待一次语音合成完成的最长时间（秒）。", "placement": "advanced", "wide": false},
+      {"key": "timeoutSeconds", "label": "请求超时（秒）", "type": "integer", "default": 60, "minimum": 1, "step": 1, "description": "", "enabledWhen": {"field": "endpointMode", "equals": "custom"}, "placement": "advanced", "wide": false},
       ]),
     ],
   };

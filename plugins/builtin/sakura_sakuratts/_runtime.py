@@ -46,12 +46,9 @@ def probe(root, release, cancel, backend=None, cache=None):
                                    stdin=subprocess.DEVNULL, stdout=output, stderr=subprocess.STDOUT,
                                    start_new_session=os.name != 'nt')
         try:
-            deadline = time.monotonic() + 120
             while process.poll() is None:
                 if cancel.wait(.1):
                     raise Cancelled()
-                if time.monotonic() >= deadline:
-                    raise TimeoutError('运行环境检查超过 120 秒。')
             if process.returncode:
                 raise RuntimeError(log.read_text(encoding='utf-8', errors='replace')[-4000:])
         finally:
@@ -158,7 +155,6 @@ class Runtime:
                     stdout=output, stderr=subprocess.STDOUT, start_new_session=os.name != 'nt')
             self.key = key
             process = self.process
-        deadline = time.monotonic() + 120
         try:
             while True:
                 if cancel.is_set():
@@ -176,8 +172,6 @@ class Runtime:
                         self.observer.start()
                     return
                 except (URLError, TimeoutError, ConnectionError):
-                    if time.monotonic() >= deadline:
-                        raise TimeoutError('SakuraTTS 服务在 120 秒内未就绪。')
                     cancel.wait(.1)
         except BaseException:
             self.stop()
@@ -213,7 +207,7 @@ class Runtime:
             if self.observer_stop.wait(1):
                 return
 
-    def request(self, path, data=None, timeout=300):
+    def request(self, path, data=None, timeout=None):
         started = time.monotonic()
         request = Request(self.url + path, data=None if data is None else json.dumps(data).encode(),
                           headers={'Content-Type': 'application/json'})

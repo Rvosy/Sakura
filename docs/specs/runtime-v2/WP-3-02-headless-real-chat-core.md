@@ -36,7 +36,7 @@ Core 保持一个活动对话槽。Mobile begin 返回 job ID 前同步受理并
 worker 启动失败必须释放未执行槽位。Mobile 图片归本轮所有，不占桌面待发送附件槽。
 
 chat.started 发布后必须恰有一个终态。chat.send 的 accepted 响应不等待模型、截图上下文或插件整个轮次；
-实际执行在 generation 拥有的后台任务中进行，不能占用请求响应 deadline。普通业务异常只使该次请求失败；
+实际执行在 generation 拥有的后台任务中进行，不能阻塞 control 请求。普通业务异常只使该次请求失败；
 传输写失败、坏帧和 EOF 由连接 owner 收尾，不自动重放请求或有副作用的工具调用。
 
 ControlDispatcher/ReadinessController 暴露当前 session，不拥有模型客户端或上下文预算。
