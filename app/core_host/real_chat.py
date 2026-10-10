@@ -636,15 +636,16 @@ class RealChatBoundary:
         try:
             if resolved_terminal == "chat.completed":
                 if plugin_application is not None and completed_fact is not None:
-                    try:
-                        getattr(plugin_application, "emit_event")(
-                            HOST_CHAT_COMPLETED_EVENT,
-                            completed_fact,
-                        )
-                    except Exception:
-                        # The terminal was atomically claimed before best-effort
-                        # plugin delivery; a late cancel can no longer win.
-                        pass
+                    legacy_fact = {key: value for key, value in completed_fact.items() if key != "operationId"}
+                    for event_name, fact in (
+                        (HOST_CHAT_COMPLETED_EVENT, legacy_fact),
+                        (HOST_CHAT_COMPLETED_EVENT + ".v2", completed_fact),
+                    ):
+                        try:
+                            getattr(plugin_application, "emit_event")(event_name, fact)
+                        except Exception:
+                            # Completion is already committed; event delivery is best-effort.
+                            pass
             finish_trace = getattr(assistant, "release", None)
             if assistant_invoked and callable(finish_trace):
                 try:

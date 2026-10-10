@@ -4,7 +4,6 @@ name: SenseVoice 语音识别
 author: Rvosy
 description: 使用 SenseVoice 在本机识别语音。
 version: 0.2.0
-min_app_version: "1.3.2"
 entry: plugin:SenseVoicePlugin
 enabled: false
 priority: 120

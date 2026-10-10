@@ -22,7 +22,7 @@ from .character_transfer import prepare_packages, public_packages, install_packa
 from .errors import LegacyImportError
 from .files import copy_tree_checked, sqlite_readonly_uri
 from .history import import_history, read_history_identities, write_history_identities
-from .inspector import detect_legacy_version, legacy_source_is_active
+from .inspector import _has_recognizable_legacy_data, legacy_source_is_active
 from .transaction import PendingCommit, commit_payload
 
 
@@ -328,21 +328,7 @@ def run_character_data_import(
 
 
 def _validate_source(source: Path, target: Path) -> None:
-    history = source / "data" / "chat_history"
-    try:
-        has_legacy_history = history.is_dir() and any(
-            path.is_file() and ".jsonl" in path.name for path in history.iterdir()
-        )
-    except OSError:
-        has_legacy_history = False
-    recognized = (
-        detect_legacy_version(source).startswith("0.9")
-        and (
-            has_legacy_history
-            or (source / "data" / "memory").is_dir()
-        )
-    )
-    if not recognized:
+    if not _has_recognizable_legacy_data(source):
         raise LegacyImportError("LEGACY_DATA_SOURCE_UNRECOGNIZED", "inspect")
     if legacy_source_is_active(source):
         raise LegacyImportError("LEGACY_SOURCE_ACTIVE", "inspect")

@@ -943,3 +943,65 @@ test("memory cards render only the owning collection columns and preserve record
   assert.equal(ui.document.querySelector(".memory-dialog-form textarea").value, "保留原始便签");
   ui.feature.dispose();
 });
+
+test("unchanged legacy model connections do not block global save or disabling the plugin", async t => {
+  const { readFile } = await import("node:fs/promises");
+  const source = await readFile(new URL("../../../plugins/builtin/sakura_model_openai_compatible/frontend/connections.js", import.meta.url), "utf8");
+  t.mock.method(URL, "createObjectURL", () => `data:text/javascript;base64,${Buffer.from(source).toString("base64")}`);
+  t.mock.method(URL, "revokeObjectURL", () => {});
+  const data = snapshot();
+  data.plugins[0].sections = [{ ...data.plugins[0].sections[0],
+    presentation: { component: "module", source },
+    fields: [field("connections", { type: "data", default: [] })],
+    values: { connections: [
+      { id: "active", alias: "Current", base_url: "https://example.test/v1", models: ["model"] },
+      { id: "legacy", alias: "Unused", base_url: "", models: [] },
+    ] },
+  }];
+  const calls = [];
+  const ui = featureFixture(async (command, args) => {
+    if (command === "settings_plugins_enabled_set") {
+      calls.push(args);
+      data.plugins[0].enabled = false;
+      return { ...structuredClone(data), managementAction: "enabled_changed", installId: data.plugins[0].installId,
+        pluginId: data.plugins[0].pluginId, applicationState: "applied" };
+    }
+    return structuredClone(data);
+  });
+  t.after(() => ui.feature.dispose());
+  ui.feature.initialize(structuredClone(data));
+  await ui.openSettings();
+  await settle();
+  assert.ok(ui.document.querySelector(".connection-editor"), ui.errors.map(String).join("\n"));
+  assert.equal(ui.feature.isDirty(), false);
+  assert.doesNotThrow(() => ui.feature.validate());
+  await ui.feature.save();
+  assert.equal(calls.length, 0);
+  const toggle = ui.document.querySelector(".plugin-enable-switch input");
+  toggle.checked = false;
+  await toggle.fire("change");
+  await ui.feature.save();
+  assert.equal(calls.length, 1);
+  assert.deepEqual(ui.errors, []);
+});
+
+test("edited model connection still validates its submitted address", async t => {
+  const { readFile } = await import("node:fs/promises");
+  const source = await readFile(new URL("../../../plugins/builtin/sakura_model_openai_compatible/frontend/connections.js", import.meta.url), "utf8");
+  t.mock.method(URL, "createObjectURL", () => `data:text/javascript;base64,${Buffer.from(source).toString("base64")}`);
+  t.mock.method(URL, "revokeObjectURL", () => {});
+  const data = snapshot();
+  data.plugins[0].sections = [{ ...data.plugins[0].sections[0],
+    presentation: { component: "module", source }, fields: [field("connections", { type: "data", default: [] })],
+    values: { connections: [{ id: "active", alias: "Current", base_url: "https://example.test/v1", models: [] }] },
+  }];
+  const ui = featureFixture(async () => structuredClone(data));
+  t.after(() => ui.feature.dispose());
+  ui.feature.initialize(structuredClone(data)); await ui.openSettings(); await settle();
+  const address = ui.document.querySelectorAll(".connection-editor input").find(input => input.value === "https://example.test/v1");
+  assert.ok(address);
+  address.value = "invalid";
+  await address.fire("input");
+  assert.equal(ui.feature.isDirty(), true);
+  await assert.rejects(() => ui.feature.save(), /API 地址/);
+});

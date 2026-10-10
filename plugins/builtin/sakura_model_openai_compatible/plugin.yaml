@@ -4,7 +4,6 @@ name: OpenAI 兼容模型
 author: Rvosy
 description: 连接远程 OpenAI 兼容 API，提供文本、图像输入和工具调用。
 version: 0.2.0
-min_app_version: 1.3.2
 entry: plugin:ModelPlugin
 enabled: true
 provides:

@@ -57,4 +57,3 @@ class PluginSpec:
     source: str = "manifest"
     priority_override: bool = False
     visuals: tuple[VisualCapability, ...] = ()
-    min_app_version: str = ""

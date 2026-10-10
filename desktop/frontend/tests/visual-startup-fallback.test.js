@@ -54,3 +54,44 @@ for (const sessionBlockedAtStartup of [false, true]) {
     assert.equal(notices.length, sessionBlockedAtStartup ? 0 : 1);
   });
 }
+
+for (const visualReasonCode of ["VISUAL_PROVIDER_MISSING", "VISUAL_RENDERER_FAILED"]) {
+  test(`rebind keeps ready chat usable when visuals fail: ${visualReasonCode}`, async () => {
+    const { createRendererHost } = await import("../pet/renderer-host.js");
+    const { browserFixture } = await import("./fixtures/plugin-settings-fixture.js");
+    const { document } = browserFixture();
+    const failures = [];
+    const container = document.createElement("div");
+    container.ownerDocument = document;
+    const rendererHost = createRendererHost({ container,
+      loadModule: async () => { throw new Error("renderer import failed"); },
+      onUnavailable: code => failures.push(code) });
+    const state = { lifecycle: "ready", silentInteraction: false, canRetry: false };
+    const next = { generationId: "g", characterId: "character", displayName: "Character",
+      visual: visualReasonCode === "VISUAL_RENDERER_FAILED" ? { bindingId: "new", renderer: "fixture" } : null,
+      visualReasonCode };
+    const rebind = source.slice(source.indexOf("async function rebindCoreGeneration("), source.indexOf('\nawait listenAppEvent("sakura://character-visual-preview"'));
+    const controls = source.slice(source.indexOf("  input.disabled = presentationUnavailable;"), source.indexOf("  replyHistoryPrevious.disabled"));
+    const context = {
+      coreRebindRevision: 0, coreRebindTarget: "", disposed: false, presentationUnavailable: true,
+      characterPresentation: { ...next, visualReasonCode: "READY" },
+      loadCurrentCharacterPresentation: async () => next, invoke() {}, rendererHost,
+      characterVisualPreviewSessions: { invalidate() {} }, characterVisualPreviewActive: false, portraitHitRevision: 0,
+      presentation: { current: () => state },
+      rebindCharacterPresentation: ({ currentReducer }) => ({ reducer: currentReducer, characterChanged: false }),
+      pendingCharacterGreeting: false, activeAppearance: { portraitScalePercent: 100 },
+      validateAppearancePublication: () => ({ portraitScalePercent: 100 }), visualScalePercent: 100,
+      characterName: {}, portraitFallbackName: {}, portrait: { setAttribute() {} },
+      applyTheme() {}, applyAppearanceVariables() {}, adaptiveSurface: { invalidate() {} }, render() {},
+      runtimeDiagnostics: { reportError: error => assert.fail(String(error)) }, showRecoverableError: assert.fail,
+      input: {}, send: {}, asrController: null, state, isChatReadyLifecycle: lifecycle => lifecycle === "ready",
+    };
+    vm.createContext(context);
+    assert.equal(await vm.runInContext(`${rebind}\nrebindCoreGeneration("g", { refresh: true })`, context), true);
+    vm.runInContext(controls, context);
+    assert.equal(context.input.disabled, false);
+    assert.equal(context.send.disabled, false);
+    assert.deepEqual(failures, [visualReasonCode]);
+    rendererHost.destroy();
+  });
+}

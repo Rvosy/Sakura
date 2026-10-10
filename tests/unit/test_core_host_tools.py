@@ -214,3 +214,23 @@ def test_saved_tool_settings_feed_the_next_core_generation(tmp_path) -> None:
         limits.max_tool_calls_per_step,
         limits.max_tool_calls_per_turn,
     ) == (6, 4, 9)
+
+
+@pytest.mark.parametrize("timeout", [None, 7.0])
+def test_sdk_131_tool_consumer_can_read_catalog_and_execute(tmp_path, timeout):
+    from app.core_host.plugin_host_services import _ToolsHostService
+    from app.plugins.sakura_plugin_sdk import PluginContext
+    registry = create_runtime_v2_tool_registry()
+    service = _ToolsHostService(registry, lambda *args: None)
+    requests = []
+    def request(name, payload):
+        requests.append((name, payload))
+        return service.call(payload["method"], payload["args"])
+    context = PluginContext("example.consumer", tmp_path, tmp_path,
+        remote_call=lambda key, method, args: service.call(method, args), remote_request=request)
+    tools = context.get("sakura.host.tools")
+    tool = tools.catalog()[0]
+    result = tools.execute(tool["registrationId"], tool["name"], {},
+                           timeout_seconds=tool["timeoutSeconds"] if timeout is None else timeout)
+    assert result["success"] is True
+    assert (requests[0][1]["timeoutSeconds"] if requests else None) == timeout

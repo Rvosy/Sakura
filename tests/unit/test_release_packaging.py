@@ -659,7 +659,6 @@ def _minimal_stage(root: Path, target: str) -> Path:
         (tools / f"{name}{suffix}").write_bytes(b"tool")
     (stage / "VERSION").write_text("1.0.0\n", encoding="utf-8")
     (stage / "runtime-manifest.json").write_text(json.dumps({"schemaVersion": 1}), encoding="utf-8")
-    copy_tree(ROOT / "tools/release/plugin_update_baselines", stage / "migration_payload/plugin-updates")
     return stage
 
 
@@ -685,13 +684,6 @@ def test_release_stages_migration_code_outside_the_plugin_inventory(tmp_path: Pa
         assert manifest["id"] == plugin_id
         assert "sakura.host.model_slots" not in manifest.get("requires", [])
 
-
-def test_distribution_rejects_incomplete_offline_update_material(tmp_path: Path) -> None:
-    stage = _minimal_stage(tmp_path, "macos-arm64")
-    baseline = next((stage / "migration_payload/plugin-updates").glob("*.zip"))
-    baseline.unlink()
-    with pytest.raises(ValueError, match="STAGING_UPDATE_BASELINE_MISSING"):
-        validate_layout(stage, "macos-arm64", portable=False)
 
 
 def test_release_builds_private_dependencies_for_builtins_and_migration_payload(

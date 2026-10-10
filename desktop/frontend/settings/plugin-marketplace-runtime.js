@@ -1,4 +1,3 @@
-import { compareVersions } from "./plugin-marketplace-source.js";
 // UI-facing adapter contract; this is not a registry wire format or version resolver.
 export function recommended(plugin) {
   return plugin?.versions.find(version => version.number === plugin.recommendedVersion
@@ -7,13 +6,13 @@ export function recommended(plugin) {
 
 export function hasUpdate(plugin) {
   const version = recommended(plugin);
-  return Boolean(plugin?.installed && version && compareVersions(version.number, plugin.installed) > 0);
+  return Boolean(plugin?.installed && version && version.number !== plugin.installed);
 }
 
 export function canInstall(plugin, source) {
   const version = recommended(plugin);
   return Boolean(source?.install && version && (!plugin.installed
-    || (source.canUpdate && !plugin.updateBlocked && compareVersions(version.number, plugin.installed) >= 0)));
+    || (source.canUpdate && !plugin.updateBlocked)));
 }
 
 export function createCatalogLoader(source, onChange) {

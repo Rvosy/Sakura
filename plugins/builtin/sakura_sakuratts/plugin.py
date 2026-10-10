@@ -370,7 +370,7 @@ class SakuraTTSPlugin:
         surface.register('bundle', 'plugin')
         announcement = UpdateAnnouncement(context.get('sakura.host.chat'), provider.bundle,
                                           lambda: provider.config['autoCheckUpdates'], provider.log)
-        context.on('sakura.host.chat.completed', announcement.completed)
+        context.on('sakura.host.chat.completed.v2', announcement.completed)
         context.effect(announcement.close)
         announcement.start()
         if provider.config['autoCheckUpdates']:

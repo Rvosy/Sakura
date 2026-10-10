@@ -2308,3 +2308,24 @@ def test_first_import_preserves_readable_memory_with_legacy_vector_dimensions(tm
             client.close()
     assert TimelineStore(target / 'data/chat_history/timeline.sqlite3').read_all('Sakura')
     assert not any(item['code'] == 'LEGACY_MEMORY_RECORDS_QUARANTINED' for item in report.warnings)
+
+
+@pytest.mark.parametrize("content", ["config", "notes", "memory"])
+def test_partial_legacy_backup_without_history_or_memory_directory_is_importable(tmp_path, content):
+    source = _legacy_fixture(tmp_path)
+    shutil.rmtree(source / "data/chat_history")
+    shutil.rmtree(source / "data/memory")
+    target = tmp_path / "target"
+    target.mkdir()
+    if content != "config":
+        shutil.rmtree(source / "data/config")
+        filename = "notes/saved.json" if content == "notes" else "memory.json"
+        saved = source / "data" / filename
+        saved.parent.mkdir(exist_ok=True)
+        saved.write_text("[]", encoding="utf-8")
+    inspection = inspect_legacy_installation(source, target)
+    assert inspection.compatible, inspection.blockers
+    report, pending = run_legacy_import(source, target, import_id="partial-backup", finalize=True)
+    assert pending is None
+    if content == "config":
+        assert (target / "config/api.yaml").is_file()

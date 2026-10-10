@@ -849,7 +849,13 @@ class _HostRegistrationProxy:
     def collect(self, registration_id: str, request: Mapping[str, Any]) -> object:
         return self._context._remote_call(self._service_key, "collect", [registration_id, dict(request)])
 
-    def execute(self, registration_id: str, name: str, arguments: Mapping[str, Any]) -> object:
+    def execute(self, registration_id: str, name: str, arguments: Mapping[str, Any],
+                *, timeout_seconds: float | None = None) -> object:
+        if timeout_seconds is not None:
+            return self._context._remote_request("service.call", {
+                "serviceKey": self._service_key, "method": "execute",
+                "args": [registration_id, name, dict(arguments)], "timeoutSeconds": timeout_seconds,
+            })
         return self._context._remote_call(
             self._service_key, "execute", [registration_id, name, dict(arguments)]
         )

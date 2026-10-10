@@ -957,7 +957,7 @@ def test_plugin_start_checks_online_without_loading_models(tmp_path, monkeypatch
         finish_bundle_task(p.bundle)
         assert checked == [True]
         assert p.bundle.available == package
-        assert 'sakura.host.chat.completed' in callbacks
+        assert 'sakura.host.chat.completed.v2' in callbacks
     finally:
         for effect in reversed(effects):
             effect()

@@ -10,7 +10,6 @@ import uuid
 from collections.abc import Callable
 from pathlib import Path
 
-import yaml
 
 from app.core.runtime_log import diagnostic_attributes, log_event
 from app.storage.atomic import atomic_write_text
@@ -78,19 +77,6 @@ def _dependency_root(dependencies, code: Path, root: Path) -> Path | None:
     return verified
 
 
-def _outside_recovery_versions(root: Path, plugin_id: str) -> bool:
-    # Inventory substitutes an invalid record when the entry is missing. Use
-    # the manifest to limit recovery to known historical/payload versions.
-    try:
-        raw = yaml.safe_load((root / "plugin.yaml").read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, yaml.YAMLError):
-        return False
-    source = SOURCES[plugin_id]
-    return (isinstance(raw, dict) and raw.get("id") == plugin_id
-            and isinstance(raw.get("version"), str) and bool(raw["version"])
-            and raw["version"] not in (source["version"], *source.get("legacyVersions", [])))
-
-
 def _needs_repair(roots: RuntimeRoots, plugin_id: str, details: dict | None = None) -> bool:
     from app.plugins.dependencies import PluginDependencyError, PluginDependencyRoots
 
@@ -103,9 +89,6 @@ def _needs_repair(roots: RuntimeRoots, plugin_id: str, details: dict | None = No
         return (StoragePaths(roots.user_root).user_plugins_dir / plugin_id).exists()
     details.update(code_source="user", version=record.version, outcome="revalidated")
     root = StoragePaths(roots.user_root).user_plugins_dir / record.directory_name
-    if _outside_recovery_versions(root, plugin_id):
-        details["outcome"] = "retained_external_version"
-        return False
     try:
         details["stage"] = "validate_existing_source"
         _record(roots, root, plugin_id)
@@ -251,9 +234,6 @@ def ensure_external_plugin(roots: RuntimeRoots, plugin_id: str, *, enabled: bool
         details.update(outcome="retained", code_source="user", version=existing.version)
         return
     original = paths.user_plugins_dir / (existing.directory_name if existing is not None else plugin_id)
-    if existing is not None and _outside_recovery_versions(original, plugin_id):
-        details.update(outcome="retained_external_version", code_source="user", version=existing.version)
-        return
     if existing is None and original.exists():
         owner = PluginInventory(roots)._record("user", original, {}).plugin_id
         if owner is not None and owner != plugin_id:
@@ -282,7 +262,7 @@ def _failure(error: Exception, code: str, plugin_id: str | None = None, details:
     return {"reasonCode": code, "diagnostics": diagnostics}
 
 
-def migrate_bundled_plugins(roots: RuntimeRoots, *, progress: Callable[[dict], None] | None = None) -> dict[str, dict[str, object]]:
+def migrate_bundled_plugins(roots: RuntimeRoots, *, progress: Callable[[dict], None] | None = None, excluded_plugin_ids=()) -> dict[str, dict[str, object]]:
     from app.plugins.inventory import PluginDesiredStateStore
 
     config = roots.user_root / "config"
@@ -321,7 +301,7 @@ def migrate_bundled_plugins(roots: RuntimeRoots, *, progress: Callable[[dict], N
 
     revalidated = completed.get(REVALIDATED_KEY) == "completed"
     pending = [plugin_id for plugin_id in MIGRATIONS
-               if completed.get(plugin_id) != "not_applicable"
+               if plugin_id not in excluded_plugin_ids and completed.get(plugin_id) != "not_applicable"
                and not (revalidated and completed.get(plugin_id) == "completed")]
     first_record = not state_path.exists()
     if pending or first_record:

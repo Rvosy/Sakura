@@ -19,7 +19,6 @@ from typing import Any, Callable, Mapping, Sequence
 
 from app.plugin_sdk.sakura_process import terminate_process_tree
 from app.plugins.dependencies import PluginDependencyError, PluginDependencyRoots
-from app.plugins.app_compatibility import app_version_reason
 from app.plugins.inventory import RuntimePluginSpec
 from app.plugins.models import PLUGIN_API_V4_VERSION, PluginSpec
 from app.plugins.process_paths import process_path
@@ -725,9 +724,7 @@ class PluginRuntimeManager:
             self._records[spec.plugin_id] = self._runtime_record(spec)
 
     def _runtime_record(self, spec: PluginSpec) -> _RuntimeRecord:
-        reason = app_version_reason(spec.min_app_version, self._roots.distribution_root)
-        if reason == "READY" and spec.api_version != PLUGIN_API_V4_VERSION:
-            reason = "API_VERSION_UNSUPPORTED"
+        reason = "READY" if spec.api_version == PLUGIN_API_V4_VERSION else "API_VERSION_UNSUPPORTED"
         return _RuntimeRecord(spec, compatibility_reason=reason)
 
     def install_host_service(
@@ -1401,7 +1398,7 @@ class PluginRuntimeManager:
                 self._start_one(record, only_unstarted=True)
         for plugin_id in unstarted & enabled.keys():
             record = enabled[plugin_id]
-            if record.reason_code in {"APP_VERSION_UNSUPPORTED", "APP_VERSION_UNAVAILABLE", "API_VERSION_UNSUPPORTED", "SERVICE_CONFLICT", "DEPENDENCY_CYCLE", "MISSING_SERVICE"}:
+            if record.reason_code in {"API_VERSION_UNSUPPORTED", "SERVICE_CONFLICT", "DEPENDENCY_CYCLE", "MISSING_SERVICE"}:
                 self._log_lifecycle(record, "plugin.start.blocked", "插件无法启动", failed=True)
 
     def _log_lifecycle(self, record: _RuntimeRecord, event: str, message: str, *, failed: bool = False, diagnostics: Mapping[str, object] | None = None) -> None:

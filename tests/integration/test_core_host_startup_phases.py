@@ -33,7 +33,7 @@ def test_visual_and_real_chat_are_published_before_optional_start_finishes(tmp_p
     optional_fails = outcome == "optional_failed"
     if outcome == "migration_failed":
         monkeypatch.setattr("app.plugins.bundled_migrations.migrate_bundled_plugins",
-            lambda roots, *, progress: {"sakura.memory.mem0": {
+            lambda roots, *, progress, excluded_plugin_ids: {"sakura.memory.mem0": {
                 "reasonCode": "PLUGIN_MIGRATION_SOURCE_MISSING",
                 "diagnostics": {"diagnostic": "fixture migration source is missing"},
             }})
@@ -289,7 +289,7 @@ def test_malformed_character_configuration_keeps_its_stable_readiness_reason(tmp
 def test_migration_progress_is_visible_before_runtime_and_failure_is_actionable(tmp_path, monkeypatch, fails):
     entered, release = threading.Event(), threading.Event()
 
-    def migrate(roots, *, progress):
+    def migrate(roots, *, progress, excluded_plugin_ids):
         progress({"state": "running", "completed": 0, "total": 1, "pluginId": "sakura.memory.mem0"})
         entered.set()
         assert release.wait(5)

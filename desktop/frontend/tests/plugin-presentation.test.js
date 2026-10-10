@@ -14,17 +14,6 @@ import {
   filterPluginCatalog,
 } from "../settings/plugin-presentation.js";
 
-test("host version failures direct users to the main application even when the plugin is disabled", () => {
-  for (const state of ["failed", "disabled"]) {
-    const upgrade = presentPluginStatus({ state, reasonCode: "APP_VERSION_UNSUPPORTED" });
-    assert.match(upgrade.message, /升级 Sakura 主程序/);
-    assert.match(upgrade.diagnostic, /APP_VERSION_UNSUPPORTED/);
-    const unavailable = presentPluginStatus({ state, reasonCode: "APP_VERSION_UNAVAILABLE" });
-    assert.match(unavailable.message, /主程序版本/);
-    assert.match(unavailable.diagnostic, /APP_VERSION_UNAVAILABLE/);
-  }
-});
-
 test("plugin transitions distinguish waiting and stopping even with a stale readiness reason", () => {
   for (const [state, label] of [
     ["starting", "正在启动"], ["waiting", "等待启动"], ["stopping", "正在停止"],

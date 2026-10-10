@@ -208,7 +208,7 @@ def run():
             dialog.locator('[data-retry]').click()
             expect(reinstall).to_be_enabled()
 
-            # Minimum Sakura versions disable installation; compatible older releases remain installable.
+            # Legacy minimum-version declarations do not prevent installation.
             page.evaluate("""async () => {
               fixture.savedPlugins = fixture.plugins; fixture.savedLocal = fixture.local;
               fixture.savedInstall = fixture.source.install;
@@ -222,34 +222,13 @@ def run():
               fixture.source.install = async plugin => {fixture.compatibleInstalledVersion=plugin.recommendedVersion;};
               await fixture.market.refresh();
             }""")
-            expect(dialog.get_by_role('button', name='需要升级 Sakura', exact=True)).to_be_disabled()
-            expect(dialog.locator('.compat-note')).to_contain_text('升级 Sakura')
-            expect(dialog.locator('.compat-note')).to_contain_text('9.0.0')
-            if not dialog.locator('[data-disclosure="history"]').evaluate('el => el.open'):
-                dialog.locator('[data-history]').click()
-            expect(dialog.locator('.version-row')).to_contain_text('9.0.0')
-            expect(dialog.locator('.version-row')).to_be_visible()
+            expect(dialog.locator('[data-install]')).to_be_enabled()
+            expect(dialog.locator('.detail-status')).to_have_text('v0.2.7')
             for width in [803, 360]:
                 page.set_viewport_size({"width": width, "height": 640})
                 assert dialog.evaluate('el => el.scrollWidth <= el.clientWidth')
-                button = dialog.locator('[data-install]').bounding_box()
-                assert 0 <= button['y'] and button['y'] + button['height'] <= 640
-                if output:
-                    dialog.screenshot(path=str(Path(output) / f"plugin-upgrade-required-{width}.png"))
-            dialog.locator('[data-install]').evaluate('el => el.click()')
-            assert page.evaluate('fixture.compatibleInstalledVersion === undefined')
-            page.evaluate("""async () => {
-              const {catalogPlugins} = await import('/desktop/frontend/settings/plugin-marketplace-source.js');
-              fixture.versionCatalog.plugins[0].versions.push({version:'0.2.6',
-                manifest:{id:'sakura.visual.spine',name:'Spine',api:4},package:{url:'https://example.test/old.zip'}});
-              fixture.plugins = catalogPlugins(fixture.versionCatalog,{api:4,services:[],appVersion:'1.0.0'});
-              await fixture.market.refresh();
-            }""")
-            expect(dialog.locator('[data-install]')).to_be_enabled()
-            expect(dialog.locator('.detail-status')).to_have_text('v0.2.6')
-            expect(dialog.locator('.compat-note')).to_contain_text('升级 Sakura')
             dialog.locator('[data-install]').click()
-            page.wait_for_function("fixture.compatibleInstalledVersion === '0.2.6'")
+            page.wait_for_function("fixture.compatibleInstalledVersion === '0.2.7'")
             expect(dialog.locator('[data-manage]')).to_be_enabled()
             page.evaluate("""async () => {
               fixture.plugins=fixture.savedPlugins;fixture.local=fixture.savedLocal;

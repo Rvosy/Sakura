@@ -135,16 +135,17 @@ class PluginRuntimeApplication:
         self._model_configuration_issue = None
         from app.plugins.bundled_migrations import migrate_bundled_plugins
 
+        recovery_failures = {}
         if specs is None:
             from app.plugins.offline_updates import recover_installed_plugins
 
-            recover_installed_plugins(roots)
+            recovery_failures = recover_installed_plugins(roots)
         # Classify the user before model migration creates config/model_slots.json.
-        migration_failures = migrate_bundled_plugins(roots, progress=migration_progress) if specs is None else {}
+        migration_failures = migrate_bundled_plugins(roots, progress=migration_progress, excluded_plugin_ids=recovery_failures) if specs is None else {}
         if specs is None:
             from app.plugins.offline_updates import update_installed_plugins
 
-            migration_failures.update(update_installed_plugins(roots, progress=migration_progress))
+            migration_failures.update(update_installed_plugins(roots, progress=migration_progress, recovery_failures=recovery_failures))
         try:
             migrate_legacy_model_configuration(roots.user_root)
         except (OSError, ValueError) as error:

@@ -117,7 +117,7 @@ def run(
     from app.plugins.installer import LocalPluginInstaller
     from app.plugins.installer import PluginInstallError
     from app.plugins.inventory import PluginDesiredStateStore, PluginInventory
-    from app.plugins.offline_updates import BASELINES, update_installed_plugins
+    from app.plugins.offline_updates import update_installed_plugins
     from app.storage.runtime_roots import RuntimeRoots
 
     import app
@@ -148,16 +148,17 @@ def run(
     assert update_installed_plugins(fresh) == {}
     assert not any(record.source == "user" for record in PluginInventory(fresh).scan().records)
 
-    # Use the shipped old source and actual platform dependencies, not checkout
-    # imports or a dependency marker fixture, for the offline update path.
-    baseline_root = stage / BASELINES
-    updates = json.loads((baseline_root / "sources.json").read_text(encoding="utf-8"))
-    for plugin_id, source in updates.items():
+    # Exercise unconditional replacement with actual staged code and dependencies.
+    for plugin_id, source in SOURCES.items():
         with tempfile.TemporaryDirectory(prefix="offline-update-", dir=work) as temporary:
             user = Path(temporary)
             code = user / "plugins/user" / plugin_id
-            with zipfile.ZipFile(baseline_root / source["baselines"][0]["file"]) as archive:
-                archive.extractall(code)
+            replacement = stage / "migration_payload/builtin-extraction-v1/plugins" / source["directory"]
+            shutil.copytree(replacement, code)
+            old_manifest = yaml.safe_load((code / "plugin.yaml").read_text(encoding="utf-8"))
+            old_manifest["version"] = "99.0.0"
+            (code / "plugin.yaml").write_text(yaml.safe_dump(old_manifest), encoding="utf-8")
+            (code / ".gitignore").write_text("local-cache/", encoding="utf-8")
             PluginDesiredStateStore(user).set(plugin_id, False)
             config = user / "data/plugins" / plugin_id / "config.json"
             config.parent.mkdir(parents=True)
@@ -167,6 +168,9 @@ def run(
             assert update_installed_plugins(roots) == {}
             record = next(record for record in PluginInventory(roots).scan().records if record.plugin_id == plugin_id)
             assert (record.source, record.version, record.desired_enabled) == ("user", SOURCES[plugin_id]["version"], False)
+            dependencies = PluginDependencyRoots(user)
+            dependencies._validate_entry(plugin_id, code, dependencies.verified_root(plugin_id, code),
+                record.entry, runtime_imports=source.get("runtimeImports", ()))
             assert config.read_text(encoding="utf-8") == '{"savedSetting":"retained"}'
             assert (user / "config/plugins.yaml").read_bytes() == enabled
             assert update_installed_plugins(roots) == {}

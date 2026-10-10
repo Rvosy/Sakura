@@ -21,61 +21,32 @@ test("catalog supplies details and chooses the highest available stable compatib
   assert.equal(compareVersions("1.0.0+build.1", "1.0.0+build.2"), 0);
 });
 
-test("minimum application versions block incompatible releases while preserving older plugins", () => {
-  const old = release("1.0.0"), current = release("2.0.0"), future = release("3.0.0");
-  current.manifest.min_app_version = "0.8.0";
-  future.manifest.min_app_version = "0.9.0";
-  const catalog = { schema_version: 1, plugins: [{ id: "demo", versions: [old, current, future] }] };
-  const context = { api: 4, services: ["host.service"], appVersion: "0.8.0+build.2" };
-  const [plugin] = catalogPlugins(catalog, context);
-  assert.equal(plugin.recommendedVersion, "2.0.0");
-  assert.equal(plugin.versions[0].compatible, false);
-  assert.equal(plugin.versions[0].reasonCode, "APP_VERSION_UNSUPPORTED");
-  assert.equal(plugin.versions[0].minAppVersion, "0.9.0");
-  assert.match(plugin.compatibilityReason, /升级 Sakura/);
-  assert.equal(catalogPlugins(catalog, { ...context, appVersion: "0.8.0-beta.1" })[0].recommendedVersion, "1.0.0");
-  assert.equal(catalogPlugins(catalog, { ...context, appVersion: "0.9.0" })[0].recommendedVersion, "3.0.0");
-  const [unknown] = catalogPlugins(catalog, { ...context, appVersion: undefined });
-  assert.equal(unknown.recommendedVersion, "1.0.0");
-  assert.equal(unknown.versions[0].reasonCode, "APP_VERSION_UNAVAILABLE");
-});
-
-test("invalid declared minimum versions are blocked instead of treated as legacy manifests", () => {
-  for (const minimum of ["", "v1.0.0", "01.0.0", "1.0", "1.0.0-beta.01", "1.0.0-beta_1", "1.0.0+", "1.0.0\n", null, 1]) {
+test("application version declarations do not restrict catalog selection", () => {
+  for (const minimum of ["99.0.0", "broken", null]) {
     const item = release("1.0.0"); item.manifest.min_app_version = minimum;
     const [plugin] = catalogPlugins({ schema_version: 1, plugins: [{ id: "demo", versions: [item] }] },
-      { api: 4, services: ["host.service"], appVersion: "1.0.0" });
-    assert.equal(plugin.recommendedVersion, undefined, JSON.stringify(minimum));
-    assert.equal(plugin.versions[0].reasonCode, "PLUGIN_MANIFEST_INVALID");
+      { api: 4, services: ["host.service"] });
+    assert.equal(plugin.recommendedVersion, "1.0.0");
+    assert.equal(plugin.versions[0].compatible, true);
   }
 });
 
 class Channel { onmessage = () => {}; }
 
-test("malformed release versions cannot break the catalog or become installable", async () => {
-  const bad = release("1.0.0-beta.01");
-  const source = createMarketplaceSource({ Channel, invoke: async () => ({
-    catalog: { schema_version: 1, plugins: [
-      { id: "demo", versions: [bad, release("1.0.0")] },
-      { id: "broken", versions: [bad] },
-    ] }, context: { api: 4, services: ["host.service"] },
-  }) });
-  const result = await source.load({ signal: new AbortController().signal });
-  assert.equal(result.state, "ready");
-  assert.equal(result.plugins[0].recommendedVersion, "1.0.0");
-  const invalid = result.plugins[0].versions.find(v => v.number === bad.version);
-  assert.equal(invalid.compatible, false);
-  assert.equal(invalid.reasonCode, "PLUGIN_MANIFEST_INVALID");
-  assert.equal(result.plugins[1].recommendedVersion, undefined);
-});
-
-test("installation never invokes the host for a plugin that requires an application upgrade", async () => {
-  const item = release("1.0.0"); item.manifest.min_app_version = "2.0.0";
+test("installation replaces a newer local version and ignores minimum app declarations", async () => {
+  const item = release("1.0.0"); item.manifest.min_app_version = "99.0.0";
   const [plugin] = catalogPlugins({ schema_version: 1, plugins: [{ id: "demo", versions: [item] }] },
-    { api: 4, services: ["host.service"], appVersion: "1.0.0" });
-  const source = createMarketplaceSource({ Channel, host: { isDirty: () => false },
-    invoke: async () => assert.fail("An incompatible release must not reach installation") });
-  await assert.rejects(source.install(plugin, { signal: new AbortController().signal, onProgress() {} }), /不可安装/);
+    { api: 4, services: ["host.service"] });
+  const calls = [];
+  const source = createMarketplaceSource({ Channel, host: { isDirty: () => false }, randomUUID: () => "install",
+    invoke: async (command, args) => {
+      calls.push([command, args]);
+      if (command === "settings_plugins_get") return { plugins: [{ pluginId: "demo", source: "user", version: "99.0.0" }] };
+      return { installed: true };
+    } });
+  assert.deepEqual(await source.install(plugin, { signal: new AbortController().signal, onProgress() {} }), { installed: true });
+  assert.equal(calls[1][0], "settings_marketplace_install");
+  assert.equal(calls[1][1].version, "1.0.0");
 });
 
 test("cached catalog uses current compatibility and hydrates README before the network completes", async () => {

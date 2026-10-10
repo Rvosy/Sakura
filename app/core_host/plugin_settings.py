@@ -15,7 +15,6 @@ from app.core.diagnostics import exception_diagnostics
 from app.core.runtime_log import log_event
 from app.plugins.inventory import INSTALL_ID_PATTERN, PluginDesiredStateStore, PluginInventory
 from app.plugins.installer import LocalPluginInstaller, PluginInstallError
-from app.plugins.app_compatibility import compatibility_message
 from app.storage.paths import StoragePaths, sanitize_directory_component
 from app.storage.runtime_roots import RuntimeRoots, coerce_runtime_roots
 
@@ -264,7 +263,7 @@ class PluginSettingsBoundary:
                 result = getattr(application, "set_enabled")(install_id, raw_enabled)
             except Exception as error:
                 code = str(getattr(error, "code", "PLUGIN_LIFECYCLE_FAILED"))
-                raise PluginSettingsError(code, compatibility_message(code, "插件启停未能应用。")) from error
+                raise PluginSettingsError(code, "插件启停未能应用。") from error
             result = dict(result)
             result["plugins"] = _project_plugins(
                 [item for item in result.get("plugins", []) if isinstance(item, Mapping)],
@@ -330,7 +329,7 @@ class PluginSettingsBoundary:
                 installed = installer.install(Path(raw_source_path), str(raw_source_kind), expected=expected,
                                               initial_enabled=initial_enabled)
             except PluginInstallError as error:
-                raise PluginSettingsError(error.code, compatibility_message(error.code, "本地插件安装失败。")) from error
+                raise PluginSettingsError(error.code, "本地插件安装失败。") from error
             try:
                 snapshot = getattr(application, "install_plugin")(installed.install_id)
                 current = next((p for p in snapshot.get("plugins", []) if p["pluginId"] == installed.plugin_id), None)
@@ -466,7 +465,7 @@ class PluginSettingsBoundary:
                         except Exception as recovery:
                             recovery_error = recovery
                         code = "PLUGIN_UPDATE_ROLLBACK_FAILED" if recovery_error else getattr(error, "code", "PLUGIN_UPDATE_FAILED")
-                        message = "插件更新失败，原安装状态恢复失败。" if recovery_error else compatibility_message(code, "插件更新失败，已恢复原安装状态。")
+                        message = "插件更新失败，原安装状态恢复失败。" if recovery_error else "插件更新失败，已恢复原安装状态。"
                         raise PluginSettingsError(code, message, recovery_error=recovery_error) from error
                     try:
                         installer.commit_uninstall(pending)
@@ -606,7 +605,6 @@ def _preview_plugin(spec: Any) -> dict[str, object]:
         "pluginId": spec.plugin_id,
         "name": spec.name[:120],
         "version": spec.version[:64],
-        "minAppVersion": spec.min_app_version,
         "author": spec.author[:120],
         "description": spec.description[:500],
         "presentation": {"kind": spec.presentation_kind, "category": spec.presentation_category, "icon": spec.presentation_icon},
@@ -666,7 +664,6 @@ def _project_plugin(
         "pluginId": plugin_id,
         "name": _text(raw.get("name"), 120, "Plugin"),
         "version": _text(raw.get("version"), 64, "0.0.0"),
-        "minAppVersion": raw.get("minAppVersion", ""),
         "author": _text(raw.get("author"), 120, ""),
         "description": _text(raw.get("description"), 500, ""),
         "presentation": raw.get("presentation", {"kind": "extension", "category": "other", "icon": ""}),

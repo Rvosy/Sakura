@@ -147,57 +147,9 @@ fn selected_release(catalog: &Value, id: &str, version: &str) -> Result<Value, S
     Ok(release.clone())
 }
 
-fn validate_install_version(
-    current: &Value,
-    revision: &str,
-    plugin_id: &str,
-    version: &str,
-) -> Result<(), String> {
+fn validate_install_revision(current: &Value, revision: &str) -> Result<(), String> {
     if current["revision"] != revision {
         return Err("CONFIG_REVISION_CONFLICT: 插件列表已变化，请刷新后重试。".into());
-    }
-    let target = semver::Version::parse(version).map_err(|source_error| {
-        crate::runtime_log::diagnostic_error("市场版本号格式无效。", source_error)
-    })?;
-    for plugin in current["plugins"].as_array().into_iter().flatten() {
-        if plugin["pluginId"] != plugin_id
-            || plugin["reasonCode"]
-                .as_str()
-                .is_some_and(|reason| reason.starts_with("PLUGIN_MIGRATION_"))
-        {
-            continue;
-        }
-        // An unreadable local manifest has no comparable version and remains
-        // repairable. Core still owns installation identity and conflict checks.
-        if let Some(installed) = plugin["version"]
-            .as_str()
-            .and_then(|text| semver::Version::parse(text).ok())
-        {
-            if installed.cmp_precedence(&target).is_gt() {
-                return Err("PLUGIN_DOWNGRADE_FORBIDDEN: 已安装更新版本。".into());
-            }
-        }
-    }
-    Ok(())
-}
-
-fn validate_app_version(context: &Value, release: &Value) -> Result<(), String> {
-    let Some(minimum) = release["manifest"].get("min_app_version") else {
-        // Manifests predating this declaration remain installable.
-        return Ok(());
-    };
-    let minimum = minimum
-        .as_str()
-        .and_then(|value| semver::Version::parse(value).ok())
-        .ok_or("PLUGIN_MANIFEST_INVALID: 插件声明的最低 Sakura 版本无效。")?;
-    let current = context["appVersion"]
-        .as_str()
-        .and_then(|value| semver::Version::parse(value).ok())
-        .ok_or("APP_VERSION_UNAVAILABLE: 无法读取 Sakura 主程序版本，请检查安装。")?;
-    if current.cmp_precedence(&minimum).is_lt() {
-        return Err(format!(
-            "APP_VERSION_UNSUPPORTED: 该插件需要 Sakura {minimum} 或更高版本，请升级主程序后再安装。"
-        ));
     }
     Ok(())
 }
@@ -388,15 +340,6 @@ pub(crate) async fn settings_marketplace_install(
         window_generation,
         &core_generation_id,
     )?;
-    let context = settings_response_payload(
-        dispatch_settings_request(
-            handle.clone(),
-            None,
-            "plugins.marketplace.context",
-            json!({}),
-        )
-        .await?,
-    )?;
     let release = {
         let catalog = market.catalog.lock().map_err(|source_error| {
             crate::runtime_log::diagnostic_error("MARKETPLACE_STATE_UNAVAILABLE", source_error)
@@ -407,11 +350,10 @@ pub(crate) async fn settings_marketplace_install(
             &version,
         )?
     };
-    validate_app_version(&context, &release)?;
     let current = settings_response_payload(
         dispatch_settings_request(handle.clone(), None, "plugins.settings.get", json!({})).await?,
     )?;
-    validate_install_version(&current, &revision, &plugin_id, &version)?;
+    validate_install_revision(&current, &revision)?;
     let sources = sources.load()?;
     let url = download_sources::https_url(release["package"]["url"].as_str().unwrap())?;
     let package_size = release["package"]["size"].as_u64().unwrap() as usize;
@@ -503,94 +445,12 @@ pub(crate) fn settings_marketplace_cancel(
 mod tests {
     use super::*;
     #[test]
-    fn native_install_checks_minimum_app_version_before_download() {
-        let release = |minimum| json!({"manifest":{"min_app_version":minimum}});
-        for (current, minimum) in [
-            ("1.9.0", "2.0.0"),
-            ("2.0.0-beta.9", "2.0.0"),
-            ("2.0.0-beta.2", "2.0.0-beta.10"),
-        ] {
-            let error = validate_app_version(&json!({"appVersion":current}), &release(minimum))
-                .unwrap_err();
-            assert!(error.starts_with("APP_VERSION_UNSUPPORTED:"));
-            assert!(error.contains(minimum));
-            assert!(error.contains("请升级主程序"));
-        }
-        for (current, minimum) in [
-            ("2.0.0", "2.0.0"),
-            ("2.0.0+build.1", "2.0.0+build.9"),
-            ("2.0.0", "2.0.0-beta.10"),
-            ("2.1.0", "2.0.0"),
-        ] {
-            assert!(
-                validate_app_version(&json!({"appVersion":current}), &release(minimum)).is_ok()
-            );
-        }
-        assert!(validate_app_version(&json!({}), &json!({"manifest":{}})).is_ok());
-        for context in [
-            json!({}),
-            json!({"appVersion":null}),
-            json!({"appVersion":"unknown"}),
-        ] {
-            assert!(validate_app_version(&context, &release("2.0.0"))
-                .unwrap_err()
-                .starts_with("APP_VERSION_UNAVAILABLE:"));
-        }
-        for minimum in [
-            json!(null),
-            json!(2),
-            json!(""),
-            json!("2.0"),
-            json!("v2.0.0"),
-            json!("2.0.0-beta.01"),
-            json!("2.0.0-测试"),
-        ] {
-            assert!(validate_app_version(
-                &json!({"appVersion":"2.0.0"}),
-                &json!({"manifest":{"min_app_version":minimum}})
-            )
+    fn native_install_rejects_a_stale_settings_revision() {
+        let current = json!({"revision":"current","plugins":[]});
+        assert!(validate_install_revision(&current, "current").is_ok());
+        assert!(validate_install_revision(&current, "stale")
             .unwrap_err()
-            .starts_with("PLUGIN_MANIFEST_INVALID:"));
-        }
-    }
-    #[test]
-    fn native_install_rejects_downgrades_but_allows_equal_precedence_repairs() {
-        let current = |version| {
-            json!({"revision":"current","plugins":[{
-                "pluginId":"demo","version":version,"source":"user","reasonCode":"READY"
-            }]})
-        };
-        for (installed, target) in [
-            ("2.0.0", "1.9.0"),
-            ("1.0.0", "1.0.0-beta.9"),
-            ("1.0.0-beta.10", "1.0.0-beta.2"),
-        ] {
-            assert!(
-                validate_install_version(&current(installed), "current", "demo", target)
-                    .unwrap_err()
-                    .starts_with("PLUGIN_DOWNGRADE_FORBIDDEN:")
-            );
-        }
-        for (installed, target) in [
-            ("1.0.0", "1.0.0"),
-            ("1.0.0+build.9", "1.0.0+build.2"),
-            ("1.0.0-beta.2", "1.0.0-beta.10"),
-            ("unknown", "1.0.0"),
-        ] {
-            assert!(
-                validate_install_version(&current(installed), "current", "demo", target).is_ok()
-            );
-        }
-        assert!(
-            validate_install_version(&current("1.0.0"), "stale", "demo", "1.1.0")
-                .unwrap_err()
-                .starts_with("CONFIG_REVISION_CONFLICT:")
-        );
-        let missing = json!({"revision":"current","plugins":[
-            {"pluginId":null,"version":"0.0.0","source":"user","reasonCode":"PLUGIN_MANIFEST_INVALID"},
-            {"pluginId":"demo","version":"0.0.0","source":"bundled","reasonCode":"PLUGIN_MIGRATION_FAILED"}
-        ]});
-        assert!(validate_install_version(&missing, "current", "demo", "1.0.0").is_ok());
+            .starts_with("CONFIG_REVISION_CONFLICT:"));
     }
     #[test]
     fn cache_survives_new_state_and_keeps_readmes_bound_to_repository_and_commit() {

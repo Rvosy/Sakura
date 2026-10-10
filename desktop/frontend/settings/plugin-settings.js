@@ -70,7 +70,7 @@ export function createPluginSettingsFeature({
     managementBusy: false,
   };
   let pluginSettingsDialog = null;
-  const pluginModules = new Set();
+  const pluginModules = new Map();
   const pendingApplication = new Set();
   const settingsUI = createSettingsUI({ document, showPage, createSection: createContributedSection });
 
@@ -111,7 +111,7 @@ export function createPluginSettingsFeature({
           importModule: path => import(new URL(`../${path}`, import.meta.url)),
         },
       });
-      pluginModules.add(component);
+      pluginModules.set(component, { pluginId: plugin.plugin_id, sectionId: section.section_id });
       const dispose = component.dispose;
       component.dispose = () => { pluginModules.delete(component); dispose(); };
       return component;
@@ -2533,8 +2533,10 @@ export function createPluginSettingsFeature({
   }
 
   function validateSettings() {
-    for (const module of pluginModules) module.validate();
     const draft = collectPluginSettings().settings_by_id;
+    for (const [module, { pluginId, sectionId }] of pluginModules) {
+      if (draft[pluginId]?.[sectionId]) module.validate();
+    }
     for (const plugin of pluginView.items) for (const section of plugin.settings) {
       const values = draft[plugin.plugin_id]?.[section.section_id];
       if (!values) continue;
@@ -3015,9 +3017,9 @@ export function createPluginSettingsFeature({
     },
     renderCollections,
     providerCatalog() {
-      return [...pluginModules].flatMap(module => module.contributions()?.modelCatalog || []);
+      return [...pluginModules.keys()].flatMap(module => module.contributions()?.modelCatalog || []);
     },
-    async cancelOperations() { await Promise.allSettled([...pluginModules].map(module => module.cancel())); },
+    async cancelOperations() { await Promise.allSettled([...pluginModules.keys()].map(module => module.cancel())); },
     renderMemorySurface,
     dialogElement: () => pluginSettingsDialog?.dialog,
     onPageChanged(page) {

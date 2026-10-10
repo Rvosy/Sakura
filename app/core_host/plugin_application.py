@@ -10,7 +10,6 @@ from app.plugins.inventory import (
     PluginDesiredStateStore,
 )
 from app.plugins.models import PLUGIN_API_V4_VERSION
-from app.plugins.app_compatibility import compatibility_message
 from app.plugins.runtime_v4 import PluginRuntimeError
 from app.storage.runtime_roots import RuntimeRoots, coerce_runtime_roots
 
@@ -61,8 +60,7 @@ class PluginApplicationHost(PluginRuntimeApplication):
         if record.required and not enabled:
             raise PluginRuntimeError("REQUIRED_PLUGIN_LOCKED", "必需插件不能禁用。")
         if enabled and not record.supported:
-            raise PluginRuntimeError(record.reason_code, compatibility_message(
-                record.reason_code, "插件不受支持。"))
+            raise PluginRuntimeError(record.reason_code, "插件不受支持。")
         if record.plugin_id is None:
             if enabled:
                 raise PluginRuntimeError("PLUGIN_MANIFEST_INVALID", "损坏插件不能启用。")
@@ -108,8 +106,7 @@ class PluginApplicationHost(PluginRuntimeApplication):
             raise PluginRuntimeError("PLUGIN_NOT_FOUND", "插件不存在。")
         spec = record.runtime_spec()
         if spec is None or spec.api_version != PLUGIN_API_V4_VERSION:
-            raise PluginRuntimeError(record.reason_code, compatibility_message(
-                record.reason_code, "插件不受支持。"))
+            raise PluginRuntimeError(record.reason_code, "插件不受支持。")
         return super().install_plugin(spec)
 
     def _merge_inventory(
@@ -154,7 +151,6 @@ class PluginApplicationHost(PluginRuntimeApplication):
             "pluginId": record.plugin_id,
             "name": record.name,
             "version": record.version,
-            "minAppVersion": record.min_app_version,
             "author": record.author,
             "description": record.description,
             "presentation": {"kind": record.presentation_kind, "category": record.presentation_category, "icon": record.presentation_icon},

@@ -100,7 +100,7 @@ test("installation respects upstream recommendation, withdrawn versions and upda
   p.installed = "0.9.0"; assert.equal(canInstall(p, source), false);
   source.canUpdate = true; assert.equal(canInstall(p, source), true);
   p.installed = "1.0.0"; assert.equal(canInstall(p, source), true);
-  p.installed = "1.1.0"; assert.equal(canInstall(p, source), false);
+  p.installed = "1.1.0"; assert.equal(canInstall(p, source), true);
   delete p.installed;
   p.versions[1].yanked = "withdrawn"; assert.equal(canInstall(p, source), false);
   p.recommendedVersion = "2.0.0"; assert.equal(canInstall(p, source), false);
@@ -111,9 +111,10 @@ test("update visibility follows compatible stable recommendations even when upda
   const plugin = { installed: "1.0.0", recommendedVersion: "1.1.0", versions: [{ number: "1.1.0" }], updateBlocked: "内置插件随应用更新" };
   assert.equal(hasUpdate(plugin), true);
   assert.equal(canInstall(plugin, { install() {}, canUpdate: true }), false);
-  for (const installed of [undefined, "1.1.0", "2.0.0"]) {
+  for (const installed of [undefined, "1.1.0"]) {
     assert.equal(hasUpdate({ ...plugin, installed }), false);
   }
+  assert.equal(hasUpdate({ ...plugin, installed: "2.0.0" }), true);
   for (const status of [{ compatible: false }, { yanked: "withdrawn" }, { prerelease: true }]) {
     assert.equal(hasUpdate({ ...plugin, versions: [{ number: "1.1.0", ...status }] }), false);
   }

@@ -1691,9 +1691,9 @@ async function rebindCoreGeneration(generationId, { refresh = false } = {}) {
     try { activeAppearance = validateAppearancePublication(await invoke("current_character_appearance"), next); } catch { /* retain valid appearance */ }
     if (disposed || revision !== coreRebindRevision) return false;
     visualScalePercent = activeAppearance.portraitScalePercent;
-    const bound = await rendererHost.bind(next);
+    await rendererHost.bind(next);
     if (disposed || revision !== coreRebindRevision) return false;
-    presentationUnavailable = !bound;
+    presentationUnavailable = false;
     characterName.textContent = next.displayName;
     portraitFallbackName.textContent = next.displayName;
     portrait.setAttribute("aria-label", `${next.displayName}，可拖动窗口`);

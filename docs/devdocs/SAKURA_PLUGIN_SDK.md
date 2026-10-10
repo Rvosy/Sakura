@@ -60,7 +60,6 @@ name: Example Greeter
 author: Your Name
 description: 提供问候 Service、聊天工具和设置项。
 version: 1.0.0
-min_app_version: "1.3.0"
 entry: plugin:GreeterPlugin
 enabled: false
 priority: 100
@@ -76,8 +75,7 @@ requires:
   - sakura.host.logging
 ```
 
-`min_app_version` 是可选的最低 Sakura 版本。使用新增宿主能力时，填入首次支持该能力的主程序版本；
-省略时沿用旧插件的兼容规则。版本格式、安装与启动门禁见[插件包合同](../specs/runtime-v2/sakura-plugin-runtime-v4.md#3-插件包python-与-dependency-root)。
+插件声明实际使用的 Plugin API 和 Service；主程序不按版本号限制安装或加载。旧清单的 `min_app_version` 字段会被忽略。
 
 `config.json` 是随插件分发的默认配置：
 
@@ -469,7 +467,8 @@ context.on(
 | `sakura.host.app.started` | `{"generationId": "..."}` | 当前 generation 的插件启动完成。 |
 | `sakura.host.message.received` | `{"role": "user", "characters": 12}` | 收到用户消息；不含正文。 |
 | `sakura.host.message.sent` | `{"role": "assistant", "characters": 24}` | 助手已生成消息；不含正文。 |
-| `sakura.host.chat.completed` | `{"operationId": "...", "characterId": "...", "turnId": "...", "cursor": "..."}` | 对话已写入 Timeline 后发送；字段与消费规则见[时间线规范](../specs/runtime-v2/WP-4-07R-typed-timeline-adaptive-context.md#5-只读-timeline-host-service)。 |
+| `sakura.host.chat.completed` | `{"characterId": "...", "turnId": "...", "cursor": "..."}` | 对话已写入 Timeline 后发送；字段与消费规则见[时间线规范](../specs/runtime-v2/WP-4-07R-typed-timeline-adaptive-context.md#5-只读-timeline-host-service)。 |
+| `sakura.host.chat.completed.v2` | `{"operationId": "...", "characterId": "...", "turnId": "...", "cursor": "..."}` | 需要关联发起操作的消费者订阅此事件；时间线消费者只需订阅旧事件。 |
 | `sakura.host.tool.started/finished/failed` | 有界工具状态 | 工具执行状态通知。 |
 | `sakura.host.tts.started/ended` | `playbackId/recordingId/outcome` | 桌面实际播放状态；有可信历史关联时另含 `characterId/historyEntryId/segmentIndex`。 |
 
@@ -1076,7 +1075,9 @@ contributors = contexts.catalog()
 fragments = contexts.collect(contributors[0]["registrationId"], request)
 ```
 
-工具目录保留 name、description、parameters、group、risk、capability 与 source；
+工具目录保留 name、description、parameters、group、risk、capability 与 source。
+兼容字段 `timeoutSeconds` 为 `None`，表示不设置默认执行期限；`tools.execute(..., timeout_seconds=...)`
+仍接受调用方显式指定的 RPC 期限，省略或传 `None` 时不设期限；取消与登记身份约束保持有效。
 Context 目录保留 providerId、description、order、enabled、scope、failurePolicy 与实际 pluginId。
 调用方必须保留 registrationId，不能在失败后按同名重新查找并重放调用。登记失效时 Host 明确报错，
 同名新登记不会接管旧请求。副作用已经开始后的取消不保证撤销。
@@ -1297,7 +1298,7 @@ state = conversation.poll(job["jobId"])
 
 `begin()` 返回 `jobId` 和本次 `operationId`。插件自行轮询和设置等待期限；完成结果只取一次。
 `cancel()` 仅请求取消，仍需轮询并消费终态。`release()` 用于放弃结果，同时请求取消尚未结束的任务；
-释放后不能再轮询该 job。使用 `release()` 的插件需声明 `min_app_version: 1.3.2`。
+释放后不能再轮询该 job。
 不传插件 ID，调用者由 Runtime 的认证实例确定。图片使用本插件已提交的 artifact descriptor。
 `result` 保留 `character_id/reply/reply_raw/segments/actions`，并携带 `operationId`；其中 `reply` 是显示文本，
 `reply_raw` 是回复原文。已写入历史且宿主提供该身份时，另有 `historyEntryId`，供历史条目定位使用。

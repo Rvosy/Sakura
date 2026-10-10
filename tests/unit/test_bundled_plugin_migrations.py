@@ -115,7 +115,7 @@ def test_new_application_classifies_user_before_model_configuration_is_written(t
         application.close()
 
 
-def test_existing_external_by_id_and_newer_version_are_not_overwritten(tmp_path):
+def test_broken_existing_external_copy_is_repaired_by_id_regardless_of_version(tmp_path):
     roots = roots_for(tmp_path)
     other = roots.user_root / "plugins/user/custom-mobile-name"
     shutil.copytree(SOURCE, other)
@@ -125,7 +125,7 @@ def test_existing_external_by_id_and_newer_version_are_not_overwritten(tmp_path)
     PluginDesiredStateStore(roots.user_root).set(PLUGIN, False)
     for _ in range(2):
         assert migrate_bundled_plugins(roots) == {}
-        assert (other / "plugin.py").read_text() == "# user's external version"
+        assert (other / "plugin.py").read_bytes() == (SOURCE / "plugin.py").read_bytes()
         assert not installed(roots).exists()
         assert PluginDesiredStateStore(roots.user_root).read()[PLUGIN] is False
 
@@ -406,7 +406,7 @@ def test_repair_does_not_replace_another_plugin_in_the_target_directory(tmp_path
 
 @pytest.mark.parametrize("state", ["completed", "repairing"])
 @pytest.mark.parametrize("damage", ["entry_missing", "retired_api"])
-def test_user_version_is_preserved_even_when_it_cannot_run(tmp_path, state, damage):
+def test_broken_user_plugin_is_repaired_regardless_of_version(tmp_path, state, damage):
     roots = roots_for(tmp_path)
     shutil.copytree(SOURCE, installed(roots))
     manifest = installed(roots) / "plugin.yaml"
@@ -415,12 +415,10 @@ def test_user_version_is_preserved_even_when_it_cannot_run(tmp_path, state, dama
         (installed(roots) / "plugin.py").unlink()
     else:
         manifest.write_text(manifest.read_text(encoding="utf-8") + "\nrequires: [sakura.host.model_slots]\n", encoding="utf-8")
-    before = manifest.read_bytes()
     marker(roots).write_text(json.dumps({PLUGIN: state}))
     assert migrate_bundled_plugins(roots) == {}
-    assert manifest.read_bytes() == before
-    if damage == "entry_missing":
-        assert not (installed(roots) / "plugin.py").exists()
+    assert "version: 1.0.0" in manifest.read_text()
+    assert (installed(roots) / "plugin.py").exists()
 
 
 def test_existing_copy_import_checks_are_inside_the_migration_phase(tmp_path, monkeypatch):

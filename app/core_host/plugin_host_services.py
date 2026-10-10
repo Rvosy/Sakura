@@ -621,7 +621,7 @@ class _ToolsHostService:
             return [{"registrationId": tool.registration_id, "name": tool.name,
                      "description": tool.description, "parameters": tool.parameters,
                      "group": tool.group, "risk": tool.risk, "capability": tool.capability,
-                     "source": tool.source}
+                     "source": tool.source, "timeoutSeconds": None}
                     for tool in self._tool_registry.all()]
         if method == "execute" and len(args) == 3:
             registration_id, name, arguments = args

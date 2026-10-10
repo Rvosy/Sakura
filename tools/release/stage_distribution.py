@@ -159,7 +159,6 @@ def plugin_layouts(stage: Path) -> list[tuple[Path, set[str], Path]]:
 
 
 def stage_migration_plugins(repo: Path, stage: Path) -> None:
-    copy_tree(repo / "tools/release/plugin_update_baselines", stage / "migration_payload/plugin-updates")
     for directory_name in sorted(MIGRATION_PLUGINS):
         copy_tree(
             repo / "plugins/optional" / directory_name,
@@ -347,7 +346,6 @@ def validate_layout(stage: Path, target: str, *, portable: bool) -> None:
     required = [
         stage / "VERSION",
         stage / "runtime-manifest.json",
-        stage / "migration_payload/plugin-updates/sources.json",
         python_executable(stage / "python", target),
         site_packages(stage / "python", target),
         stage / "core/app/core_host/__main__.py",
@@ -360,11 +358,6 @@ def validate_layout(stage: Path, target: str, *, portable: bool) -> None:
     missing = [path.relative_to(stage).as_posix() for path in required if not path.exists()]
     if missing:
         raise ValueError(f"STAGING_LAYOUT_INCOMPLETE: {', '.join(missing)}")
-    update_root = stage / "migration_payload/plugin-updates"
-    for source in json.loads((update_root / "sources.json").read_text(encoding="utf-8")).values():
-        for baseline in source["baselines"]:
-            if not (update_root / baseline["file"]).is_file():
-                raise ValueError(f"STAGING_UPDATE_BASELINE_MISSING: {baseline['file']}")
     if (stage / "plugins/optional").exists() or (stage / "plugins/migrations").exists():
         raise ValueError("STAGING_CONTAINS_OPTIONAL_PLUGINS")
     for plugin_parent, expected_plugins, dependency_roots in plugin_layouts(stage):

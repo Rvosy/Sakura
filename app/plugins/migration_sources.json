@@ -13,10 +13,7 @@
     ],
     "repository": "Rvosy/Sakura-SenseVoice",
     "version": "0.2.0",
-    "commit": "554c9ebf174de80d2b3dfbf38515e118c4c16c7c",
-    "legacyVersions": [
-      "0.1.0"
-    ]
+    "commit": "554c9ebf174de80d2b3dfbf38515e118c4c16c7c"
   },
   "sakura.memory.mem0": {
     "directory": "sakura_mem0",
@@ -28,10 +25,7 @@
     ],
     "repository": "Rvosy/Sakura-Mem0",
     "version": "0.2.0",
-    "commit": "d7b3d50d5bf7c025522352348e18534983bb0b31",
-    "legacyVersions": [
-      "0.1.0"
-    ]
+    "commit": "d7b3d50d5bf7c025522352348e18534983bb0b31"
   },
   "sakura.tts.gpt-sovits": {
     "directory": "sakura_gpt_sovits",
@@ -42,10 +36,7 @@
     ],
     "repository": "Rvosy/Sakura-GPT-SoVITS",
     "version": "0.2.0",
-    "commit": "c641173aa1fc6c44786c78d3a0907851ea718652",
-    "legacyVersions": [
-      "0.1.0"
-    ]
+    "commit": "c641173aa1fc6c44786c78d3a0907851ea718652"
   },
   "sakura.tts.genie": {
     "directory": "sakura_genie",
@@ -55,18 +46,12 @@
     ],
     "repository": "Rvosy/Sakura-Genie",
     "version": "0.2.0",
-    "commit": "6eb389d0370937bb576d29cd2d6955dee8a91fe3",
-    "legacyVersions": [
-      "0.1.0"
-    ]
+    "commit": "6eb389d0370937bb576d29cd2d6955dee8a91fe3"
   },
   "sakura.visual.spine": {
     "directory": "sakura_spine",
     "repository": "Rvosy/Sakura-Spine",
     "version": "0.2.7",
-    "legacyVersions": [
-      "0.2.5"
-    ],
     "commit": "e245e6710e7f7baf18711cb7c8c62ae8dd3ea2a3"
   }
 }

@@ -694,6 +694,15 @@ def test_started_worker_failure_logs_and_releases_chat_execution(
 def test_completed_history_notifies_mem0_after_saving_the_reply(tmp_path: Path) -> None:
     from plugins.optional.sakura_mem0.plugin import HOST_CHAT_COMPLETED_EVENT, SakuraMem0Runtime
 
+    import ast
+    import zipfile
+    from collections.abc import Mapping
+    with zipfile.ZipFile(Path(__file__).resolve().parents[1] / "fixtures/plugin_upgrade/sakura_mem0-v1.3.1.zip") as archive:
+        tree = ast.parse(archive.read("plugin.py"))
+    legacy_method = next(node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef) and node.name == "note_completed_chat")
+    namespace = {"Mapping": Mapping}
+    exec(compile(ast.Module(body=[legacy_method], type_ignores=[]), "legacy_mem0", "exec"), namespace)
+
     plugin_events: list[tuple[str, dict[str, object]]] = []
     chat_events = []
     curated = []
@@ -702,7 +711,9 @@ def test_completed_history_notifies_mem0_after_saving_the_reply(tmp_path: Path) 
         def emit_event(self, name, payload):  # type: ignore[no-untyped-def]
             plugin_events.append((name, payload))
             if name == HOST_CHAT_COMPLETED_EVENT:
-                memory.note_completed_chat(payload)
+                # 1.3.1 Mem0 rejects additional keys before triggering catch-up.
+                assert set(payload) == {"characterId", "turnId", "cursor"}
+                namespace["note_completed_chat"](memory, payload)
 
     class Assistant(_AssistantDouble):
         def run_turn(self, _messages, **_kwargs):  # type: ignore[no-untyped-def]
@@ -759,7 +770,7 @@ def test_completed_history_notifies_mem0_after_saving_the_reply(tmp_path: Path) 
     assert curated == [stored]
     assert chat_events[-1]["payload"]["reply"]["historyEntryId"] == stored[1].entry_id
     assert plugin_events[-1] == (
-        "sakura.host.chat.completed",
+        "sakura.host.chat.completed.v2",
         {
             "operationId": "completed-fact",
             "characterId": "sakura",
@@ -772,6 +783,7 @@ def test_completed_history_notifies_mem0_after_saving_the_reply(tmp_path: Path) 
         "sakura.host.chat.request.started",
         "message.ai",
         "sakura.host.chat.completed",
+        "sakura.host.chat.completed.v2",
     ]
     assert next(payload for name, payload in plugin_events if name == "sakura.host.chat.request.started") == {"characterId": "sakura"}
     boundary.close()
