@@ -43,7 +43,7 @@ export function createProviderModelController({ invoke, readDraft, applySnapshot
 
   async function refreshCurrent({ preserveDraft = false } = {}) {
     const revision = ++refreshRevision;
-    const next = validateProviderModelSnapshot(await invoke("settings_provider_model_get"));
+    const next = await invoke("settings_provider_model_get");
     if (disposed || revision !== refreshRevision) return next;
     const preserved = preserveDraft && isDirty() ? structuredClone(readDraft()) : null;
     await initialize(next);

@@ -51,6 +51,7 @@ export function createVoiceController({
   let snapshot = null;
   let baseline = "";
   let disposed = false;
+  let refreshRevision = 0;
   enhanceSelect(fields.provider);
 
   function renderFailure() {
@@ -211,36 +212,41 @@ export function createVoiceController({
     onDirty();
   }
 
-  async function refresh(options = {}) {
+  async function refresh(options = {}, revision = ++refreshRevision) {
     if (disposed) return null;
-    const next = await invoke("settings_voice_get");
-    if (!disposed) {
+    try {
+      const next = await invoke("settings_voice_get");
+      if (disposed || revision !== refreshRevision) return null;
       try { initialize(next, options); }
       catch (error) {
         reportError(error, { command: "settings_voice_get", stage: "voice.render" });
         throw error;
       }
+      return snapshot;
+    } catch (error) {
+      if (disposed || revision !== refreshRevision) return null;
+      throw error;
     }
-    return snapshot;
   }
 
   async function refreshCurrent({ preserveDraft = false } = {}) {
+    const revision = ++refreshRevision;
+    if (disposed) return null;
     const availability = hubAvailability(getPlugins());
     if (availability.state !== "active") {
       if (preserveDraft && snapshot && draftSignature(currentDraft()) !== baseline) {
         throw new Error("语音设置暂不可用，请稍后重试。");
       }
-      if (!disposed) renderUnavailable(availability);
+      renderUnavailable(availability);
       return null;
     }
     try {
-      return await refresh({ preserveDraft });
+      return await refresh({ preserveDraft }, revision);
     } catch (error) {
+      if (disposed || revision !== refreshRevision) return null;
       if (preserveDraft && snapshot) throw error;
-      if (!disposed) {
-        renderUnavailable({ state: "error", error });
-        onStatus(error, "error");
-      }
+      renderUnavailable({ state: "error", error });
+      onStatus(error, "error");
       return null;
     }
   }
@@ -284,6 +290,7 @@ export function createVoiceController({
     },
     dispose() {
       disposed = true;
+      refreshRevision++;
       snapshot = null;
     },
   });

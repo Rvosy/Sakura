@@ -103,6 +103,8 @@ TTS 被跳过时，报告和统一日志必须记录稳定 warning，但最终�
 
 ## 数据映射
 
+- 来源缺失的配置域保留目标已有值，包括模型连接与选择、系统与屏幕设置、UI、当前角色和插件启停。
+  目标也没有对应配置时才生成默认值；有效 `.env` 模型配置仍按下述规则导入。
 - 旧 API profiles、密钥、地址、模型槽及允许名单内 `.env` 字段转为当前 `config/api.yaml`。旧环境变量
   白名单固定为 `BASE_URL → llm.base_url`、`API_KEY → llm.api_key`、`MODEL → llm.model`；仅当 YAML
   对应值缺失、为 null 或空白时填充，已有非空 YAML 始终优先。只读取源根仍在使用的 `.env`；

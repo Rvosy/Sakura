@@ -63,7 +63,7 @@ def test_remote_reference_requires_mapping_and_contained_audio(tmp_path: Path) -
 
 def _queue(settings: _support.GPTSoVITSTTSSettings) -> SimpleNamespace:
     resolver = _support.GptSovitsEndpointResolver(
-        settings, base_dir=Path(), resource_manager=None, is_closed=lambda: False
+        settings, base_dir=Path(), is_closed=lambda: False
     )
     # Endpoint reachability is outside these synthesis payload/error cases.
     resolver._custom_checked = True

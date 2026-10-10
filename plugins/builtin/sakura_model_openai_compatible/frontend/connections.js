@@ -19,7 +19,6 @@ export function createConnectionEditor({ document, window, read, write, probe, c
   root.append(fields.providerStatusStrip, toolbar, workbench);
   const controller = { listModels: (v) => probe("list_models", v), testConnection: (v) => probe("test_connection", v) };
   const markInvalid = (input, invalid) => { if (input) input.classList.toggle("is-invalid", invalid); };
-  const refreshModelSlots = () => {};
   function refreshDirty() {
     const value = structuredClone(providerState.profiles);
     lastValue = JSON.stringify(value); write(value); onCatalogChanged();
@@ -342,7 +341,6 @@ export function createConnectionEditor({ document, window, read, write, probe, c
         remove.addEventListener("click", () => {
           profile.models = profile.models.filter((item) => item !== model);
           renderProviderPage();
-          refreshModelSlots();
           refreshDirty();
         });
         chip.append(name, remove);
@@ -398,7 +396,6 @@ export function createConnectionEditor({ document, window, read, write, probe, c
     });
     if (added) {
       renderProviderPage();
-      refreshModelSlots();
       refreshDirty();
     }
     return added;
@@ -511,7 +508,6 @@ export function createConnectionEditor({ document, window, read, write, probe, c
       providerState.selectedId = providerState.profiles[0]?.id || "";
     }
     renderProviderPage();
-    refreshModelSlots();
     refreshDirty();
   }
 
@@ -532,7 +528,6 @@ export function createConnectionEditor({ document, window, read, write, probe, c
       fields.providerSearch.value = "";
     }
     renderProviderPage();
-    refreshModelSlots();
     refreshDirty();
   }
 

@@ -291,7 +291,15 @@ def target_semantic_empty_error(target: Path) -> str | None:
 
 def _target_overwrite_domains(source: Path, target: Path) -> tuple[str, ...]:
     paths = {
-        "配置": ((source / "data/config", target / "config", frozenset()),),
+        "配置": (
+            (source / "data/config", target / "config", frozenset()),
+            (source / "data/config/api.yaml", target / "data/plugins/sakura.model.openai_compatible/config.json", frozenset()),
+            (source / "data/config/api.yaml", target / "data/plugins/sakura.assistant.default/config.json", frozenset()),
+            (source / "data/config/system_config.yaml", target / "data/plugins/sakura.screen_awareness/config.json", frozenset()),
+            (source / ".env", target / "config", frozenset()),
+            (source / ".env", target / "data/plugins/sakura.model.openai_compatible/config.json", frozenset()),
+            (source / ".env", target / "data/plugins/sakura.assistant.default/config.json", frozenset()),
+        ),
         "长期记忆": (
             (
                 source / "data/memory",

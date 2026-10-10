@@ -1100,7 +1100,6 @@ def test_managed_coordinator_serializes_weight_switch_and_synthesis(
             self.settings = settings
             self._weights_ready = False
             self._server_process = None
-            self._process_resource = None
 
     class FakeResolver:
         def __init__(self, settings: object, **_kwargs: object) -> None:

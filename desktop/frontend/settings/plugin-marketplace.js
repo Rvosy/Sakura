@@ -157,7 +157,7 @@ export function createPluginMarketplace({ document, host, notify, showError = ({
     if (task?.state === "running") action = `<button class="secondary-button" data-cancel-task ${task.phase === "installing" || task.cancelling ? "disabled" : ""}>${task.cancelling && task.phase !== "installing" ? "正在取消" : "取消安装"}</button>`;
     else if (task?.state === "failed") action = `<button data-retry ${task.installed || canInstall(p, source) ? "" : "disabled"}>重试</button>`;
     else if (updating(p)) action = `${!canInstall(p, source) ? manage : ""}<button data-install ${canInstall(p, source) ? "" : "disabled"}>更新至 ${escape(next.number)}</button>`;
-    else if (p.installed) action = `${manage}${canInstall(p, source) ? '<button data-install>重新安装</button>' : ""}`;
+    else if (p.installed) action = `${manage}${canInstall(p, source) ? `<button data-install>${next.number === p.installed ? "重新安装" : "替换为该版本"}</button>` : ""}`;
     else action = `<button data-install ${canInstall(p, source) ? "" : "disabled"}>${next ? "安装插件" : "暂无兼容版本"}</button>`;
     let compatibility = "";
     if (!next) compatibility = `<div class="compat-note warning">${escape(p.compatibilityReason || '暂无兼容版本')}</div>`;
@@ -165,7 +165,7 @@ export function createPluginMarketplace({ document, host, notify, showError = ({
     else if (p.compatibilityReason) compatibility = `<div class="compat-note">${escape(p.compatibilityReason)}</div>`;
     else if (updating(p) && p.enabled) compatibility = '<div class="compat-note">更新时会短暂停止插件，完成后自动恢复启用。</div>';
     const taskMarkup = task?.state === "running"
-      ? `<div class="task-state" role="status"><span class="task-label">${task.phase === "installing" ? task.reinstall ? "正在重新安装" : task.update ? "正在更新" : "正在安装" : "正在下载"}${task.source ? ` · ${escape(task.source)}` : ""} · ${Math.round(task.progress)}%</span><div class="resource-progress" role="progressbar" aria-label="安装进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${task.progress}"><span style="width:${task.progress}%"></span></div></div>`
+      ? `<div class="task-state" role="status"><span class="task-label">${task.phase === "installing" ? task.reinstall ? "正在重新安装" : task.replace ? "正在替换" : task.update ? "正在更新" : "正在安装" : "正在下载"}${task.source ? ` · ${escape(task.source)}` : ""} · ${Math.round(task.progress)}%</span><div class="resource-progress" role="progressbar" aria-label="安装进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${task.progress}"><span style="width:${task.progress}%"></span></div></div>`
       : task?.state === "failed" ? `<div class="task-state task-error" role="alert">${task.installed ? "插件列表刷新失败" : "安装失败"} <button class="plain" data-task-error>查看错误详情</button></div>` : "";
     $("detail").innerHTML = `<div class="drawer-top"><span>插件详情</span><button class="icon-button" data-close aria-label="关闭插件详情">${icon("x")}</button></div>
       <div class="drawer-scroll"><div class="drawer-identity">${mark(p)}<div><h2 id="detail-title">${escape(p.name)}</h2><div class="detail-byline">${escape([p.author, p.category === "表现" ? "角色表现" : p.category].filter(Boolean).join(" · "))}${example(p)}</div></div></div>
@@ -267,7 +267,7 @@ export function createPluginMarketplace({ document, host, notify, showError = ({
     const installed = tasks.get(id)?.installed;
     if ((!installed && !canInstall(p, source)) || tasks.get(id)?.state === "running") return;
     const abort = new AbortController();
-    const task = { state: "running", progress: installed ? 100 : 0, phase: installed ? "installing" : "downloading", abort, installed, update: Boolean(p.installed), reinstall: Boolean(p.installed && !updating(p)) };
+    const task = { state: "running", progress: installed ? 100 : 0, phase: installed ? "installing" : "downloading", abort, installed, update: Boolean(p.installed), reinstall: Boolean(p.installed && p.installed === recommended(p)?.number), replace: Boolean(p.installed && p.installed !== recommended(p)?.number && !updating(p)) };
     tasks.set(id, task); render(); refreshDetail();
     try {
       if (!task.installed) await source.install(p, { signal: abort.signal, onProgress(progress, phase = "downloading", sourceName = "") {
@@ -280,7 +280,7 @@ export function createPluginMarketplace({ document, host, notify, showError = ({
       task.phase = "installing";
       await host.refreshCurrent();
       if (disposed) return;
-      tasks.delete(id); notify(task.reinstall ? "已重新安装" : task.update ? "已更新" : "已安装", "success");
+      tasks.delete(id); notify(task.reinstall ? "已重新安装" : task.replace ? "已替换" : task.update ? "已更新" : "已安装", "success");
     } catch (error) {
       if (disposed || tasks.get(id) !== task) return;
       if (abort.signal.aborted && task.phase !== "installing") { tasks.delete(id); notify("已取消安装"); }

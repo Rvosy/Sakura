@@ -2329,3 +2329,51 @@ def test_partial_legacy_backup_without_history_or_memory_directory_is_importable
     assert pending is None
     if content == "config":
         assert (target / "config/api.yaml").is_file()
+
+
+@pytest.mark.parametrize("missing", ["all", "api.yaml", "system_config.yaml", "characters.yaml", "plugins.yaml"])
+def test_partial_configuration_preserves_existing_missing_domains(tmp_path, missing):
+    from app.config.model_references import OPENAI_SERVICE, migrate_legacy_model_configuration
+    from app.core_host.screen_host import migrate_legacy_screen_settings
+
+    source = _legacy_fixture(tmp_path)
+    target = tmp_path / "target"
+    config = target / "config"
+    config.mkdir(parents=True)
+    (config / "api.yaml").write_text(yaml.safe_dump({
+        "llm": {"base_url": "https://existing.test/v1", "api_key": "saved-key", "model": "existing-model"},
+    }))
+    (config / "system_config.yaml").write_text("config_version: 1\nscreen_awareness:\n  enabled: false\n")
+    (config / "characters.yaml").write_text("current_character_id: Existing\n")
+    (config / "plugins.yaml").write_text("- id: sakura.tts.genie\n  enabled: false\n")
+    (config / "ui.json").write_text('{"portrait_scale_percent": 125}')
+    migrate_legacy_model_configuration(target)
+    migrate_legacy_screen_settings(target)
+    domains = {
+        "api.yaml": [config / "api.yaml", config / "model_slots.json",
+                     target / "data/plugins" / OPENAI_SERVICE / "config.json",
+                     target / "data/plugins/sakura.assistant.default/config.json"],
+        "system_config.yaml": [config / "system_config.yaml", config / "ui.json",
+                               target / "data/plugins/sakura.screen_awareness/config.json"],
+        "characters.yaml": [config / "characters.yaml"],
+        "plugins.yaml": [config / "plugins.yaml"],
+    }
+    selected = domains if missing == "all" else {missing: domains[missing]}
+    original = {path: path.read_bytes() for paths in selected.values() for path in paths}
+    for name in selected:
+        (source / "data/config" / name).unlink(missing_ok=True)
+    if missing == "all":
+        shutil.rmtree(source / "data")
+        shutil.rmtree(source / "characters")
+        notes = source / "data/notes/saved.txt"
+        notes.parent.mkdir(parents=True)
+        notes.write_text("old note")
+        inspection = inspect_legacy_installation(source, target)
+        assert inspection.compatible
+        assert not inspection.overwrite_domains
+    report, pending = run_legacy_import(source, target, import_id="partial-config", finalize=True)
+    assert pending is None
+    assert not any(w["code"] == "LEGACY_CONFIGURATION_IMPORT_SKIPPED" for w in report.warnings)
+    assert {path: path.read_bytes() for path in original} == original
+    if missing == "all":
+        assert (target / "data/notes/saved.txt").read_text() == "old note"
