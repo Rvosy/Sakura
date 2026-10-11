@@ -272,8 +272,10 @@ Sakura 按下面的优先级读取一份依赖声明：
 
 未指定源时默认使用 `https://mirrors.aliyun.com/pypi/simple`。Sakura 保留 uv 环境变量、用户/项目 uv 配置、
 插件 requirements 中声明的源；没有 uv 源配置时，将 `PIP_INDEX_URL` 传给 uv。需要官方源时，可在启动
-Sakura 前设置 `UV_DEFAULT_INDEX=https://pypi.org/simple`。直接 URL、锁文件中的来源和专用 wheel 索引不会
-被改写，镜像也不会改变插件依赖版本约束。下载缓存仍由 uv 复用。
+Sakura 前设置 `UV_DEFAULT_INDEX=https://pypi.org/simple`。默认源的安装包或元数据返回 404 时，先刷新阿里云索引，
+再按需尝试华为云和官方 PyPI；具体条件见[依赖安装契约](../specs/runtime-v2/sakura-plugin-runtime-v4.md#3-插件包python-与-dependency-root)。
+显式指定的源、直接 URL、锁文件中的来源和专用 wheel 索引不会被改写，镜像也不会改变插件依赖版本约束。
+下载缓存仍由 uv 复用。
 
 插件进程能导入的内容只有 Python 标准库、Plugin SDK、当前插件代码和自己的 dependency root。同一个库的
 不同版本可以分别安装在两个插件中，不要把依赖写进 Sakura 的主 Python 环境。

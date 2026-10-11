@@ -81,7 +81,14 @@ capability dependency；Python distribution dependency 单独通过 `pyproject.t
 - 未指定软件包源时，插件安装、源码依赖准备和本地发行 staging 默认使用阿里云 PyPI 镜像。
   `UV_*` 源配置、uv 配置文件和插件 requirements 中的源声明优先；没有 uv 源配置时，沿用显式的
   `PIP_INDEX_URL`。不改写锁文件、直接下载 URL 或 uv 的索引选择策略，也不混用多个默认镜像。
-  海外 GitHub Actions 打包任务显式使用官方 PyPI。镜像缺包或不可用时明确报错，用户可指定其他源后重试。
+  海外 GitHub Actions 打包任务显式使用官方 PyPI。
+- 插件安装使用默认源，且该源的 wheel 或 `.whl.metadata` 下载返回 HTTP 404 时，先刷新阿里云索引缓存重试一次；
+  仍是该源的文件 404 时，依次尝试华为云镜像、官方 PyPI，各一次，成功即停止；继续使用本次 staging 和共享下载缓存。
+  备用来源由 `app/plugins/dependencies.py` 的 `_install_dependencies` 定义。
+  用户或插件显式配置了源时不自动切换；不改写直接 URL、锁文件或版本约束。依赖冲突、构建失败、其他 HTTP 状态
+  和非当前源的错误直接停止。全部失败时保留各次失败原因，并按现有诊断长度上限截断；不发布未完成的依赖环境。
+  每次尝试的开始、失败及最终结果写入统一运行日志，包含插件 ID、尝试次数、来源、恢复动作和退出码；
+  错误输出沿用日志桥的脱敏与长度限制。下载安装完成不代表插件入口校验或整个插件安装已完成。
 
 插件安装和加载不比较 Sakura 或插件版本号。旧清单中的 `min_app_version` 字段被忽略。
 Plugin API、所需 Service、依赖环境与入口仍按实际接口处理。

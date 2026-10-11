@@ -2339,6 +2339,10 @@ fn viewer_detail_label(key: &str) -> &'static str {
 
 fn business_message(event: &str) -> Option<&'static str> {
     Some(match event {
+        "plugin.dependencies.attempt.started" => "开始安装插件依赖",
+        "plugin.dependencies.attempt.failed" => "插件依赖安装尝试失败",
+        "plugin.dependencies.install.finished" => "插件依赖下载安装完成",
+        "plugin.dependencies.install.failed" => "插件依赖安装失败",
         "asr.capture.started" => "开始录音",
         "asr.capture.finished" => "录音结束",
         "asr.capture.cancelled" => "录音已取消",
@@ -3001,6 +3005,14 @@ fn format_human_summary(event: &str, attributes: Option<&Value>) -> String {
             "status",
         ],
         value if value.starts_with("legacy_import.tts_copy_") => &LEGACY_COPY_PRIORITY,
+        value if value.starts_with("plugin.dependencies.") => &[
+            "plugin_id",
+            "dependency_source",
+            "attempt",
+            "action",
+            "exit_code",
+            "reason_code",
+        ],
         value if value.starts_with("plugin.migration.") => &[
             "stage",
             "status",
@@ -5490,6 +5502,52 @@ mod tests {
         assert!(fs::read_to_string(path)
             .unwrap()
             .contains("TTS 服务预热已排队"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn dependency_install_events_reach_viewer_and_file() {
+        let root = temp_root("dependency-install-log");
+        let path = root.join("runtime.log");
+        let log = RuntimeLogService::start_with_config(test_config(path.clone()));
+        let context = CoreLogContext {
+            generation_id: "dependency-test".to_string(),
+            generation_number: 1,
+            core_pid: 4242,
+        };
+        let stages = [
+            ("attempt.started", "info"),
+            ("attempt.failed", "warning"),
+            ("install.finished", "info"),
+            ("install.failed", "error"),
+        ];
+        for (stage, severity) in stages {
+            let event = json!({
+                "severity": severity,
+                "verbosity": if severity == "warning" { "warn" } else { severity },
+                "channel": "plugin",
+                "event": format!("plugin.dependencies.{stage}"),
+                "message": "ignored",
+                "attributes": {"plugin_id": "fixture", "dependency_source": "huawei", "attempt": 3, "action": "fallback"},
+            });
+            assert!(log.submit_core_bridge(&event.to_string(), &context).unwrap());
+        }
+        let records = log.viewer_snapshot(None).unwrap().records;
+        assert_eq!(records.len(), stages.len());
+        for (record, (stage, _)) in records.iter().zip(stages) {
+            assert_eq!(record.event_code, format!("plugin.dependencies.{stage}"));
+            assert_ne!(record.message, "Core 运行事件");
+            assert!(record.details.iter().any(|detail| detail.value == "huawei"));
+        }
+        log.drain_and_shutdown_for_test();
+        let written = fs::read_to_string(path).unwrap();
+        assert!(written.contains("huawei"));
+        assert!(written.contains("fixture"));
+        assert!(written.contains("attempt=3"));
+        assert!(written.contains("action=fallback"));
+        for record in records {
+            assert!(written.contains(&record.message));
+        }
         let _ = fs::remove_dir_all(root);
     }
 
