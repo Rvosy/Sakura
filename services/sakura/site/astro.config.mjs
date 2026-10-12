@@ -32,7 +32,7 @@ export default defineConfig({
 					label: '开始使用',
 					items: [
 						{ label: '安装与配置', slug: 'start/setup' },
-						{ label: 'API 配置', slug: 'start/api-config' },
+						{ label: '模型服务', slug: 'start/api-config' },
 						{ label: 'macOS 指南', slug: 'platform/macos' },
 					],
 				},
@@ -40,14 +40,14 @@ export default defineConfig({
 					label: '产品能力',
 					items: [
 						{ label: '功能概览', slug: 'product/features' },
-						{ label: '技术架构', slug: 'developers/architecture' },
 					],
 				},
 				{
-					label: '扩展开发',
+					label: '开发与扩展',
 					items: [
 						{ label: '角色包制作', slug: 'developers/character-pack' },
 						{ label: '插件 SDK', slug: 'developers/plugin-sdk' },
+						{ label: '技术架构', slug: 'developers/architecture' },
 					],
 				},
 			],
