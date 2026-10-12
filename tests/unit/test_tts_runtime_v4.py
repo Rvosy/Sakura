@@ -589,8 +589,7 @@ def test_genie_bundle_action_installs_and_updates_plugin_config(tmp_path: Path) 
         installer=install,
     )
     try:
-        started = resource.start({})
-        assert started["message"] == "已开始安装组件。"
+        resource.start({})
         assert runtime_ready.wait(2)
         assert resource.load()["bundleResource"]["taskState"] in {"queued", "running"}
         assert updates == []

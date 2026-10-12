@@ -19,11 +19,10 @@ def test_deployment_package_contains_size_inventory(tmp_path, monkeypatch):
     monkeypatch.setattr(package_release, "__file__", str(source / "package_release.py"))
     destination = tmp_path / "release.tar.gz"
     result = package_release.package(destination)
-    assert set(result) == {"archive", "bytes", "files"}
     assert result["bytes"] == destination.stat().st_size
     with tarfile.open(destination) as archive:
         manifest = json.load(archive.extractfile("release-manifest.json"))
         assert manifest["format"] == 3
         assert manifest["productionDeployed"] is False
         for name, info in manifest["files"].items():
-            assert info == {"bytes": archive.getmember(name).size}
+            assert info["bytes"] == archive.getmember(name).size

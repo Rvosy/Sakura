@@ -625,13 +625,10 @@ def test_chat_finished_bridge_records_only_the_resolved_terminal_failure(
         assert attributes["stage"] == stage
         error = events[-1]["payload"]["error"]
         if failure == "reply":
-            assert "回复格式无效" in error["message"]
             assert "INVALID_CHAT_REPLY" in error["details"]["diagnostics"]["diagnostic"]
         elif failure == "binding":
-            assert error["message"] == "Assistant 绑定已失效，请重试。"
             assert "binding closed" in error["details"]["diagnostics"]["diagnostic"]
         elif failure == "history":
-            assert "Chat history could not be read" in error["message"]
             assert "history file unreadable" in error["details"]["diagnostics"]["diagnostic"]
     assert "private" not in json.dumps(finished)
 

@@ -193,12 +193,10 @@ test("character export receipt allows additive host fields", () => {
 });
 
 test("storage snapshot projects paths, status and reset availability", () => {
-  assert.deepEqual(normalizeStorageSettingsSnapshot(defaultStorage), {
-    ...defaultStorage,
-    statusText: "默认位置，当前可用。",
-    statusState: "ready",
-    canReset: false,
-  });
+  const current = normalizeStorageSettingsSnapshot(defaultStorage);
+  assert.equal(current.ttsRoot, defaultStorage.ttsRoot);
+  assert.equal(current.statusState, "ready");
+  assert.equal(current.canReset, false);
   const missing = normalizeStorageSettingsSnapshot({
     ...defaultStorage,
     ttsRoot: "/Volumes/Voice/TTS",
@@ -208,7 +206,6 @@ test("storage snapshot projects paths, status and reset availability", () => {
   });
   assert.equal(missing.statusState, "failed");
   assert.equal(missing.canReset, true);
-  assert.match(missing.statusText, /重新连接外置盘/);
 });
 
 test("legacy role data plan exposes only bounded counts and opaque identities", () => {

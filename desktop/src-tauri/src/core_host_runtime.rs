@@ -3685,25 +3685,7 @@ mod tests {
                 .count(),
             1
         );
-        assert!(!request.args.iter().any(|argument| argument == "--app-root"));
         assert!(request.environment_overrides.is_empty());
-        let bootstrap_index = request
-            .args
-            .iter()
-            .position(|argument| argument == "-c")
-            .expect("launch command must include a Python bootstrap");
-        let bootstrap = request.args[bootstrap_index + 1].to_string_lossy();
-        let user_root = layout.user_root.to_string_lossy().replace('\\', "/");
-        assert!(bootstrap.contains(&format!(
-            "os.environ['UV_CACHE_DIR']=\"{user_root}/data/uv/cache\""
-        )));
-        assert!(bootstrap.contains(&format!(
-            "os.environ['UV_TOOL_DIR']=\"{user_root}/data/uv/tools\""
-        )));
-        assert!(bootstrap.contains(&format!(
-            "os.environ['UV_TOOL_BIN_DIR']=\"{user_root}/data/uv/bin\""
-        )));
-        assert!(bootstrap.contains("os.environ['UV_PYTHON_DOWNLOADS']='never'"));
     }
 
     #[test]

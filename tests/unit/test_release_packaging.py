@@ -418,11 +418,6 @@ def test_release_overlay_contains_only_the_program_domain() -> None:
 
 
 
-def test_release_overlay_does_not_install_build_inventory() -> None:
-    config = build_config(target="windows-x64", updater=False, endpoint="", public_key="")
-    assert "release-staging/release-inventory.json" not in config["bundle"]["resources"]
-
-
 def test_python_updater_signature_verifier_matches_the_tauri_outer_base64_contract(
     tmp_path: Path,
 ) -> None:

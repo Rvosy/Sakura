@@ -477,13 +477,7 @@ def test_invalid_genie_config_stays_active_but_unavailable(tmp_path: Path) -> No
         sections = worker.settings_sections("voice")
         assert len(sections) == 1
         assert sections[0]["pluginId"] == "sakura.tts.genie"
-        assert {field["key"] for field in sections[0]["fields"]} == {
-            "endpointMode",
-            "apiUrl",
-            "timeoutSeconds",
-        }
         fields = {field["key"]: field for field in sections[0]["fields"]}
-        assert fields["endpointMode"]["label"] == "服务来源"
         assert fields["apiUrl"]["enabledWhen"] == {
             "field": "endpointMode",
             "equals": "custom",

@@ -1,40 +1,41 @@
----
-kind: index
-status: current
-audience: all
-source_of_truth: self
-updated: 2026-09-24
----
-
 # Sakura 文档
 
-第一次使用 Sakura，先看安装指南。想写插件或参与开发，可以直接进入开发者文档。
+文档按使用、模块规格、架构决策与开发接口组织。各模块保留足够的职责、流程、数据和协作说明；重复内容通过链接共用，历史版本见 [Releases](https://github.com/Rvosy/Sakura/releases) 与 Git。
 
-## 使用 Sakura
+## 了解系统与模块
 
-- [更新日志](CHANGELOG.md)
-- [安装与首次配置](userdocs/SETUP.md)
-- [API 模型服务与模型](userdocs/API_CONFIG.md)
-- [聊天、截图与屏幕感知](userdocs/CHAT_SCREEN_AND_CONTEXT.md)
-- [数据与存储](userdocs/RUNTIME_V2_STORAGE.md)
-- [联网搜索与网页读取](userdocs/WEB_SEARCH.md)
-- [运行统计与错误报告](userdocs/REMOTE_DIAGNOSTICS_AND_TELEMETRY.md)
-- [macOS 使用说明](userdocs/MACOS_SETUP.md)
-- [Linux 使用说明](userdocs/LINUX_SETUP.md)
-- [窗口交互](userdocs/RUNTIME_V2_WINDOW_INTERACTION.md)
-- [外观设置](userdocs/RUNTIME_V2_APPEARANCE.md)
-- [MCP 基础组件](userdocs/RUNTIME_V2_MCP.md)
-- [Python 插件](userdocs/RUNTIME_V2_PLUGINS.md)
-- [运行日志与故障排查](userdocs/RUNTIME_LOG_TROUBLESHOOTING.md)
+| 入口 | 内容 |
+|---|---|
+| [架构与模块关系](development/architecture.md) | 整体结构、模块地图、对话链路及数据归属 |
+| [模块规格 Spec](specs/README.md) | 运行时、插件、聊天、模型、历史、设置、角色、语音等模块的业务契约 |
+| [架构决策 ADR](adr/README.md) | 当前技术选择的理由、边界和代价 |
 
-## 开发与扩展
+修改某个模块时，从它的 Spec 进入，再查看关联模块、ADR 和公开接口。规格不跟随内部函数拆分而改变，业务要求变化时同步更新。
 
-- [开发者文档](devdocs/README.md)
-- [技术架构](devdocs/TECHNICAL_README.md)
-- [Plugin API v4 开发指南](devdocs/SAKURA_PLUGIN_SDK.md)
-- [插件开发 AI 提示词](devdocs/SAKURA_PLUGIN_AI_PROMPT.md)
-- [贡献指南](../.github/CONTRIBUTING.md)
+## 使用指南
 
-`specs/`、`adr/`、`plans/`、`records/` 和 `archive/` 保存维护者使用的契约、决策与工程记录，不是普通使用流程的一部分。
+| 文档 | 内容 |
+|---|---|
+| [安装与首次配置](guide/setup.md) | 各平台安装、源码启动、首次使用与更新 |
+| [模型服务](guide/models.md) | 连接、模型选择、密钥与请求故障 |
+| [聊天与语音](guide/chat.md) | 截图、主动搭话、历史、上下文和语音 |
+| [角色与外观](guide/characters.md) | 导入、工坊、布局与桌面交互 |
+| [插件与资源](guide/plugins.md) | 安装、更新、设置、资源与联网工具 |
+| [数据管理](guide/data.md) | 数据目录、备份、迁移与清理 |
+| [故障排查](guide/diagnostics.md) | 按操作步骤定位失败与读取日志 |
+| [统计与隐私](guide/privacy.md) | 发送范围、开关与保存期限 |
 
-[English entry](README.en.md) · [项目主页](../README.md)
+## 开发接口与维护
+
+| 文档 | 内容 |
+|---|---|
+| [贡献指南](../.github/CONTRIBUTING.md) | 开发环境、目录与提交 |
+| [Plugin API v4](development/plugin-sdk.md) | 清单、通用接口、设置贡献与最小插件 |
+| [插件能力接入](development/plugin-recipes.md) | 模型、Assistant、语音、MCP 等公共服务接口 |
+| [角色与表现接口](development/characters.md) | 资源格式、渲染与工坊编辑器接入 |
+| [发行操作](development/release.md) | 构建、更新签名、发布正文与镜像 |
+| [在线服务运维](development/services.md) | 服务构建、部署模板、备份与诊断导出 |
+| [诊断接入](development/diagnostics.md) | 日志入口和错误传递示例 |
+| [测试入口](../harness/README.md) | 选择并执行相关验证 |
+
+协作和文档维护规则见 [AGENTS.md](../AGENTS.md)。[当前发行说明](CHANGELOG.md) · [项目主页](../README.md)

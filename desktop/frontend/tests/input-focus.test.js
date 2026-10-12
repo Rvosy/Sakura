@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-const inputFocus = await import("../pet/input-focus.js").catch(() => null);
+import * as inputFocus from "../pet/input-focus.js";
 
 function harness(initialText = "hello", { emptySubmissionText = () => "" } = {}) {
   const focusReasons = [];
@@ -17,7 +17,6 @@ function harness(initialText = "hello", { emptySubmissionText = () => "" } = {})
 }
 
 test("composer accepts ordinary text and submits only to the injected local presentation consumer", () => {
-  assert.ok(inputFocus, "input-focus module must exist");
   const { controller, submissions } = harness("  hello Sakura  ");
   controller.setPresentation("product");
   const result = controller.handleKeyDown({ key: "Enter", isComposing: false, shiftKey: false });
@@ -26,7 +25,6 @@ test("composer accepts ordinary text and submits only to the injected local pres
 });
 
 test("an attached screenshot supplies the main-compatible default text for an empty draft", () => {
-  assert.ok(inputFocus, "input-focus module must exist");
   const { controller, submissions } = harness("   ", {
     emptySubmissionText: () => "请根据我框选的截图继续对话。",
   });
@@ -40,7 +38,6 @@ test("an attached screenshot supplies the main-compatible default text for an em
 });
 
 test("IME composition updates never become a submit action", () => {
-  assert.ok(inputFocus, "input-focus module must exist");
   const { controller, submissions } = harness("樱花");
   controller.setPresentation("product");
   controller.handleCompositionStart("y");
@@ -57,7 +54,6 @@ test("IME composition updates never become a submit action", () => {
 });
 
 test("composition end permits a later explicit submit", () => {
-  assert.ok(inputFocus, "input-focus module must exist");
   const { controller, submissions } = harness("中文");
   controller.setPresentation("product");
   controller.handleCompositionStart("zhong");
@@ -68,7 +64,6 @@ test("composition end permits a later explicit submit", () => {
 });
 
 test("window deactivation relinquishes focus until the product presentation requests it again", () => {
-  assert.ok(inputFocus, "input-focus module must exist");
   const { controller, focusReasons } = harness();
   controller.setPresentation("product");
   controller.handleInputFocus();
@@ -84,7 +79,6 @@ test("window deactivation relinquishes focus until the product presentation requ
 });
 
 test("window deactivation clears a focused input even when no DOM blur arrives", () => {
-  assert.ok(inputFocus, "input-focus module must exist");
   const { controller } = harness();
   controller.setPresentation("product");
   controller.handleInputFocus();
@@ -94,7 +88,6 @@ test("window deactivation clears a focused input even when no DOM blur arrives",
 });
 
 test("an explicit outside-pointer dismissal survives window and visibility round-trips", () => {
-  assert.ok(inputFocus, "input-focus module must exist");
   const { controller, focusReasons } = harness();
   controller.setPresentation("product");
   controller.handleInputFocus();
@@ -109,7 +102,6 @@ test("an explicit outside-pointer dismissal survives window and visibility round
 });
 
 test("empty text, inactive states, and Shift+Enter do not submit", () => {
-  assert.ok(inputFocus, "input-focus module must exist");
   const { controller, submissions, setText } = harness("");
   assert.equal(controller.submit("button"), false);
   controller.setPresentation("product");

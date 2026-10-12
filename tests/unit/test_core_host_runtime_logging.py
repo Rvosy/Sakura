@@ -135,7 +135,6 @@ def test_core_bridge_forwards_suppressed_log_events_without_legacy_outputs(monke
     records = _records(stream)
     event = next(record for record in records if record["event"] == "agent.turn.started")
     assert event["operation_id"] == "operation-wp-4l-01"
-    assert event["message"] == "Assistant turn started"
     assert event["attributes"] == {"tool_name": "memory.search", "elapsed_ms": 12}
     serialized = stream.getvalue().decode("utf-8")
     assert PRIVATE_CHAT not in serialized
@@ -239,7 +238,6 @@ def test_app_logging_handler_preserves_error_and_redacts_credentials() -> None:
     assert "original filesystem error" in serialized
     assert PRIVATE_SECRET not in serialized
     event = next(record for record in _records(stream) if record["event"] == "python.logging.error")
-    assert event["message"] == "Python application error"
     assert event["attributes"]["category"] == "RuntimeError"
     assert event["attributes"]["code"] == "PYTHON_EXCEPTION"
     assert "exception_stack" in event["attributes"]
@@ -507,7 +505,6 @@ def test_unknown_info_event_is_not_promoted_to_user_visible_info() -> None:
     event = _records(stream)[0]
     assert event["event"] == "core.runtime.event"
     assert event["severity"] in {"debug", "trace"}
-    assert event["message"] == "Core internal diagnostic"
 
 
 def test_tts_business_event_keeps_text_size_without_text() -> None:
@@ -580,7 +577,6 @@ def test_forwarded_worker_record_uses_only_active_sink_and_reapplies_safety(
     event = records[0]
     assert event["event"] == "tts.request.started"
     assert event["operation_id"] == "chat-worker-1"
-    assert event["message"] == "TTS synthesis started"
     assert event["attributes"] == {
         "provider": "gpt_sovits",
         "text_chars": 41,

@@ -18,7 +18,7 @@ test("stopping rejects stale waiting frames after another run starts", () => {
   stale();
   assert.equal(rendered.length, count);
   timers.shift()();
-  assert.equal(rendered.at(-1), "..");
+  assert.equal(rendered.length, count + 1);
   indicator.stop();
   assert.equal(indicator.active(), false);
 });

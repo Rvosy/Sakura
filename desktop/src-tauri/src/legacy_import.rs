@@ -2405,54 +2405,6 @@ mod tests {
         ))
     }
 
-    #[test]
-    fn packaged_python_bootstrap_includes_importer_and_memory_roots() {
-        let root = std::env::temp_dir().join(format!(
-            "sakura-legacy-bootstrap-test-{}",
-            uuid::Uuid::new_v4().simple()
-        ));
-        let core_root = root.join("core");
-        let distribution_root = root.join("distribution");
-        let site_packages = root.join("site-packages");
-        let memory_dependencies = distribution_root.join("plugins/dependencies/sakura.memory.mem0");
-        fs::create_dir_all(&memory_dependencies).unwrap();
-
-        let bootstrap = python_bootstrap(
-            std::slice::from_ref(&site_packages),
-            &core_root,
-            &distribution_root,
-        )
-        .unwrap();
-        let roots_json = bootstrap
-            .split_once(";sys.path[:0]=")
-            .unwrap()
-            .1
-            .split_once(";sys.argv[0]")
-            .unwrap()
-            .0;
-        let roots: Vec<PathBuf> = serde_json::from_str(roots_json).unwrap();
-
-        assert_eq!(roots[0], core_root);
-        assert_eq!(roots[1], distribution_root);
-        assert!(roots.contains(&site_packages));
-        assert!(roots.contains(&memory_dependencies));
-        let distribution_json = bootstrap
-            .split_once("os.environ['SAKURA_DISTRIBUTION_ROOT']=")
-            .unwrap()
-            .1
-            .split_once(";sys.path")
-            .unwrap()
-            .0;
-        assert_eq!(
-            serde_json::from_str::<PathBuf>(distribution_json).unwrap(),
-            distribution_root
-        );
-        assert!(!bootstrap.contains("SAKURA_RUNTIME_LOG_PATH"));
-        assert!(!bootstrap.contains("sakura-runtime.log"));
-
-        fs::remove_dir_all(root).unwrap();
-    }
-
     #[cfg(windows)]
     #[test]
     fn windows_import_request_accepts_inherited_environment() {

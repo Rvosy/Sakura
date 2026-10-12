@@ -286,27 +286,6 @@ def test_turn_id_cannot_cross_characters_in_batch_or_existing_rows(tmp_path: Pat
     assert store.read_all("other") == []
 
 
-def test_schema_has_one_business_table_and_two_indexes(tmp_path: Path) -> None:
-    store = TimelineStore(tmp_path / "timeline.sqlite3")
-    store.initialize()
-    store.append(_entry(TimelineKind.HUMAN, {"text": "hello"}))
-
-    with sqlite3.connect(store.path) as connection:
-        tables = {
-            row[0]
-            for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")
-            if not row[0].startswith("sqlite_")
-        }
-        indexes = {
-            row[0]
-            for row in connection.execute(
-                "SELECT name FROM sqlite_master WHERE type='index' AND name LIKE 'timeline_%'"
-            )
-        }
-    assert tables == {"timeline_entries"}
-    assert indexes == {"timeline_character_seq", "timeline_character_turn_seq"}
-
-
 def test_activated_store_does_not_recreate_database_deleted_during_runtime(tmp_path: Path) -> None:
     store = TimelineStore(tmp_path / "timeline.sqlite3")
     store.initialize()

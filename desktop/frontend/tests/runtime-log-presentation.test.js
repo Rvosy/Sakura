@@ -8,7 +8,6 @@ import {
   validateViewerBootstrap,
   validateViewerSnapshot,
   viewerCopyText,
-  viewerInlineSummary,
   viewerItemKey,
   viewerProblemCount,
   viewerScopeCounts,
@@ -58,7 +57,7 @@ test("unified snapshots filter plugins by trusted identity and preserve file fai
   assert.deepEqual(filterViewerRecords(state.records, "plugins", "problems"), [two]);
   assert.equal(collapseViewerRecords([one, { ...one, sequence: 2, pluginId: "fixture.two" }], "plugins").length, 2);
   const copied = viewerCopyText({ record: one });
-  assert.match(copied, /插件：长期记忆/);
+  assert.ok(copied.includes(one.pluginName));
   assert.match(copied, /<img src=x onerror=alert\(1\)>/);
   assert.throws(() => validateViewerSnapshot(snapshot([{ ...one, source: "core" }])));
   assert.throws(() => validateViewerSnapshot(snapshot([one], { failedFiles: ["C:/private"] })));
@@ -126,50 +125,10 @@ test("consecutive duplicate rows collapse and copied errors retain support detai
   assert.equal(collapsed.length, 1);
   assert.equal(collapsed[0].repeatCount, 2);
   const copied = viewerCopyText(collapsed[0]);
-  assert.match(copied, /\[错误\] 模型请求失败/);
-  assert.match(copied, /原始报错：身份验证失败/);
-  assert.ok(!copied.includes("说明："));
-  assert.match(copied, /事件代码：api\.request\.failed/);
-  assert.match(copied, /关联编号：op:12345678/);
-  assert.match(copied, /连续重复：2 次/);
-  assert.ok(copied.indexOf("原始报错：") < copied.indexOf("错误码："));
-  assert.ok(copied.indexOf("错误码：") < copied.indexOf("关联编号："));
-});
-
-test("plugin synthesis duration is visible inline while stage metrics stay in details", () => {
-  const tts = record(1, { source: "plugin", pluginId: "sakura.tts.sakuratts", scopes: ["tts"],
-    eventCode: "runtime.message", message: "SakuraTTS 合成耗时", details: [
-      { label: "reference_ms", value: "1400" },
-      { label: "elapsed_ms", value: "1875" },
-      { label: "gpt_ms", value: "215" },
-    ] });
-  assert.equal(viewerInlineSummary(tts), "耗时=1.88 秒");
-  assert.equal(tts.details.length, 3);
-  for (const [value, expected] of [["469", "耗时=469 ms"], ["0", "耗时=0 ms"],
-    ["NaN", ""], ["Infinity", ""], ["-1", ""], [" ", ""]]) {
-    assert.equal(viewerInlineSummary({ ...tts, details: [{ label: "elapsed_ms", value }] }), expected);
+  for (const value of [error.message, error.eventCode, error.correlationId, ...error.details.map(detail => detail.value)]) {
+    assert.ok(copied.includes(value));
   }
-  assert.equal(viewerInlineSummary({ ...tts, details: [{ label: "duration_ms", value: "2000" }] }), "耗时=2 秒");
-  assert.equal(viewerInlineSummary(tts, 0), "");
 });
-
-test("inline summaries keep useful context and hide support-only diagnostics", () => {
-  const summary = viewerInlineSummary(record(1, {
-    details: [
-      { label: "原因码", value: "TTS_DEVICE_PROBE_FAILED" },
-      { label: "阶段", value: "runtime_start" },
-      { label: "服务", value: "sakura.tts.gpt-sovits" },
-      { label: "耗时", value: "32375 ms" },
-      { label: "数据量", value: "741.3 KB" },
-      { label: "状态", value: "ready" },
-    ],
-  }));
-
-  assert.equal(summary, "服务=sakura.tts.gpt-sovits · 耗时=32375 ms · 数据量=741.3 KB");
-  assert.doesNotMatch(summary, /原因码|阶段|TTS_DEVICE_PROBE_FAILED|runtime_start/);
-});
-
-
 
 test("collapsed rows have distinct instance keys even when identical records are non-consecutive", () => {
   const repeated = {

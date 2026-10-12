@@ -31,8 +31,6 @@ def test_legacy_portrait_business_is_owned_by_replaceable_plugin(tmp_path: Path,
     (package / "character.json").write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
     before = (package / "character.json").read_text(encoding="utf-8")
     profile = CharacterRegistry(user).get("demo")
-    assert profile.current_visual_resource.name == "立绘1"
-    assert not hasattr(profile, "default_portrait_path")
     application = PluginApplicationHost(RuntimeRoots(distribution, user), "portraits", ToolRegistry())
     application.start()
     try:

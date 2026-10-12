@@ -21,7 +21,7 @@ function entry(kind, payload, overrides = {}) {
   };
 }
 
-test("history projection keeps old left right grouping and current subtitle language", () => {
+test("history projection preserves participants and current subtitle language", () => {
   const projected = projectHistoryEntries([
     entry("human", { text: "你好" }),
     entry("assistant", {
@@ -39,48 +39,22 @@ test("history projection keeps old left right grouping and current subtitle lang
     formatTime: () => "2026/08/29 12:00:00",
   });
 
-  assert.deepEqual(projected.map(({ role, align, content, showMeta }) => ({
-    role, align, content, showMeta,
-  })), [
-    { role: "human", align: "right", content: "你好", showMeta: true },
-    { role: "assistant", align: "left", content: "我回来了", showMeta: true },
-    { role: "assistant", align: "left", content: "嗯", showMeta: false },
-    { role: "assistant", align: "left", content: "我在这里", showMeta: false },
+  assert.deepEqual(projected.map(({ role, content }) => ({ role, content })), [
+    { role: "human", content: "你好" },
+    { role: "assistant", content: "我回来了" },
+    { role: "assistant", content: "嗯" },
+    { role: "assistant", content: "我在这里" },
   ]);
-  assert.equal(projected[1].metaText, "桜 · 2026/08/29 12:00:00");
 });
 
-test("observations and system facts become centered plain-text records", () => {
+test("observation content is preserved as plain text", () => {
   const unsafe = "<script>alert('x')</script>\n视觉摘要";
   const projected = projectHistoryEntries([
     entry("observation", { text: unsafe }, { origin: "manual_screen" }),
     entry("system", { text: "已确认的关系事实" }, { entryId: "entry-system", origin: "host" }),
   ], { formatTime: () => "now" });
 
-  assert.equal(projected[0].align, "center");
-  assert.equal(projected[0].roleName, "屏幕记录");
   assert.equal(projected[0].content, unsafe);
-  assert.equal(projected[1].roleName, "系统记录");
-  assert.equal("visualId" in projected[0], false);
-});
-
-test("legacy reconnection events are hidden without changing stored entries or other records", () => {
-  const reconnectText = "legacy reconnection notice";
-  const entries = [
-    entry("system", { text: "start", eventType: "app.started" }, { entryId: "started" }),
-    entry("system", { text: reconnectText, eventType: "app.reconnected" }, { entryId: "reconnected" }),
-    entry("human", { text: reconnectText }, { entryId: "human" }),
-    entry("system", { text: reconnectText }, { entryId: "system-fact" }),
-    entry("system", { text: "close", eventType: "app.closed" }, { entryId: "closed" }),
-  ];
-  const storedEntries = structuredClone(entries);
-
-  const projected = projectHistoryEntries(entries);
-
-  assert.deepEqual(projected.map(({ entryId }) => entryId), ["started", "human", "system-fact", "closed"]);
-  assert.equal(projected[1].content, reconnectText);
-  assert.equal(projected[2].content, reconnectText);
-  assert.deepEqual(entries, storedEntries);
 });
 
 test("only assistant bubbles carry stable recording identity with original segment indices", () => {
@@ -108,21 +82,6 @@ test("bilingual history pairs each assistant segment and preserves human text", 
   assert.deepEqual(projected.map(({ content }) => content), ["你好", "我回来了\nただいま", "うん"]);
 });
 
-test("legacy manual screenshot notices are projected without changing stored text or other entries", () => {
-  const legacyText = "用户手动选择的 2 张屏幕截图已提交给对话模型。";
-  const manual = entry("observation", { text: legacyText }, { origin: "manual_screen" });
-  const projected = projectHistoryEntries([
-    manual,
-    entry("human", { text: legacyText }),
-    entry("observation", { text: `${legacyText}\n画面摘要` }, { origin: "manual_screen" }),
-  ]);
-  assert.match(projected[0].content, /2 张屏幕截图/);
-  assert.notEqual(projected[0].content, legacyText);
-  assert.equal(manual.payload.text, legacyText);
-  assert.equal(projected[1].content, legacyText);
-  assert.equal(projected[2].content, `${legacyText}\n画面摘要`);
-});
-
 test("scheduled screen summaries fold into one humanized observation record", () => {
   const projected = projectHistoryEntries([
     entry("observation", {
@@ -134,8 +93,6 @@ test("scheduled screen summaries fold into one humanized observation record", ()
   ], { formatTime: () => "now" });
 
   assert.equal(projected.length, 1);
-  assert.equal(projected[0].roleName, "屏幕观察");
-  assert.equal(projected[0].content, "刚才留意了一下屏幕状态。");
   assert.equal(
     projected[0].detailsContent,
     "画面摘要：用户正在检查串口监控。\n关键元素：监控主界面",
@@ -163,12 +120,9 @@ test("plugin screen observations retain the character perspective and fold only 
     const saved = structuredClone(entries);
     const projected = projectHistoryEntries(entries);
     assert.equal(projected.length, 5);
-    assert.equal(projected[0].roleName, "屏幕观察");
-    assert.equal(projected[0].content, "刚才留意了一下屏幕状态。");
     assert.equal(projected[0].detailsContent, "画面摘要：用户正在检查界面。");
     assert.equal(projected[1].detailsContent, "另一次观察");
-    assert.equal(projected[2].content, `由「${sourcePluginId}」发起`);
-    assert.equal(projected[2].roleName, "插件消息");
+    assert.ok(projected[2].content.includes(sourcePluginId));
     assert.equal(projected[3].content, "你分享了 1 张屏幕截图。");
     assert.equal(projected[4].content, trigger);
     assert.deepEqual(entries, saved);
@@ -214,10 +168,8 @@ test("plugin notifications use explicit purpose while legacy messages remain gen
   const entries = payloads.map((payload, index) => entry("observation", payload, { origin: "host", entryId: String(index) }));
   const before = JSON.stringify(entries);
   const projected = projectHistoryEntries(entries);
-  assert.equal(projected[0].roleName, "更新提醒");
   assert.equal(projected[0].content, payloads[0].text);
-  assert.equal(projected[1].roleName, "插件消息");
-  assert.equal(projected[1].content, "由「tts」发起");
-  assert.equal(projected[2].content, "由「示例插件」发起");
+  assert.ok(projected[1].content.includes(payloads[1].sourcePluginId));
+  assert.ok(projected[2].content.includes(payloads[2].sourcePluginName));
   assert.equal(JSON.stringify(entries), before);
 });

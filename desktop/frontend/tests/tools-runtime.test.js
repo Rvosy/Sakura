@@ -44,7 +44,7 @@ function fixture() {
   };
 }
 
-test("WP-4-02 Tools snapshots are exact, bounded, and generation scoped", () => {
+test("Tools snapshots are exact, bounded, and generation scoped", () => {
   assert.equal(validateToolsSnapshot(snapshot()).coreGenerationId, "generation-a");
   assert.throws(() => validateToolsSnapshot({ ...snapshot(), arguments: {} }));
   assert.throws(() => validateToolsSnapshot(snapshot("", {})));
@@ -57,7 +57,7 @@ test("WP-4-02 Tools snapshots are exact, bounded, and generation scoped", () => 
   })), /整轮工具数/);
 });
 
-test("WP-4-02 Tools save hot-applies in the bound generation", async () => {
+test("Tools save hot-applies in the bound generation", async () => {
   const { controls, document } = fixture();
   const calls = [];
   let restarted = false;
@@ -104,7 +104,7 @@ test("WP-4-02 Tools save hot-applies in the bound generation", async () => {
   assert.equal(controller.isDirty(), false);
 });
 
-test("WP-4-02 failed Tools save keeps the draft and committed discard baseline", async () => {
+test("failed Tools save keeps the draft and committed discard baseline", async () => {
   const { controls, document } = fixture();
   const controller = createToolsController({
     document,

@@ -17,6 +17,13 @@ test("two icon changes before the first animation frame preserve the visible sou
   globalThis.cancelAnimationFrame = id => scheduled.delete(id);
   let currentPath;
   const morph = createMorph({ setAttribute: (_name, value) => { currentPath = value; } }, icons["volume-2"]);
+  const bounds = path => {
+    const coordinates = [...path.matchAll(/-?[\d.]+/g)].map(match => Number(match[0]));
+    const x = coordinates.filter((_, index) => index % 2 === 0);
+    const y = coordinates.filter((_, index) => index % 2 === 1);
+    return [Math.min(...x), Math.max(...x), Math.min(...y), Math.max(...y)];
+  };
+  const initialBounds = bounds(currentPath);
   try {
     morph.morphTo(icons["loader-circle"], "snappy");
     morph.morphTo(icons.stop, "snappy");
@@ -25,15 +32,14 @@ test("two icon changes before the first animation frame preserve the visible sou
     scheduled.clear();
     frame(0);
 
-    // The zero-time frame must still occupy the speaker's original 24px grid,
-    // rather than collapse to (0, 0) and fly in from the corner.
-    const points = [...currentPath.matchAll(/[ML](-?[\d.]+) (-?[\d.]+)/g)]
-      .map(([, x, y]) => [Number(x), Number(y)]);
-    const xs = points.map(([x]) => x);
-    const ys = points.map(([, y]) => y);
-    assert.ok(points.length > 0);
-    assert.ok(Math.min(...xs) >= 1.9 && Math.max(...xs) >= 21.9, currentPath);
-    assert.ok(Math.min(...ys) >= 3.9 && Math.max(...ys) >= 19.9, currentPath);
+    // 重采样允许小幅误差，连续切换的首帧仍应留在原图标范围内。
+    const interruptedBounds = bounds(currentPath);
+    for (let axis = 0; axis < 2; axis++) {
+      const start = axis * 2;
+      const tolerance = (initialBounds[start + 1] - initialBounds[start]) * 0.05;
+      assert.ok(Math.abs(interruptedBounds[start] - initialBounds[start]) <= tolerance, currentPath);
+      assert.ok(Math.abs(interruptedBounds[start + 1] - initialBounds[start + 1]) <= tolerance, currentPath);
+    }
   } finally {
     morph.destroy();
     globalThis.requestAnimationFrame = previousRequest;

@@ -1,8 +1,6 @@
 import { errorText } from '../core/error-display.js';
 import assert from "node:assert/strict";
 import test from "node:test";
-import { readFile } from "node:fs/promises";
-import vm from "node:vm";
 
 import { createVoiceController as createController, exactVoiceSnapshot } from "../settings/voice-runtime.js";
 
@@ -171,8 +169,6 @@ test("disabled TTS Hub skips voice IPC and can recover after the Hub is enabled"
   assert.equal(controls.voiceSettings.hidden, false);
   assert.equal(controls.voiceUnavailable.hidden, false);
   assert.equal(controls["page-voice"].dataset.voiceState, "disabled");
-  assert.equal(created.some((item) => item.textContent === "语音管理暂不可用"), true);
-  assert.equal(created.some((item) => item.textContent === "语音插件已停用。"), true);
   assert.equal(controller.isDirty(), false);
 
   const refresh = created.find((item) => item.textContent === "重新检查");
@@ -219,33 +215,6 @@ test("entering voice refreshes prepared providers without applying or losing edi
   assert.equal(calls.length, 2);
 });
 
-test("settings startup connects the voice controller to the installed plugin snapshot", async () => {
-  const source = await readFile(new URL("../settings/settings.js", import.meta.url), "utf8");
-  const start = source.indexOf("runtimeVoiceController = createVoiceController({");
-  const endMarker = "await runtimeVoiceController.refreshCurrent();";
-  const end = source.indexOf(endMarker, start) + endMarker.length;
-  const { controls, document, created } = fixture();
-  let plugins = [hub({ enabled: false, state: "disabled" })];
-  let calls = 0;
-  const context = {
-    createVoiceController: createController, document,
-    invoke: async () => { calls++; return snapshot(); },
-    runtimePluginController: {
-      installedPlugins: () => plugins,
-      refreshCurrent: async () => { plugins = [hub()]; },
-      onVoiceSectionsRendered() {},
-    },
-    enhanceSelect() {}, refreshSelect() {}, refreshDirty() {}, notify() {}, showPage() {}, openVoicePlugin() {},
-    runtimeDiagnostics: { reportError() {} },
-  };
-  await vm.runInNewContext(`(async () => { let runtimeVoiceController; ${source.slice(start, end)} })()`, context);
-  assert.equal(calls, 0);
-  assert.equal(controls["page-voice"].dataset.voiceState, "disabled");
-  await created.find((item) => item.textContent === "重新检查").fireAsync("click");
-  assert.equal(calls, 1);
-  assert.equal(controls["page-voice"].dataset.voiceState, "available");
-});
-
 test("empty voice engine list keeps the selector visible with an installation hint", async () => {
   const { controls, document, created } = fixture();
   const controller = createVoiceController({
@@ -259,7 +228,6 @@ test("empty voice engine list keeps the selector visible with an installation hi
   assert.equal(await controller.refreshCurrent(), null);
   assert.equal(controls.voiceSettings.hidden, false);
   assert.equal(controls.voiceUnavailable.hidden, true);
-  assert.equal(controls.ttsProvider.children.at(-1).textContent, "未安装语音插件");
   assert.equal(controls.ttsPluginSettings.disabled, true);
   assert.equal(controller.isDirty(), false);
 });

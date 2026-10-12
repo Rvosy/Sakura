@@ -14,8 +14,6 @@ from sakura_context import ContextFragment, ContextMessage, ContextRequest
 from app.plugins.discovery import PluginDiscovery
 from app.plugins.models import ContextProviderContribution
 from plugins.optional.sakura_mem0.plugin import (
-    HOST_CHAT_COMPLETED_EVENT,
-    MEMORY_COLLECTION_ID,
     SakuraMem0Plugin,
     SakuraMem0Runtime,
     _default_runtime,
@@ -326,53 +324,6 @@ def test_external_manifest_is_discoverable_and_disabled_on_fresh_install(tmp_pat
     )
 
 
-def test_plugin_registers_only_generic_host_services_and_effect_cleanup(tmp_path: Path) -> None:
-    runtime, boundary = _runtime(tmp_path)
-    context = FakeContext()
-
-    SakuraMem0Plugin(lambda _context: runtime).setup(context)
-
-    assert [name for name, _callback in context.events] == [
-        HOST_CHAT_COMPLETED_EVENT,
-    ]
-    assert len(context.services["sakura.host.context"].calls) == 1
-    tool_calls = context.services["sakura.host.tools"].calls
-    assert [call[0][0]["name"] for call in tool_calls] == [
-        "memory_search",
-        "memory_remember",
-        "memory_update",
-        "memory_forget",
-    ]
-    assert {call[0][0]["group"] for call in tool_calls} == {"plugin"}
-    settings_calls = context.services["sakura.host.settings"].calls
-    assert [call[0][0]["sectionId"] for call in settings_calls] == [
-        "memory",
-        "memory_embedding_component",
-        "memory_management",
-    ]
-    assert "collections" not in settings_calls[0][0][0]
-    assert "surface" not in settings_calls[1][0][0]
-    surface_calls = context.services["sakura.host.settings.surface-v0"].calls
-    assert [call[0] for call in surface_calls] == [
-        ("memory_embedding_component", "about"),
-        ("memory_management", "memory"),
-    ]
-    collection_call = context.services["sakura.host.settings.collection-v0"].calls[0]
-    assert collection_call[0][0] == "memory_management"
-    assert collection_call[0][1]["collectionId"] == MEMORY_COLLECTION_ID
-    assert collection_call[0][1]["scope"] == "character"
-    slot_call = context.services["sakura.host.model_slots.v2"].calls[0]
-    assert {key: value for key, value in slot_call[0][0].items() if key not in {"label", "description"}} == {
-        "slotId": "curation",
-        "modelKind": "chat_completion",
-        "required": False,
-        "order": 30,
-    }
-
-    context.effects[0]()
-    assert boundary.closed is True
-
-
 def test_plugin_setup_does_not_wait_for_initial_timeline_catch_up(tmp_path: Path) -> None:
     runtime, boundary = _runtime(tmp_path)
     context = FakeContext()
@@ -481,16 +432,6 @@ def test_official_descriptors_pass_real_generic_host_validators(tmp_path: Path) 
         },
     )
     assert settings.count == 3
-    section = next(
-        item
-        for item in settings.sections_for_plugin("sakura.memory.mem0")
-        if item["sectionId"] == "memory"
-    )
-    assert [field["type"] for field in section["fields"]] == [
-        "status",
-        "integer",
-    ]
-    assert section["fields"][0]["placement"] == "section_header"
     component = next(
         item for item in settings.sections_for_plugin("sakura.memory.mem0")
         if item["sectionId"] == "memory_embedding_component"

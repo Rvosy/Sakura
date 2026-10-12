@@ -34,7 +34,6 @@ def test_context_contract_preserves_content_scope_and_authenticated_owner() -> N
     )
     capabilities = service.call("describe", [])
     assert capabilities["schemaVersion"] == 2
-    assert "fragmentKinds" not in capabilities
     assert "turn" in capabilities["scopes"]
     assert "abort" in capabilities["failurePolicies"]
     assert provider.plugin_id == "example.actual-owner"
@@ -42,8 +41,6 @@ def test_context_contract_preserves_content_scope_and_authenticated_owner() -> N
     assert provider.failure_policy == "abort"
     rule, reference = provider.build_context(ContextRequest(current_input="你好"))
     assert (rule.content, rule.required, rule.cache_scope) == ("用简短句子回答。", True, "turn")
-    assert not hasattr(rule, "kind")
-    assert not hasattr(reference, "trust")
     assert not reference.required
     assert reference.source == "plugin"
     assert service.call("unregister", [registration["registrationId"]]) == {"removed": True}

@@ -37,8 +37,6 @@ runtime\python.exe -m pytest -q tests/unit/test_windows_mcp_plugin.py
 `SAKURA_TEST_WINDOWS_MCP_LIVE=1` 与 `SAKURA_WINDOWS_MCP_TEST_DEPS`（已安装上游依赖的独立目录）。
 真实测试只发现工具、读取无图快照和验证进程退出，不点击、输入或执行命令，也不输出桌面内容。
 
-2026-09-15 在 Windows 实测：20 个工具，Snapshot 成功，停用后两个服务端进程回收。
-这一结果不代表已逐个验证写入工具。PyPI 0.8.5 支持当前 Python 3.12；GitHub 主分支的 Python 要求不同，
-更新时应重新核对发行包及依赖，不直接跟随 main。
+更新上游版本时核对发行包及其 Python 要求，不直接跟随主分支。
 
 上游 Windows-MCP 使用 MIT License，作者 JEOMON GEORGE；上游代码通过包管理器获取，未复制到此包装插件。

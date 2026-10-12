@@ -1,75 +1,40 @@
-# 手机聊天插件
+# 手机聊天
 
-通过手机浏览器与电脑上的 Sakura 聊天，发送文字或图片、查看聊天历史，使用桌面端当前角色和同一份会话数据。插件 ID 为 `sakura_mobile`，使用 Plugin API v4。使用时需要保持电脑上的 Sakura 运行。
+通过手机浏览器与电脑上的 Sakura 聊天，发送文字或图片、查看历史，使用桌面端当前角色和同一份会话数据。电脑上的 Sakura 需要保持运行；回复也会进入桌面字幕和语音流程，语音在电脑播放。
 
-## 安装与升级
+## 安装与连接
 
-此插件单独分发，新用户不预装。在“设置 → 插件 → 市场”搜索“手机聊天”并安装，也可以从“更多 → 从 ZIP 安装…”导入插件包，然后启用插件。
-插件需要 Sakura 1.3.2 或更新版本，只依赖 Python 标准库和宿主公开服务，无需额外 Python 依赖。
+在“设置 → 插件 → 市场”搜索“手机聊天”并安装、启用，也可以从 ZIP 安装。插件 ID 为 `sakura_mobile`，使用 Plugin API v4，无额外 Python 依赖。
 
-```text
-runtime/bin/python tools/release/package_optional_plugin.py --source plugins/optional/sakura_mobile --output artifacts/plugins/sakura-mobile-1.0.0.zip
-```
+打开插件设置，修改访问令牌，开启网页服务并保存。手机和电脑接入同一局域网，或通过 Tailscale 互通后，用手机浏览器打开设置中显示的地址。地址包含访问令牌，不要公开分享。
 
-Windows 将上述 Python 路径替换为 `runtime\python.exe`。
+| 配置 | 含义 |
+|---|---|
+| `enabled` | 是否开启网页服务 |
+| `host` | 监听地址 |
+| `port` | 监听端口，1–65535 |
+| `token` | 访问令牌，启用时不能为空 |
 
-从内置版本升级时，Sakura 使用本地文件和发行包中的兼容材料离线迁移，保留配置、数据和启停选择。已有其他版本的用户插件不会自动降级，迁移完成后主动卸载也不会自动恢复。原 `data/plugins/sakura_mobile/config.json` 和聊天历史继续使用。
-
-迁移在启动时执行，安装版和便携版使用同一流程；便携版需要沿用原用户目录。失败时可从市场重新安装，详见[插件升级指南](../../../docs/userdocs/RUNTIME_V2_PLUGINS.md#升级已有安装)。
-
-## Runtime v2 当前状态
-
-当前角色和主题通过 `sakura.host.character` 读取，历史使用 `sakura.host.timeline`，用户聊天使用
-`sakura.host.conversation`。聊天使用显式
-`begin/poll`，超时后通过 `release` 放弃结果并请求取消，避免保留无人读取的任务；图片先写入现有
-`sakura.host.artifacts`，跨进程只传有界 descriptor。回复同时进入桌面字幕和 TTS 流程，语音在电脑播放；手机网页接收文字和段落结果。
-
-## 激活后的能力边界
-
-插件激活后会：
-
-- 使用 Python 标准库 `ThreadingHTTPServer` 提供手机网页和 JSON API；
-- 通过通用角色、Timeline 和 conversation 接口读取资料并提交用户原文；
-- 通过 `sakura.host.artifacts` 传递图片，不把大型 data URL 塞进 Plugin IPC；
-- 通过 root Effect 关闭 HTTP server 并等待监听线程退出；
-- 使用 `sakura.host.settings` 注册声明式设置、状态和刷新 action；
-- 保存设置后在当前插件生命周期内重启 server，并返回 `applied` 或 `error`；
-- 继续限制 12 MiB 请求体、8 个并发请求、每客户端每分钟 60 次请求和 30 秒 socket timeout。
-
-Host Service 把任务绑定当前 generation 和插件 scope；插件停止时 Runtime 只取消该 scope 尚未完成的任务。
-
-## 配置
-
-打开插件设置，修改访问令牌，开启手机网页服务并保存。将手机和电脑接入同一局域网，或通过 Tailscale 互通，再用手机浏览器打开设置中显示的访问地址。地址包含访问令牌，不要公开分享。
-
-插件自带默认配置：
-
-```text
-plugins/optional/sakura_mobile/config.json
-```
-
-用户覆盖配置：
-
-```text
-data/plugins/sakura_mobile/config.json
-```
-
-字段包括：
-
-- `enabled`：是否启动手机网页服务；
-- `host`：监听地址；
-- `port`：1–65535；
-- `token`：访问令牌，启用时不能为空。
+保存后服务按新配置重启。停用插件会关闭服务并取消尚未完成的请求，已有聊天记录保留。更新与旧版迁移见[插件指南](../../../docs/guide/plugins.md#更新与修复)。
 
 ## HTTP 接口
 
 | 方法 | 路径 | 作用 |
-| --- | --- | --- |
-| `GET` | `/` | 返回手机网页 |
-| `GET` | `/api/status` | 检查服务状态 |
-| `GET` | `/api/characters` | 获取当前可用角色 |
-| `GET` | `/api/history` | 获取角色历史 |
+|---|---|---|
+| `GET` | `/` | 手机网页 |
+| `GET` | `/api/status` | 服务状态 |
+| `GET` | `/api/characters` | 可用角色 |
+| `GET` | `/api/history` | 角色历史 |
 | `POST` | `/api/chat` | 发送文字和可选图片 |
 
-所有接口都需要 token。正式使用时不要保留默认 token，不要把监听端口直接暴露到公共互联网；远程访问优先
-使用 Tailscale Serve 等有独立访问控制的反向代理。
+所有接口都需要访问令牌。正式使用时修改默认令牌，远程访问使用有独立访问控制的反向代理，避免把监听端口直接暴露到公网。
+
+## 打包
+
+在仓库根目录执行；macOS/Linux 使用 `runtime/bin/python`：
+
+```powershell
+runtime\python.exe tools\release\package_optional_plugin.py --source plugins\optional\sakura_mobile --output dist\sakura-mobile.zip
+```
+
+插件通过宿主的角色、历史、对话和图像服务工作。开发接口见[插件能力接入](../../../docs/development/plugin-recipes.md)。

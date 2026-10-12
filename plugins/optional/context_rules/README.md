@@ -3,8 +3,7 @@
 在插件设置中填写一段上下文，说明这次希望怎样交流，或补充需要使用的内容。默认内容让回复更简短。
 插件通过公开的 Context 和设置接口工作，不修改角色文件；当前角色信息与填写的上下文一起参与对话。
 
-0.2.0 需要支持 Context schema 2 的 Sakura 构建。旧版本不支持时，插件会启动失败并报告
-`CONTEXT_RULES_HOST_UNSUPPORTED`。宿主不再要求把内容分成“行为规则”和“参考资料”，也不判断它与角色卡是否冲突。
+插件使用 Plugin API v4 和 Context schema 2。填写的内容作为一段完整上下文参与对话。
 
 ## 安装与使用
 
@@ -52,6 +51,4 @@ runtime\python.exe tools\release\package_optional_plugin.py --source plugins\opt
 
 macOS/Linux 使用 `runtime/bin/python`，路径分隔符改为 `/`。插件没有额外 Python 依赖，不需要下载模型或资源。
 
-开发其他上下文插件时，可以参考 `plugin.py` 的能力检查、`scope: turn` 登记和纯内容返回值。
-`scope`、`required` 和失败策略是默认对话实现的消费约定。插件停用时，SDK 和宿主负责撤销登记；
-无需修改 Core 来登记业务类别。当前对话仍由默认 Assistant 和 ChatPipeline 执行。
+开发同类插件见[上下文接入](../../../docs/development/plugin-recipes.md)。

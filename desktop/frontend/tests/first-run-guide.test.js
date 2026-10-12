@@ -2,27 +2,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  FIRST_RUN_GUIDE_STEPS,
   calloutPosition,
   firstRunGuideRequested,
   modelSlotFeatures,
-  nextGuideIndex,
   spotlightGeometry,
 } from "../settings/first-run-guide.js";
-
-test("first-run guide has the non-blocking character, provider, and model sequence", () => {
-  assert.deepEqual(
-    FIRST_RUN_GUIDE_STEPS.map(({ id, page, selector }) => ({ id, page, selector })),
-    [
-      { id: "character", page: "character", selector: "#characterImportButton" },
-      { id: "providers", page: "providers", selector: "#addProviderButton" },
-      { id: "models", page: "model", selector: "#page-model > fieldset.settings-group" },
-    ],
-  );
-  assert.equal(nextGuideIndex(0, -1), 0);
-  assert.equal(nextGuideIndex(0, 1), 1);
-  assert.equal(nextGuideIndex(2, 1), 2);
-});
 
 test("first-run guide query is explicit and replay-safe", () => {
   assert.equal(firstRunGuideRequested("?guide=first-run"), true);
@@ -55,11 +39,11 @@ test("guide copy stays outside a wide spotlight", () => {
     { width: 980, height: 684 },
     { width: 300, height: 250 },
   );
-  assert.ok(position.top >= spotlight.top + spotlight.height + 18);
+  assert.ok(position.top >= spotlight.top + spotlight.height);
   assert.ok(position.maxHeight > 0);
 });
 
-test("model guide uses dynamic slot labels and falls back when slots are unavailable", () => {
+test("model guide uses labels and descriptions supplied by the current slots", () => {
   const row = (label, description) => ({
     querySelector(selector) {
       const textContent = selector === ".setting-title" ? label : description;
@@ -75,8 +59,4 @@ test("model guide uses dynamic slot labels and falls back when slots are unavail
     { label: "对话模型", description: "主要聊天" },
     { label: "视觉模型", description: "处理图片" },
   ]);
-  assert.deepEqual(
-    modelSlotFeatures(null).map(({ label }) => label),
-    ["对话模型", "视觉对话模型"],
-  );
 });

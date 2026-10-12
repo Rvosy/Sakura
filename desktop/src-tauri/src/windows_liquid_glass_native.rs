@@ -1,4 +1,4 @@
-//! Windows implementation for the safety-gated WP-3-03D single GPU pipeline.
+//! Windows 玻璃效果的原生 GPU 渲染。
 //!
 //! This module owns one WGC monitor session, one D3D11 device, two intermediate
 //! textures and one composition swap chain. It never creates a DWM effect graph.

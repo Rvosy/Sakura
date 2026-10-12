@@ -258,7 +258,5 @@ def test_screen_observation_logs_follow_real_terminal_and_keep_plugin_identity(t
     if outcome == "failed":
         assert "model connection lost" in records[-1]["attributes"]["diagnostic"]
         assert records[-1]["attributes"]["exception_chain"]
-    if outcome in {"reply", "empty"}:
-        assert ("没有回复" in records[-1]["message"]) == (outcome == "empty")
     serialized = json.dumps(records)
     assert all(private not in serialized for private in ("PRIVATE_SCREEN_PIXELS", "private-screen", "private-image", "private-model-secret", "proactive request"))

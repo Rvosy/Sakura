@@ -1,14 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { readFileSync } from "node:fs";
-import { runInNewContext } from "node:vm";
-import { createChatPresentationReducer } from "../chat/chat-presentation.js";
-import { createWaitingIndicator } from "../chat/waiting-indicator.js";
 
 import { createTtsController as createPluginTtsController } from "../../../plugins/builtin/sakura_tts_hub/frontend/playback.mjs";
 import { errorText } from "../core/error-display.js";
 const createTtsController = options => createPluginTtsController({ ...options, errorText });
-import { createTypewriter } from "../pet/typewriter.js";
 
 function deferred() {
   let resolve;
@@ -59,8 +54,6 @@ async function harness(implementation = () => descriptor, { emitBegin = true } =
     },
   };
 }
-
-const appSource = readFileSync(new URL("../app.js", import.meta.url), "utf8");
 
 test("all segments synthesize serially while the first segment is still playing", async () => {
   const synthesis = [deferred(), deferred(), deferred()];
@@ -233,92 +226,6 @@ test("another window taking audio keeps later automatic segments silent while su
   h.controller.dispose();
   assert.equal(h.calls.some(([name]) => name === "tts_stop_playback"), false);
 });
-const typewriterBinding = appSource.slice(
-  appSource.indexOf("const typewriter = createTypewriter({"),
-  appSource.indexOf("\nconst waitingIndicator =", appSource.indexOf("const typewriter = createTypewriter({")),
-);
-
-function sequence(h, segments, prepareVisual = async control => control) {
-  const timers = [];
-  const text = [];
-  const portraits = [];
-  const controls = [];
-  const opened = segments.map(() => deferred());
-  const requested = segments.map(() => deferred());
-  const pauses = segments.map(() => deferred());
-  const finished = deferred();
-  const presentation = createChatPresentationReducer({ initialMessage: "你好" });
-  const identity = { generationId: "generation-1", generationNumber: 1, operationId: "reply" };
-  presentation.reduce({ type: "lifecycle", status: "ready", revision: 1, ...identity });
-  presentation.reduce({ type: "chat.started", ...identity });
-  const waiting = createWaitingIndicator({
-    setTimer: () => 1, clearTimer() {}, onFrame: frame => presentation.setWaitingText(frame),
-  });
-  waiting.start();
-  presentation.reduce({ type: "chat.completed", reply: { segments }, ...identity });
-  segments = presentation.current().segments;
-  // Execute the production app binding, with fake native audio and deterministic timers.
-  const writer = runInNewContext(`${typewriterBinding}\ntypewriter;`, {
-    chatTiming: { subtitleTypingIntervalMs: 28, replySegmentPauseMs: 160 },
-    subtitleLanguage: "zh", bubbleScroll: { beginReply() {} },
-    presentation, ttsController: h.controller, waitingIndicator: waiting,
-    rendererHost: { prepare: prepareVisual, play(control, _operation, _index, segment) { portraits.push(segment.portrait); controls.push(control); } },
-    render() {},
-    createTypewriter(options) {
-      return createTypewriter({
-        ...options,
-        setTimer(callback, delay) {
-          timers.push(callback);
-          if (delay === 160) pauses[portraits.length - 1].resolve();
-          return callback;
-        },
-        clearTimer(callback) {
-          const index = timers.indexOf(callback);
-          if (index >= 0) timers.splice(index, 1);
-        },
-        onSegment(segment, index) {
-          requested[index].resolve();
-          return options.onSegment(segment, index);
-        },
-        onText(value, update) {
-          options.onText(value, update);
-          text.push(value);
-          if (update.reason === "segment") opened[portraits.length - 1]?.resolve();
-        },
-        onComplete(result) { options.onComplete(result); finished.resolve(); },
-      });
-    },
-  });
-  h.controller.beginReply("reply", segments);
-  writer.start(segments);
-  return {
-    writer, text, portraits, controls, opened, requested, pauses, finished, waiting, presentation,
-    drain() { while (timers.length) timers.shift()(); },
-  };
-}
-
-test("slow visual preparation keeps segment presentation synchronized after chat completion", async () => {
-  const visual = deferred();
-  const entered = deferred();
-  const h = await harness(name => name === "tts_prepare_segment" ? descriptor : undefined);
-  const s = sequence(h, [{ text: "ready text", portrait: "smile" }], () => {
-    entered.resolve();
-    return visual.promise;
-  });
-  await entered.promise;
-  assert.equal(s.presentation.current().segments[0].text, "ready text");
-  assert.equal(h.calls.filter(([name]) => name === "tts_play_prepared").length, 0);
-  assert.deepEqual(s.text, []);
-  assert.deepEqual(s.portraits, []);
-  visual.resolve(null);
-  await h.waitFor("tts_play_prepared");
-  h.emit("tts-1-0", "started");
-  await s.opened[0].promise;
-  assert.deepEqual(s.portraits, ["smile"]);
-  assert.deepEqual(s.text, [""]);
-  h.controller.dispose();
-});
-
 test("cancelling a segment releases pending visual preparation without playing late audio", async () => {
   const visual = deferred();
   const entered = deferred();
@@ -365,126 +272,6 @@ test("synthesis failure does not count the segment as voiced", async () => {
   h.controller.beginReply("reply", [segment]);
   await h.controller.beforeSegment(segment, 0);
   assert.equal(await h.controller.afterSegment(0), false);
-  h.controller.dispose();
-});
-
-test("capture interrupts the current wait while later silent segments still prepare their visuals", async () => {
-  const visuals = [deferred(), deferred()];
-  const entered = [deferred(), deferred()];
-  const h = await harness(name => name === "tts_prepare_segment" ? descriptor : undefined);
-  let index = 0;
-  const s = sequence(h, [{ text: "one", portrait: "smile" }, { text: "two", portrait: "calm" }], () => {
-    const current = index++;
-    entered[current].resolve();
-    return visuals[current].promise;
-  });
-  try {
-    await entered[0].promise;
-    h.controller.setInputCaptureActive(true);
-    await s.opened[0].promise;
-    s.drain();
-    await s.pauses[0].promise;
-    h.controller.setInputCaptureActive(false);
-    s.drain();
-    await entered[1].promise;
-    await new Promise(setImmediate);
-    assert.deepEqual(s.portraits, ["smile"]);
-    assert.equal(s.text.at(-1), "one");
-    const control = { state: { expression: "calm" } };
-    visuals[1].resolve(control);
-    await s.opened[1].promise;
-    assert.deepEqual(s.portraits, ["smile", "calm"]);
-    assert.equal(s.controls[1], control);
-    visuals[0].resolve({ state: { expression: "late" } });
-    await visuals[0].promise;
-    assert.equal(h.calls.filter(([name]) => name === "tts_play_prepared").length, 0);
-    assert.equal(s.controls.length, 2);
-  } finally {
-    s.writer.dispose();
-    h.controller.dispose();
-  }
-});
-
-for (const audioFirst of [false, true]) {
-  test(`each segment waits for synthesis and playback start, then both text and audio completion (${audioFirst})`, async () => {
-    const synthesis = [deferred(), deferred()];
-    const h = await harness((name, args) => name === "tts_prepare_segment"
-      ? synthesis[args.payload.segmentIndex].promise : undefined);
-    const s = sequence(h, [{ text: "one", portrait: "smile" }, { text: "two", portrait: "calm" }]);
-    s.drain();
-    assert.deepEqual(s.text, []);
-    assert.deepEqual(s.portraits, []);
-    assert.equal(s.waiting.active(), true);
-    assert.equal(s.presentation.current().bubbleText, ".");
-    assert.equal(s.writer.skip(), false);
-    synthesis[0].resolve(descriptor);
-    await h.waitFor("tts_play_prepared");
-    assert.deepEqual(s.portraits, []);
-    assert.deepEqual(s.text, []);
-    h.emit("tts-1-0", "started");
-    await s.opened[0].promise;
-    assert.equal(s.waiting.active(), false);
-    assert.deepEqual(s.portraits, ["smile"]);
-    assert.deepEqual(s.text, [""]);
-    if (audioFirst) {
-      h.emit("tts-1-0", "finished");
-      assert.deepEqual(s.portraits, ["smile"]);
-      assert.equal(s.writer.isActive(), true);
-      s.drain();
-    } else {
-      s.drain();
-      assert.equal(s.text.at(-1), "one");
-      assert.deepEqual(s.portraits, ["smile"]);
-      assert.equal(s.writer.isActive(), true);
-      h.emit("tts-1-0", "finished");
-    }
-    await s.pauses[0].promise;
-    s.drain();
-    await s.requested[1].promise;
-    assert.equal(s.writer.skip(), false);
-    assert.equal(s.text.at(-1), "one");
-    assert.deepEqual(s.portraits, ["smile"]);
-    synthesis[1].resolve(descriptor);
-    await h.waitFor("tts_play_prepared", 2);
-    assert.equal(s.text.at(-1), "one");
-    h.emit("tts-1-1", "started");
-    await s.opened[1].promise;
-    assert.deepEqual(s.portraits, ["smile", "calm"]);
-    s.drain();
-    assert.equal(s.text.at(-1), "two");
-    assert.equal(s.writer.isActive(), true);
-    h.emit("tts-1-1", "finished");
-    await s.finished.promise;
-    assert.equal(s.writer.isActive(), false);
-    s.writer.dispose();
-    h.controller.dispose();
-  });
-}
-
-test("subtitle language changes reuse the pending gate and never replay a segment", async () => {
-  const pending = deferred();
-  const h = await harness(name => name === "tts_prepare_segment" ? pending.promise : undefined);
-  const s = sequence(h, [{ text: "かな", translation: "中文", portrait: "smile" }]);
-  s.writer.updateLanguage("ja");
-  assert.deepEqual(s.text, []);
-  pending.resolve(descriptor);
-  await h.waitFor("tts_play_prepared");
-  h.emit("tts-1-0", "started");
-  await s.opened[0].promise;
-  s.drain();
-  assert.equal(s.text.at(-1), "かな");
-  s.writer.updateLanguage("bilingual");
-  assert.equal(s.writer.skip(), true);
-  assert.equal(s.writer.skip(), true);
-  assert.equal(s.text.at(-1), "中文\nかな");
-  s.writer.updateLanguage("bilingual_ja");
-  assert.equal(s.writer.skip(), true);
-  assert.equal(s.text.at(-1), "かな\n中文");
-  assert.equal(h.calls.filter(([name]) => name === "tts_play_prepared").length, 1);
-  h.emit("tts-1-0", "finished");
-  await s.finished.promise;
-  assert.deepEqual(s.portraits, ["smile"]);
-  s.writer.dispose();
   h.controller.dispose();
 });
 

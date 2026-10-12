@@ -108,7 +108,7 @@ mod tests {
 
     #[test]
     fn the_current_formal_build_reports_its_frozen_target() {
-        let target = current_platform_target().expect("tests run on a Phase 1P formal target");
+        let target = current_platform_target().expect("tests run on a supported platform");
         assert!(PlatformTarget::ALL.contains(&target));
     }
 }

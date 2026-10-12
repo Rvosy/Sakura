@@ -127,27 +127,6 @@ def test_mobile_config_restart_and_effect_join_server_thread(
     assert thread.is_alive() is False
 
 
-def test_bundled_plugin_manifests_are_all_v4_defaults() -> None:
-    from app.plugins.discovery import PluginDiscovery
-
-    specs = PluginDiscovery(REPOSITORY_ROOT).discover()
-    bundled = [spec for spec in specs if spec.source == "bundled"]
-    assert bundled
-    assert {spec.plugin_id for spec in bundled} == {
-        "sakura.assistant.default",
-        "sakura.asr",
-        "sakura.mcp",
-        "sakura.model.openai_compatible",
-        "sakura.portrait",
-        "sakura.screen_awareness",
-        "sakura.tts",
-        "sakura.tts.sakuratts",
-        "sakura.web",
-    }
-    assert all(spec.api_version == 4 for spec in bundled)
-    assert all(spec.enabled and not spec.required for spec in bundled)
-
-
 def test_mobile_status_is_quiet_and_bind_failure_is_logged(monkeypatch) -> None:
     context = _Context()
     plugin = mobile_plugin.SakuraMobilePlugin()

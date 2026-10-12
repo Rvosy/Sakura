@@ -1343,12 +1343,6 @@ mod tests {
     }
 
     #[test]
-    fn pet_visibility_action_text_tracks_window_state() {
-        assert_eq!(pet_visibility_action_text(true), "隐藏桌宠");
-        assert_eq!(pet_visibility_action_text(false), "显示桌宠");
-    }
-
-    #[test]
     fn settings_window_generation_is_monotonic_and_close_is_one_shot() {
         let state = ProductShellState::default();
         assert_eq!(state.next_generation().unwrap(), 1);

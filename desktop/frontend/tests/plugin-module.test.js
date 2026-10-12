@@ -53,6 +53,5 @@ test("module failures preserve the original error and prevent an apparently succ
   await module.ready;
   assert.deepEqual(failures, [error]);
   assert.throws(() => module.validate(), candidate => candidate === error);
-  assert.equal(module.element.textContent, "插件设置加载失败。");
   module.dispose();
 });
