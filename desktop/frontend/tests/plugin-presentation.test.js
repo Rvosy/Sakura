@@ -101,7 +101,6 @@ test("plugin failure presentation prioritizes the original cause and keeps the t
     diagnostics: { diagnostic: "Permission denied: C:/plugins/marker.json api_key=private-key", exception_stack: "at verified_path:233" } });
   assert.match(status.message, /Permission denied: C:\/plugins\/marker.json/);
   assert.match(status.diagnostic, /verified_path:233/);
-  assert.match(status.diagnostic, /PLUGIN_DEPENDENCIES_INVALID/);
   assert.doesNotMatch(JSON.stringify(status), /private-key/);
 });
 

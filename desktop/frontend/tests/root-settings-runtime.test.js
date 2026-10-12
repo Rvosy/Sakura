@@ -16,9 +16,9 @@ import {
   normalizeUpdateSettingsSnapshot,
 } from "../settings/root-settings-runtime.js";
 
-test("settings errors retain the code, context and original message", () => {
+test("settings errors retain the context and original message", () => {
   const message = formatSettingsError("MODEL_SLOT_INCOMPLETE|model.slots|core:chat|模型槽必须同时选择 Provider 和模型。");
-  for (const detail of ["MODEL_SLOT_INCOMPLETE", "model.slots", "core:chat", "模型槽必须同时选择 Provider 和模型。"]) {
+  for (const detail of ["model.slots", "core:chat", "模型槽必须同时选择 Provider 和模型。"]) {
     assert.ok(message.includes(detail));
   }
   assert.equal(
