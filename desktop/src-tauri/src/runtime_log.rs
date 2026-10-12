@@ -5530,7 +5530,9 @@ mod tests {
                 "message": "ignored",
                 "attributes": {"plugin_id": "fixture", "dependency_source": "huawei", "attempt": 3, "action": "fallback"},
             });
-            assert!(log.submit_core_bridge(&event.to_string(), &context).unwrap());
+            assert!(log
+                .submit_core_bridge(&event.to_string(), &context)
+                .unwrap());
         }
         let records = log.viewer_snapshot(None).unwrap().records;
         assert_eq!(records.len(), stages.len());

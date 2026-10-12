@@ -2,13 +2,18 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { errorText } from '../core/error-display.js';
 
+test('native and structured failures display the actual reason', () => {
+  assert.equal(errorText('CHARACTER_PRESENTATION_NOT_READY: 后台未发布可显示的角色。'), '后台未发布可显示的角色。');
+  assert.equal(errorText({code: 'SETTINGS_TRANSPORT_UNAVAILABLE', message: 'Core exited with status 5'}), 'Core exited with status 5');
+});
+
 test('structured boundary failures retain source path, chain and traceback while redacting credentials', () => {
   const result = errorText({code: 'LEGACY_RUNTIME_UNAVAILABLE', message: '启动失败', details: {diagnostics: {
     diagnostic: 'OSError: C:\\旧目录\\python.exe win32=5 api_key=private-value',
     exception_chain: 'PermissionError: access denied',
     exception_stack: 'Traceback\n  File "bootstrap.py", line 12',
   }}});
-  for (const detail of ['LEGACY_RUNTIME_UNAVAILABLE', 'C:\\旧目录\\python.exe', 'win32=5', 'PermissionError: access denied', 'Traceback\n']) assert.ok(result.includes(detail));
+  for (const detail of ['C:\\旧目录\\python.exe', 'win32=5', 'PermissionError: access denied', 'Traceback\n']) assert.ok(result.includes(detail));
   assert.ok(!result.includes('private-value'));
 });
 
@@ -25,7 +30,7 @@ test('Core routing envelopes are readable without losing pipes or lines in the o
   const diagnostic = 'PermissionError: C:\\角色\\model.json\nexpected read | write\n  at load_model:42';
   const result = errorText(`SETTINGS_LOAD_FAILED|voice|provider|${diagnostic}`);
   assert.ok(result.startsWith(diagnostic));
-  for (const value of ['SETTINGS_LOAD_FAILED', 'voice', 'provider']) assert.ok(result.includes(value));
+  for (const value of ['voice', 'provider']) assert.ok(result.includes(value));
   assert.ok(!result.includes('SETTINGS_LOAD_FAILED|voice|provider|'));
   assert.equal(errorText(result), result);
 });

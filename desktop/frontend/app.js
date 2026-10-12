@@ -180,22 +180,6 @@ let surfaceVisibilityCommitQueue = Promise.resolve();
 chatBubble.dataset.surfaceVisible = "true";
 composer.dataset.surfaceVisible = "true";
 
-async function initialSessionBlocker() {
-  for (let attempt = 0; attempt < 80; attempt += 1) {
-    try {
-      const publication = await invoke("runtime_lifecycle_snapshot");
-      const readiness = publication?.snapshot?.readiness;
-      if (["ready", "degraded"].includes(readiness)) return false;
-      if (["setup_required", "failed"].includes(readiness)) return true;
-    } catch {
-      // Core startup can briefly publish without a complete Snapshot.
-    }
-    await new Promise((resolve) => window.setTimeout(resolve, 50));
-  }
-  return false;
-}
-
-const sessionBlockedAtStartup = await initialSessionBlocker();
 const composerActionIndicator = createComposerActionIndicator({ button: send });
 
 let lastInputVisualEffectFallback = "";
@@ -408,12 +392,14 @@ let characterPresentation;
 try {
   characterPresentation = await loadCurrentCharacterPresentation({
     invoke,
-    attempts: sessionBlockedAtStartup ? 1 : 160,
   });
 } catch (error) {
-  if (!sessionBlockedAtStartup) runtimeDiagnostics.reportError(error, { command: "visual_startup", code: "VISUAL_STARTUP_FAILED" });
+  runtimeDiagnostics.reportError(error, { command: "visual_startup", code: "VISUAL_STARTUP_FAILED" });
   presentationUnavailable = true;
-  if (!sessionBlockedAtStartup) showRecoverableError("角色加载失败，请重启 Sakura 后再试。");
+  showRecoverableError(errorText(error));
+}
+if (!characterPresentation) {
+  presentationUnavailable = true;
   characterPresentation = validateCharacterPresentation({
     generationId: "unavailable",
     characterId: "unavailable",
@@ -436,13 +422,15 @@ activeAppearance = Object.freeze({
   visualEffectMode: "gaussian_blur",
   themeTokens: characterPresentation.themeTokens,
 });
-try {
-  activeAppearance = validateAppearancePublication(
-    await invoke("current_character_appearance"),
-    characterPresentation,
-  );
-} catch {
-  // Package theme/default sizes remain a complete safe baseline.
+if (!presentationUnavailable) {
+  try {
+    activeAppearance = validateAppearancePublication(
+      await invoke("current_character_appearance"),
+      characterPresentation,
+    );
+  } catch {
+    // 读取失败时保留角色主题和默认尺寸。
+  }
 }
 let characterVisualPreviewActive = false;
 let visualScalePercent = activeAppearance.portraitScalePercent;
@@ -1705,7 +1693,7 @@ async function rebindCoreGeneration(generationId, { refresh = false } = {}) {
   } catch (error) {
     if (!disposed && revision === coreRebindRevision) {
       runtimeDiagnostics.reportError(error, { command: "visual_rebind", code: "VISUAL_REBIND_FAILED" });
-      showRecoverableError("角色资源加载失败，请稍后重试。");
+      showRecoverableError(errorText(error));
     }
     return false;
   }

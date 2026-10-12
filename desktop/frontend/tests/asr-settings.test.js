@@ -38,6 +38,32 @@ test("ASR settings show the selected provider startup cause", async () => {
   assert.match(f.controls.asrStatus.textContent, /initialize:42/);
 });
 
+test("ASR refresh keeps a draft during restart and exposes real read failures", async () => {
+  const controls = Object.fromEntries(["asrProvider", "asrStatus", "asrLocation", "asrPluginSettings"].map(key => [key, element()]));
+  let failure = null;
+  const controller = createAsrSettingsController({
+    document: { getElementById: key => controls[key], createElement: element },
+    invoke: async () => {
+      if (failure) throw failure;
+      return { selectedProviderId: "first", providers: [{providerId: "first", label: "First"}, {providerId: "second", label: "Second"}] };
+    },
+  });
+  await controller.refresh();
+  controls.asrProvider.value = "second";
+  failure = "GENERATION_INVALIDATED: Core generation is stopping";
+  await controller.refresh({preserveDraft: true});
+  assert.equal(controls.asrStatus.hidden, true);
+  assert.equal(controls.asrProvider.value, "second");
+  failure = "SETTINGS_TRANSPORT_UNAVAILABLE: Permission denied: settings.json";
+  await controller.refresh({preserveDraft: true});
+  assert.equal(controls.asrStatus.textContent, "Permission denied: settings.json");
+  failure = null;
+  await controller.refresh({preserveDraft: true});
+  assert.equal(controls.asrProvider.value, "second");
+  assert.equal(controller.isDirty(), true);
+  controller.dispose();
+});
+
 test("ASR choices are Hub supplied, unavailable explicit choice survives refresh, selection does not auto-save", async () => {
   const f = fixture({ providers: [{ providerId: "example.local", label: "Local", processingLocation: "local", available: true },
     { providerId: "example.remote", label: "Remote", processingLocation: "remote", available: true }],

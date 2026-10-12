@@ -95,22 +95,48 @@ pub(crate) fn load_current_character_presentation(
     lifecycle: &ShellLifecycleState,
     resources: &character_presentation::CharacterPresentationState,
 ) -> Result<character_presentation::FrontendCharacterPresentation, String> {
-    let handle = lifecycle
-        .handle
-        .as_ref()
-        .ok_or_else(|| "CHARACTER_PRESENTATION_UNAVAILABLE".to_string())?;
-    let generation_id = handle
-        .available_generation_id()
-        .map_err(|error| error.to_string())?
-        .ok_or_else(|| "CHARACTER_PRESENTATION_NOT_READY".to_string())?;
-
-    let value = handle
-        .character_presentation()
-        .map_err(|error| error.to_string())?
-        .ok_or_else(|| "CHARACTER_PRESENTATION_NOT_READY".to_string())?;
+    let handle = lifecycle.handle.as_ref().ok_or_else(|| {
+        "CHARACTER_PRESENTATION_UNAVAILABLE: 后台运行服务尚未启动，无法读取当前角色。".to_string()
+    })?;
+    let publication = handle.snapshot()?;
+    let (generation_id, value) = current_presentation_source(&publication)?;
     let presentation =
-        character_presentation::CharacterPresentation::from_value(&value, &generation_id)?;
+        character_presentation::CharacterPresentation::from_value(value, &generation_id)?;
     resources.activate(presentation, &generation_id)
+}
+
+fn current_presentation_source(
+    publication: &ShellLifecyclePublication,
+) -> Result<(String, &Value), String> {
+    if let Some(failure) = &publication.supervisor.failure {
+        return Err(crate::runtime_log::diagnostic_error(
+            "CHARACTER_PRESENTATION_UNAVAILABLE",
+            &failure.message,
+        ));
+    }
+    let generation_id = available_generation_id(publication).ok_or_else(|| {
+        format!(
+            "CHARACTER_PRESENTATION_NOT_READY: 后台尚未发布当前角色，运行状态：{}。",
+            publication.supervisor.state
+        )
+    })?;
+    let value = publication.character_presentation.as_ref().ok_or_else(|| {
+        let snapshot = publication.snapshot.as_ref().unwrap();
+        let detail = &snapshot.assistant;
+        let code = detail
+            .get("code")
+            .and_then(Value::as_str)
+            .unwrap_or("CHARACTER_PRESENTATION_NOT_READY");
+        let message = detail.get("message").and_then(Value::as_str);
+        match message {
+            Some(message) => crate::runtime_log::diagnostic_error(code, message),
+            None => format!(
+                "CHARACTER_PRESENTATION_NOT_READY: 后台未发布可显示的角色，初始化状态：{}。",
+                snapshot.readiness
+            ),
+        }
+    })?;
+    Ok((generation_id, value))
 }
 
 const SNAPSHOT_POLL_INTERVAL: Duration = Duration::from_millis(100);
@@ -135,6 +161,8 @@ pub struct FailurePublication {
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SnapshotPublication {
+    #[serde(skip)]
+    assistant: Value,
     generation_id: String,
     revision: u64,
     readiness: String,
@@ -392,8 +420,22 @@ impl ShellLifecycleHandle {
             .map_err(|source_error| {
                 crate::runtime_log::diagnostic_error("SETTINGS_TRANSPORT_UNAVAILABLE", source_error)
             })?
-            .clone()
-            .ok_or_else(|| "SETTINGS_TRANSPORT_UNAVAILABLE".to_string())?;
+            .clone();
+        let Some(transport) = transport else {
+            let publication = self.snapshot()?;
+            if let Some(failure) = publication.supervisor.failure {
+                return Err(crate::runtime_log::diagnostic_error(
+                    "SETTINGS_TRANSPORT_UNAVAILABLE",
+                    failure.message,
+                ));
+            }
+            if publication.supervisor.state == "failed" {
+                return Err(
+                    "SETTINGS_TRANSPORT_UNAVAILABLE: 后台启动失败，未建立设置连接。".to_string(),
+                );
+            }
+            return Err(format!("GENERATION_INVALIDATED: 后台连接尚未就绪或正在重启，本次设置请求已取消（状态：{}）。", publication.supervisor.state));
+        };
         transport.request(request_id, name, payload)
     }
 
@@ -1242,6 +1284,10 @@ fn publish(state: &WorkerState, target: &Arc<Mutex<ShellLifecyclePublication>>) 
             return None;
         }
         Some(SnapshotPublication {
+            assistant: snapshot
+                .pointer("/components/assistant")
+                .cloned()
+                .unwrap_or(Value::Null),
             plugin_migration: plugin_migration(snapshot),
             generation_id,
             revision: snapshot.get("revision").and_then(Value::as_u64)?,
@@ -1463,6 +1509,7 @@ mod tests {
                 failure: None,
             },
             snapshot: Some(SnapshotPublication {
+                assistant: Value::Null,
                 generation_id: "current".into(),
                 revision: 1,
                 readiness: "initializing".into(),
@@ -1652,6 +1699,7 @@ mod tests {
             publication.supervisor.generation_id = Some("generation-ready".to_string());
             publication.supervisor.generation_number = 1;
             publication.snapshot = Some(SnapshotPublication {
+                assistant: Value::Null,
                 plugin_migration: None,
                 generation_id: "generation-ready".to_string(),
                 revision: 1,
@@ -1695,15 +1743,28 @@ mod tests {
             settings_request_number: Arc::new(AtomicU64::new(0)),
             chat_bridge: Arc::new(Mutex::new(None)),
         };
+        assert!(handle
+            .settings_request(None, "asr.settings.get", json!({}))
+            .unwrap_err()
+            .starts_with("GENERATION_INVALIDATED:"));
         let worker = thread::spawn(move || {
             assert!(matches!(commands.recv().unwrap(), ShellCommand::Start));
             thread::sleep(Duration::from_millis(30));
-            publication.lock().unwrap().supervisor.state = "failed";
+            let mut publication = publication.lock().unwrap();
+            publication.supervisor.state = "failed";
+            publication.supervisor.failure = Some(FailurePublication {
+                code: "runtime",
+                message: "CreateProcess: python.exe access denied".into(),
+            });
         });
 
         assert_eq!(
             handle.start_core_and_wait_available(),
-            Err("CORE_START_FAILED: Core start failed".to_string())
+            Err("CORE_START_FAILED: CreateProcess: python.exe access denied".to_string())
+        );
+        assert_eq!(
+            handle.settings_request(None, "asr.settings.get", json!({})),
+            Err("SETTINGS_TRANSPORT_UNAVAILABLE: CreateProcess: python.exe access denied".into())
         );
         worker.join().unwrap();
     }
@@ -2415,6 +2476,7 @@ mod tests {
                 failure: None,
             },
             snapshot: Some(SnapshotPublication {
+                assistant: Value::Null,
                 plugin_migration: None,
                 generation_id: generation.clone(),
                 revision: 7,
@@ -2431,6 +2493,10 @@ mod tests {
         assert_eq!(
             available_generation_id(&publication).as_deref(),
             Some("generation-safe")
+        );
+        assert_eq!(
+            current_presentation_source(&publication).unwrap().0,
+            "generation-safe"
         );
         assert!(
             ready_character_generation(&publication, "generation-old", 1, "character-b").is_none()
@@ -2456,6 +2522,7 @@ mod tests {
         publication.snapshot = None;
         assert!(available_generation_id(&publication).is_none());
         publication.snapshot = Some(SnapshotPublication {
+            assistant: Value::Null,
             plugin_migration: None,
             generation_id: "stale-generation".to_string(),
             revision: 8,
@@ -2464,11 +2531,26 @@ mod tests {
         publication.character_presentation = None;
         assert!(available_generation_id(&publication).is_none());
         publication.snapshot = Some(SnapshotPublication {
+            assistant: Value::Null,
             plugin_migration: None,
             generation_id: "generation-safe".to_string(),
             revision: 9,
             readiness: "failed".to_string(),
         });
+        publication.snapshot.as_mut().unwrap().assistant = json!({
+            "code": "CHARACTER_REQUIRED", "message": "请安装并选择角色。"
+        });
+        assert_eq!(
+            current_presentation_source(&publication).unwrap_err(),
+            "CHARACTER_REQUIRED: 请安装并选择角色。"
+        );
+        publication.supervisor.failure = Some(FailurePublication {
+            code: "unexpected_exit",
+            message: "CreateProcess: 拒绝访问 python.exe (os error 5)".into(),
+        });
+        assert!(current_presentation_source(&publication)
+            .unwrap_err()
+            .contains("拒绝访问 python.exe (os error 5)"));
         assert_eq!(
             available_generation_id(&publication).as_deref(),
             Some("generation-safe")
@@ -2487,6 +2569,7 @@ mod tests {
                 failure: None,
             },
             snapshot: Some(SnapshotPublication {
+                assistant: Value::Null,
                 plugin_migration: None,
                 generation_id: generation.clone(),
                 revision: 1,

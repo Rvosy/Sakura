@@ -19,10 +19,12 @@ export function errorText(error, fallback = '未提供错误详情') {
       const envelope = value.match(/^([A-Z][A-Z0-9_]{0,63})\|([^|\r\n]*)\|([^|\r\n]*)\|([\s\S]*)$/);
       if (envelope) {
         add(envelope[4]);
-        add(envelope[1], '错误码');
         add(envelope[2], '功能');
         add(envelope[3], '字段');
-      } else add(value);
+      } else {
+        const coded = value.match(/^[A-Z][A-Z0-9_]{0,63}:\s*([\s\S]+)$/);
+        add(coded ? coded[1] : value);
+      }
       return;
     }
     visit(value.details?.diagnostics);
@@ -35,7 +37,7 @@ export function errorText(error, fallback = '未提供错误详情') {
     add(value.recovery_diagnostic, '回滚报错');
     add(value.error_type || value.name, '类型');
     for (const [key, label] of [
-      ['cause_type', '根因类型'], ['cause_code', '底层原因码'],
+      ['cause_type', '根因类型'],
       ['exception_site', '代码位置'], ['stage', '阶段'], ['validation_field', '校验字段'],
       ['errno', '系统错误码'], ['winerror', 'Windows 错误码'],
       ['exit_code', '退出码'], ['http_status', 'HTTP 状态码'],
@@ -45,14 +47,13 @@ export function errorText(error, fallback = '未提供错误详情') {
       ['result_type', '返回类型'], ['has_application_state', '包含应用状态'],
       ['application_state_type', '应用状态类型'],
     ]) add(value[key], label);
-    add(value.code || value.errorCode, '错误码');
-    add(value.reason_code, '原因码');
     if (value.relativePath) add(`${value.relativePath}${value.line ? `:${value.line}` : ''}`, '代码位置');
     visit(value.cause);
     visit(value.error);
     // Native AggregateError carries independent failures in errors.
     if (Array.isArray(value.errors)) value.errors.forEach(visit);
     add(value.diagnosticLog, '诊断日志');
+    if (!parts.length) add(value.code || value.errorCode || value.reason_code);
   }
   visit(error);
   // Source boundaries already bound remote diagnostics. Do not cut off another

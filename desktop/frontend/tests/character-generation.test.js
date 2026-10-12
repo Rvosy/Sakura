@@ -42,6 +42,14 @@ const ready = (generationId, generationNumber) => ({
   failure: null,
 });
 
+test("an unselected character ends loading without turning setup into a renderer failure", async () => {
+  const result = await loadCurrentCharacterPresentation({
+    invoke: async () => { throw "CHARACTER_REQUIRED: 请安装并选择角色。"; },
+    setTimer: () => { throw new Error("setup should wait for the user to select a character"); },
+  });
+  assert.equal(result, null);
+});
+
 test("a Core restart retires the pending old resource load without retrying or blocking the new generation", async () => {
   const base = { schemaVersion: 2, generationId: "old", characterId: "sample", displayName: "角色", initialMessage: "你好", themeTokens: {}, visual: null, visualReasonCode: "VISUAL_NOT_BOUND" };
   let current = base;

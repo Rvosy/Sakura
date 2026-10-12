@@ -31,15 +31,16 @@ export async function loadCurrentCharacterPresentation({
       if (!presentation.visual && presentation.visualReasonCode === "VISUAL_NOT_BOUND") {
         // Core publishes character identity before the plugin finishes binding.
         // This is startup progress, not an unavailable renderer.
-        throw new Error("CHARACTER_PRESENTATION_NOT_READY");
+        throw new Error(`CHARACTER_PRESENTATION_NOT_READY: 角色“${presentation.displayName}”的显示插件尚未完成资源绑定。`);
       }
       return presentation;
     } catch (error) {
       lastError = error;
       const message = String(error?.message || error || "");
+      if (/^CHARACTER_REQUIRED(?::|\|)/.test(message)) return null;
       if (!/NOT_READY|UNAVAILABLE|LIFECYCLE|GENERATION_STALE/i.test(message)) throw error;
       if (attempt + 1 < attempts) await new Promise((resolve) => setTimer(resolve, delayMs));
     }
   }
-  throw lastError || new Error("CHARACTER_PRESENTATION_NOT_READY");
+  throw lastError || new Error("CHARACTER_PRESENTATION_NOT_READY: 后台尚未发布可显示的角色。");
 }

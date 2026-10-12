@@ -30,6 +30,25 @@ def _controller(tmp_path):
     return controller
 
 
+def test_missing_character_reason_reaches_full_and_minimal_snapshots(tmp_path):
+    controller = ReadinessController(
+        HostConfig(RuntimeRoots(tmp_path, tmp_path), "generation", "a" * 32),
+        initializer_factory=lambda *_args, **_kwargs: SimpleNamespace(
+            initialize=lambda _: ReadinessResult("setup_required", "CHARACTER_REQUIRED", "请安装并选择角色。", False, None),
+            close=lambda: None,
+        ),
+    )
+    try:
+        controller.begin({})
+        controller._worker.join(5)
+        for snapshot in (controller.snapshot(), controller.minimal_snapshot(None)):
+            assert snapshot["readiness"] == "setup_required"
+            assert snapshot["components"]["assistant"]["message"] == "请安装并选择角色。"
+            assert snapshot["characterPresentation"] is None
+    finally:
+        controller.close()
+
+
 def _session(tmp_path, role):
     character = CharacterProfile(role, role, tmp_path, tmp_path / f"{role}.md", f"hello {role}", reply_tones=[])
     return AssistantSession(character, object(), RuntimeLoopSettings(), "test", system_prompt=f"prompt {role}")

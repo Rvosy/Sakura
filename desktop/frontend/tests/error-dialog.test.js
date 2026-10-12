@@ -78,7 +78,7 @@ test("error details preserve source diagnostics as text and redact credentials",
     },
   });
   const diagnostic = dialog.querySelector("pre");
-  for (const value of ["MARKETPLACE_FETCH_FAILED", markup, "C:\\Sakura\\cache", "10061", "Traceback\n", "tcp connection refused"]) {
+  for (const value of [markup, "C:\\Sakura\\cache", "10061", "Traceback\n", "tcp connection refused"]) {
     assert.ok(diagnostic.textContent.includes(value), value);
   }
   assert.ok(!diagnostic.textContent.includes("fixture-private-value"));

@@ -382,7 +382,7 @@ class ReadinessController:
                     elif session is not None:
                         plugin_application.unbind_session()
                 self._readiness = result.state
-                self._component = {"state": result.state, "code": result.code, "retryable": result.retryable}
+                self._component = {"state": result.state, "code": result.code, "message": result.message, "retryable": result.retryable}
                 self._current_character_summary = summary
                 self._current_character_presentation = presentation
                 self._session = result.session
@@ -429,7 +429,7 @@ class ReadinessController:
             if not valid:
                 self._session = None
                 self._readiness = result.state
-                self._component = {"state": result.state, "code": result.code, "retryable": result.retryable}
+                self._component = {"state": result.state, "code": result.code, "message": result.message, "retryable": result.retryable}
                 self._current_character_summary = None
                 self._revision += 1
         if not valid and application is not None and session is not None:
@@ -574,6 +574,7 @@ class ReadinessController:
         with self._lock:
             readiness = self._readiness
             revision = self._revision
+            components = {"assistant": dict(self._component)} if self._component else {}
             migration = dict(self._plugin_migration) if self._plugin_migration else None
             summary = self._copy_summary(self._current_character_summary)
             presentation = self._copy_presentation(
@@ -584,6 +585,7 @@ class ReadinessController:
                 "generationId": self._config.generation_id,
                 "revision": revision,
                 "readiness": readiness,
+                "components": components,
                 "pluginMigration": migration,
                 "currentCharacterSummary": summary,
                 "characterPresentation": presentation,
@@ -595,6 +597,7 @@ class ReadinessController:
             base_revision=revision,
         )
         snapshot["characterPresentation"] = presentation
+        snapshot["components"] = components
         snapshot["pluginMigration"] = migration
         return snapshot
 
@@ -775,6 +778,7 @@ class ReadinessController:
                     self._component = {
                         "state": result.state,
                         "code": result.code,
+                        "message": result.message,
                         "retryable": result.retryable,
                     }
                     self._current_character_summary = summary
