@@ -82,10 +82,6 @@ const VISIBILITY_PROBE_HIDDEN_DURATION: std::time::Duration = std::time::Duratio
 const CONTROL_CONTRACTION_REGION_GRACE_MS: u64 = 40;
 const ALREADY_RUNNING_TITLE: &str = "Sakura 已在运行";
 const ALREADY_RUNNING_BODY: &str = "另一个 Sakura 实例正在运行。请先退出现有实例，再重试。";
-#[cfg(debug_assertions)]
-const WP_4_01_MANUAL_ROOT_ENV: &str = "SAKURA_WP_4_01_MANUAL_ROOT";
-#[cfg(debug_assertions)]
-const WP_4_01_MANUAL_DIRECTORY_PREFIX: &str = "sakura-wp-4-01-manual-";
 
 #[derive(Clone)]
 struct PendingPortraitTransition {
@@ -7473,43 +7469,6 @@ fn character_appearance_state(
     character_appearance::CharacterAppearanceState::new_with_repository(repository)
 }
 
-#[cfg(debug_assertions)]
-fn wp_4_01_manual_root(path: std::path::PathBuf) -> Result<std::path::PathBuf, String> {
-    if !path.is_absolute()
-        || path
-            .components()
-            .any(|component| matches!(component, std::path::Component::ParentDir))
-    {
-        return Err("WP_4_01_MANUAL_ROOT_INVALID".to_string());
-    }
-    let root = path.canonicalize().map_err(|source_error| {
-        crate::runtime_log::diagnostic_error("WP_4_01_MANUAL_ROOT_INVALID", source_error)
-    })?;
-    let directory = root
-        .parent()
-        .ok_or_else(|| "WP_4_01_MANUAL_ROOT_INVALID".to_string())?;
-    let temp = std::env::temp_dir()
-        .canonicalize()
-        .map_err(|source_error| {
-            crate::runtime_log::diagnostic_error("WP_4_01_MANUAL_TEMP_UNAVAILABLE", source_error)
-        })?;
-    let name = directory
-        .file_name()
-        .and_then(|value| value.to_str())
-        .ok_or_else(|| "WP_4_01_MANUAL_ROOT_INVALID".to_string())?;
-    if directory.parent() != Some(temp.as_path())
-        || !name.starts_with(WP_4_01_MANUAL_DIRECTORY_PREFIX)
-        || root.file_name().and_then(|value| value.to_str()) != Some("app-root")
-        || !directory.join(".sakura-wp-4-01-manual").is_file()
-        || !root.join("config/system_config.yaml").is_file()
-        || !root.join("config/api.yaml").is_file()
-        || !root.join("config/characters.yaml").is_file()
-    {
-        return Err("WP_4_01_MANUAL_ROOT_INVALID".to_string());
-    }
-    Ok(root)
-}
-
 #[cfg(windows)]
 fn show_startup_message(title: &str, body: &str, fatal: bool) {
     use windows::{
@@ -7566,16 +7525,6 @@ fn main() {
         std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
     }
 
-    #[cfg(not(debug_assertions))]
-    if std::env::var_os("SAKURA_WP_4_01_MANUAL_ROOT").is_some() {
-        show_startup_message(
-            "Sakura WP-4-01 验收启动失败",
-            "release 构建不接受验收根覆盖。",
-            true,
-        );
-        std::process::exit(2);
-    }
-
     let instance_lock_backend = NativeInstanceLockBackend;
     let _instance_guard = match instance_lock_backend.acquire(SHARED_INSTANCE_ID) {
         Ok(InstanceLockAcquire::Acquired(guard)) => guard,
@@ -7597,13 +7546,6 @@ fn main() {
         show_startup_message("Sakura 启动失败", &error, true);
         std::process::exit(1);
     });
-    #[cfg(debug_assertions)]
-    let mut runtime_request = runtime_request;
-    #[cfg(debug_assertions)]
-    if let Some(root) = std::env::var_os(WP_4_01_MANUAL_ROOT_ENV) {
-        runtime_request.user_root = wp_4_01_manual_root(root.into())
-            .expect("WP-4-01 manual acceptance root must be isolated and complete");
-    }
     let character_resource_root = runtime_request.user_root.clone();
     let visual_distribution_root = runtime_request
         .explicit_development_root

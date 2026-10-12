@@ -1,4 +1,4 @@
-//! Safety-gated core for WP-3-03D's single-pipeline Windows liquid glass backend.
+//! Windows 玻璃效果的渲染状态与能力选择。
 //!
 //! Windows Graphics Capture is only the dynamic background source. All blur and
 //! optical work happens in one D3D11 pipeline whose final texture is exposed to

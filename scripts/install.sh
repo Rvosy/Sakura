@@ -42,7 +42,7 @@ if [ "$(uname -s)" = "Linux" ]; then
         echo "        sudo apt-get install -y build-essential pkg-config clang libclang-dev libssl-dev \\"
         echo "          libasound2-dev libgbm-dev libpipewire-0.3-dev libwebkit2gtk-4.1-dev \\"
         echo "          libayatana-appindicator3-dev libxdo-dev librsvg2-dev"
-        echo "        完整步骤见 docs/userdocs/LINUX_SETUP.md"
+        echo "        完整步骤见 docs/guide/setup.md#linux"
         exit 1
     fi
 fi
@@ -75,5 +75,5 @@ echo "========================================"
 echo "  安装完成！运行 scripts/start.sh 启动"
 echo "========================================"
 if [ "$(uname -s)" = "Linux" ]; then
-    echo "Linux 说明见 docs/userdocs/LINUX_SETUP.md"
+    echo "Linux 说明见 docs/guide/setup.md#linux"
 fi

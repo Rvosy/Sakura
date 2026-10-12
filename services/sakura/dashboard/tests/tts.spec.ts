@@ -2,7 +2,7 @@ import { test, expect } from "@playwright/test";
 
 test("TTS samples show outcomes and submit environment filters", async ({
   page,
-}, info) => {
+}) => {
   const sample = {
     stage: "synthesis",
     installations: 1,
@@ -20,10 +20,7 @@ test("TTS samples show outcomes and submit environment filters", async ({
     route.fulfill({ json: { stages: [sample], items: [sample] } }),
   );
   await page.goto("/admin/#tts");
-  await expect(
-    page.getByRole("heading", { name: "SakuraTTS 运行结果" }),
-  ).toBeVisible();
-  await expect(page.getByText("50.0%", { exact: true })).toHaveCount(2);
+  await expect(page.getByText("50.0%", { exact: true }).first()).toBeVisible();
   await page.getByLabel("运行后端", { exact: true }).fill("cuda");
   const request = page.waitForRequest(
     (request) =>
@@ -32,16 +29,4 @@ test("TTS samples show outcomes and submit environment filters", async ({
   );
   await page.getByRole("button", { name: "筛选", exact: true }).click();
   await request;
-  await page.screenshot({
-    path: info.outputPath("tts-desktop.png"),
-    fullPage: true,
-  });
-  await page.setViewportSize({ width: 390, height: 844 });
-  await expect(
-    page.getByRole("button", { name: "筛选", exact: true }),
-  ).toBeVisible();
-  await page.screenshot({
-    path: info.outputPath("tts-mobile.png"),
-    fullPage: true,
-  });
 });

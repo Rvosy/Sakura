@@ -1,6 +1,6 @@
 //! Fixed macOS launch-help actions exposed only to the first-party settings window.
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(target_os = "macos")]
 pub const APPLE_SUPPORT_URL: &str =
     "https://support.apple.com/guide/mac-help/open-a-mac-app-from-an-unknown-developer-mh40616/mac";
 
@@ -38,21 +38,4 @@ pub fn open_apple_support() -> Result<(), String> {
 #[cfg(not(target_os = "macos"))]
 pub fn open_apple_support() -> Result<(), String> {
     Err("MACOS_OPEN_HELP_UNAVAILABLE".to_string())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn apple_support_target_is_a_fixed_https_document() {
-        assert!(APPLE_SUPPORT_URL.starts_with("https://support.apple.com/"));
-        assert!(APPLE_SUPPORT_URL.contains("open-a-mac-app-from-an-unknown-developer"));
-        assert!(!APPLE_SUPPORT_URL.chars().any(char::is_control));
-    }
-
-    #[test]
-    fn availability_matches_the_compiled_platform() {
-        assert_eq!(is_available(), cfg!(target_os = "macos"));
-    }
 }

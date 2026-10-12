@@ -72,25 +72,19 @@ def run():
             errors = []
             page.on("pageerror", lambda error: errors.append(str(error)))
             page.expose_function("nativeInvoke", invoke)
-            production = (ROOT / "desktop/frontend/settings/settings.js").read_text(encoding="utf-8")
-            busy_function = production.split("function setSubmissionBusy(busy) {", 1)[1].split("\nasync function closeSettingsWindow", 1)[0]
             script = """
               import {createCharacterSettingsFeature} from './character-settings.js';
               import {enhanceSelect,refreshSelect} from './select-control.js';
               let feature,submissionBusy=false;
-              const submissionDisabledStates=new Map();
               const fields=Object.fromEntries(['applyButton','saveButton','cancelButton'].map(id=>[id,document.getElementById(id)]));
               const dirty=()=>{fields.applyButton.disabled=submissionBusy||!feature?.isDirty();fields.saveButton.disabled=submissionBusy||!feature?.isDirty();};
-              function refreshDirty(){dirty();}
-              /* PRODUCTION_BUSY_FUNCTION */
               feature=createCharacterSettingsFeature({document,window,invoke:window.nativeInvoke,onDirty:dirty,onError:message=>{document.getElementById('characterArchiveHint').textContent=message;},notify:()=>{},enhanceSelect,refreshSelect,hasCharacterDrafts:()=>false,isSubmitting:()=>submissionBusy,applyPreviewTheme:()=>{},rebindSettings:async()=>{},clearCharacterState:()=>{},renderPluginCollections:()=>{},openPlugin:(id,configure)=>{window.pluginRequest={id,configure};}});
-              const runtimeCharacterFeature=feature;
               window.feature=feature;
               await feature.initialize(); feature.prepareControls();
-              document.getElementById('applyButton').onclick=async()=>{setSubmissionBusy(true);try{await feature.commit();}finally{setSubmissionBusy(false);}};
+              document.getElementById('applyButton').onclick=async()=>{submissionBusy=true;dirty();try{await feature.commit();}finally{submissionBusy=false;feature.syncControls();dirty();}};
               window.discard=async()=>{await feature.discard();dirty();};
               dirty(); document.body.dataset.ready='true';
-            """.replace("/* PRODUCTION_BUSY_FUNCTION */", "function setSubmissionBusy(busy) {" + busy_function)
+            """
             page.route("**/settings/settings.js", lambda route: route.fulfill(content_type="text/javascript", body=script))
             page.goto(origin + "/desktop/frontend/settings/")
             expect(page.get_by_role("combobox", name="显示方式", exact=True)).to_be_enabled()

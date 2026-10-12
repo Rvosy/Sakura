@@ -186,26 +186,6 @@ def test_chat_prompt_budget_excludes_native_visual_reply_instruction() -> None:
     assert "visual_observation" in native_prompt
 
 
-class TestRuntimeInitialization:
-
-    def test_context_orchestrator_is_constructed_once_on_first_real_request(self) -> None:
-        client = _dummy_api_client()
-        runtime = AgentRuntime(client, _dummy_system_prompt())
-        assert runtime._context_orchestrator is None
-
-        from sakura_assistant.agent import context_orchestrator as context_module
-
-        real_orchestrator = context_module.ContextOrchestrator
-        with patch.object(context_module, "ContextOrchestrator", wraps=real_orchestrator) as constructor:
-            first = runtime.handle_user_message([ChatMessage(role="user", content="第一轮")])
-            first_instance = runtime.context_orchestrator
-            second = runtime.handle_user_message([ChatMessage(role="user", content="第二轮")])
-
-        assert constructor.call_count == 1
-        assert runtime.context_orchestrator is first_instance
-        assert first.reply.text == "おはよう"
-        assert second.reply.text == "おはよう"
-
 class TestBrowserRouting:
     """浏览器工具路由拦截"""
 
@@ -364,32 +344,6 @@ class TestScreenAwarenessEventFlow:
             )
 
         client.chat.assert_not_called()
-
-
-def test_retired_proactive_check_event_is_rejected(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    import sakura_assistant.agent.runtime as runtime_module
-
-    logs = []
-    monkeypatch.setattr(
-        runtime_module,
-        "log_event",
-        lambda channel, message, payload=None, **kwargs: logs.append(
-            (channel, message, payload)
-        ),
-    )
-    client = _dummy_api_client()
-    runtime = AgentRuntime(client, _dummy_system_prompt())
-
-    with pytest.raises(ValueError, match="不支持的主动事件类型：proactive_check"):
-        runtime.handle_event(AgentEvent(type="proactive_check", payload={}))
-    assert not client.complete_with_tools.called
-    client.complete_with_tools.assert_not_called()
-    client.chat.assert_not_called()
-    assert (
-        "AgentRuntime",
-        "拒绝不支持的主动事件",
-        {"event_type": "proactive_check"},
-    ) in logs
 
 
 class TestAgentRuntimeBasics:

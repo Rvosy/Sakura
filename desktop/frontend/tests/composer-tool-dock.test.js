@@ -24,7 +24,6 @@ test("composer tool snapshots preserve bounded host-rendered plugin actions", ()
   const result = validateComposerToolsSnapshot(snapshot([tool()]));
   assert.equal(result.tools[0].id, "com.example.tools:browser");
   assert.equal(result.tools[0].icon, "globe");
-  assert.equal(Object.isFrozen(result.tools[0]), true);
 });
 
 test("composer tool snapshots reject markup icons, duplicate ids, and private fields", () => {

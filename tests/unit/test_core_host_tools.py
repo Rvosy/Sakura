@@ -7,14 +7,6 @@ from app.core_host.tools import create_runtime_v2_tool_registry
 from app.core_host.tool_settings import ToolSettingsBoundary, load_tool_runtime_configuration
 
 
-def test_runtime_v2_registry_contains_only_frozen_tools() -> None:
-    registry = create_runtime_v2_tool_registry()
-
-    assert {tool.name for tool in registry.all()} == {"get_current_time"}
-    assert "add_todo" not in {tool.name for tool in registry.all()}
-    assert "observe_screen" not in {tool.name for tool in registry.all()}
-
-
 def test_core_read_only_tool_executes_without_confirmation() -> None:
     registry = create_runtime_v2_tool_registry()
     current_time = registry.execute("get_current_time", {})

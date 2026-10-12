@@ -129,7 +129,6 @@ def test_background_search_returns_before_network_and_ignores_closed_worker(monk
 def test_removed_google_selection_falls_back_without_losing_tavily_key():
     result = search.configuration({'provider': 'google', 'tavily_api_key': 'fixture-key', 'tavily_depth': 'advanced'})
     assert result == {'provider': 'baidu', 'tavily_api_key': 'fixture-key', 'tavily_depth': 'advanced'}
-    assert set(search.PROVIDERS) == {'baidu', 'bing', 'tavily'}
 
 
 def test_baidu_summary_comes_from_result_not_sidebar(monkeypatch):

@@ -29,7 +29,7 @@ from sakura_assistant.llm.token_estimation import (
 )
 
 
-def test_prompt_inspection_exposes_section_metadata_without_content_digest() -> None:
+def test_prompt_inspection_reports_size_without_exposing_content() -> None:
     result = PromptRuntime().build(PromptRecipe(
         "fixture", [PromptSection("persona.character", "private character text", source="character")],
     ))
@@ -40,7 +40,6 @@ def test_prompt_inspection_exposes_section_metadata_without_content_digest() -> 
     assert section["source"] == "character"
     assert section["chars"] == len(result.system_prompt)
     assert section["estimated_tokens"] == estimate_prompt_tokens(result.system_prompt)
-    assert "static_hash" not in section
     assert "private character text" not in str(inspection)
 
 

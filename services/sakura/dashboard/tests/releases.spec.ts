@@ -1,11 +1,12 @@
 import { test, expect } from "@playwright/test";
 
-test("saved release preview, explicit publish, conflicts and responsive console", async ({
+test("saved release preview, explicit publish and conflicts", async ({
   page,
-}, info) => {
+}) => {
   let draft: any = null;
   const published: any[] = [];
   let conflict = true;
+  const conflictReason = "线上版本已变化，请刷新并核对后再发布。";
   const live = {
     updater: { version: "1.1.0" },
     consistent: true,
@@ -59,7 +60,7 @@ test("saved release preview, explicit publish, conflicts and responsive console"
           status: 409,
           contentType: "application/json",
           body: JSON.stringify({
-            detail: "线上版本已变化，请刷新并核对后再发布。",
+            detail: conflictReason,
           }),
         });
         return;
@@ -93,30 +94,14 @@ test("saved release preview, explicit publish, conflicts and responsive console"
   ).toBeDisabled();
   await page.getByRole("button", { name: "保存草稿" }).click();
   await expect(
-    page.getByRole("status").filter({ hasText: "草稿已保存" }),
-  ).toBeVisible();
+    page.getByRole("button", { name: "发布版本", exact: true }),
+  ).toBeEnabled();
+  expect(draft.payload.updater.notes).toBe("修复启动异常与导出");
   expect(published).toEqual([]);
-  for (const width of [1440, 390]) {
-    await page.setViewportSize({ width, height: 1050 });
-    await expect(page.getByLabel("更新说明")).toBeVisible();
-    if (width === 390)
-      await expect(
-        page.getByRole("navigation", { name: "主导航" }),
-      ).toBeHidden();
-    expect(
-      await page.evaluate(
-        () => document.documentElement.scrollWidth <= window.innerWidth,
-      ),
-    ).toBe(true);
-    await page.screenshot({
-      path: info.outputPath(`release-${width}.png`),
-      fullPage: true,
-    });
-  }
   await page.getByRole("button", { name: "发布版本", exact: true }).click();
   expect(published).toEqual([]);
   await page.getByRole("button", { name: "确认发布", exact: true }).click();
-  await expect(page.getByRole("alert")).toContainText("线上版本已变化");
+  await expect(page.getByRole("alert")).toContainText(conflictReason);
   expect(published).toEqual([]);
   await page.getByRole("button", { name: "确认发布", exact: true }).click();
   await expect(

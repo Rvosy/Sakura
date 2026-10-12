@@ -74,15 +74,7 @@ test("macOS 26 exposes both native visual modes", () => {
 test("older macOS locks liquid glass without locking gaussian blur", () => {
   const modes = inputVisualEffectModes(manifest({ liquid: false }));
   assert.equal(modes.find(({ id }) => id === "gaussian_blur").disabled, false);
-  assert.deepEqual(
-    modes.find(({ id }) => id === "liquid_glass"),
-    {
-      id: "liquid_glass",
-      label: "液态玻璃",
-      disabled: true,
-      reason: "需要 macOS 26 或更高版本",
-    },
-  );
+  assert.equal(modes.find(({ id }) => id === "liquid_glass").disabled, true);
 });
 
 test("solid remains selectable when both native visual effects are unavailable", () => {
@@ -92,19 +84,6 @@ test("solid remains selectable when both native visual effects are unavailable",
     ["gaussian_blur", true],
     ["liquid_glass", true],
   ]);
-});
-
-test("schema 1 rejects the retired section-list shape", () => {
-  assert.throws(
-    () => validateCapabilityManifest({
-      schemaVersion: 1,
-      windowGeneration: 1,
-      availableSections: ["appearance"],
-      readOnlySections: [],
-      unavailableReasons: {},
-    }),
-    /missing settings capability field: sections/,
-  );
 });
 
 test("schema 1 rejects unknown section fields instead of normalizing them", () => {

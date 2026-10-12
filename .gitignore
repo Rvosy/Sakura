@@ -31,8 +31,6 @@ desktop/src-tauri/release-staging/
 desktop/src-tauri/portable-staging/
 desktop/src-tauri/tauri.release.json
 characters/
-!tests/fixtures/runtime_v2/wp_0_02/dataset/characters/
-!tests/fixtures/runtime_v2/wp_0_02/dataset/characters/**
 
 .pytest_cache/
 .pytest-basetemp/

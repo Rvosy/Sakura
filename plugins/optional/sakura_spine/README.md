@@ -110,10 +110,9 @@ Room 只向模型开放 `skin` 表情选择，待机动画始终循环，默认 
 省略控制字段保持原状态，动作完成后回到当前循环动画。编辑页预览独立校验，不受模型开放范围限制。
 旧 `portrait`/`tone` 没有 Spine 含义，插件忽略这些旧字段。
 
-后端接口遵循[表现插件边界](../../../docs/specs/runtime-v2/visual-plugin-boundary.md)。
-插件前端导出 `createRenderer()`、`createEditor()`，具体参数、交付序号、取消与销毁要求见
-[Spine 插件规范](../../../docs/specs/runtime-v2/spine-visual-plugin.md)。这些方法目前是本插件的前端接口，
-正式入口为 `mount` 和 `mountEditor`，通过公共宿主获取授权资源和提交草稿，Core 无 Spine 专属分支。
+后端接口遵循[表现插件边界](../../../docs/development/characters.md)。
+正式前端入口为 `mount` 和 `mountEditor`，通过公共宿主读取资源和提交草稿。
+回调、取消与销毁约定见[角色与表现开发](../../../docs/development/characters.md)。
 
 ## 运行库与范围
 

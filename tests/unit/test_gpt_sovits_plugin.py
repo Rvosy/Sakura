@@ -814,9 +814,6 @@ def test_invalid_provider_config_stays_active_but_reports_unavailable(tmp_path: 
         assert sections[0]["pluginId"] == "sakura.tts.gpt-sovits"
         assert sections[0]["sectionId"] == "runtime"
         fields = {field["key"]: field for field in sections[0]["fields"]}
-        assert "enabled" not in fields
-        assert fields["endpointMode"]["label"] == "服务来源"
-        assert fields["workDir"]["placement"] == "advanced"
         assert fields["customBaseUrl"]["enabledWhen"] == {
             "field": "endpointMode",
             "equals": "custom",

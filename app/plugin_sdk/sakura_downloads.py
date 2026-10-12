@@ -18,6 +18,7 @@ _UV_SOURCE_ENV = {
 
 def uv_download_environment(
     directory: Path, environment: Mapping[str, str] | None = None,
+    *, default_index: str = DEFAULT_PYPI_INDEX,
 ) -> dict[str, str]:
     """Use the domestic default only when the caller has not chosen sources.
 
@@ -34,7 +35,7 @@ def uv_download_environment(
             if result.get(source):
                 result[target] = result[source]
         return result
-    result["UV_DEFAULT_INDEX"] = result.get("PIP_INDEX_URL") or DEFAULT_PYPI_INDEX
+    result["UV_DEFAULT_INDEX"] = result.get("PIP_INDEX_URL") or default_index
     if result.get("PIP_EXTRA_INDEX_URL"):
         result["UV_EXTRA_INDEX_URL"] = result["PIP_EXTRA_INDEX_URL"]
     return result

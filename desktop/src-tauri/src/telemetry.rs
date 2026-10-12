@@ -26,7 +26,7 @@ use crate::{product_shell, runtime_log::CoreLogContext, ui_config::UiConfigRepos
 pub const TELEMETRY_CORE_BRIDGE_PREFIX: &str = "SAKURA_TELEMETRY_V1\t";
 pub const TELEMETRY_ENDPOINT: &str = "https://telemetry.cialloo.cn";
 pub const TELEMETRY_DOCUMENTATION_URL: &str =
-    "https://github.com/Rvosy/Sakura/blob/main/docs/userdocs/REMOTE_DIAGNOSTICS_AND_TELEMETRY.md";
+    "https://github.com/Rvosy/Sakura/blob/main/docs/guide/privacy.md";
 const TELEMETRY_NAMESPACE: &str = "TELEMETRY_SETTINGS";
 const QUEUE_CAPACITY: usize = 128;
 const HTTP_TIMEOUT: Duration = Duration::from_millis(2_500);

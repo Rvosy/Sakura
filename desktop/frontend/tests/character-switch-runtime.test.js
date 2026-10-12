@@ -7,7 +7,6 @@ import {
   commitCharacterSelection,
   hasCharacterScopedDrafts,
   pendingCharacterSelection,
-  syncCharacterEditorControl,
   setCharacterSwitchLock,
   waitForCharacterSwitch,
 } from "../settings/character-switch-runtime.js";
@@ -83,23 +82,6 @@ test("appearance, voice, and character collection drafts block switching", () =>
   assert.equal(hasCharacterScopedDrafts({ appearanceDirty: true }), true);
   assert.equal(hasCharacterScopedDrafts({ voiceDirty: true }), true);
   assert.equal(hasCharacterScopedDrafts({ collectionDraftCount: 1 }), true);
-});
-
-test("available character editor clears the stale Runtime v2 placeholder state", () => {
-  const attributes = new Map([
-    ["title", "该设置能力尚未迁移到 Runtime v2"],
-    ["aria-disabled", "true"],
-  ]);
-  const control = {
-    disabled: true,
-    removeAttribute(name) { attributes.delete(name); },
-  };
-
-  syncCharacterEditorControl(control, false);
-
-  assert.equal(control.disabled, false);
-  assert.equal(attributes.has("title"), false);
-  assert.equal(attributes.has("aria-disabled"), false);
 });
 
 test("character choices remain local drafts until apply commits only the final target", async () => {

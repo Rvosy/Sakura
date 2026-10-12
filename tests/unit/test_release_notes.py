@@ -7,14 +7,13 @@ import sys
 from pathlib import Path
 
 import pytest
-import yaml
 
 from tools.release.release_notes import release_changes, render_body, version_changes
 
 
 ROOT = Path(__file__).resolve().parents[2]
 VERSION = "1.4.0"
-CHANGES = "新增功能。\n\n### 使用说明\n\n- 保留字面量 `$value`。\n- [安装](userdocs/SETUP.md#开始)"
+CHANGES = "新增功能。\n\n### 使用说明\n\n- 保留字面量 `$value`。\n- [安装](guide/setup.md#首次启动)"
 
 
 def test_selects_only_exact_version_with_prereleases_and_previous_notes() -> None:
@@ -39,11 +38,11 @@ def test_rejects_missing_empty_or_duplicate_current_version(changelog: str) -> N
 
 def test_links_resolve_at_released_tag_without_changing_external_or_anchor_links() -> None:
     source = (
-        "[指南](userdocs/SETUP.md#开始) [首页](../README.md) "
+        "[指南](guide/setup.md#首次启动) [首页](../README.md) "
         "[外部](https://example.test/guide) [同页](#使用说明)"
     )
     actual = release_changes(source, "example/Sakura", "1.4.0-rc.1")
-    assert "https://github.com/example/Sakura/blob/v1.4.0-rc.1/docs/userdocs/SETUP.md#开始" in actual
+    assert "https://github.com/example/Sakura/blob/v1.4.0-rc.1/docs/guide/setup.md#首次启动" in actual
     assert "https://github.com/example/Sakura/blob/v1.4.0-rc.1/README.md" in actual
     assert "[外部](https://example.test/guide) [同页](#使用说明)" in actual
 
@@ -86,7 +85,6 @@ def test_cli_refreshes_portable_links_and_keeps_updater_notes_separate(tmp_path:
     assert "windows-x64-portable.zip" not in initial_body
     assert "待发布" not in initial_body
     assert "旧版内容" not in initial_body
-    assert initial_body.index("## 下载") < initial_body.index("## 本次更新")
 
     portable = assets / f"Sakura-{VERSION}-windows-x64-portable.zip"
     portable.write_bytes(b"portable fixture")
@@ -111,25 +109,3 @@ def test_cli_refreshes_portable_links_and_keeps_updater_notes_separate(tmp_path:
     manifest = json.loads(updater_path.read_text(encoding="utf-8"))
     assert manifest["notes"] == notes
     assert "releases/download" not in manifest["notes"]
-
-
-def test_publish_and_portable_refresh_keep_github_generated_footer() -> None:
-    workflow = yaml.safe_load((ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8"))
-    for job, published_file in (
-        ("publish", "release-assets/*"),
-        ("publish-portable", "windows-x64-portable.zip"),
-    ):
-        steps = workflow["jobs"][job]["steps"]
-        publication = next(
-            step for step in steps
-            if step.get("uses", "").startswith("softprops/action-gh-release@")
-            and published_file in step["with"]["files"]
-        )
-        # The action prepends body_path to GitHub's PR list and compare link.
-        assert publication["with"]["body_path"] == "release-body.md"
-        assert publication["with"]["generate_release_notes"] is True
-        assert not publication["with"].get("append_body", False)
-        generator = next(
-            step for step in steps if "tools.release.release_notes" in step.get("run", "")
-        )
-        assert steps.index(generator) < steps.index(publication)

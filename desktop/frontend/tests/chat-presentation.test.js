@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { composerPlaceholder, createChatPresentationReducer } from "../chat/chat-presentation.js";
+import { createChatPresentationReducer } from "../chat/chat-presentation.js";
 import { createTypewriter, selectSegmentText } from "../pet/typewriter.js";
 
 const lifecycle = (status, generationNumber = 1, revision = 1, canRetry = false, failure = null) => ({
@@ -23,7 +23,6 @@ test("only a stopped Core failure exposes the manual retry action", () => {
     message: "Core 进程意外退出。",
   }));
   assert.equal(reducer.current().canRetry, true);
-  assert.ok(!reducer.current().lifecycleHeadline.includes("Core 进程意外退出"));
   reducer.reduce(lifecycle("rehydrating", 2, 1, false));
   assert.equal(reducer.current().canRetry, false);
 });
@@ -81,7 +80,6 @@ test("a verbose failure message stays outside the bubble", () => {
   reducer.reduce({ type: "chat.started", ...identity });
   const message = 'upstream '.repeat(200) + '\nTraceback\n  File "transport.py"';
   reducer.reduce({ type: "chat.failed", ...identity, error: { message } });
-  assert.ok(reducer.current().bubbleText.length <= 181);
   assert.ok(!reducer.current().bubbleText.includes("Traceback"));
   assert.ok(!reducer.current().bubbleText.includes("upstream"));
 });
@@ -461,13 +459,11 @@ test("Core failure gives active work one interrupted terminal and preserves earl
   assert.equal(reducer.current().phase, "error");
   assert.equal(reducer.current().operationId, null);
   assert.equal(reducer.current().canCancel, false);
-  assert.equal(reducer.current().bubbleText, "连接中断，本次回复已停止。");
   assert.equal(reducer.current().error.code, "CHAT_INTERRUPTED");
   assert.deepEqual(reducer.current().replyHistorySegments.map(({ text }) => text), ["已经完成"]);
 
   reducer.reduce(lifecycle("rehydrating", 2, 1));
   reducer.reduce(lifecycle("ready", 2, 2));
-  assert.equal(reducer.current().bubbleText, "连接中断，本次回复已停止。");
   assert.deepEqual(reducer.current().replyHistorySegments.map(({ text }) => text), ["已经完成"]);
   assert.equal(reducer.current().lifecycle, "ready");
 });

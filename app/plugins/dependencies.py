@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -14,9 +15,11 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator
+from urllib.parse import urlsplit
 
 from app.core.diagnostics import TRACE_LIMIT, bounded_text
-from app.plugin_sdk.sakura_downloads import uv_download_environment
+from app.core.runtime_log import log_event
+from app.plugin_sdk.sakura_downloads import DEFAULT_PYPI_INDEX, uv_download_environment
 from app.plugins.process_paths import process_path
 from app.storage.atomic import atomic_write_text
 from app.storage.paths import StoragePaths
@@ -24,6 +27,12 @@ from app.storage.runtime_roots import DistributionPaths
 
 
 _MARKER = ".sakura-dependencies.json"
+_PYPI_INDEX = "https://pypi.org/simple"
+_BACKUP_PYPI_INDEX = "https://repo.huaweicloud.com/repository/pypi/simple"
+_PACKAGE_FILE_NOT_FOUND = re.compile(
+    r"HTTP status client error \(404\b[^)]*\) for url\s+"
+    r"\((https://[^\s)]+\.whl(?:\.metadata)?)\)"
+)
 
 
 class PluginDependencyError(RuntimeError):
@@ -137,19 +146,7 @@ class PluginDependencyRoots:
                 shutil.copytree(source, staging, dirs_exist_ok=True)
             else:
                 command, exported = self._install_command(declaration, staging)
-                result = subprocess.run(
-                    command,
-                    cwd=Path(plugin_root),
-                    env=self._uv_environment(plugin_root),
-                    stdin=subprocess.DEVNULL,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True,
-                    check=False,
-                )
-                if result.returncode != 0:
-                    detail = f"exit_code={result.returncode}\n{(result.stderr or result.stdout).strip()}"
-                    raise PluginDependencyError("PLUGIN_DEPENDENCY_INSTALL_FAILED", detail)
+                self._install_dependencies(command, Path(plugin_root), plugin_id)
             if entry is not None:
                 self._validate_entry(plugin_id, plugin_root, staging, entry)
             marker = {
@@ -305,6 +302,65 @@ class PluginDependencyRoots:
         if executable:
             return [executable]
         return [str(self._python), "-m", "uv"]
+
+    def _install_dependencies(self, command: list[str], directory: Path, plugin_id: str) -> None:
+        environment = self._uv_environment(directory)
+        errors: list[str] = []
+        for attempt, (index, label) in enumerate((
+            (None, "首次安装"),
+            (DEFAULT_PYPI_INDEX, "刷新阿里云索引后重试"),
+            (_BACKUP_PYPI_INDEX, "华为云镜像兜底"),
+            (_PYPI_INDEX, "官方 PyPI 兜底"),
+        ), start=1):
+            arguments = command
+            if index is not None:
+                environment = {**environment, "UV_DEFAULT_INDEX": index}
+                arguments = [*command, "--refresh"]
+            attributes = {
+                "plugin_id": plugin_id,
+                "attempt": attempt,
+                "dependency_source": {
+                    DEFAULT_PYPI_INDEX: "aliyun", _BACKUP_PYPI_INDEX: "huawei", _PYPI_INDEX: "pypi",
+                }.get(environment.get("UV_DEFAULT_INDEX"), "configured"),
+                "action": "install" if attempt == 1 else "refresh" if index == DEFAULT_PYPI_INDEX else "fallback",
+            }
+            log_event("Plugin", "开始安装插件依赖", attributes,
+                      event="plugin.dependencies.attempt.started", severity="info")
+            try:
+                result = subprocess.run(
+                    arguments, cwd=directory, env=environment,
+                    stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE, text=True, check=False,
+                )
+            except OSError as error:
+                errors.append(f"{label}\n{error}")
+                log_event("Plugin", "插件依赖安装失败",
+                          {**attributes, "reason_code": "PLUGIN_DEPENDENCY_INSTALL_FAILED", "diagnostic": str(error)},
+                          event="plugin.dependencies.install.failed", severity="error")
+                raise PluginDependencyError("PLUGIN_DEPENDENCY_INSTALL_FAILED", "\n\n".join(errors)) from error
+            if not result.returncode:
+                log_event("Plugin", "插件依赖下载安装完成", {**attributes, "exit_code": 0},
+                          event="plugin.dependencies.install.finished", severity="info")
+                return
+            output = (result.stderr or result.stdout).strip()
+            errors.append(f"{label}\nexit_code={result.returncode}\n{output}")
+            log_event("Plugin", "插件依赖安装尝试失败",
+                      {**attributes, "exit_code": result.returncode, "diagnostic": output},
+                      event="plugin.dependencies.attempt.failed", severity="warning")
+            missing = _PACKAGE_FILE_NOT_FOUND.search(output)
+            if not missing or urlsplit(missing[1]).netloc != urlsplit(environment.get("UV_DEFAULT_INDEX", "")).netloc:
+                break
+            if index is None:
+                if environment.get("UV_DEFAULT_INDEX") != DEFAULT_PYPI_INDEX or environment.get("UV_EXTRA_INDEX_URL"):
+                    break
+                # An explicit source remains unchanged when the default is replaced.
+                fallback = uv_download_environment(directory, default_index=_BACKUP_PYPI_INDEX)
+                if fallback.get("UV_DEFAULT_INDEX") != _BACKUP_PYPI_INDEX:
+                    break
+        log_event("Plugin", "插件依赖安装失败",
+                  {**attributes, "exit_code": result.returncode, "reason_code": "PLUGIN_DEPENDENCY_INSTALL_FAILED"},
+                  event="plugin.dependencies.install.failed", severity="error")
+        raise PluginDependencyError("PLUGIN_DEPENDENCY_INSTALL_FAILED", "\n\n".join(errors))
 
     def _uv_environment(self, directory: Path | None = None) -> dict[str, str]:
         environment = uv_download_environment(directory or Path.cwd())

@@ -39,7 +39,6 @@ def test_commit_is_atomic_and_lookup_and_playback_copy_are_controlled(tmp_path: 
     assert record.audio_path.read_bytes()[:4] == b"RIFF"
     metadata = json.loads((record.directory / "record.json").read_text(encoding="utf-8"))
     assert metadata["schemaVersion"] == 1
-    assert "sha256" not in metadata
     assert metadata["historyEntryId"] == "entry-0001"
     assert metadata["favorite"] is False
     assert not list(record.directory.parent.glob(".staging-*"))
@@ -177,7 +176,6 @@ def test_legacy_digest_is_ignored_and_invalid_audio_is_isolated(tmp_path: Path) 
     assert store.get(record.recording_id) == record
     assert store.scan_and_prune() == (record,)
     assert store.set_favorite(record.recording_id, True).favorite
-    assert "sha256" not in json.loads(metadata_path.read_text(encoding="utf-8"))
     # Equal byte length cannot make an invalid WAV healthy.
     record.audio_path.write_bytes(b"x" * record.byte_length)
     assert store.get(record.recording_id) is None

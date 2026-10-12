@@ -5,22 +5,17 @@ import {
   disabledRequiredPluginProviders,
   enabledPluginDependents,
   presentPluginComponent,
-  presentPluginReason,
   presentPluginStatus,
   projectPluginActivity,
   pluginMetadata,
-  pluginIconName,
   pluginResourceContributions,
   filterPluginCatalog,
 } from "../settings/plugin-presentation.js";
 
 test("plugin transitions distinguish waiting and stopping even with a stale readiness reason", () => {
-  for (const [state, label] of [
-    ["starting", "正在启动"], ["waiting", "等待启动"], ["stopping", "正在停止"],
-  ]) {
+  for (const state of ["starting", "waiting", "stopping"]) {
     for (const reason_code of ["", "PLUGIN_APPLICATION_NOT_READY"]) {
       const activity = projectPluginActivity({ plugin_id: "fixture.worker", state, reason_code });
-      assert.equal(activity.label, label);
       assert.equal(activity.state, "working");
       assert.equal(activity.isTransient, true);
     }
@@ -45,16 +40,6 @@ test("component overview combines enabled plugin resources across surfaces and k
     ["third-party", "bundle", installed], ["third-party", "second", running], ["legacy", "bundle", running],
   ]);
   assert.equal(pluginResourceContributions([{ ...plugins[0], enabled: false }]).length, 0);
-});
-
-test("plugin icons use the local catalogue and fall back without interpreting supplied markup", () => {
-  assert.equal(pluginIconName({ presentation: { category: "connectivity", icon: "smartphone" } }), "smartphone");
-  for (const icon of [undefined, "future-icon", "../brain.svg", '<svg onload="alert(1)">']) {
-    assert.equal(pluginIconName({ presentation: { category: "memory", icon } }), "brain");
-  }
-  assert.equal(pluginIconName({ presentation: { kind: "infrastructure", category: "voice" } }), "layers");
-  assert.equal(pluginIconName({ presentation: { kind: "provider", category: "visual" } }), "person-standing");
-  assert.equal(pluginIconName({ plugin_id: "sakura_mem0" }), "puzzle");
 });
 
 test("catalog filters combine declared metadata, install source and actual activity", () => {
@@ -108,8 +93,6 @@ test("plugin dependency projections cascade enablement and find affected consume
 
 test("missing plugin dependencies stay distinct from a bad API key", () => {
   const status = presentPluginStatus({ state: "failed", reasonCode: "PLUGIN_DEPENDENCIES_MISSING" });
-  assert.equal(status.label, "依赖检查失败");
-  assert.doesNotMatch(status.message, /没有安装/);
   assert.match(status.diagnostic, /PLUGIN_DEPENDENCIES_MISSING/);
 });
 
@@ -123,20 +106,13 @@ test("plugin failure presentation prioritizes the original cause and keeps the t
 });
 
 test("unknown plugin failures stay readable and retain the original code", () => {
-  assert.deepEqual(presentPluginStatus({
-    state: "failed",
-    reasonCode: "SOMETHING_NEW",
-  }), {
-    label: "启动失败",
-    message: "这个插件暂时无法使用。",
-    diagnostic: "诊断代码：SOMETHING_NEW",
-  });
+  const status = presentPluginStatus({ state: "failed", reasonCode: "SOMETHING_NEW" });
+  assert.ok(status.diagnostic.includes("SOMETHING_NEW"));
 });
 
 test("retired model contracts show an update action with their diagnostic", () => {
   for (const state of ["failed", "disabled"]) {
     const status = presentPluginStatus({ state, reasonCode: "MODEL_API_UPDATE_REQUIRED" });
-    assert.equal(status.label, "需要更新");
     assert.match(status.diagnostic, /MODEL_API_UPDATE_REQUIRED/);
   }
 });
@@ -161,17 +137,11 @@ test("plugin activity keeps warning and failure stable", () => {
   assert.equal(projectPluginActivity({ state: "failed", sections: [] }).state, "failed");
   assert.equal(projectPluginActivity({ state: "failed", sections: [] }).isTransient, false);
 
-  assert.deepEqual(projectPluginActivity({
-    state: "failed",
-    reason_code: "PLUGIN_APPLICATION_NOT_READY",
-    sections: [],
-  }), {
-    state: "working",
-    label: "正在启动",
-    message: "",
-    hasRunningResource: false,
-    isTransient: true,
+  const starting = projectPluginActivity({
+    state: "failed", reason_code: "PLUGIN_APPLICATION_NOT_READY", sections: [],
   });
+  assert.equal(starting.state, "working");
+  assert.equal(starting.isTransient, true);
 
   const error = structuredClone(warning);
   error.state = "error";

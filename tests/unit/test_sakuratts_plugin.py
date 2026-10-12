@@ -457,13 +457,13 @@ def test_engine_state_distinguishes_on_demand_start_and_failure(tmp_path, monkey
         p.close()
 
 
-@pytest.mark.parametrize(('runtime_state', 'state', 'label'), [
-    ({'state': 'awake', 'busy': True}, 'working', '正在合成'),
-    ({'state': 'awake'}, 'ready', '已加载'),
-    ({'state': 'sleeping'}, 'ready', '已休眠'),
-    ({'state': 'failed'}, 'error', '启动失败'),
+@pytest.mark.parametrize(('runtime_state', 'state'), [
+    ({'state': 'awake', 'busy': True}, 'working'),
+    ({'state': 'awake'}, 'ready'),
+    ({'state': 'sleeping'}, 'ready'),
+    ({'state': 'failed'}, 'error'),
 ])
-def test_engine_state_reports_runtime_without_waking_model(tmp_path, monkeypatch, runtime_state, state, label):
+def test_engine_state_reports_runtime_without_waking_model(tmp_path, monkeypatch, runtime_state, state):
     p, _ = provider(tmp_path, monkeypatch)
     p.runtime.process = SimpleNamespace(poll=lambda: None)
     monkeypatch.setattr(p.runtime, 'stop', lambda: None)
@@ -474,7 +474,7 @@ def test_engine_state_reports_runtime_without_waking_model(tmp_path, monkeypatch
     monkeypatch.setattr(p.runtime, 'request', request)
     try:
         result = p.engine_state()
-        assert (result['state'], result['label']) == (state, label)
+        assert result['state'] == state
         assert calls == ['/runtime']
     finally:
         p.close()

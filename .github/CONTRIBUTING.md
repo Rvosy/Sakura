@@ -1,44 +1,12 @@
-# 为 Sakura 贡献代码
+# 参与 Sakura 开发
 
-[English](CONTRIBUTING.en.md)
+开发约定见 [AGENTS.md](../AGENTS.md)，产品行为与扩展接口见[文档总览](../docs/README.md)。先阅读相关调用链，修改解决实际问题所需的部分。
 
-小修复可以直接提交 Pull Request。公开接口、配置格式、Plugin API 或主要交互的调整应说明问题、结果和兼容影响。
-需求尚不明确时可先讨论；已有明确需求或维护者授权时可以直接实施，无需另开 Issue 才能开始。
-
-使用编码智能体时，协作规则见根目录 [AGENTS.md](../AGENTS.md)。旧 Work Package 的文件范围、激活状态和
-提交步骤是历史资料，不限制当前任务的调查与修改。
-
-## 仓库结构
-
-Sakura 的产品运行链是 Tauri Shell、Python Core Host 和逐插件 Plugin API v4 进程。
-
-| 目录 | 内容 |
-|---|---|
-| `desktop/` | Tauri/Rust 后端和 WebView 前端，包含角色工作室 |
-| `app/` | Core Host、Agent、配置、存储、MCP、Plugin Runtime 和语音领域 |
-| `plugins/` | 随项目提供的 Plugin API v4 插件 |
-| `harness/` | 按产品能力组织的验证入口 |
-| `tests/` | Python 单元、集成和测试夹具 |
-| `docs/` | 用户文档、开发指南和维护者工程资料 |
-
-`third_party/` 与 `tools/mcp/` 包含第三方或外部工具代码。只有问题确实属于这些目录时才修改。
-
-不要提交 `runtime/`、`data/`、角色资源、日志、模型、测试缓存或 Tauri 构建产物。测试需要数据时，使用临时 app root。
+从[架构与模块关系](../docs/development/architecture.md)找到涉及的模块，再读它的 [Spec](../docs/specs/README.md)、关联 [ADR](../docs/adr/README.md) 和公开接口。改变业务要求时更新模块规格；改变重要架构选择时更新对应决策及理由。内部重构不改写业务规则，普通修复也不需要另建决策文档。
 
 ## 开发环境
 
-Fork 仓库，克隆自己的 Fork，再添加上游：
-
-```bash
-git clone https://github.com/<你的 GitHub 用户名>/Sakura.git
-cd Sakura
-git remote add upstream https://github.com/Rvosy/Sakura.git
-git fetch upstream
-```
-
-项目使用根目录下的 bundled Python Runtime，不使用系统 Python 替代。源码检出不包含 `runtime/`。
-`scripts/install.sh` 与 `scripts/install.bat` 会在缺少 Runtime 时按当前平台清单下载冻结的 CPython；
-Linux 还需要 WebKitGTK 4.1 开发包，见 [Linux 使用说明](../docs/userdocs/LINUX_SETUP.md)。
+从仓库根目录执行安装、开发依赖准备和启动。使用项目自带 Python；源码检出缺少 `runtime/` 时，安装脚本会下载指定版本。Rust 与 Node.js 需预先安装，Linux 系统依赖见[安装指南](../docs/guide/setup.md#linux)。
 
 Windows：
 
@@ -52,129 +20,41 @@ macOS / Linux：
 
 ```bash
 bash scripts/install.sh
-./runtime/bin/python3 -m pip install -r tools/requirements-dev.txt
+./runtime/bin/python -m pip install -r tools/requirements-dev.txt
 bash scripts/start.sh
 ```
 
-Windows 的 `scripts\start.bat` 与 macOS/Linux 的 `scripts/start.sh` 都会增量编译并启动 debug Shell。
+启动脚本增量编译开发版。正式打包见[发行指南](../docs/development/release.md)。
 
-## 本地打包
+## 仓库入口
 
-准备好 `runtime/`、Rust 和 Node.js 后，在 Windows 仓库根目录运行 `scripts\package.bat`。产物位于
-`artifacts/local/`，包括 Setup、Portable ZIP 和单独的 Playwright 插件 ZIP。
+| 目录 | 用途 |
+|---|---|
+| `desktop/` | 桌面窗口、前端与系统资源 |
+| `app/` | 后台服务、插件运行、存储和 SDK |
+| `plugins/` | 内置及可选插件源码 |
+| `services/sakura/` | 在线服务、控制台和官网 |
+| `tests/`、`harness/` | 测试与验证入口 |
+| `tools/`、`scripts/`、`packaging/` | 开发、启动与发行工具 |
 
-冻结 Python 归档、pip wheel 和 uv wheel 缓存位于 `temp/release-cache/`。后续构建会先核对 Python 归档的固定大小，
-确认归档可解析后再复用；pip/uv 锁文件中的上游包哈希由安装工具校验。缓存失效时只重建对应缓存，
-不会把开发用 `runtime/` 中已经安装的包直接复制到发行包。
+用户数据、模型、日志、凭据、测试缓存和构建产物不入库。测试使用隔离数据，不读写已有角色和配置。
 
-## 正式发布正文
+## 验证
 
-Release 流水线自动生成下载表，读取 [更新日志](../docs/CHANGELOG.md) 中与 `VERSION` 对应的版本段落，并在
-结尾保留 GitHub 自动生成的 PR 列表与版本比较链接。每次发布只需维护对应版本的更新内容，无需另写正文或
-下载地址；缺少、重复或空的版本段落会在打包前报错。
-
-固定排版在 [Release 正文模板](../packaging/release-body.md)，生成入口为
-[`tools.release.release_notes`](../tools/release/release_notes.py)。Windows 可以先检查当前版本内容：
-
-```powershell
-.\runtime\python.exe -m tools.release.release_notes --check
-```
-
-汇总三个平台的产物后，可在本地预览下载表和版本更新日志：
+测试应能发现具体业务错误，先复用已有覆盖。按修改选择相关测试或 [Harness](../harness/README.md) profile，通过后不重复扩大范围。下面的 Python 路径为 Windows，其他平台换成 `runtime/bin/python`。
 
 ```powershell
-.\runtime\python.exe -m tools.release.release_notes --assets-dir release-assets --output release-body.md
-```
-
-GitHub 的 `What's Changed` 和 `Full Changelog` 由发布 Action 自动追加，本地预览不包含它们。
-Portable 尚未打包完成时不显示下载链接，上传后自动刷新正文。完整合同见
-[发行与存储 Spec](../docs/specs/runtime-v2/release-distribution-and-storage.md#release-正文)。
-
-## 分支和提交
-
-准备贡献分支时，通常从最新 `dev` 建立分支：
-
-```bash
-git fetch upstream
-git switch -c feat/short-name upstream/dev
-```
-
-已有任务分支或 worktree 时继续使用当前环境；上述命令是新贡献的示例，不要求智能体切换或清理用户工作区。
-
-分支使用 `feat/`、`fix/` 或 `refactor/` 等简短英文前缀。Commit 使用常规类型和简洁说明：
-
-```text
-feat: 添加手机端图片发送
-fix: 修复退出时的 TTS 残留进程
-docs: 更新插件开发说明
-test: 增加配置保存回归测试
-```
-
-一次 Commit 处理一件事。不要夹带无关格式化、重命名或清理。
-
-## 修改代码
-
-- 新增和修改界面遵循[界面文案规范](../docs/devdocs/UI_COPY_GUIDELINES.md)。先删重复说明，核对状态和操作后果，同步动态提示及用户文档。
-- 先读真实调用链和相关测试。长期行为受 Spec 约束时，再查看对应文档。
-- 新接口写清输入、返回值和失败方式。
-- 可自动复现的 Bug 应有能让原缺陷失败的回归测试；已有覆盖可直接复用，低影响文案或样式调整不需要照抄实现的测试。
-- 不要吞掉异常、放宽断言或为假设场景增加自动重试。
-- 保留工作树中已有修改，不使用破坏性 Git 命令清理用户工作。
-
-插件作者应使用 [Plugin API v4 开发指南](../docs/devdocs/SAKURA_PLUGIN_SDK.md)。桌面窗口、MCP 和日志的开发入口位于 [开发者文档](../docs/devdocs/README.md)。
-
-## 测试
-
-下面使用 macOS/Linux 路径。Windows 把 `./runtime/bin/python3` 替换为 `.\runtime\python.exe`。
-
-需要选择 Harness profile 时，先查看当前清单：
-
-```bash
-./runtime/bin/python3 -m harness list
-```
-
-从受影响能力的窄测试或 profile 开始。以下是不同任务的入口，按需选择：
-
-```bash
-./runtime/bin/python3 -m harness run core-host
-./runtime/bin/python3 -m harness run runtime-v2-shell
-./runtime/bin/python3 -m pytest -q tests/unit/test_plugin_runtime_v4.py tests/unit/test_core_host_plugins.py
-```
-
-前端或 Rust 改动可以使用各自入口，并按受影响模块选择测试：
-
-```bash
+runtime\python.exe -m harness list
+runtime\python.exe -m harness run <profile>
+runtime\python.exe -m pytest -q <相关测试文件>
 npm test --prefix desktop/frontend
-cargo fmt --manifest-path desktop/src-tauri/Cargo.toml -- --check
-cargo test --manifest-path desktop/src-tauri/Cargo.toml <相关测试过滤条件>
+cargo test --manifest-path desktop/src-tauri/Cargo.toml <相关模块>
 ```
 
-角色工作室属于主 Tauri 应用，使用同一 Cargo manifest。文档改动运行：
+文档链接使用 `runtime\python.exe -m harness run docs` 检查。原生窗口、麦克风和跨平台行为按对应环境验证，未验证部分如实说明。
 
-```bash
-./runtime/bin/python3 -m harness run docs
-```
+## 提交与 PR
 
-`docs` 已包含文档检查器，其他 profile 也可能共享 case；通过的检查无需重复执行。仅在新改动、失败或未覆盖
-风险出现时扩大验证，跨模块变化可选择 `python-full` 等更广的 profile。本地不必重复 CI 的完整平台矩阵。
-无法执行真实桌面、设备或平台验证时，在 PR 中说明未验证内容和风险。
+新贡献通常从 `dev` 建立分支，已有任务继续使用当前工作区。提交标题使用 `<type>: <中文说明>`，PR 面向 `dev`，使用中文说明问题、修改结果、验证和实际剩余问题。UI 变化按需附截图。
 
-CI 偶发失败遵循 [项目约束](../AGENTS.md#ci-偶发失败必须闭环)。先保留首次失败的 run/job、提交、attempt、
-平台和原始错误，再调查根因。复跑只能用于有次数上限的诊断或修复验证，必须保留全部结果；重跑变绿或
-后续提交通过不能代替修复。已知失败未闭环时，不建议或执行合并到 `main`、`dev`。
-
-## 提交 Pull Request
-
-PR 合并目标是 `dev`，标题和说明使用中文。说明中写清：
-
-- 问题和修改结果；
-- 运行过的测试及结果；
-- 本轮或相关历史 CI 失败的根因、修复证据及尚未解决的问题（如有）；
-- 没有覆盖的风险；
-- UI 改动的截图或短录屏。
-
-提交前检查差异，确认没有 API Key、token、聊天记录、日志、模型文件或其他本地数据。CI 结果和本地不一致时，附上失败输出和相关环境信息。
-
-## 许可证
-
-提交代码即表示你同意按项目的 [MIT License](../LICENSE) 发布，并确认自己有权提交相关代码和资源。
+提交内容按 [MIT License](../LICENSE) 发布，并须有权分发所含代码与资源。

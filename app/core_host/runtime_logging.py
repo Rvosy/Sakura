@@ -283,6 +283,10 @@ _CORE_CHANNELS = frozenset(
     }
 )
 _FIXED_MESSAGES = {
+    "plugin.dependencies.attempt.started": "开始安装插件依赖",
+    "plugin.dependencies.attempt.failed": "插件依赖安装尝试失败",
+    "plugin.dependencies.install.finished": "插件依赖下载安装完成",
+    "plugin.dependencies.install.failed": "插件依赖安装失败",
     "reply.repair.finished": "Reply repair finished",
     "agent.turn.started": "Assistant turn started",
     "agent.turn.finished": "Assistant turn finished",

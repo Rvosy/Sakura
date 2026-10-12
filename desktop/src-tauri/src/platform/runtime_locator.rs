@@ -117,7 +117,7 @@ impl FilesystemRuntimeLocator {
                     PlatformErrorCategory::UnsupportedEnvironment,
                     "select_target",
                     RetryAdvice::Never,
-                    "the current build is not a formal Phase 1P target",
+                    "the current build platform is not supported",
                 ));
             };
             if request.target != current {
@@ -572,8 +572,6 @@ mod tests {
     use super::*;
 
     static NEXT_FIXTURE: AtomicU64 = AtomicU64::new(1);
-    const WP_1C_04_LIFECYCLE_GOLDEN: &str =
-        include_str!("../../../../tests/fixtures/runtime_v2/wp_1c_04/lifecycle-golden.json");
 
     struct FixtureDirectory(PathBuf);
 
@@ -675,78 +673,6 @@ mod tests {
             resource_directory,
             explicit_development_root: None,
             user_root: fixture.path().join("assistant-root"),
-        }
-    }
-
-    #[test]
-    fn all_source_manifests_are_exact_complete_and_unique() {
-        let mut source_ids = Vec::new();
-        for target in PlatformTarget::ALL {
-            let manifest = expected_manifest(target).expect("compiled manifest should parse");
-            manifest.validate(target).expect("manifest should validate");
-            assert_eq!(manifest.target, target);
-            assert_eq!(manifest.python_version, "3.12.8");
-            source_ids.push(manifest.source_id);
-            match target {
-                PlatformTarget::WindowsX64 => {
-                    assert_eq!(manifest.archive.archive_root, ".");
-                    assert_eq!(manifest.archive.strip_components, 0);
-                }
-                PlatformTarget::MacOsArm64 | PlatformTarget::LinuxX64 => {
-                    assert_eq!(manifest.archive.archive_root, "python");
-                    assert_eq!(manifest.archive.strip_components, 1);
-                }
-            }
-        }
-        source_ids.sort();
-        source_ids.dedup();
-        assert_eq!(source_ids.len(), PlatformTarget::ALL.len());
-    }
-
-    #[test]
-    fn wp_1c_04_shared_golden_freezes_all_packaged_layout_results() {
-        let golden: serde_json::Value =
-            serde_json::from_str(WP_1C_04_LIFECYCLE_GOLDEN).expect("golden fixture should parse");
-        assert_eq!(golden["schemaVersion"], 1);
-        let layouts = golden["layouts"]
-            .as_array()
-            .expect("golden fixture layouts should be an array");
-        assert_eq!(layouts.len(), PlatformTarget::ALL.len());
-        for target in PlatformTarget::ALL {
-            let layout = layouts
-                .iter()
-                .find(|layout| layout["target"] == target.platform_id())
-                .expect("each formal target has a golden layout");
-            let manifest = expected_manifest(target).expect("compiled manifest should parse");
-            assert_eq!(
-                layout["architecture"],
-                serde_json::to_value(target.architecture()).unwrap()
-            );
-            assert_eq!(
-                layout["packagedPythonRelativePath"],
-                manifest
-                    .packaged_python_relative_path
-                    .to_string_lossy()
-                    .replace('\\', "/")
-            );
-            assert_eq!(
-                layout["packagedResourceRootRelativePath"],
-                manifest
-                    .packaged_application_root_relative_path
-                    .to_string_lossy()
-                    .replace('\\', "/")
-            );
-            assert_eq!(
-                layout["packagedCoreEntryRelativePath"],
-                manifest
-                    .packaged_core_entry_relative_path
-                    .to_string_lossy()
-                    .replace('\\', "/")
-            );
-            assert_eq!(
-                layout["packagedWorkingDirectoryRelativePath"],
-                layout["packagedResourceRootRelativePath"]
-            );
         }
     }
 

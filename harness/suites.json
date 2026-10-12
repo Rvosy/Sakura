@@ -15,7 +15,7 @@
       ]
     },
     "docs": {
-      "description": "验证文档目录、元数据、链接和真相源约束",
+      "description": "检查仓库文档的本地文件链接",
       "cases": [
         "docs-check"
       ]
@@ -423,7 +423,7 @@
     },
     {
       "id": "docs-check",
-      "description": "运行文档结构、元数据、链接和真相源检查",
+      "description": "检查仓库文档的本地文件链接",
       "argv": [
         "{python}",
         "tools/check_docs.py"

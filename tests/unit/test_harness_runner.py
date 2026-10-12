@@ -11,7 +11,6 @@ import pytest
 from harness.report import write_json_atomic
 from harness.runner import (
     HarnessError,
-    _build_parser,
     _write_captured_output,
     load_manifest,
     main,
@@ -51,46 +50,6 @@ def _manifest(
     }
     path.write_text(json.dumps(value), encoding="utf-8")
     return path
-
-
-def test_default_manifest_and_profile_topology_are_valid() -> None:
-    manifest = load_manifest()
-
-    assert manifest["schema_version"] == 1
-    assert {
-        "smoke",
-        "harness",
-        "unit",
-        "docs",
-        "core-host",
-        "python-full",
-        "release-distribution",
-        "runtime-v2-shell",
-        "journey-character-studio",
-        "legacy-import",
-    } <= set(manifest["profiles"])
-    shell = manifest["profiles"]["runtime-v2-shell"]["cases"]
-    core = manifest["profiles"]["core-host"]["cases"]
-    release = manifest["profiles"]["release-distribution"]["cases"]
-    legacy_import = manifest["profiles"]["legacy-import"]["cases"]
-    assert "runtime-v2-provider-model-tests" not in shell
-    assert "runtime-v2-memory-tests" not in shell
-    assert {"runtime-v2-provider-model-tests", "runtime-v2-memory-tests"} <= set(core)
-    assert "runtime-v2-release-distribution-tests" in release
-    assert {
-        "legacy-import-python-tests",
-        "legacy-import-rust-tests",
-        "legacy-import-rust-transaction-tests",
-    } <= set(legacy_import)
-    assert "harness-agent-development-tests" not in {
-        item["id"] for item in manifest["cases"]
-    }
-    used = {
-        case_id
-        for profile in manifest["profiles"].values()
-        for case_id in profile["cases"]
-    }
-    assert used == {item["id"] for item in manifest["cases"]}
 
 
 def test_manifest_rejects_unknown_duplicate_and_unreferenced_cases(
@@ -141,15 +100,6 @@ def test_list_preserves_profile_and_case_order(
         "  - b: b",
         "  - c: c",
     ]
-
-
-@pytest.mark.parametrize("removed_command", ["current", "check", "verify"])
-def test_cli_only_exposes_list_and_run(removed_command: str) -> None:
-    assert _build_parser().parse_args(["list"]).command == "list"
-    assert _build_parser().parse_args(["run", "smoke"]).command == "run"
-    with pytest.raises(SystemExit) as raised:
-        main([removed_command])
-    assert raised.value.code == 2
 
 
 @pytest.mark.parametrize(

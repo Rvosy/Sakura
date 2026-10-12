@@ -1,42 +1,20 @@
-# SenseVoice provider sources
+# SenseVoice 资源来源
 
-The Python runtime dependency is `sherpa-onnx==1.13.7` (Apache-2.0), including
-the matching `sherpa-onnx-core` binary wheel. NumPy 2.2.6 is BSD-3-Clause.
-Dependencies are installed into the provider's isolated dependency root, not Core.
+运行依赖为 Apache-2.0 许可的 `sherpa-onnx==1.13.7` 及对应 `sherpa-onnx-core`，NumPy 2.2.6 使用 BSD-3-Clause。依赖安装在插件自己的环境中。
 
-SenseVoiceSmall INT8 and its vocabulary are converted ONNX artifacts published by
-the sherpa-onnx maintainer `csukuangfj`:
+## 识别模型
 
-- [Pinned conversion repository](https://huggingface.co/csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/tree/2365baeacb507f821a0c8120fcee3d484dba7a07)
-- [Download mirror on ModelScope](https://www.modelscope.cn/models/gomodels/sherpa/files?Revision=590473aaa26eed19b270a424cb641972ae56482d):
-  `sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/model.int8.onnx` and `tokens.txt`.
-  The fixed mirror revision retains the existing file sizes and vocabulary;
-  the mirrored INT8 model was verified with native sherpa-onnx Chinese inference.
-- [Upstream SenseVoice code and model information](https://github.com/FunAudioLLM/SenseVoice)
-- [Conversion repository license notice](https://huggingface.co/csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/blob/2365baeacb507f821a0c8120fcee3d484dba7a07/LICENSE)
+SenseVoiceSmall INT8 模型和词表来自 sherpa-onnx 维护者 `csukuangfj` 发布的 ONNX 转换：
 
-The conversion's license notice delegates to FunASR's license information. The
-[upstream SenseVoiceSmall model card](https://huggingface.co/FunAudioLLM/SenseVoiceSmall)
-identifies its weights as `model-license` and links the
-[FunASR Model Open Source License Agreement](https://github.com/modelscope/FunASR/blob/main/MODEL_LICENSE).
-Those terms apply to the model weights and their conversion; they are separate
-from the MIT SenseVoice code and Apache-2.0 sherpa-onnx runtime. Retain the model
-license and conversion notice with any offline model distribution.
+- [转换仓库与固定版本](https://huggingface.co/csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/tree/2365baeacb507f821a0c8120fcee3d484dba7a07)
+- [ModelScope 镜像](https://www.modelscope.cn/models/gomodels/sherpa/files?Revision=590473aaa26eed19b270a424cb641972ae56482d)：目录 `sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/` 下的 `model.int8.onnx` 和 `tokens.txt`
+- [SenseVoice 上游](https://github.com/FunAudioLLM/SenseVoice)
+- [转换仓库许可说明](https://huggingface.co/csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/blob/2365baeacb507f821a0c8120fcee3d484dba7a07/LICENSE)
 
-Silero VAD is MIT licensed by the Silero Team. This provider uses the
-[sherpa-onnx ONNX release artifact](https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx).
-See the [Silero source and license](https://github.com/snakers4/silero-vad).
-The Silero files found in the ModelScope mirrors have different sizes/versions,
-so its original release URL remains in use. Each new file request reads the
-current system proxy; an already open download is not interrupted by changes.
+[SenseVoiceSmall 模型卡](https://huggingface.co/FunAudioLLM/SenseVoiceSmall)将权重标为 `model-license`，具体条款见 [FunASR 模型开源许可](https://github.com/modelscope/FunASR/blob/main/MODEL_LICENSE)。模型及转换产物遵循该许可，与 SenseVoice 代码的 MIT 许可、sherpa-onnx 运行库的 Apache-2.0 许可分别适用。离线分发模型时保留模型许可和转换说明。
 
-The resource version and required file sizes are fixed in `_resources.py`.
-Installation is an explicit Settings action. It checks download lengths before
-atomically publishing the complete directory. Startup/status/warmup never download.
-An offline preinstallation needs the matching files and a `complete.json` marker
-with the resource version. Legacy digest fields are ignored; native inference
-validates model loading without a separate content scan. The existing version
-label and cache directory remain unchanged for installed resources.
+## 语音活动检测
 
-The five upstream `test_wavs` files were used as public validation inputs. They
-are not bundled with this plugin. No user recordings are included in tests.
+Silero VAD 来自 [sherpa-onnx 发布的 ONNX 文件](https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx)，使用 Silero Team 的 MIT 许可，见[上游代码与许可证](https://github.com/snakers4/silero-vad)。
+
+安装和资源管理方式见[插件说明](README.md)。

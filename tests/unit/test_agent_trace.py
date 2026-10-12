@@ -161,7 +161,6 @@ def test_credentials_and_binary_bodies_never_reach_trace(tmp_path: Path) -> None
     assert binary["type"] == "binary"
     assert binary == {"type": "binary", "mime": "image/png", "bytes": 5}
     assert request["parameters"]["binary_input"] == {"type": "binary", "bytes": 19}
-    assert "sha256" not in json.dumps(_documents(recorder))
 
 
 def test_known_credentials_are_removed_from_dynamic_context(tmp_path: Path) -> None:

@@ -196,37 +196,6 @@ def stop_host(process: subprocess.Popen[bytes]) -> None:
                 stream.close()
 
 
-def test_wp_1c_04_shared_lifecycle_golden_matches_python_contract() -> None:
-    assert LIFECYCLE_GOLDEN["schemaVersion"] == 1
-    assert LIFECYCLE_GOLDEN["protocol"] == {
-        "major": 2,
-        "minMinor": 0,
-        "maxMinor": 1,
-        "requiredCapabilities": CAPABILITIES,
-    }
-    assert LIFECYCLE_GOLDEN["deadlinesMs"] == {
-        "hello": 3000,
-        "initializeAcceptance": 5000,
-        "readinessWatchdog": 30000,
-        "request": 3000,
-        "shutdown": 3000,
-        "treeStop": 5000,
-    }
-    assert LIFECYCLE_GOLDEN["lifecycle"] == [
-        "system.hello",
-        "core.initialize",
-        "core.readiness",
-        "core.snapshot",
-        "system.health",
-        "system.shutdown",
-    ]
-    assert {layout["target"] for layout in LIFECYCLE_GOLDEN["layouts"]} == {
-        "windows-x64",
-        "macos-arm64",
-        "linux-x64",
-    }
-
-
 def test_real_host_answers_hello_repeated_health_unknown_and_shutdown(tmp_path: Path) -> None:
     process = start_host(isolated_app_root(tmp_path))
     try:
