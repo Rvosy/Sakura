@@ -41,8 +41,8 @@ def legacy_install(tmp_path):
     return directory, root, record
 
 
-def store_at(directory, probe=lambda *_: None, publish=lambda action: action()):
-    return _bundle.BundleStore(directory, probe, publish)
+def store_at(directory, probe=lambda *_: None, publish=lambda action: action(), **kwargs):
+    return _bundle.BundleStore(directory, probe, publish, **kwargs)
 
 
 def finish(store):
@@ -69,11 +69,19 @@ def test_existing_install_moves_before_any_engine_check_and_preserves_data(tmp_p
     assert store_at(directory).current() == store.current()
 
 
-@pytest.mark.parametrize('interrupted_at', ['rename', 'pointer', 'cleanup'])
+@pytest.mark.parametrize('interrupted_at', ['journal', 'rename', 'pointer', 'cleanup'])
 def test_interrupted_automatic_migration_recovers_on_restart(tmp_path, monkeypatch, interrupted_at):
     directory, old, record = legacy_install(tmp_path)
+    logs = []
     with monkeypatch.context() as patch:
-        if interrupted_at == 'rename':
+        if interrupted_at == 'journal':
+            replace = os.replace
+            def fail_journal(source, destination):
+                if destination == directory / 'relocation.json':
+                    raise PermissionError('journal write failed')
+                return replace(source, destination)
+            patch.setattr(os, 'replace', fail_journal)
+        elif interrupted_at == 'rename':
             rename = Path.rename
             def fail_rename(path, destination):
                 if path == old:
@@ -89,16 +97,29 @@ def test_interrupted_automatic_migration_recovers_on_restart(tmp_path, monkeypat
                     raise PermissionError('journal busy')
                 return unlink(path, *args, **kwargs)
             patch.setattr(Path, 'unlink', fail_cleanup)
-        first = store_at(directory)
-        if interrupted_at == 'cleanup':
-            assert first.current() is not None
-        else:
-            assert first.installation_error
+        first = store_at(directory, log=lambda level, message, **fields: logs.append((level, fields)))
+        assert first.current() is not None, first.error
+        assert not first.installation_error
+        assert first.load()['bundle']['ready']
+        current = first.current()[0]
+        assert (current == old) == (interrupted_at in {'journal', 'rename'})
+        assert (current / 'launcher.py').read_text() == 'launcher fixture'
+        assert any(level == 'warning' and fields.get('diagnostic') for level, fields in logs)
+        assert store_at(directory).current() == first.current()
     recovered = store_at(directory)
     assert recovered.current() is not None, recovered.error
     assert (recovered.current()[0] / 'launcher.py').read_text() == 'launcher fixture'
     assert recovered.release_id == record['releaseId']
     assert store_at(directory).current() == recovered.current()
+
+
+def test_failed_migration_does_not_hide_a_broken_bundle(tmp_path, monkeypatch):
+    directory, old, _ = legacy_install(tmp_path)
+    (old / 'launcher.py').unlink()
+    monkeypatch.setattr(Path, 'rename', lambda *_: (_ for _ in ()).throw(PermissionError('file busy')))
+    store = store_at(directory)
+    assert store.current() is None
+    assert store.installation_error
 
 
 def test_old_relocation_journal_does_not_replace_a_later_install(tmp_path):

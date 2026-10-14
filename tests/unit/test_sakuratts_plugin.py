@@ -668,12 +668,24 @@ def finish_bundle_task(store):
     assert not store.thread.is_alive()
 
 
-def test_online_download_install_and_new_published_index(tmp_path, online_repo):
-    _, publish = online_repo
+@pytest.mark.parametrize('unpacked_size', [None, 'unknown'])
+def test_online_download_install_and_new_published_index(tmp_path, online_repo, unpacked_size):
+    remote, publish = online_repo
     publish('preview-1', 'first')
+    index_path = remote / 'latest-preview.json'
+    index = json.loads(index_path.read_text())
+    package = index['packages'][0]
+    if unpacked_size is None:
+        package.pop('unpackedBytes')
+    else:
+        package['unpackedBytes'] = unpacked_size
+    index_path.write_text(json.dumps(index))
     probes = []
     store = BundleStore(tmp_path / 'installed', lambda *args: probes.append(args), lambda action: action())
     assert store.load()['bundle']['availableActionIds'][0] == 'downloadBundle'
+    store.check_update()
+    finish_bundle_task(store)
+    assert store.state == 'succeeded', store.error
     store.download()
     finish_bundle_task(store)
     assert store.state == 'succeeded', store.error

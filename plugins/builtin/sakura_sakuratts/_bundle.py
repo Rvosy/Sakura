@@ -57,9 +57,8 @@ def online_package():
     path = safe_name(package['path'])
     if path.parts[:2] != ('previews', index['releaseId']) or len(path.parts) != 3:
         raise ValueError('整合包不在指定发布目录中。')
-    for key in ('bytes', 'unpackedBytes'):
-        if type(package[key]) is not int or package[key] <= 0:
-            raise ValueError('版本索引中的整合包大小无效。')
+    if type(package['bytes']) is not int or package['bytes'] <= 0:
+        raise ValueError('版本索引中的整合包大小无效。')
     # 下载地址由固定仓库和已校验的路径组成，不执行索引中的任意 URL。
     return {**package, 'url': REPOSITORY_URL + quote(package['path'], safe='/')}
 
@@ -241,8 +240,15 @@ class BundleStore:
             destination = self.directory / pending['destination']
             if value == pending['current'] and destination.is_dir():
                 value = {**value, 'directory': pending['destination']}
-                self._write_record(value)
-            self._finish_relocation()
+                try:
+                    self._write_record(value)
+                except OSError as error:
+                    self.log('warning', '安装目录记录更新失败，继续使用已迁移的环境',
+                             diagnostic=str(error), directory=str(destination))
+                else:
+                    self._finish_relocation()
+            else:
+                self._finish_relocation()
         self.storage_directory = filesystem_path(value.get('storageDirectory', self.directory))
         root = (self.storage_directory / value['directory']).resolve()
         if not root.is_relative_to(self.storage_directory.resolve()):
@@ -259,18 +265,23 @@ class BundleStore:
         os.replace(temporary, self.directory / 'current.json')
 
     def _shorten_current(self, root, record):
-        destination = Path(tempfile.mkdtemp(prefix='v-', dir=self.directory))
-        destination.rmdir()
-        relative = destination.relative_to(self.directory).as_posix()
-        relocation = self.directory / 'relocation.json'
-        temporary = relocation.with_suffix('.tmp')
-        temporary.write_text(json.dumps({'current': record, 'destination': relative}), encoding='utf-8')
-        os.replace(temporary, relocation)
-        self.log('info', '正在缩短 SakuraTTS 安装目录', event='tts.bundle.relocating',
-                 source=str(root), destination=str(destination))
-        # 同一存储目录内重命名，不复制模型，也不依赖旧引擎能够启动。
-        root.rename(destination)
-        self._write_record({**record, 'directory': relative})
+        try:
+            destination = Path(tempfile.mkdtemp(prefix='v-', dir=self.directory))
+            destination.rmdir()
+            relative = destination.relative_to(self.directory).as_posix()
+            relocation = self.directory / 'relocation.json'
+            temporary = relocation.with_suffix('.tmp')
+            temporary.write_text(json.dumps({'current': record, 'destination': relative}), encoding='utf-8')
+            os.replace(temporary, relocation)
+            self.log('info', '正在缩短 SakuraTTS 安装目录', event='tts.bundle.relocating',
+                     source=str(root), destination=str(destination))
+            # 移动后立即沿用实际目录，记录写入失败不影响本次使用。
+            root = root.rename(destination)
+            self._write_record({**record, 'directory': relative})
+        except OSError as error:
+            self.log('warning', '安装目录调整未完成，继续读取现有环境',
+                     diagnostic=str(error), directory=str(root))
+            return root
         self._finish_relocation()
         self.log('info', 'SakuraTTS 安装目录已调整', event='tts.bundle.relocated',
                  destination=str(destination))
@@ -356,7 +367,7 @@ class BundleStore:
             self.message = '已是最新版本'
         else:
             self.message = (f"可下载预览版 {package['releaseId']} · {package['platform']} · 魔搭 · "
-                            f"下载 {package['bytes'] / 1e9:.2f} GB · 解压 {package['unpackedBytes'] / 1e9:.2f} GB")
+                            f"下载 {package['bytes'] / 1e9:.2f} GB")
         self.state = 'succeeded'
 
     def download(self, values=None):
