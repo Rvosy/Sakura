@@ -728,6 +728,7 @@ def test_run_host_reaches_writer_cleanup_when_initializer_close_never_returns(
 
     monkeypatch.setattr(server_module, "ControlDispatcher", Dispatcher)
     monkeypatch.setattr(server_module, "ResponseWriter", Writer)
+    monkeypatch.setattr(server_module, "CLOSE_TIMEOUT_SECONDS", 0.1)
     failures: list[BaseException] = []
     host_done = threading.Event()
 
