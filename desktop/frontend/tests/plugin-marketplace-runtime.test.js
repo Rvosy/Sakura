@@ -114,8 +114,20 @@ test("update visibility follows compatible stable recommendations even when upda
   for (const installed of [undefined, "1.1.0"]) {
     assert.equal(hasUpdate({ ...plugin, installed }), false);
   }
-  assert.equal(hasUpdate({ ...plugin, installed: "2.0.0" }), true);
+  assert.equal(hasUpdate({ ...plugin, installed: "2.0.0" }), false);
   for (const status of [{ compatible: false }, { yanked: "withdrawn" }, { prerelease: true }]) {
     assert.equal(hasUpdate({ ...plugin, versions: [{ number: "1.1.0", ...status }] }), false);
   }
 });
+
+for (const [installed, available, expected] of [
+  ["2.0.0", "1.1.0", false], ["1.1.0-rc.1", "1.0.0", false],
+  ["1.1.0+build.1", "1.1.0+build.2", false], ["custom", "1.1.0", false],
+  ["1.1.0-rc.1", "1.1.0", true], ["1.0.0", "1.1.0", true],
+]) {
+  test(`update label compares ${installed} with ${available} without blocking replacement`, () => {
+    const plugin = { installed, recommendedVersion: available, versions: [{ number: available }] };
+    assert.equal(hasUpdate(plugin), expected);
+    assert.equal(canInstall(plugin, { install() {}, canUpdate: true }), true);
+  });
+}

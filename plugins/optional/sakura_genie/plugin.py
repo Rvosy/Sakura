@@ -44,7 +44,6 @@ read_url_cancellable = _support.read_url_cancellable
 terminate_process_tree = _support.terminate_process_tree
 urlopen_direct_for_loopback = _support.urlopen_direct_for_loopback
 user_facing_path = _support.user_facing_path
-verify_generated_audio = _support.verify_generated_audio
 
 
 PROVIDER_ID = "sakura.tts.genie"
@@ -341,9 +340,6 @@ class _Coordinator:
             job.check_cancelled()
             source = job.output_path.with_name(f"source-{uuid.uuid4().hex}.wav")
             if not _write_genie_audio(audio_data, source):
-                raise RuntimeError("TTS_AUDIO_INVALID")
-            issue = verify_generated_audio(source)
-            if issue is not None:
                 raise RuntimeError("TTS_AUDIO_INVALID")
             os.replace(source, job.output_path)
             source = None

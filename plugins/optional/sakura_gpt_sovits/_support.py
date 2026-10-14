@@ -539,11 +539,9 @@ class GptSovitsEndpointResolver:
         settings: GPTSoVITSTTSSettings,
         *,
         base_dir: Path,
-        resource_manager: object,
         is_closed: Callable[[], bool],
         diagnostic: Callable[[str, str, Mapping[str, str]], None] | None = None,
     ) -> None:
-        del resource_manager
         base_url = settings.custom_base_url or DEFAULT_GPT_SOVITS_BASE_URL
         synthesis_url = f"{base_url.rstrip('/')}{settings.tts_path}"
         self.endpoint = _Endpoint(

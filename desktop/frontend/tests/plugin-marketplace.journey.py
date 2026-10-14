@@ -107,6 +107,11 @@ def run():
             expect(dialog).to_be_visible()
             expect(dialog.locator('[data-manage]')).to_be_enabled()
             expect(dialog.get_by_role('button', name='重新安装', exact=True)).to_be_enabled()
+            # A lower recommended release remains installable, without an update label.
+            page.evaluate("fixture.local[0].version = '9.0.0'; fixture.market.sync()")
+            expect(dialog.get_by_role('button', name='替换为该版本', exact=True)).to_be_enabled()
+            expect(dialog.get_by_role('button', name='更新至 0.2.7', exact=True)).to_have_count(0)
+            page.evaluate("fixture.local[0].version = '0.2.7'; fixture.market.sync()")
             expect(dialog.locator('[data-technical]')).to_be_visible()
             # Catalog descriptions are not duplicated into a second body; absent notes stay absent.
             assert dialog.locator('.detail-summary').count() == 1
@@ -197,7 +202,7 @@ def run():
             reinstall.click()
             failure = page.locator('.sakura-error-dialog')
             expect(failure).to_be_visible()
-            expect(failure.locator('pre')).to_contain_text('PLUGIN_DOWNLOAD_FAILED')
+            expect(failure.locator('pre')).to_contain_text('archive download failed')
             expect(failure.locator('pre')).to_contain_text('tcp connect error 10061')
             expect(dialog.locator('.task-error')).not_to_contain_text('10061')
             failure.get_by_role('button', name='关闭', exact=True).click()

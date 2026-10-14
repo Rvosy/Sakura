@@ -92,14 +92,14 @@ test("market installation uses current runtime identity and cancels in-flight do
   assert.equal(installed.coreGenerationId, "core"); assert.ok(calls.includes("settings_marketplace_cancel"));
 });
 
-test("updates cannot replace bundled plugins or downgrade newer versions", async () => {
+test("installation rejects bundled plugins and conflicting identities", async () => {
   const [plugin] = catalogPlugins(catalog, { api: 4, services: ["host.service"] });
-  for (const existing of [ { enabled: false, source: "bundled", version: "1.0.0" }, { enabled: false, source: "user", version: "2.0.0" },
-    { enabled: true, source: "user", version: "1.10.0", reasonCode: "PLUGIN_ID_CONFLICT" } ]) {
+  for (const [existing, message] of [ [{ enabled: false, source: "bundled", version: "1.0.0" }, "内置插件随应用更新。"],
+    [{ enabled: true, source: "user", version: "1.10.0", reasonCode: "PLUGIN_ID_CONFLICT" }, "请先在已安装列表中卸载冲突的插件副本。"] ]) {
     const source = createMarketplaceSource({ Channel, host: { isDirty: () => false }, invoke: async name => {
       assert.equal(name, "settings_plugins_get"); return { plugins: [{ pluginId: "demo", ...existing }] };
     } });
-    await assert.rejects(source.install(plugin, { signal: new AbortController().signal, onProgress() {} }));
+    await assert.rejects(source.install(plugin, { signal: new AbortController().signal, onProgress() {} }), { message });
   }
 });
 

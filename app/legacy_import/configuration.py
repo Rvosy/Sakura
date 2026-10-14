@@ -61,15 +61,24 @@ def migrate_configuration(
     legacy_config = source / "data" / "config"
     target_config = staged / "config"
     target_config.mkdir(parents=True, exist_ok=True)
-    counts: dict[str, int] = {}
+    counts: dict[str, int] = {"config": 0}
+
+    def needs_configuration(source_name: str, *destinations: str) -> bool:
+        return (legacy_config / source_name).is_file() or existing_user_root is None or not any(
+            (existing_user_root / name).is_file() for name in destinations
+        )
 
     api_missing = not (legacy_config / "api.yaml").is_file()
     api = _load_yaml(legacy_config / "api.yaml", required=False)
     tts = api.pop("tts", None)
     _merge_allowed_env(source, api)
-    compatibility_fallbacks = int(api_missing) + _normalize_api(api)
-    _write_yaml(target_config / "api.yaml", api)
-    counts["config"] = counts.get("config", 0) + 1
+    compatibility_fallbacks = 0
+    if api or needs_configuration("api.yaml", "config/api.yaml", "config/model_slots.json",
+                                   "data/plugins/sakura.model.openai_compatible/config.json",
+                                   "data/plugins/sakura.assistant.default/config.json"):
+        compatibility_fallbacks = int(api_missing) + _normalize_api(api)
+        _write_yaml(target_config / "api.yaml", api)
+        counts["config"] += 1
 
     system = _load_yaml(legacy_config / "system_config.yaml", required=False)
     current_system: dict[str, object] = {"config_version": 1}
@@ -82,7 +91,10 @@ def migrate_configuration(
         if isinstance(legacy_context_enabled, bool):
             current_enabled = screen_awareness.get("enabled", True)
             screen_awareness["enabled"] = bool(current_enabled) and legacy_context_enabled
-    _write_yaml(target_config / "system_config.yaml", current_system)
+    if needs_configuration("system_config.yaml", "config/system_config.yaml",
+                           "data/plugins/sakura.screen_awareness/config.json"):
+        _write_yaml(target_config / "system_config.yaml", current_system)
+        counts["config"] += 1
 
     characters = _load_yaml(legacy_config / "characters.yaml", required=False)
     current_character = characters.get("current_character_id", "")
@@ -92,10 +104,9 @@ def migrate_configuration(
         # settings from the same legacy config tree.
         current_character = ""
         compatibility_fallbacks += 1
-    _write_yaml(
-        target_config / "characters.yaml",
-        {"current_character_id": current_character.strip()},
-    )
+    if needs_configuration("characters.yaml", "config/characters.yaml"):
+        _write_yaml(target_config / "characters.yaml", {"current_character_id": current_character.strip()})
+        counts["config"] += 1
 
     tts_provider = _legacy_tts_provider(tts)
     plugins = _migrate_plugins(legacy_config / "plugins.yaml", tts_provider=tts_provider)
@@ -112,12 +123,15 @@ def migrate_configuration(
                 destination = staged / "data/plugins" / web_plugin_id / "config.json"
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 destination.write_bytes(old_config.read_bytes())
-    _write_yaml(target_config / "plugins.yaml", plugins)
-    ui = _migrate_ui(system)
-    (target_config / "ui.json").write_text(
-        json.dumps(ui, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-    )
-    counts["config"] += 4
+    if needs_configuration("plugins.yaml", "config/plugins.yaml"):
+        _write_yaml(target_config / "plugins.yaml", plugins)
+        counts["config"] += 1
+    if needs_configuration("system_config.yaml", "config/ui.json"):
+        ui = _migrate_ui(system)
+        (target_config / "ui.json").write_text(
+            json.dumps(ui, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        )
+        counts["config"] += 1
     counts["configCompatibilityFallbacks"] = compatibility_fallbacks
 
     if isinstance(tts, Mapping):
