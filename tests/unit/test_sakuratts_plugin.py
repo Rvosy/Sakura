@@ -131,6 +131,7 @@ def provider(tmp_path, monkeypatch):
     services = {'sakura.host.character': object(), 'sakura.tts': SimpleNamespace(status=lambda _: {
         'enabled': True, 'providerId': 'sakura.tts.sakuratts'}),
         'sakura.host.logging': logger,
+        'sakura.host.storage': SimpleNamespace(resolve=lambda *_: tmp_path / 'tts/sakura'),
         'sakura.host.artifacts': SimpleNamespace(allocate=lambda _: {'artifactId': 'audio', 'path': str(tmp_path/'audio.wav')},
             release=released.append, commit=lambda _: {'artifactId': 'audio'})}
     context = SimpleNamespace(get=services.get, data_path=lambda _: str(tmp_path),

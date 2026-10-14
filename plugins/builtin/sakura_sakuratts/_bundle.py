@@ -192,12 +192,13 @@ def inspect_bundle(root):
 
 
 class BundleStore:
-    def __init__(self, directory, probe, publish, log=lambda *_args, **_fields: None):
+    def __init__(self, directory, probe, publish, log=lambda *_args, **_fields: None, *, default_storage=None):
         self.directory = filesystem_path(directory)
         self.directory.mkdir(parents=True, exist_ok=True)
         self.storage_directory = self.directory
         self.probe, self.publish = probe, publish
         self.log = log
+        self.default_storage = filesystem_path(default_storage) if default_storage is not None else self.directory
         self.lock = threading.RLock()
         self.cancel_event = threading.Event()
         self.thread = None
@@ -211,6 +212,9 @@ class BundleStore:
         self.installation_error = ''
         try:
             self._current = self._read_current()
+            if self._current is None:
+                self.default_storage.mkdir(parents=True, exist_ok=True)
+                self.storage_directory = self.default_storage
         except Exception as error:
             self.installation_error = str(error)
             self.state, self.message, self.error = 'failed', '运行环境不可用，请重新导入整合包', str(error)
@@ -237,9 +241,14 @@ class BundleStore:
         relocation = self.directory / 'relocation.json'
         if relocation.exists():
             pending = json.loads(relocation.read_text(encoding='utf-8'))
-            destination = self.directory / pending['destination']
+            pending_storage = self.default_storage if pending.get('defaultStorage') else filesystem_path(pending.get('storageDirectory', self.directory))
+            destination = pending_storage / pending['destination']
             if value == pending['current'] and destination.is_dir():
                 value = {**value, 'directory': pending['destination']}
+                if 'storageDirectory' in pending:
+                    value['storageDirectory'] = pending['storageDirectory']
+                if pending.get('defaultStorage'):
+                    value['defaultStorage'] = True
                 try:
                     self._write_record(value)
                 except OSError as error:
@@ -249,11 +258,11 @@ class BundleStore:
                     self._finish_relocation()
             else:
                 self._finish_relocation()
-        self.storage_directory = filesystem_path(value.get('storageDirectory', self.directory))
+        self.storage_directory = self.default_storage if value.get('defaultStorage') else filesystem_path(value.get('storageDirectory', self.directory))
         root = (self.storage_directory / value['directory']).resolve()
         if not root.is_relative_to(self.storage_directory.resolve()):
             raise ValueError('运行环境目录无效。')
-        if self.storage_directory == self.directory and Path(value['directory']).parts[0] == 'versions':
+        if self.storage_directory == self.directory and (self.default_storage != self.directory or Path(value['directory']).parts[0] == 'versions'):
             root = self._shorten_current(root, value)
         current = inspect_bundle(root)
         self.release_id = value.get('releaseId')
@@ -266,18 +275,24 @@ class BundleStore:
 
     def _shorten_current(self, root, record):
         try:
-            destination = Path(tempfile.mkdtemp(prefix='v-', dir=self.directory))
+            self.default_storage.mkdir(parents=True, exist_ok=True)
+            destination = Path(tempfile.mkdtemp(prefix='v-', dir=self.default_storage))
             destination.rmdir()
-            relative = destination.relative_to(self.directory).as_posix()
+            relative = destination.relative_to(self.default_storage).as_posix()
+            updated = {**record, 'directory': relative}
+            pending = {'current': record, 'destination': relative}
+            if self.default_storage != self.directory:
+                updated['defaultStorage'] = pending['defaultStorage'] = True
             relocation = self.directory / 'relocation.json'
             temporary = relocation.with_suffix('.tmp')
-            temporary.write_text(json.dumps({'current': record, 'destination': relative}), encoding='utf-8')
+            temporary.write_text(json.dumps(pending), encoding='utf-8')
             os.replace(temporary, relocation)
             self.log('info', '正在缩短 SakuraTTS 安装目录', event='tts.bundle.relocating',
                      source=str(root), destination=str(destination))
             # 移动后立即沿用实际目录，记录写入失败不影响本次使用。
             root = root.rename(destination)
-            self._write_record({**record, 'directory': relative})
+            self.storage_directory = self.default_storage
+            self._write_record(updated)
         except OSError as error:
             self.log('warning', '安装目录调整未完成，继续读取现有环境',
                      diagnostic=str(error), directory=str(root))
@@ -564,7 +579,9 @@ class BundleStore:
         storage = storage or self.storage_directory
         release_id = package['releaseId'] if package else release_id
         record = {'directory': root.relative_to(storage).as_posix(), 'releaseId': release_id}
-        if storage != self.directory:
+        if storage == self.default_storage and storage != self.directory:
+            record['defaultStorage'] = True
+        elif storage != self.directory:
             record['storageDirectory'] = str(storage)
         self._write_record(record)
         self.storage_directory = storage
