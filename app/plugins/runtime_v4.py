@@ -28,7 +28,7 @@ from app.storage.paths import StoragePaths
 from app.storage.runtime_roots import RuntimeRoots, coerce_runtime_roots
 
 
-CLOSE_TIMEOUT_SECONDS = 0.8
+CLOSE_TIMEOUT_SECONDS = 10.0
 TERMINATE_TIMEOUT_SECONDS = 2.0
 STARTUP_SNAPSHOT_TIMEOUT_SECONDS = 0.2
 

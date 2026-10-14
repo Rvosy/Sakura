@@ -278,16 +278,16 @@ def run():
               fixture.disk = {catalog:{schema_version:1,plugins:[{id:'cached',repository:'https://github.com/a/b',versions:[release]}]},
                 context:{api:4,services:[]},readmes:[{id:'cached',repository:'https://github.com/a/b',version:'1.0.0',commit:release.commit,
                   document:{markdown:'Cached instructions',url:'https://github.com/a/b/blob/'+release.commit+'/README.md'}}]};
-              fixture.readmeCalls=0;
+              fixture.readmeCalls=0;fixture.catalogRequests=0;
               fixture.source = createMarketplaceSource({Channel:class {},host:{},invoke:async (command,args)=>{
                 if(command === 'settings_marketplace_readme') {fixture.readmeCalls++; throw Error('unexpected download');}
+                fixture.catalogRequests++;
                 args.progress.onmessage(fixture.disk);
                 args.progress.onmessage({source:'slow network'});
                 return new Promise((resolve,reject)=>{fixture.completeRefresh=resolve;fixture.failRefresh=reject;});
               }});
               fixture.market=createPluginMarketplace({document,host:{installedPlugins:()=>[]},notify(){},showError:fixture.showError,source:fixture.source});
-              fixture.market.setView('market',{load:false});
-              fixture.refresh=fixture.market.refresh();
+              fixture.market.setView('market');
             }""")
             expect(page.locator('.card-open')).to_have_text('Cached plugin')
             expect(page.locator('#search')).to_be_enabled()
@@ -297,22 +297,63 @@ def run():
             assert page.evaluate('fixture.readmeCalls') == 0
             assert dialog.locator('.detail-document-state').count() == 0
             dialog.locator('[data-technical]').click()
-            page.evaluate("async () => {fixture.failRefresh(Error('offline'));await fixture.refresh;}")
+            page.evaluate("fixture.failRefresh(Error('offline'))")
+            expect(page.locator('#notice')).to_be_visible()
             expect(dialog.locator('.plugin-readme')).to_have_text('Cached instructions')
             assert dialog.locator('[data-disclosure="technical"]').evaluate('el=>el.open')
             expect(dialog.locator('[data-technical]')).to_be_focused()
             expect(page.locator('#notice')).to_be_visible()
-            page.evaluate("fixture.refresh=fixture.market.refresh();void 0")
-            page.evaluate("""async () => {
+            dialog.locator('[data-close]').click()
+            page.locator('#installed-tab').click()
+            page.locator('#market-tab').click()
+            expect(page.locator('.card-open')).to_have_text('Cached plugin')
+            expect(page.locator('#notice')).not_to_be_visible()
+            page.locator('.card-open').click()
+            page.evaluate("""() => {
               const next=structuredClone(fixture.disk);next.catalog.plugins[0].versions[0].manifest.name='Updated plugin';
-              fixture.completeRefresh(next);await fixture.refresh;
+              fixture.disk=next;fixture.completeRefresh(next);
             }""")
             expect(dialog.locator('#detail-title')).to_have_text('Updated plugin')
             expect(dialog.locator('.plugin-readme')).to_have_text('Cached instructions')
             assert page.evaluate('fixture.readmeCalls') == 0
+            assert page.evaluate('fixture.catalogRequests') == 2
+
+            # Returning to a visible market refreshes without interrupting an active request.
+            dialog.locator('[data-close]').click()
+            page.evaluate("""() => {
+              fixture.navigate = name => {
+                document.getElementById('page-plugins').classList.toggle('is-active', name === 'plugins');
+                fixture.market.onPageChanged(name);
+              };
+              fixture.navigate('general');
+              window.dispatchEvent(new Event('focus'));
+            }""")
+            assert page.evaluate('fixture.catalogRequests') == 2
+            page.evaluate("fixture.navigate('plugins')")
+            expect(page.locator('.card-open')).to_have_text('Updated plugin')
+            page.evaluate("""() => {
+              window.dispatchEvent(new Event('focus'));
+              document.dispatchEvent(new Event('visibilitychange'));
+              fixture.navigate('general');fixture.navigate('plugins');
+            }""")
+            assert page.evaluate('fixture.catalogRequests') == 3
+            page.evaluate("fixture.completeRefresh(fixture.disk)")
+            expect(page.locator('#refresh')).to_be_enabled()
+
+            page.evaluate("window.dispatchEvent(new Event('focus'))")
+            assert page.evaluate('fixture.catalogRequests') == 4
+            page.evaluate("""() => {
+              const next=structuredClone(fixture.disk);next.catalog.plugins[0].versions[0].manifest.name='Latest plugin';
+              fixture.completeRefresh(next);
+            }""")
+            expect(page.locator('.card-open')).to_have_text('Latest plugin')
+            page.locator('#installed-tab').click()
+            page.evaluate("window.dispatchEvent(new Event('focus'))")
+            assert page.evaluate('fixture.catalogRequests') == 4
+            page.evaluate("fixture.market.dispose();window.dispatchEvent(new Event('focus'))")
+            assert page.evaluate('fixture.catalogRequests') == 4
             # Download failures and source names are external text, not markup.
             page.evaluate("""async () => {
-              fixture.market.dispose();
               const {createPluginMarketplace} = await import('/desktop/frontend/settings/plugin-marketplace.js');
               fixture.market=createPluginMarketplace({document,host:{installedPlugins:()=>[]},notify(){},showError:fixture.showError,source:{
                 async load({onProgress}) {

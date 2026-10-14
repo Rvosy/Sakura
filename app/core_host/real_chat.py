@@ -17,6 +17,7 @@ from pathlib import Path
 from time import monotonic
 from typing import TYPE_CHECKING, Any
 
+from app.plugins.runtime_v4 import CLOSE_TIMEOUT_SECONDS
 from app.plugin_sdk.sakura_provider_errors import provider_http_status, public_provider_http_message
 
 from .protocol import event, response
@@ -27,7 +28,6 @@ if TYPE_CHECKING:
 
 
 REAL_CHAT_EXECUTION_LIMIT = 1
-CHAT_CLOSE_TIMEOUT_SECONDS = 3.0
 MANUAL_SCREEN_ATTACHMENT_LIMIT = 6
 HOST_CHAT_COMPLETED_EVENT = "sakura.host.chat.completed"
 
@@ -1044,7 +1044,7 @@ class RealChatBoundary:
 
     @contextmanager
     def suspend_for_character_change(self):
-        deadline = monotonic() + CHAT_CLOSE_TIMEOUT_SECONDS
+        deadline = monotonic() + CLOSE_TIMEOUT_SECONDS
         with self._changed:
             if self._runtime_update_pending:
                 raise RealChatRejection("RUNTIME_UPDATE_BUSY", "角色表现正在更新，请稍后重试。", retryable=True)
@@ -1077,7 +1077,7 @@ class RealChatBoundary:
                 execution.cancel.cancel()
 
     def close(self) -> None:
-        deadline = monotonic() + CHAT_CLOSE_TIMEOUT_SECONDS
+        deadline = monotonic() + CLOSE_TIMEOUT_SECONDS
         with self._changed:
             if not self._closed:
                 self._closed = True

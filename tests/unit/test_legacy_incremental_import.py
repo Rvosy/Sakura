@@ -927,7 +927,7 @@ def test_incremental_unscoped_qdrant_is_quarantined_without_creating_target_coll
     assert record["payload"] == {"data": "cannot be attributed"}
 
 
-@pytest.mark.parametrize("operation", ["create_collection", "upsert"])
+@pytest.mark.parametrize("operation", ["get_collections", "create_collection", "upsert"])
 def test_incremental_target_qdrant_write_failure_aborts_instead_of_quarantining(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, operation: str
 ) -> None:
@@ -957,10 +957,12 @@ def test_incremental_target_qdrant_write_failure_aborts_instead_of_quarantining(
     plan = inspect_character_data_import(source, target)
 
     real_client = legacy_incremental._qdrant_client
+    target_queries = []
 
     def failing_client(path: Path):
         opened = real_client(path)
         if ".legacy-import-staging-" in path.as_posix() and "/payload/" in path.as_posix():
+            target_queries.append(opened.get_collections)
             def fail_write(*_args: object, **_kwargs: object) -> None:
                 raise OSError("synthetic target write failure")
 
@@ -968,7 +970,8 @@ def test_incremental_target_qdrant_write_failure_aborts_instead_of_quarantining(
         return opened
 
     monkeypatch.setattr(legacy_incremental, "_qdrant_client", failing_client)
-    with pytest.raises(LegacyImportError, match="LEGACY_DATA_TARGET_MEMORY_WRITE_FAILED"):
+    code = "LEGACY_DATA_TARGET_MEMORY_INVALID" if operation == "get_collections" else "LEGACY_DATA_TARGET_MEMORY_WRITE_FAILED"
+    with pytest.raises(LegacyImportError, match=code):
         run_character_data_import(
             source,
             target,
@@ -976,6 +979,11 @@ def test_incremental_target_qdrant_write_failure_aborts_instead_of_quarantining(
             plan_token=str(plan["planToken"]),
             overwrite_conflicts=False,
         )
+    assert target_queries
+    for query in target_queries:
+        with pytest.raises(RuntimeError, match="closed"):
+            query()
+    assert not list(target.glob(".legacy-import-staging-*"))
     assert not list(target.glob(".legacy-import-journal-*"))
     assert not (target / "data/legacy-imports/incremental-target-write-failure").exists()
     assert not (target / "data/memory/qdrant").exists()

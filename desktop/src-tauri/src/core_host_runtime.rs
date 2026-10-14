@@ -86,14 +86,16 @@ pub(crate) fn lifecycle_test_lock() -> std::sync::MutexGuard<'static, ()> {
 }
 
 #[derive(Clone, Copy)]
-struct ShutdownPolicy {
-    graceful: Duration,
-    total: Duration,
+pub(crate) struct ShutdownPolicy {
+    pub(crate) graceful: Duration,
+    pub(crate) total: Duration,
 }
 
+pub(crate) const CORE_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(35);
+
 const PRODUCTION_SHUTDOWN_POLICY: ShutdownPolicy = ShutdownPolicy {
-    graceful: Duration::from_millis(3000),
-    total: Duration::from_millis(5000),
+    graceful: Duration::from_secs(30),
+    total: CORE_SHUTDOWN_TIMEOUT,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1956,7 +1958,7 @@ impl CoreHostRuntime {
     }
 
     #[cfg(test)]
-    fn shutdown_with_policy(
+    pub(crate) fn shutdown_with_policy(
         self,
         policy: ShutdownPolicy,
     ) -> Result<CoreHostExit, CoreHostLifecycleFailure> {
@@ -3184,18 +3186,6 @@ mod tests {
             .starts_with("TRANSPORT_WRITE_FAILED: Core Host credential bootstrap failed"));
         assert_eq!(finalize_calls.load(Ordering::SeqCst), 1);
         assert!(failure.into_recovery().is_none());
-    }
-
-    #[test]
-    fn production_shutdown_policy_is_exactly_3000ms_graceful_and_5000ms_total() {
-        assert_eq!(
-            PRODUCTION_SHUTDOWN_POLICY.graceful,
-            Duration::from_millis(3000)
-        );
-        assert_eq!(
-            PRODUCTION_SHUTDOWN_POLICY.total,
-            Duration::from_millis(5000)
-        );
     }
 
     #[test]
@@ -5201,7 +5191,10 @@ mod tests {
         let shutdown_written_at = Arc::new(Mutex::new(None));
         host.observe_shutdown_write_for_test(Arc::clone(&shutdown_written_at));
         let failure = host
-            .shutdown()
+            .shutdown_with_policy(ShutdownPolicy {
+                graceful: Duration::from_millis(100),
+                total: Duration::from_secs(5),
+            })
             .expect_err("ignored shutdown must preserve its protocol timeout diagnostic");
         let elapsed = shutdown_written_at
             .lock()

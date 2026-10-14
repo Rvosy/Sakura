@@ -1889,7 +1889,10 @@ mod tests {
                 }
                 let result = host.request("blocked", phase);
                 assert!(matches!(commands.recv().unwrap(), ShellCommand::Shutdown));
-                let cleanup = host.shutdown_for_app_exit();
+                let cleanup = host.shutdown_with_policy(crate::core_host_runtime::ShutdownPolicy {
+                    graceful: Duration::from_millis(100),
+                    total: Duration::from_secs(5),
+                });
                 completed.send((result, cleanup)).unwrap();
             });
             let watchdog = Instant::now() + Duration::from_secs(10);

@@ -134,7 +134,7 @@ impl WindowsInputGlassState {
 
     pub fn support(&self) -> crate::input_visual_effect::InputVisualEffectSupport {
         crate::input_visual_effect::InputVisualEffectSupport::new(
-            self.status().outcome != "degraded",
+            !matches!(self.status().outcome, "degraded" | "unavailable"),
             false,
         )
     }
@@ -157,6 +157,10 @@ impl WindowsInputGlassState {
 
         #[cfg(windows)]
         {
+            if windows_version::OsVersion::current().build < 22000 {
+                self.set_status(InputVisualEffectStatus::unavailable());
+                return;
+            }
             if enabled_value(std::env::var_os(LIQUID_GLASS_POC_ENV).as_deref()) {
                 eprintln!(
                     "[windows-input-glass] LIQUID_GLASS_UNSAFE_BACKEND_RETIRED: ignoring legacy PoC switch"

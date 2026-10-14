@@ -6,6 +6,11 @@ import { isNewCharacterGeneration, rebindCharacterPresentation } from "../pet/ch
 import { loadCurrentCharacterPresentation } from "../pet/character-presentation.js";
 import { createRendererHost } from "../pet/renderer-host.js";
 
+const initializing = generationId => ({
+  supervisor: { state: "running", generationId },
+  snapshot: { generationId, readiness: "initializing" },
+});
+
 test("startup waits for plugin binding, while real unavailability is reported immediately", async () => {
   const base = { schemaVersion: 2, generationId: "g", characterId: "sample", displayName: "角色", initialMessage: "你好", themeTokens: {}, visual: null, visualReasonCode: "VISUAL_NOT_BOUND" };
   const readyVisual = { bindingId: "a".repeat(32), resourceId: "sample-model", renderer: `http://sakura-character.localhost/module/67/${"a".repeat(32)}/renderer.js`, data: {}, assets: {} };
@@ -18,10 +23,11 @@ test("startup waits for plugin binding, while real unavailability is reported im
   assert.deepEqual(unavailable, []);
   let reads = 0;
   const presentation = await loadCurrentCharacterPresentation({
-    invoke: async () => ++reads < 3 ? base : { ...base, visual: readyVisual, visualReasonCode: "READY" },
+    invoke: async command => command === "runtime_lifecycle_snapshot" ? initializing("g")
+      : ++reads < 201 ? base : { ...base, visual: readyVisual, visualReasonCode: "READY" },
     setTimer: resolve => resolve(),
   });
-  assert.equal(reads, 3);
+  assert.equal(reads, 201);
   assert.equal(await host.bind(presentation), true);
   assert.deepEqual(unavailable, []);
   let waited = false;
@@ -42,12 +48,70 @@ const ready = (generationId, generationNumber) => ({
   failure: null,
 });
 
-test("an unselected character ends loading without turning setup into a renderer failure", async () => {
+test("pending resources stop waiting for setup, failure, shutdown, or a replaced Core", async () => {
+  const pending = initializing("g");
+  for (const publication of [
+    { ...pending, snapshot: { generationId: "g", readiness: "setup_required" } },
+    { ...pending, snapshot: { generationId: "g", readiness: "failed" } },
+    { ...pending, supervisor: { state: "failed", generationId: "g", failure: { code: "core_crashed", message: "Core exited" } } },
+    { ...pending, supervisor: { ...pending.supervisor, appShutdown: true } },
+    initializing("replacement"),
+  ]) {
+    const result = await loadCurrentCharacterPresentation({
+      invoke: async command => {
+        if (command === "runtime_lifecycle_snapshot") return publication;
+        throw new Error("CHARACTER_PRESENTATION_NOT_READY");
+      },
+      expectedGenerationId: "g",
+      setTimer: () => { assert.fail("terminal lifecycle must not keep polling"); },
+    });
+    assert.equal(result, null);
+  }
+});
+
+test("a stale setup snapshot does not stop the new Core's resource load", async () => {
+  let current = null;
   const result = await loadCurrentCharacterPresentation({
-    invoke: async () => { throw "CHARACTER_REQUIRED: 请安装并选择角色。"; },
-    setTimer: () => { throw new Error("setup should wait for the user to select a character"); },
+    invoke: async command => {
+      if (command === "runtime_lifecycle_snapshot") return {
+        supervisor: { state: "running", generationId: "new" },
+        snapshot: { generationId: "old", readiness: "setup_required" },
+      };
+      if (current) return current;
+      throw new Error("CHARACTER_PRESENTATION_NOT_READY");
+    },
+    expectedGenerationId: "new",
+    setTimer: resolve => {
+      current = { schemaVersion: 2, generationId: "new", visual: null, visualReasonCode: "PLUGIN_DISABLED" };
+      resolve();
+    },
   });
-  assert.equal(result, null);
+  assert.equal(result.generationId, "new");
+});
+
+test("cancelling a presentation load releases its timer and ignores late IPC results", async () => {
+  const abort = new AbortController();
+  let timerCleared = false;
+  const pending = loadCurrentCharacterPresentation({
+    invoke: async command => {
+      if (command === "runtime_lifecycle_snapshot") return initializing("g");
+      throw new Error("CHARACTER_PRESENTATION_NOT_READY");
+    },
+    signal: abort.signal,
+    setTimer: () => { abort.abort(); return 7; },
+    clearTimer: id => { timerCleared = id === 7; },
+  });
+  assert.equal(await pending, null);
+  assert.equal(timerCleared, true);
+
+  const nextAbort = new AbortController();
+  let resolve;
+  const loading = loadCurrentCharacterPresentation({
+    invoke: () => new Promise(done => { resolve = done; }), signal: nextAbort.signal,
+  });
+  nextAbort.abort();
+  assert.equal(await loading, null);
+  resolve({ schemaVersion: 2, generationId: "old", visual: null });
 });
 
 test("a Core restart retires the pending old resource load without retrying or blocking the new generation", async () => {
@@ -55,14 +119,16 @@ test("a Core restart retires the pending old resource load without retrying or b
   let current = base;
   let resume;
   let reads = 0;
-  const invoke = async () => { reads += 1; return current; };
+  const invoke = async command => {
+    if (command === "runtime_lifecycle_snapshot") return initializing(current.generationId);
+    reads += 1; return current;
+  };
   const pending = loadCurrentCharacterPresentation({
     invoke,
-    attempts: 2,
     expectedGenerationId: "old",
     setTimer: callback => { resume = callback; },
   });
-  await Promise.resolve();
+  await new Promise(resolve => setImmediate(resolve));
   assert.equal(typeof resume, "function");
   current = { ...base, generationId: "new", visualReasonCode: "PLUGIN_DISABLED" };
   resume();
@@ -73,11 +139,14 @@ test("a Core restart retires the pending old resource load without retrying or b
   assert.equal(next.visualReasonCode, "PLUGIN_DISABLED");
 });
 
-test("invalid current-generation resources still fail instead of being treated as a superseded load", async () => {
-  await assert.rejects(loadCurrentCharacterPresentation({
-    invoke: async () => ({ schemaVersion: 2, generationId: "current", characterId: "sample", displayName: "角色", initialMessage: "你好", themeTokens: {}, visualReasonCode: "READY", visual: { bindingId: "invalid" } }),
-    expectedGenerationId: "current",
-  }), /VISUAL_PRESENTATION_INVALID/);
+test("a native resource error is preserved without retrying", async () => {
+  for (const code of ["VISUAL_MODULE_REJECTED", "CHARACTER_ROOT_UNAVAILABLE"]) {
+    const failure = new Error(`${code}: missing plugin file`);
+    await assert.rejects(loadCurrentCharacterPresentation({
+      invoke: async () => { throw failure; },
+      expectedGenerationId: "current",
+    }), error => error === failure);
+  }
 });
 
 test("first lifecycle publication preserves the initial renderer; a later generation revokes it", () => {

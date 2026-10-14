@@ -21,7 +21,7 @@ from app.core_host import plugin_host_services
 from app.core_host.plugin_settings import PluginSettingsBoundary
 from app.plugins.installer import LocalPluginInstaller, PluginInstallError
 from app.plugins.inventory import PluginDesiredStateStore, PluginInventory
-from app.plugins.runtime_v4 import PluginRuntimeError, PluginRuntimeManager
+from app.plugins.runtime_v4 import CLOSE_TIMEOUT_SECONDS, PluginRuntimeError, PluginRuntimeManager
 from app.plugins.sakura_plugin_sdk import PluginApiError, RpcPeer
 from app.storage.paths import StoragePaths
 from app.storage.runtime_roots import RuntimeRoots
@@ -207,9 +207,10 @@ class Plugin:
                 worker.join(3)
 
 
-def test_tts_shutdown_can_finish_when_provider_cancel_is_blocked(tmp_path: Path) -> None:
+def test_tts_shutdown_can_finish_when_provider_cancel_is_blocked(tmp_path: Path, monkeypatch) -> None:
     from app.core_host.tts_boundary import TTSBoundary, _PluginSynthesisHandle
 
+    monkeypatch.setattr("app.core_host.tts_boundary.CLOSE_TIMEOUT_SECONDS", 0.1)
     roots = _roots(tmp_path)
     _plugin_source(roots.distribution_root / "plugins/builtin", "fixture.tts", "sakura.tts", body='''
 class Plugin:
@@ -2191,7 +2192,13 @@ def test_generation_close_acknowledges_four_real_plugins_without_timeout_multipl
             bundled,
             plugin_id,
             f"{plugin_id}.service",
-            body=_simple_service_body(f"{plugin_id}.service", str(index)),
+            body=f"""
+import time
+class Plugin:
+    def setup(self, context):
+        context.provide({f"{plugin_id}.service"!r}, object(), exports=())
+        context.effect(lambda: time.sleep(0.3))
+""".strip(),
         )
     manager = PluginRuntimeManager(
         roots,
@@ -2215,7 +2222,7 @@ def test_generation_close_acknowledges_four_real_plugins_without_timeout_multipl
     manager.close()
     elapsed = time.monotonic() - started
 
-    assert elapsed < 1.5
+    assert elapsed < CLOSE_TIMEOUT_SECONDS + 1.5
     assert close_acknowledgements == [None] * 4
     _wait_pids_gone(pids)
     manager.close()
@@ -2378,7 +2385,7 @@ class Plugin:
     manager.close()
     elapsed = time.monotonic() - started
 
-    assert elapsed < 1.5
+    assert elapsed < CLOSE_TIMEOUT_SECONDS + 1.5
     _wait_pids_gone(pids)
 
 

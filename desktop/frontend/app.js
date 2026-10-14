@@ -33,7 +33,7 @@ import { createBubbleScroll } from "./pet/bubble-scroll.js";
 import { createControlSurfaceTransactions } from "./pet/control-surface-transactions.js";
 import {
   loadCurrentCharacterPresentation,
-  validateCharacterPresentation,
+  normalizeCharacterPresentation,
 } from "./pet/character-presentation.js";
 import { isNewCharacterGeneration, rebindCharacterPresentation } from "./pet/character-generation.js";
 import { PetContextMenu } from "./pet/context_menu.js";
@@ -54,9 +54,7 @@ import {
   runInitialLayoutWithBootstrapRecovery,
 } from "./pet/layout-controller.js";
 import {
-  isNativePetDragPointRejected,
   shouldRevealBubbleAfterNativeDrag,
-  startNativePetDragWithRevisionRecovery,
 } from "./pet/native-drag.js";
 import {
   applyBootstrapPetLayout,
@@ -180,6 +178,8 @@ let surfaceVisibilityCommitQueue = Promise.resolve();
 chatBubble.dataset.surfaceVisible = "true";
 composer.dataset.surfaceVisible = "true";
 
+const presentationLoad = new AbortController();
+window.addEventListener("beforeunload", () => presentationLoad.abort(), { once: true });
 const composerActionIndicator = createComposerActionIndicator({ button: send });
 
 let lastInputVisualEffectFallback = "";
@@ -392,15 +392,15 @@ let characterPresentation;
 try {
   characterPresentation = await loadCurrentCharacterPresentation({
     invoke,
+    signal: presentationLoad.signal,
   });
 } catch (error) {
   runtimeDiagnostics.reportError(error, { command: "visual_startup", code: "VISUAL_STARTUP_FAILED" });
-  presentationUnavailable = true;
-  showRecoverableError(errorText(error));
+  showRecoverableError("角色加载失败，请重启 Sakura 后再试。");
 }
 if (!characterPresentation) {
   presentationUnavailable = true;
-  characterPresentation = validateCharacterPresentation({
+  characterPresentation = normalizeCharacterPresentation({
     generationId: "unavailable",
     characterId: "unavailable",
     displayName: "当前角色",
@@ -422,15 +422,13 @@ activeAppearance = Object.freeze({
   visualEffectMode: "gaussian_blur",
   themeTokens: characterPresentation.themeTokens,
 });
-if (!presentationUnavailable) {
-  try {
-    activeAppearance = validateAppearancePublication(
-      await invoke("current_character_appearance"),
-      characterPresentation,
-    );
-  } catch {
-    // 读取失败时保留角色主题和默认尺寸。
-  }
+try {
+  activeAppearance = validateAppearancePublication(
+    await invoke("current_character_appearance"),
+    characterPresentation,
+  );
+} catch {
+  // Package theme/default sizes remain a complete safe baseline.
 }
 let characterVisualPreviewActive = false;
 let visualScalePercent = activeAppearance.portraitScalePercent;
@@ -1129,11 +1127,7 @@ if (surfaceVisibilityCapabilities.bubbleAutoHide && surfaceVisibilityCapabilitie
   }
   surfaceVisibilityController.setInputPinned(inputIsPinned());
   surfaceHoverProbe = createSurfaceHoverProbe({
-    // Report only the first failed read until native hover becomes available again.
     readHover: () => nativeInvoke("pet_surface_hovered"),
-    onFailure: (error) => runtimeDiagnostics.reportError(error, {
-      command: "pet_surface_hovered", stage: "surface_hover_probe",
-    }),
     onHoverChange: (active) => {
       if (active) surfaceHoverTracker.enter("native-surface");
       else surfaceHoverTracker.leave("native-surface");
@@ -1497,7 +1491,6 @@ for (const dragRegion of dragRegions) {
     if (!shouldStartNativeDrag({ hitKind, button: event.button, isPrimary: event.isPrimary })) return;
     const dragGesture = interactionLatencyTrace.createGesture("pet-drag");
     const dragTrace = interactionLatencyTrace.atRevision(dragGesture, activeSurfaceRevision);
-    const pointerClientPoint = [event.clientX, event.clientY];
     const initialPortraitAnchor = activePortraitAnchor;
     const bubbleWasHidden = surfaceVisibilityController?.snapshot().bubbleVisible === false;
     interactionLatencyTrace.mark("pet-drag.pointerdown", dragTrace, { event });
@@ -1506,46 +1499,9 @@ for (const dragRegion of dragRegions) {
     dragRegion.classList.add("is-native-dragging");
     surfaceVisibilityController?.setSuspended(true);
     try {
-      const dragResult = await startNativePetDragWithRevisionRecovery({
-        revision: activeSurfaceRevision,
-        point,
-        start: ({ revision, point: nextPoint }) => tracedInteractionInvoke(
-          "start_pet_drag",
-          {
-            revision,
-            surfaceX: nextPoint[0],
-            surfaceY: nextPoint[1],
-          },
-          dragTrace,
-          "pet-drag.start-native",
-        ),
-        readSurfaceDiagnostics: () => invoke("current_pet_surface_diagnostics"),
-        syncSurface: (diagnostics) => {
-          const nextContentScale = Number(diagnostics?.contentScale);
-          const nextBounds = diagnostics?.logicalBounds;
-          if (
-            !Number.isFinite(nextContentScale)
-            || nextContentScale <= 0
-            || !Array.isArray(nextBounds)
-            || nextBounds.length !== 4
-            || nextBounds.some((value) => !Number.isSafeInteger(value) || value < 0)
-          ) {
-            throw new Error("PET_SURFACE_DIAGNOSTICS_INVALID");
-          }
-          commitSurfaceApplication({
-            contentScale: nextContentScale,
-            activeBounds: nextBounds,
-            revision: diagnostics.revision,
-          });
-        },
-        getPoint: () => {
-          const [surfaceX, surfaceY] = currentSurfaceOffset();
-          return [
-            pointerClientPoint[0] / contentScale + surfaceX,
-            pointerClientPoint[1] / contentScale + surfaceY,
-          ];
-        },
-      });
+      const dragResult = await tracedInteractionInvoke(
+        "start_pet_drag", {}, dragTrace, "pet-drag.start-native",
+      );
       if (shouldRevealBubbleAfterNativeDrag({
         bubbleWasHidden,
         initialAnchor: initialPortraitAnchor,
@@ -1555,7 +1511,6 @@ for (const dragRegion of dragRegions) {
       }
       if (dragResult?.portraitAnchor) activePortraitAnchor = dragResult.portraitAnchor;
     } catch (error) {
-      if (isNativePetDragPointRejected(error)) return;
       showRecoverableError("窗口拖动暂时不可用。");
     } finally {
       dragRegion.classList.remove("is-native-dragging");
@@ -1597,10 +1552,7 @@ document.addEventListener("contextmenu", async (event) => {
   try {
     await screenAttachment.close();
     if (portraitSurfaceMutationDepth > 0 || portraitScaleGestureActive) return;
-    const manifest = await invoke("open_pet_context_menu", {
-      surfaceX: point[0],
-      surfaceY: point[1],
-    });
+    const manifest = await invoke("open_pet_context_menu");
     if (portraitSurfaceMutationDepth > 0 || portraitScaleGestureActive) {
       await contextMenu.dismissForSurfaceTransition();
       return;
@@ -1646,15 +1598,19 @@ await listenAppEvent("sakura://subtitle-language-changed", (event) => {
 
 let coreRebindRevision = 0;
 let coreRebindTarget = "";
+let coreRebindLoad = null;
 
 async function rebindCoreGeneration(generationId, { refresh = false } = {}) {
   if (!refresh && !presentationUnavailable && generationId === characterPresentation.generationId
     && (!characterPresentation.visual || rendererHost.current()?.bindingId === characterPresentation.visual.bindingId)) return true;
   if (disposed || !generationId || coreRebindTarget === generationId) return false;
+  coreRebindLoad?.abort();
+  const load = new AbortController();
+  coreRebindLoad = load;
   const revision = ++coreRebindRevision;
   coreRebindTarget = generationId;
   try {
-    const next = await loadCurrentCharacterPresentation({ invoke, expectedGenerationId: generationId });
+    const next = await loadCurrentCharacterPresentation({ invoke, expectedGenerationId: generationId, signal: load.signal });
     if (!next || disposed || revision !== coreRebindRevision) return false;
     if (next.generationId === characterPresentation.generationId && next.characterId === characterPresentation.characterId
       && next.visual?.bindingId === characterPresentation.visual?.bindingId && next.visualReasonCode === characterPresentation.visualReasonCode
@@ -1693,11 +1649,16 @@ async function rebindCoreGeneration(generationId, { refresh = false } = {}) {
   } catch (error) {
     if (!disposed && revision === coreRebindRevision) {
       runtimeDiagnostics.reportError(error, { command: "visual_rebind", code: "VISUAL_REBIND_FAILED" });
-      showRecoverableError(errorText(error));
+      showRecoverableError("角色资源加载失败，请稍后重试。");
     }
     return false;
   }
-  finally { if (revision === coreRebindRevision) coreRebindTarget = ""; }
+  finally {
+    if (revision === coreRebindRevision) {
+      coreRebindTarget = "";
+      coreRebindLoad = null;
+    }
+  }
 }
 
 await listenAppEvent("sakura://character-visual-preview", async (event) => {
@@ -1705,7 +1666,7 @@ await listenAppEvent("sakura://character-visual-preview", async (event) => {
     const publication = event?.payload;
     const token = characterVisualPreviewSessions.begin(publication);
     if (!token) return;
-    const next = validateCharacterPresentation(publication.presentation);
+    const next = normalizeCharacterPresentation(publication.presentation);
     const appearance = validateAppearancePublication(publication.appearance, next);
     if (next.generationId !== token.coreGenerationId) return;
     if (next.characterId === characterPresentation.characterId) {
@@ -2168,6 +2129,8 @@ document.addEventListener("visibilitychange", () => {
 function dispose() {
   if (disposed) return;
   disposed = true;
+  presentationLoad.abort();
+  coreRebindLoad?.abort();
   asrController?.dispose();
   asrAvailability.dispose();
   waveform.stop();

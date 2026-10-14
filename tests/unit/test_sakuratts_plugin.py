@@ -105,7 +105,7 @@ def test_import_keeps_old_environment_when_check_fails_or_cancelled(tmp_path, mo
     store.close()
     assert store.state == 'idle' and store.current()[0] == original
     assert store.load()['bundle']['message'] == ''
-    assert len(list((store.directory / 'versions').iterdir())) == 1
+    assert list(store.directory.rglob('runtime/portable.json')) == [original / 'runtime/portable.json']
     assert [fields['event'] for _, _, fields in logs] == [
         'tts.bundle.extracting', 'tts.bundle.checking', 'tts.bundle.succeeded',
         'tts.bundle.extracting', 'tts.bundle.checking', 'tts.bundle.failed',
@@ -137,7 +137,7 @@ def provider(tmp_path, monkeypatch):
                               config=SimpleNamespace(get=lambda: {}))
     result = Provider(context)
     monkeypatch.setattr(result.bundle, 'current', lambda: (tmp_path, {}))
-    monkeypatch.setattr('plugins.builtin.sakura_sakuratts.plugin.character_voice', lambda *_: {
+    monkeypatch.setattr('plugins.builtin.sakura_sakuratts.plugin.character_voice', lambda *_, **_kwargs: {
         'gpt': 'gpt', 'sovits': 'sovits', 'text_lang': 'ja', 'ref_audio_path': 'a.wav', 'prompt_lang': 'ja', 'prompt_text': 'a'})
     return result, released
 
@@ -668,12 +668,24 @@ def finish_bundle_task(store):
     assert not store.thread.is_alive()
 
 
-def test_online_download_install_and_new_published_index(tmp_path, online_repo):
-    _, publish = online_repo
+@pytest.mark.parametrize('unpacked_size', [None, 'unknown'])
+def test_online_download_install_and_new_published_index(tmp_path, online_repo, unpacked_size):
+    remote, publish = online_repo
     publish('preview-1', 'first')
+    index_path = remote / 'latest-preview.json'
+    index = json.loads(index_path.read_text())
+    package = index['packages'][0]
+    if unpacked_size is None:
+        package.pop('unpackedBytes')
+    else:
+        package['unpackedBytes'] = unpacked_size
+    index_path.write_text(json.dumps(index))
     probes = []
     store = BundleStore(tmp_path / 'installed', lambda *args: probes.append(args), lambda action: action())
     assert store.load()['bundle']['availableActionIds'][0] == 'downloadBundle'
+    store.check_update()
+    finish_bundle_task(store)
+    assert store.state == 'succeeded', store.error
     store.download()
     finish_bundle_task(store)
     assert store.state == 'succeeded', store.error
@@ -704,7 +716,8 @@ def test_online_download_install_and_new_published_index(tmp_path, online_repo):
     assert store.current()[1]['source_commit'] == 'third'
     assert not old[0].exists()
     assert second.is_dir()
-    assert len(list((store.directory / 'versions').iterdir())) == 2
+    assert set(store.directory.rglob('runtime/portable.json')) == {
+        second / 'runtime/portable.json', store.current()[0] / 'runtime/portable.json'}
     store.close()
 
 
@@ -768,7 +781,7 @@ def test_online_failure_preserves_installed_bundle(tmp_path, online_repo, failur
         assert not list((store.directory / 'downloads').glob('*.zip'))
     assert store.state == 'failed' and store.error
     assert store.current() == old
-    assert len(list((store.directory / 'versions').iterdir())) == 1
+    assert list(store.directory.rglob('runtime/portable.json')) == [old[0] / 'runtime/portable.json']
     store.close()
 
 
@@ -992,6 +1005,23 @@ def test_cancel_online_install_restores_status_and_reuses_download_after_restart
     assert store.current()[1]['source_commit'] == 'first'
     assert store.downloaded is None
     store.close()
+
+
+def test_prewake_skips_character_without_voice_configuration(tmp_path):
+    import threading
+    root = tmp_path / 'character'
+    root.mkdir()
+    (root / 'character.json').write_text('{}')
+    provider = object.__new__(Provider)
+    provider.lock = threading.RLock()
+    provider.wake = threading.Event()
+    provider.character = SimpleNamespace(resolve_resource=lambda *_: root / 'character.json', get=lambda _: {})
+    records = []
+    provider.log = lambda level, message, **fields: records.append((level, fields))
+    provider._prewake('test', provider.wake)
+    assert provider.wake is None
+    assert provider.error == ''
+    assert not any(level == 'error' for level, _ in records)
 
 
 def test_missing_character_model_returns_diagnostic_with_source_location(tmp_path):

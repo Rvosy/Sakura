@@ -41,13 +41,15 @@ def configuration(values):
     return result
 
 
-def character_voice(character, character_id, tone='中性'):
+def character_voice(character, character_id, tone='中性', *, optional=False):
     manifest_path = character.resolve_resource(character_id, 'character.json')
     manifest = json.loads(Path(manifest_path).read_text(encoding='utf-8'))
     extension = dict(manifest.get('extensions', {}).get('sakura.tts.gpt-sovits', {}))
     extension.update(character.get(character_id))
     for key, label in (('toneRefs', '参考音频表'), ('gptModel', 'GPT 模型'), ('sovitsModel', 'SoVITS 模型')):
         if not extension.get(key):
+            if optional:
+                return None
             raise ValueError(f'角色尚未配置{label}，请在角色工坊中添加。')
     package_dir = Path(manifest_path).parent
     resources = {key: Path(character.resolve_resource(character_id, extension[key]))
@@ -167,7 +169,9 @@ class Provider:
         try:
             with operation(self.log, 'preload', cancel=cancel):
                 self.error = ''
-                voice = character_voice(self.character, character_id)
+                voice = character_voice(self.character, character_id, optional=True)
+                if voice is None:
+                    return
                 self.runtime.start(self.bundle.current(), self.config, voice, cancel)
                 if not cancel.is_set():
                     self.log('info', 'SakuraTTS 正在提前加载模型', backend=self.runtime.backend)
@@ -354,19 +358,25 @@ class SakuraTTSPlugin:
         surface.register('runtime', 'plugin')
         settings.register({'sectionId': 'bundle', 'title': '本地运行环境', 'order': 30, 'fields': [
             {'key': 'bundle', 'label': 'SakuraTTS 整合包', 'type': 'resource',
-             'actionIds': ['downloadBundle', 'installDownload', 'checkUpdate', 'importBundle', 'cancelImport'],
+             'actionIds': ['downloadBundle', 'installDownload', 'checkUpdate', 'importBundle', 'relocateBundle', 'reinstallBundle', 'cancelImport'],
              'default': provider.bundle.load()['bundle']},
             {'key': 'bundlePath', 'label': '本地整合包路径', 'type': 'string', 'default': ''},
+            {'key': 'bundleDirectory', 'label': '运行环境目录', 'type': 'string', 'default': '',
+             'description': '可填写短目录，例如 D:\\SakuraTTS。下载、导入或迁移时使用；迁移不改动角色和模型缓存。'},
         ], 'actions': [
             {'actionId': 'downloadBundle', 'label': '下载并安装'},
             {'actionId': 'installDownload', 'label': '安装已下载整合包'},
             {'actionId': 'checkUpdate', 'label': '检查更新'},
             {'actionId': 'importBundle', 'label': '导入整合包', 'filePicker': {'field': 'bundlePath', 'extensions': ['zip', '7z', 'gz']}},
+            {'actionId': 'relocateBundle', 'label': '迁移运行环境'},
+            {'actionId': 'reinstallBundle', 'label': '重新下载并安装'},
             {'actionId': 'cancelImport', 'label': '取消'},
         ]}, load=provider.bundle.load, save=lambda values: None,
             actions={'importBundle': provider.bundle.start, 'cancelImport': provider.bundle.cancel,
                      'checkUpdate': provider.bundle.check_update, 'downloadBundle': provider.bundle.download,
-                     'installDownload': provider.bundle.install_download})
+                     'installDownload': provider.bundle.install_download,
+                     'relocateBundle': provider.bundle.relocate,
+                     'reinstallBundle': provider.bundle.reinstall})
         surface.register('bundle', 'plugin')
         announcement = UpdateAnnouncement(context.get('sakura.host.chat'), provider.bundle,
                                           lambda: provider.config['autoCheckUpdates'], provider.log)

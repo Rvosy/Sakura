@@ -1395,7 +1395,7 @@ pub(crate) async fn settings_update_install(
             lifecycle_handle
                 .as_ref()
                 .ok_or_else(|| "LIFECYCLE_COMMAND_UNAVAILABLE".to_string())?
-                .shutdown_and_wait(std::time::Duration::from_secs(5))
+                .shutdown_and_wait(crate::core_host_runtime::CORE_SHUTDOWN_TIMEOUT)
                 .map_err(|error| error.to_string())
         },
     )

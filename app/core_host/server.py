@@ -15,6 +15,7 @@ from time import monotonic
 from typing import TYPE_CHECKING, Any, BinaryIO, Callable
 
 from app.plugin_sdk.sakura_cancellation import OperationCancelled
+from app.plugins.runtime_v4 import CLOSE_TIMEOUT_SECONDS
 from app.storage.runtime_roots import RuntimeRoots
 
 from .protocol import PROTOCOL_MAJOR, PROTOCOL_MINOR, error_payload, read_frame, response, write_frame
@@ -52,7 +53,6 @@ MIN_PROTOCOL_MINOR = 0
 REQUIRED_CAPABILITIES = frozenset(CAPABILITIES)
 _WRITER_STOP = object()
 WRITER_QUEUE_LIMIT = 32
-_READINESS_CLOSE_TIMEOUT_SECONDS = 1.0
 _WRITER_OPERATION_TIMEOUT_SECONDS = 3.0
 _SUMMARY_KEYS = (
     "id",
@@ -602,7 +602,6 @@ class ReadinessController:
         return snapshot
 
     def close(self) -> None:
-        deadline = monotonic() + _READINESS_CLOSE_TIMEOUT_SECONDS
         with self._lock:
             if self._close_called:
                 return
@@ -621,6 +620,7 @@ class ReadinessController:
         # Plugin startup can be waiting on its process. Stop that owned process
         # before joining the initializer which is waiting for startup to finish.
         self._close_application_resources([plugin_application, starting_application])
+        deadline = monotonic() + CLOSE_TIMEOUT_SECONDS
         if worker is not None:
             worker.join(timeout=max(0.0, deadline - monotonic()))
         with self._lock:

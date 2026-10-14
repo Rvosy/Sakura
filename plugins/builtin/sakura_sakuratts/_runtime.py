@@ -50,7 +50,7 @@ def probe(root, release, cancel, backend=None, cache=None):
                 if cancel.wait(.1):
                     raise Cancelled()
             if process.returncode:
-                raise RuntimeError(log.read_text(encoding='utf-8', errors='replace')[-4000:])
+                raise RuntimeError(log.read_text(encoding='utf-8', errors='replace'))
         finally:
             terminate_process_tree(process, timeout=5)
 
@@ -160,7 +160,7 @@ class Runtime:
                 if cancel.is_set():
                     raise Cancelled()
                 if process.poll() is not None:
-                    raise RuntimeError(self.log.read_text(encoding='utf-8', errors='replace')[-4000:])
+                    raise RuntimeError(self.log.read_text(encoding='utf-8', errors='replace'))
                 try:
                     self.request('/health', timeout=1)
                     self.emit('info', 'SakuraTTS 服务已就绪', event='tts.engine.ready', backend=backend,

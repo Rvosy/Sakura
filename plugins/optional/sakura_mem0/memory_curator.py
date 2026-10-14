@@ -344,6 +344,8 @@ class MemoryCurator:
         try:
             operations = _parse_curation_operations(raw)
         except ValueError as first_error:
+            if not raw.strip():
+                raise
             marker = getattr(self.api_client, "mark_latest_trace_repair_requested", None)
             if callable(marker):
                 marker(str(first_error))

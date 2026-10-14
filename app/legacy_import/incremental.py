@@ -907,11 +907,14 @@ def _merge_qdrant(
     target_root.mkdir(parents=True, exist_ok=True)
     try:
         target_client = _qdrant_client(target_root)
-        target_names = {item.name for item in target_client.get_collections().collections}
     except Exception as exc:
         raise LegacyImportError("LEGACY_DATA_TARGET_MEMORY_INVALID", "staging") from exc
     target_scopes: dict[str, _ScopeResolution] = {}
     try:
+        try:
+            target_names = {item.name for item in target_client.get_collections().collections}
+        except Exception as exc:
+            raise LegacyImportError("LEGACY_DATA_TARGET_MEMORY_INVALID", "staging") from exc
         if "sakura_memories" not in target_names:
             try:
                 target_client.create_collection(
