@@ -168,7 +168,7 @@ class AssistantPlugin:
         slots = session.get("modelSlots", {})
         value = slots.get("chat")
         if not isinstance(value, dict) or not all(value.get(key) for key in ("serviceKey", "profileId", "modelId")):
-            raise ApiConfigError("PROVIDER_SETUP_REQUIRED")
+            raise ApiConfigError("尚未配置对话模型，请在模型设置中选择服务、配置和模型。")
         return value, slots.get("vision_chat")
 
     def prepare(self, session):
@@ -183,7 +183,7 @@ class AssistantPlugin:
                 client.close()
             diagnostics.log_event("Assistant", "模型服务尚未就绪", diagnostics.diagnostic_attributes(error), event="assistant.model.not_ready", severity="warning")
             code = getattr(error, "code", "PROVIDER_SETUP_REQUIRED")
-            return {"state": "setup_required", "code": code, "message": "请先配置模型服务。", "retryable": False}
+            return {"state": "setup_required", "code": code, "message": str(error), "retryable": False}
         bindings = {"chat": clients[0].identity}
         if vision:
             bindings["vision_chat"] = clients[-1].identity

@@ -21,6 +21,7 @@ import {
 import { FALLBACK_THEME_TOKENS } from "../core/theme.js";
 import { installDevtoolsShortcutGuard } from "../core/devtools-guard.js";
 import { createMigrationStatus } from "./migration-status.js";
+import { isRuntimeCancellation } from "../core/runtime-diagnostics.js";
 
 installDevtoolsShortcutGuard();
 installClickIconMotion(document);
@@ -229,6 +230,7 @@ function prepareRuntimeAppearance(snapshot, themeFields) {
 const errorDialog = createErrorDialog({ document });
 
 function showError({ title = "操作失败", message = "", error }) {
+  if (isRuntimeCancellation(error)) return;
   const status = document.createElement("span");
   status.textContent = message || title;
   const details = document.createElement("button");
@@ -1017,6 +1019,7 @@ async function rebindSettingsAfterCharacterSwitch(generationId, characterId) {
   await runtimeToolsController?.refreshCurrent();
   await runtimePluginController?.refreshCurrent();
   await runtimeVoiceController?.refreshCurrent({ preserveDraft: true });
+  await runtimeAsrController?.refresh({ preserveDraft: true });
 }
 
 function renderThemeControls() {

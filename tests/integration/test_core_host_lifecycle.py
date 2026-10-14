@@ -384,9 +384,11 @@ def test_real_host_initializes_in_background_and_returns_python_snapshot(tmp_pat
         assert revisions == sorted(revisions)
         assert snapshot["revision"] > 1
         assert exchange(process, request("settled-snapshot", "core.snapshot"))["payload"] == snapshot
-        assert snapshot["components"] == {
-            "assistant": {"state": "ready", "code": "READY", "retryable": False}
-        }
+        assistant = snapshot["components"]["assistant"]
+        assert assistant["state"] == "ready"
+        assert assistant["code"] == "READY"
+        assert assistant["retryable"] is False
+        assert isinstance(assistant["message"], str) and assistant["message"]
         assert set(snapshot["currentCharacterSummary"]) == {
             "id",
             "displayName",
@@ -452,11 +454,11 @@ def test_real_host_keeps_character_visible_while_provider_setup_is_required(
                 break
             assert time.monotonic() < deadline, (snapshot, _stderr_text(process))
 
-        assert snapshot["components"]["assistant"] == {
-            "state": "setup_required",
-            "code": "PROVIDER_SETUP_REQUIRED",
-            "retryable": False,
-        }
+        assistant = snapshot["components"]["assistant"]
+        assert assistant["state"] == "setup_required"
+        assert assistant["code"] == "PROVIDER_SETUP_REQUIRED"
+        assert assistant["retryable"] is False
+        assert isinstance(assistant["message"], str) and assistant["message"]
         assert snapshot["currentCharacterSummary"] is None
         assert snapshot["characterPresentation"]["characterId"] == "sakura"
         # Character/Assistant publication precedes optional TTS startup. Wait

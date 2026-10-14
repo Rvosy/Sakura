@@ -218,7 +218,12 @@ def test_remove_character_installation_only_deletes_direct_package_dirs(
     with pytest.raises(ValueError, match="CHARACTER_PACKAGE_PATH_INVALID"):
         remove_character_installation(characters, characters)
     linked = characters / "linked"
-    linked.symlink_to(outside)
+    try:
+        linked.symlink_to(outside, target_is_directory=True)
+    except OSError as error:
+        if getattr(error, "winerror", None) == 1314:
+            pytest.skip("当前 Windows 用户无权创建符号链接")
+        raise
     with pytest.raises(ValueError, match="CHARACTER_PACKAGE_PATH_INVALID"):
         remove_character_installation(characters, linked)
     assert outside.is_dir()

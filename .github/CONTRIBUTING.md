@@ -26,6 +26,8 @@ bash scripts/start.sh
 
 启动脚本增量编译开发版。正式打包见[发行指南](../docs/development/release.md)。
 
+源码安装脚本和 Windows 本地打包默认使用阿里云 PyPI 镜像，可通过 `PIP_INDEX_URL` 指定其他源；插件依赖安装也支持 `UV_DEFAULT_INDEX`。这些设置不修改系统 pip 配置。
+
 ## 仓库入口
 
 | 目录 | 用途 |

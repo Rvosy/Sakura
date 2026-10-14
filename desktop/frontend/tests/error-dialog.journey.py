@@ -76,7 +76,8 @@ def run():
                 dialog, diagnostic = check_details(page)
                 dialog.get_by_role('button', name='复制详情', exact=True).click()
                 expect(dialog.get_by_role('status')).to_have_text('已复制')
-                assert page.evaluate('navigator.clipboard.readText()') == diagnostic.inner_text()
+                # Windows 剪贴板使用 CRLF，比较时保留行内容并统一换行。
+                assert page.evaluate('navigator.clipboard.readText()').replace('\r\n', '\n') == diagnostic.inner_text()
                 output = os.environ.get('SAKURA_ERROR_DIALOG_SCREENSHOT_DIR')
                 if output:
                     Path(output).mkdir(parents=True, exist_ok=True)

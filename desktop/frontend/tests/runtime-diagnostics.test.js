@@ -56,6 +56,18 @@ function harness(handler = async () => ({ ok: true })) {
   };
 }
 
+test("a request interrupted by Core restart is cancelled while real transport failures stay visible", async () => {
+  let failure = "GENERATION_INVALIDATED: Core generation is stopping";
+  const env = harness(async () => { throw failure; });
+  await assert.rejects(env.diagnostics.invoke("settings_asr_get"), error => error === failure);
+  failure = "SETTINGS_TRANSPORT_UNAVAILABLE: Core exited with status 5";
+  await assert.rejects(env.diagnostics.invoke("settings_asr_get"), error => error === failure);
+  await env.diagnostics.flush();
+  const entries = env.calls.find(([command]) => command === RUNTIME_DIAGNOSTICS_COMMAND)[1].entries;
+  assert.ok(entries.some(entry => entry.outcome === "cancelled" && entry.level === "debug" && entry.diagnostic === "Core generation is stopping"));
+  assert.ok(entries.some(entry => entry.outcome === "failed" && entry.level === "warn" && entry.diagnostic === "Core exited with status 5"));
+});
+
 
 test("coded invoke failures preserve only a bounded redacted diagnostic", async () => {
   const failure = "REQUEST_DEADLINE_EXCEEDED: Provider token=visible did not respond";

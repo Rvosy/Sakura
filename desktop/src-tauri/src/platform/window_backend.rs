@@ -152,14 +152,12 @@ fn macos_atomic_frame(
             let _ = sender.send(apply(&main_window, placement));
         })
         .map_err(|error| format!("failed to dispatch atomic macOS window frame: {error}"))?;
-    receiver
-        .recv()
-        .map_err(|source_error| {
-            crate::runtime_log::diagnostic_error(
-                "macOS window frame operation disconnected before returning",
-                source_error,
-            )
-        })?
+    receiver.recv().map_err(|source_error| {
+        crate::runtime_log::diagnostic_error(
+            "macOS window frame operation disconnected before returning",
+            source_error,
+        )
+    })?
 }
 
 #[cfg(any(target_os = "macos", test))]
@@ -247,14 +245,12 @@ fn macos_atomic_resize_preserving_top_left(
             let _ = sender.send(apply(&main_window, placement));
         })
         .map_err(|error| format!("failed to dispatch macOS resize: {error}"))?;
-    receiver
-        .recv()
-        .map_err(|source_error| {
-            crate::runtime_log::diagnostic_error(
-                "macOS resize operation disconnected before returning",
-                source_error,
-            )
-        })?
+    receiver.recv().map_err(|source_error| {
+        crate::runtime_log::diagnostic_error(
+            "macOS resize operation disconnected before returning",
+            source_error,
+        )
+    })?
 }
 
 #[cfg(windows)]

@@ -223,8 +223,13 @@ function eventForCommand(command, outcome) {
 }
 
 function isExpectedReadinessRetry(command, code) {
-  return ["current_character_presentation", "settings_character_appearance_get"].includes(command)
-    && ["CHARACTER_PRESENTATION_NOT_READY", "CHARACTER_PRESENTATION_UNAVAILABLE"].includes(code);
+  return ["current_character_presentation", "current_character_appearance", "settings_character_appearance_get"].includes(command)
+    && ["CHARACTER_PRESENTATION_NOT_READY", "CHARACTER_REQUIRED"].includes(code);
+}
+
+export function isRuntimeCancellation(error) {
+  const code = safeDiagnostic(error).code;
+  return code === "GENERATION_INVALIDATED" || code === "CANCELLED" || code.endsWith("_CANCELLED");
 }
 
 export function createRuntimeDiagnostics({
@@ -245,7 +250,9 @@ export function createRuntimeDiagnostics({
     if (coreResponseError(error)) return false;
     if (error && typeof error === "object" && reportedErrors.has(error)) return false;
     const diagnostic = safeDiagnostic(error);
-    const accepted = record({ ...diagnostic, level, event: "webview.command.failed", outcome: "failed",
+    const cancelled = isRuntimeCancellation(error);
+    const accepted = record({ ...diagnostic, level: cancelled ? "debug" : level,
+      event: cancelled ? "webview.command.cancelled" : "webview.command.failed", outcome: cancelled ? "cancelled" : "failed",
       command, stage, code: diagnostic.code === "INVOKE_FAILED" ? code || diagnostic.code : diagnostic.code });
     if (accepted && error && typeof error === "object") reportedErrors.add(error);
     return accepted;
@@ -322,11 +329,12 @@ export function createRuntimeDiagnostics({
       if (token(command, 96)) {
         const diagnostic = safeDiagnostic(error);
         const expectedRetry = diagnostic && isExpectedReadinessRetry(command, diagnostic.code);
+        const cancelled = isRuntimeCancellation(error);
         record({
-          level: expectedRetry ? "debug" : coreResponseError(error) ? "info" : "warn",
-          event: eventForCommand(command, "failed"),
+          level: expectedRetry || cancelled ? "debug" : coreResponseError(error) ? "info" : "warn",
+          event: eventForCommand(command, cancelled ? "cancelled" : "failed"),
           command: logCommand,
-          outcome: "failed",
+          outcome: cancelled ? "cancelled" : "failed",
           code: diagnostic?.code || "INVOKE_FAILED",
           ...diagnostic,
           elapsedMs: Math.max(0, now() - started),

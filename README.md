@@ -2,54 +2,60 @@
 
 # Sakura Desktop Pet
 
-### 一个能主动感知屏幕内容与系统事件的通用桌宠 Agent 框架
+把喜欢的角色做成能主动看屏幕、陪你交流的 AI 桌宠。
 
 [![Release](https://img.shields.io/github/v/release/Rvosy/sakura)](https://github.com/Rvosy/sakura/releases)
-[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey.svg)](docs/guide/setup.md)
-[![Downloads](https://img.shields.io/github/downloads/Rvosy/sakura/total)](https://github.com/Rvosy/sakura/releases)
-[![Python](https://img.shields.io/badge/Python-blue)](https://www.python.org/)
+![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey.svg)
 [![License](https://img.shields.io/github/license/Rvosy/sakura)](LICENSE)
 
-[安装教程](docs/guide/setup.md) [API配置教程](docs/guide/models.md)  [插件开发文档](docs/development/plugin-sdk.md)  [技术文档](docs/development/architecture.md)
+[安装与配置](docs/guide/setup.md) · [文档](docs/README.md)
 
 </div>
 
-> 安装包与历史发布说明见 [Releases](https://github.com/Rvosy/sakura/releases)，当前更新见 [发行说明](docs/CHANGELOG.md)，使用指南见[文档总览](docs/README.md)。
+Sakura 是一个可扩展的 AI 桌宠框架。你可以在角色工坊中加入喜欢的角色立绘、编写人设、配置表情和语音，再导出角色包分享。
 
-最近推完水晶社的新作，~~推完自动变成学姐的狗~~，已经变成学姐的形状了，夜里辗转反侧怎么都睡不着。便以学姐的名字 **Sakura** 命名这个项目，开发了这个桌宠 Agent 框架。
-
-Sakura 在桌面上显示你选择的角色，用角色卡决定对话风格，并通过插件接入模型、语音和长期记忆。
-开启屏幕感知后，她可以结合屏幕内容主动搭话；聊天中也可以搜索网页、调用已启用的工具。
+开启屏幕感知后，角色会定期查看屏幕，由模型判断是否主动搭话。它需要支持图片的模型和系统截图权限，截图会发送给你配置的模型服务。语音、长期记忆、浏览器操作等能力通过插件按需添加。
 
 ## 效果预览
 
+同一个框架可以装载不同的角色，下面是 Sakura 和 N.A.V.I. 的桌面效果。
+
 <div align="center">
 
-![Sakura 预览](docs/assets/sakura_01.png)
-![N.A.V.I. 预览](docs/assets/navi_01.png)
+![Sakura 桌宠效果](docs/assets/sakura_01.png)
+![N.A.V.I. 桌宠效果](docs/assets/navi_01.png)
 
 </div>
 
-## 快速开始
+## 制作你的角色
 
-1. 从 [Releases](https://github.com/Rvosy/sakura/releases) 下载对应平台的安装包。Windows Setup 直接安装，Portable ZIP 解压后运行 `sakura.exe`；macOS 按[安装指南](docs/guide/setup.md#macos)操作。
-2. 首次启动时导入 `.char` 角色包，并按 [API 配置指南](docs/guide/models.md)添加模型服务、选择对话模型。
-3. 发送一条消息开始聊天。语音可使用内置 SakuraTTS，其他语音引擎、记忆和语音输入按需安装，见[插件指南](docs/guide/plugins.md)。
+角色工坊可以编辑人设、形态、立绘和表情标签，也能配置语音资源与配色。完成后导出 `.char` 角色包，供自己导入或分享给别人。
 
-Linux x64 的安装与源码运行见 [Linux 使用说明](docs/guide/setup.md#linux)；其他源码运行方式和版本升级见[完整安装指南](docs/guide/setup.md)。
+![角色工坊：配置形态、立绘和表情标签](docs/assets/character-studio.webp)
 
-## 功能特性
+图为 1.3.1 Linux 正式版的角色工坊，正在编辑 N.A.V.I. 的立绘。
 
-- **角色与外观**：导入 `.char` 角色包，在内置角色工坊编辑人设、表现资源、主题和语音资源；气泡、输入栏和窗口材质可调整。
-- **聊天与屏幕感知**：文字和图片对话、框选截图、主动搭话、分段字幕与表现播放，详见[聊天与屏幕感知](docs/guide/chat.md)。
-- **工具与扩展**：自带[网页搜索与读取](docs/guide/plugins.md#联网工具与-mcp)；浏览器操作、手机网页端等通过[插件](docs/guide/plugins.md)扩展，MCP 基础组件供服务插件使用。
-- **语音与记忆**：内置 SakuraTTS，也可安装 GPT-SoVITS、Genie 或 Mem0 等插件，详见[插件指南](docs/guide/plugins.md)。
-- **日志与历史**：浏览聊天记录，通过[运行日志](docs/guide/diagnostics.md)查看模型、插件与工具调用的状态及失败原因。
+## 安装与配置
 
-## 文档
+从[图文配置教程](docs/guide/setup.md)开始：选择安装包、导入角色、连接模型服务。教程也包含可选的语音、记忆和插件配置。
 
-[文档总览](docs/README.md)包含使用指南、模块规格、架构决策和扩展接口。开发先看[架构与模块关系](docs/development/architecture.md)，再进入对应模块的 [Spec](docs/specs/README.md) 和关联 [ADR](docs/adr/README.md)。
-参与开发先看[贡献指南](.github/CONTRIBUTING.md)，历史版本变化见 [Releases](https://github.com/Rvosy/Sakura/releases)。
+需要准备一个角色包，以及模型服务商提供的 API 地址、密钥和模型名称。模型服务可能收费，请先查看服务商的计费说明。
+
+## 开发与扩展
+
+写插件从 [Plugin API v4 指南](docs/development/plugin-sdk.md)开始；修改框架本身见[开发者文档](docs/development/architecture.md)。版本变化见[更新日志](docs/CHANGELOG.md)。
+
+## 项目缘起
+
+最近推完水晶社的新作，~~推完自动变成学姐的狗~~，已经变成学姐的形状了，夜里辗转反侧怎么都睡不着。便以学姐的名字 **Sakura** 命名这个项目，开发了这个桌宠 Agent 框架。
+
+## 贡献者
+
+欢迎参与 Sakura 的开发与改进，提交代码前请阅读[贡献指南](.github/CONTRIBUTING.md)。
+
+<a href="https://github.com/Rvosy/Sakura/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=Rvosy/Sakura" alt="Sakura 贡献者" />
+</a>
 
 ## 致谢与开源许可说明
 

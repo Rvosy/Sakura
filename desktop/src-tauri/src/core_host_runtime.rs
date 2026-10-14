@@ -86,9 +86,9 @@ pub(crate) fn lifecycle_test_lock() -> std::sync::MutexGuard<'static, ()> {
 }
 
 #[derive(Clone, Copy)]
-struct ShutdownPolicy {
-    graceful: Duration,
-    total: Duration,
+pub(crate) struct ShutdownPolicy {
+    pub(crate) graceful: Duration,
+    pub(crate) total: Duration,
 }
 
 pub(crate) const CORE_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(35);
@@ -1217,7 +1217,9 @@ impl ConcurrentRequestHandle {
                             })
                     })
                     .unwrap_or("REQUEST_REJECTED");
-                let cancelled = code == "CANCELLED" || code.ends_with("_CANCELLED");
+                let cancelled = code == "GENERATION_INVALIDATED"
+                    || code == "CANCELLED"
+                    || code.ends_with("_CANCELLED");
                 self.log_request(
                     if cancelled {
                         Severity::Info
@@ -1258,34 +1260,34 @@ impl ConcurrentRequestHandle {
                 None,
                 None,
             ),
-            Err(error) => self.log_request(
-                if error.contains("CANCEL") {
-                    Severity::Info
-                } else {
-                    Severity::Warning
-                },
-                if error.contains("CANCEL") {
-                    "ipc.request.cancelled"
-                } else {
-                    "ipc.request.failed"
-                },
-                if error.contains("CANCEL") {
-                    "Core IPC request was cancelled"
-                } else {
-                    "Core IPC request failed"
-                },
-                request_id,
-                name,
-                if error.contains("CANCEL") {
-                    "cancelled"
-                } else {
-                    "failed"
-                },
-                Some(stable_error_code(error)),
-                elapsed_ms,
-                Some(error),
-                None,
-            ),
+            Err(error) => {
+                let cancelled =
+                    error.contains("CANCEL") || error.starts_with("GENERATION_INVALIDATED:");
+                self.log_request(
+                    if cancelled {
+                        Severity::Info
+                    } else {
+                        Severity::Warning
+                    },
+                    if cancelled {
+                        "ipc.request.cancelled"
+                    } else {
+                        "ipc.request.failed"
+                    },
+                    if cancelled {
+                        "Core IPC request was cancelled"
+                    } else {
+                        "Core IPC request failed"
+                    },
+                    request_id,
+                    name,
+                    if cancelled { "cancelled" } else { "failed" },
+                    Some(stable_error_code(error)),
+                    elapsed_ms,
+                    Some(error),
+                    None,
+                )
+            }
         }
     }
 
@@ -1956,7 +1958,7 @@ impl CoreHostRuntime {
     }
 
     #[cfg(test)]
-    fn shutdown_with_policy(
+    pub(crate) fn shutdown_with_policy(
         self,
         policy: ShutdownPolicy,
     ) -> Result<CoreHostExit, CoreHostLifecycleFailure> {
@@ -4487,6 +4489,16 @@ mod tests {
                 .iter()
                 .all(|record| record.event_code == "ipc.request.cancelled"
                     && record.severity == "info"));
+            handle.log_request_result(
+                "restart-asr",
+                "asr.settings.get",
+                &Err("GENERATION_INVALIDATED: Core generation is stopping".into()),
+                0,
+            );
+            let records = log.viewer_snapshot(None).unwrap().records;
+            let cancelled = records.last().unwrap();
+            assert_eq!(cancelled.event_code, "ipc.request.cancelled");
+            assert_eq!(cancelled.severity, "info");
             handle.log_request_result(
                 "character-import-original-error",
                 "settings.character.import",

@@ -1,4 +1,5 @@
 import { errorText } from "../core/error-display.js";
+import { isRuntimeCancellation } from "../core/runtime-diagnostics.js";
 
 export function createAsrSettingsController({ document, invoke, enhanceSelect = () => {},
   refreshSelect = () => {}, onDirty = () => {}, onStatus = () => {},
@@ -65,8 +66,9 @@ export function createAsrSettingsController({ document, invoke, enhanceSelect = 
       refreshSelect(provider);
       renderStatus(); onDirty();
     } catch (error) {
+      if (isRuntimeCancellation(error)) return;
       if (!disposed && request === revision) {
-        status.textContent = "语音输入设置暂不可用，请重新打开插件设置。";
+        status.textContent = errorText(error);
         status.hidden = false;
       }
     }

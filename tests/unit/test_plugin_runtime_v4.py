@@ -207,9 +207,10 @@ class Plugin:
                 worker.join(3)
 
 
-def test_tts_shutdown_can_finish_when_provider_cancel_is_blocked(tmp_path: Path) -> None:
+def test_tts_shutdown_can_finish_when_provider_cancel_is_blocked(tmp_path: Path, monkeypatch) -> None:
     from app.core_host.tts_boundary import TTSBoundary, _PluginSynthesisHandle
 
+    monkeypatch.setattr("app.core_host.tts_boundary.CLOSE_TIMEOUT_SECONDS", 0.1)
     roots = _roots(tmp_path)
     _plugin_source(roots.distribution_root / "plugins/builtin", "fixture.tts", "sakura.tts", body='''
 class Plugin:

@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 
 import pytest
+import yaml
 
 from app.plugins import bundled_migrations as migration
 from app.plugins.bundled_migrations import PAYLOAD_PATH, migrate_bundled_plugins
@@ -34,6 +35,7 @@ def roots_for(tmp_path, *, old=True):
     roots = RuntimeRoots(tmp_path / "distribution", tmp_path / "user")
     shutil.copytree(SOURCE, roots.distribution_root / "plugins/builtin" / PLUGIN)
     shutil.copytree(SOURCE, roots.distribution_root / PAYLOAD_PATH / "plugins" / PLUGIN)
+    (roots.distribution_root / PAYLOAD_PATH / "revision.txt").write_text("test-bundle", encoding="utf-8")
     shutil.copyfile(SOURCE.parents[2] / "VERSION", roots.distribution_root / "VERSION")
     if old:
         (roots.user_root / "config").mkdir(parents=True)
@@ -120,7 +122,9 @@ def test_broken_existing_external_copy_is_repaired_by_id_regardless_of_version(t
     other = roots.user_root / "plugins/user/custom-mobile-name"
     shutil.copytree(SOURCE, other)
     manifest = other / "plugin.yaml"
-    manifest.write_text(manifest.read_text(encoding="utf-8").replace("version: 1.0.0", "version: 9.0.0"), encoding="utf-8")
+    descriptor = yaml.safe_load(manifest.read_text(encoding="utf-8"))
+    descriptor["version"] = "9.0.0"
+    manifest.write_text(yaml.safe_dump(descriptor, allow_unicode=True), encoding="utf-8")
     (other / "plugin.py").write_text("# user's external version")
     PluginDesiredStateStore(roots.user_root).set(PLUGIN, False)
     for _ in range(2):
@@ -410,14 +414,17 @@ def test_broken_user_plugin_is_repaired_regardless_of_version(tmp_path, state, d
     roots = roots_for(tmp_path)
     shutil.copytree(SOURCE, installed(roots))
     manifest = installed(roots) / "plugin.yaml"
-    manifest.write_text(manifest.read_text(encoding="utf-8").replace("version: 1.0.0", "version: 9.0.0"), encoding="utf-8")
+    descriptor = yaml.safe_load(manifest.read_text(encoding="utf-8"))
+    payload_version = descriptor["version"]
+    descriptor["version"] = "9.0.0"
     if damage == "entry_missing":
         (installed(roots) / "plugin.py").unlink()
     else:
-        manifest.write_text(manifest.read_text(encoding="utf-8") + "\nrequires: [sakura.host.model_slots]\n", encoding="utf-8")
+        descriptor["requires"] = ["sakura.host.model_slots"]
+    manifest.write_text(yaml.safe_dump(descriptor, allow_unicode=True), encoding="utf-8")
     marker(roots).write_text(json.dumps({PLUGIN: state}))
     assert migrate_bundled_plugins(roots) == {}
-    assert "version: 1.0.0" in manifest.read_text()
+    assert yaml.safe_load(manifest.read_text(encoding="utf-8"))["version"] == payload_version
     assert (installed(roots) / "plugin.py").exists()
 
 

@@ -37,7 +37,7 @@ test("autostart snapshot is strict and generation-scoped", () => {
 test("autostart platform errors retain the original OS reason", () => {
   assert.equal(
     autostartErrorMessage("AUTOSTART_SETTINGS_UPDATE_FAILED: Access denied (os error 5)"),
-    "AUTOSTART_SETTINGS_UPDATE_FAILED: Access denied (os error 5)",
+    "Access denied (os error 5)",
   );
 });
 
