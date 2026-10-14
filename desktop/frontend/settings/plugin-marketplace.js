@@ -298,11 +298,16 @@ export function createPluginMarketplace({ document, host, notify, showError = ({
     render(); refreshDetail();
   }
   function clearFilters() { category = "全部"; $("search").value = ""; $("compatible").checked = true; $("hide-installed").checked = false; $("sort").value = "default"; render(); }
+  function refreshVisibleMarket() {
+    if (disposed || !source || view !== "market" || !page.classList.contains("is-active") || document.hidden
+      || refreshing || ["loading", "restoring"].includes(catalogState)) return;
+    void loader.load();
+  }
   function setView(nextView, { load = true } = {}) {
     if (disposed) return;
     closeFilters(); closeSelects(); view = nextView;
     render(); $("content").scrollTop = 0;
-    if (load && view === "market" && catalogState === "unconfigured" && source) void loader.load();
+    if (load) refreshVisibleMarket();
   }
   function handleClick(event) {
     const link = event.target.closest("[data-document-link]");
@@ -388,12 +393,17 @@ export function createPluginMarketplace({ document, host, notify, showError = ({
   });
   listen(filterPanel, "toggle", () => $("market-filter").setAttribute("aria-expanded", String(filterPanel.matches(":popover-open"))));
   listen(document.defaultView, "resize", closeFilters);
+  listen(document.defaultView, "focus", refreshVisibleMarket);
+  listen(document, "visibilitychange", refreshVisibleMarket);
   enhanceSelect($("sort")); render();
   return {
     setView,
     refresh: () => loader.load(),
     sync() { if (!disposed) { render(); refreshDetail(); } },
-    onPageChanged(pageName) { if (pageName !== "plugins") { closeFilters(); closeSelects($("market-surface")); $("detail-dialog").close(); submitDialog.close(); } },
+    onPageChanged(pageName) {
+      if (pageName === "plugins") refreshVisibleMarket();
+      else { closeFilters(); closeSelects($("market-surface")); $("detail-dialog").close(); submitDialog.close(); }
+    },
     dispose() {
       disposed = true; loader.dispose();
       for (const task of tasks.values()) task.abort.abort();
