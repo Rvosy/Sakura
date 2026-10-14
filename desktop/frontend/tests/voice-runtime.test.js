@@ -393,3 +393,44 @@ for (const installed of [false, true]) {
     controller.dispose();
   });
 }
+
+for (const staleFailure of [false, true]) {
+  test(`character switch ignores an older voice ${staleFailure ? "failure" : "snapshot"}`, async () => {
+    const { controls, document } = fixture();
+    const requests = [], statuses = [], saves = [];
+    const beta = snapshot({ character: { characterId: "beta", displayName: "Beta" } });
+    const controller = createVoiceController({ document, onStatus: (...args) => statuses.push(args),
+      invoke(command, args) {
+        if (command === "settings_voice_save") { saves.push(args.draft); return Promise.resolve({}); }
+        if (saves.length) return Promise.resolve(beta);
+        return new Promise((resolve, reject) => requests.push({ resolve, reject }));
+      },
+    });
+    const old = controller.refreshCurrent(), current = controller.refreshCurrent();
+    requests[1].resolve(beta); await current;
+    if (staleFailure) requests[0].reject(new Error("old character unavailable"));
+    else requests[0].resolve(snapshot());
+    await old;
+    assert.equal(controller.isDirty(), false);
+    assert.equal(controls.voiceUnavailable.hidden, true);
+    assert.deepEqual(statuses, []);
+    controls.ttsEnabled.checked = false;
+    assert.equal(controller.isDirty(), true);
+    await controller.save();
+    assert.equal(saves[0].characterId, "beta");
+  });
+}
+
+test("unavailable hub invalidates an in-flight voice response", async () => {
+  const { controls, document } = fixture();
+  let finish, plugins = [hub()];
+  const controller = createVoiceController({ document, getPlugins: () => plugins,
+    invoke: () => new Promise(resolve => { finish = resolve; }),
+  });
+  const pending = controller.refreshCurrent();
+  plugins = [hub({ enabled: false })];
+  await controller.refreshCurrent();
+  finish(snapshot()); await pending;
+  assert.equal(controls["page-voice"].dataset.voiceState, "disabled");
+  assert.equal(controller.isDirty(), false);
+});

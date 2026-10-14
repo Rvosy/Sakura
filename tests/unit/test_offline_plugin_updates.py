@@ -43,6 +43,7 @@ def installation(tmp_path, monkeypatch):
     payload = roots.distribution_root / updates.PAYLOAD_PATH
     new_code = payload / "plugins/test"
     shutil.copytree(code, new_code)
+    (payload / "revision.txt").write_text("bundle-one")
     manifest.update(version="0.2.0", enabled=False, min_app_version="1.3.2")
     (new_code / "plugin.yaml").write_text(yaml.safe_dump(manifest))
     (new_code / "plugin.py").write_text("class Plugin: upgraded = True\n")
@@ -271,9 +272,14 @@ def test_locked_committed_backup_does_not_block_startup_or_next_update(installat
     assert json.loads((_transaction(code) / "transaction.json").read_text())["committed"]
     assert updates.recover_installed_plugins(roots) == {}
     (replacement / "plugin.py").write_text("class Plugin: upgraded_again = True\n")
+    (roots.distribution_root / updates.PAYLOAD_PATH / "revision.txt").write_text("bundle-two")
     assert updates.update_installed_plugins(roots) == {}
     assert _files(code) == _files(replacement)
     assert (dependencies / "new.txt").exists()
+    def no_publish(*args, **kwargs):
+        pytest.fail("old cleanup journals must not replace the latest receipt")
+    monkeypatch.setattr(updates, "_publish", no_publish)
+    assert updates.update_installed_plugins(roots) == {}
 
 
 def test_failed_recovery_isolates_plugin_without_aborting_core(installation, monkeypatch):
@@ -320,6 +326,7 @@ def test_real_historical_release_sources_are_replaced(tmp_path, monkeypatch, dir
     monkeypatch.setattr(updates, "SOURCES", {plugin_id: {"directory": directory}})
     replacement = roots.distribution_root / updates.PAYLOAD_PATH / "plugins" / directory
     shutil.copytree(repo / "plugins/optional" / directory, replacement)
+    (roots.distribution_root / updates.PAYLOAD_PATH / "revision.txt").write_text("bundle-one")
     dependency_source = roots.distribution_root / updates.PAYLOAD_PATH / "dependencies" / plugin_id
     dependency_source.mkdir(parents=True)
     (dependency_source / "new.txt").write_text("staged dependencies")
@@ -367,3 +374,56 @@ def test_rollback_cleanup_journal_cannot_erase_a_later_update(installation, monk
     assert updates.recover_installed_plugins(roots) == {}
     assert _files(code) == _files(replacement)
     assert (dependencies / "new.txt").exists()
+
+
+@pytest.mark.parametrize("preinstalled", [True, False])
+def test_same_bundle_does_not_republish_or_undo_market_install(installation, monkeypatch, tmp_path, preinstalled):
+    from app.plugins.installer import LocalPluginInstaller
+
+    roots, code, dependencies, replacement = installation
+    if not preinstalled:
+        shutil.rmtree(code)
+        shutil.rmtree(dependencies)
+    assert updates.update_installed_plugins(roots) == {}
+    package = tmp_path / "market-plugin"
+    shutil.copytree(replacement, package)
+    (package / "requirements.txt").unlink()
+    manifest = yaml.safe_load((package / "plugin.yaml").read_text())
+    manifest["version"] = "9.0.0"
+    (package / "plugin.yaml").write_text(yaml.safe_dump(manifest))
+    (package / "plugin.py").write_text("class Plugin: market = True\n")
+    installer = LocalPluginInstaller(roots)
+    pending = installer.begin_uninstall(PluginInventory(roots).scan().records[0].install_id) if preinstalled else None
+    installer.install(package, "folder")
+    if pending is not None:
+        installer.commit_uninstall(pending)
+    installed = PluginInventory(roots).scan().records[0]
+    assert installed.version == "9.0.0"
+    def no_publish(*args, **kwargs):
+        pytest.fail("ordinary restart must preserve a marketplace installation")
+    with monkeypatch.context() as patch:
+        patch.setattr(updates, "_publish", no_publish)
+        patch.setattr(updates.shutil, "copytree", no_publish)
+        assert updates.update_installed_plugins(roots) == {}
+    assert PluginInventory(roots).scan().records[0].version == "9.0.0"
+    (roots.distribution_root / updates.PAYLOAD_PATH / "revision.txt").write_text("bundle-two")
+    assert updates.update_installed_plugins(roots) == {}
+    assert PluginInventory(roots).scan().records[0].version == "0.2.0"
+
+
+def test_committed_update_recovers_receipt_before_skipping_republication(installation, monkeypatch):
+    roots, code, _, _ = installation
+    write = updates.atomic_write_text
+    def crash_before_receipt(path, content):
+        if path.parent.name == "plugin-updates":
+            raise SystemExit("power loss after publication")
+        return write(path, content)
+    with monkeypatch.context() as patch:
+        patch.setattr(updates, "atomic_write_text", crash_before_receipt)
+        with pytest.raises(SystemExit):
+            updates.update_installed_plugins(roots)
+    def no_publish(*args, **kwargs):
+        pytest.fail("committed publication must not run twice")
+    monkeypatch.setattr(updates, "_publish", no_publish)
+    assert updates.update_installed_plugins(roots) == {}
+    assert not list(code.parent.glob(".update-*"))

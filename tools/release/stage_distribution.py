@@ -12,6 +12,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import uuid
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -164,6 +165,7 @@ def stage_migration_plugins(repo: Path, stage: Path) -> None:
             repo / "plugins/optional" / directory_name,
             stage / MIGRATION_PAYLOAD / "plugins" / directory_name,
         )
+    (stage / MIGRATION_PAYLOAD / "revision.txt").write_text(uuid.uuid4().hex, encoding="utf-8")
 
 
 def stage_bundled_dependencies(stage: Path, target: str) -> None:

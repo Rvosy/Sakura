@@ -32,7 +32,7 @@ def _clear_transaction(transaction: Path) -> None:
     transaction.rmdir()
 
 
-def _recover(transaction: Path, code: Path, dependencies: Path, state: dict) -> None:
+def _recover(transaction: Path, code: Path, dependencies: Path, state: dict, receipt: Path) -> None:
     """Roll back interrupted publication before inventory or plugin imports."""
     if not state["committed"]:
         for name, target in (("code", code), ("dependencies", dependencies)):
@@ -46,6 +46,10 @@ def _recover(transaction: Path, code: Path, dependencies: Path, state: dict) -> 
         # Rollback is also a completed publication. A leftover cleanup journal
         # must never roll back a later successful update on the next startup.
         state = {**state, "committed": True}
+        state.pop("revision", None)
+        atomic_write_text(transaction / "transaction.json", json.dumps(state))
+    if "revision" in state:
+        atomic_write_text(receipt, state.pop("revision"))
         atomic_write_text(transaction / "transaction.json", json.dumps(state))
     try:
         _clear_transaction(transaction)
@@ -80,7 +84,7 @@ def recover_installed_plugins(roots: RuntimeRoots) -> dict[str, dict]:
             dependencies = paths.plugin_dependency_root_for(plugin_id)
             if code.is_symlink() or dependencies.is_symlink():
                 raise ValueError("PLUGIN_UPDATE_STATE_INVALID")
-            _recover(transaction, code, dependencies, state)
+            _recover(transaction, code, dependencies, state, paths.config_dir / "plugin-updates" / plugin_id)
         except Exception as error:
             log_event("Plugin", "插件离线更新恢复失败", diagnostic_attributes(
                 error, reason_code="PLUGIN_UPDATE_RECOVERY_FAILED", stage="offline_update_recovery"),
@@ -93,8 +97,8 @@ def recover_installed_plugins(roots: RuntimeRoots) -> dict[str, dict]:
     return failures
 
 
-def _publish(transaction: Path, code: Path, dependencies: Path, plugin_id: str) -> None:
-    state = {"pluginId": plugin_id, "directory": code.name, "committed": False,
+def _publish(transaction: Path, code: Path, dependencies: Path, plugin_id: str, revision: str, receipt: Path) -> None:
+    state = {"pluginId": plugin_id, "directory": code.name, "committed": False, "revision": revision,
              "existed": {"code": code.exists(), "dependencies": dependencies.exists()}}
     journal = transaction / "transaction.json"
     atomic_write_text(journal, json.dumps(state))
@@ -110,12 +114,12 @@ def _publish(transaction: Path, code: Path, dependencies: Path, plugin_id: str) 
         atomic_write_text(journal, json.dumps(state))
     except Exception:
         try:
-            _recover(transaction, code, dependencies, {**state, "committed": False})
+            _recover(transaction, code, dependencies, {**state, "committed": False}, receipt)
         except Exception as error:
             error.plugin_update_recovery_failed = True
             raise
         raise
-    _recover(transaction, code, dependencies, state)
+    _recover(transaction, code, dependencies, state, receipt)
 
 
 def update_installed_plugins(roots: RuntimeRoots, *, progress=None, recovery_failures=None) -> dict[str, dict]:
@@ -135,9 +139,16 @@ def update_installed_plugins(roots: RuntimeRoots, *, progress=None, recovery_fai
         details = {"stage": "offline_update", "pluginId": plugin_id}
         transaction = None
         try:
+            revision = (payload / "revision.txt").read_text(encoding="utf-8")
+            receipt = paths.config_dir / "plugin-updates" / plugin_id
+            if receipt.is_file() and receipt.read_text(encoding="utf-8") == revision:
+                continue
             records = [record for record in installed_records
                        if record.plugin_id == plugin_id and record.source == "user"]
             if not records:
+                # Later marketplace installs belong to the user; this bundle
+                # has already finished processing the absent plugin.
+                atomic_write_text(receipt, revision)
                 continue
             if len(records) != 1 or records[0].reason_code == "PLUGIN_ID_CONFLICT":
                 raise ValueError("PLUGIN_ID_CONFLICT")
@@ -161,7 +172,7 @@ def update_installed_plugins(roots: RuntimeRoots, *, progress=None, recovery_fai
                 shutil.copytree(dependency_source, transaction / "new-dependencies")
             if raw.get("enabled", True) != installed.desired_enabled:
                 PluginDesiredStateStore(roots.user_root).set(plugin_id, installed.desired_enabled)
-            _publish(transaction, target, dependency_target, plugin_id)
+            _publish(transaction, target, dependency_target, plugin_id, revision, receipt)
             log_event("Plugin", "已离线更新插件", details, event="plugin.update.completed", plugin_id=plugin_id)
             if progress is not None:
                 progress({"state": "completed", "completed": 1, "total": 1, "pluginId": plugin_id})

@@ -557,7 +557,6 @@ class _Coordinator:
             self._resolver = GptSovitsEndpointResolver(
                 settings,
                 base_dir=base_dir,
-                resource_manager=None,
                 is_closed=self._operation_cancelled,
                 diagnostic=self._report_runtime_lifecycle,
             )
@@ -621,7 +620,6 @@ class _Coordinator:
             terminate_process_tree(process, timeout=0.2)
         if runtime is not None:
             runtime._server_process = None
-            runtime._process_resource = None
         # A plugin is not allowed to report a completed disable while its
         # coordinator can still mutate files. The Core-owned lifecycle
         # deadline remains the final escape hatch: a truly stuck coordinator
