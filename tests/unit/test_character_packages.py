@@ -7,8 +7,28 @@ from pathlib import Path
 
 import pytest
 
-from app.config.character_loader import CharacterRegistry, THEME_SOURCE_PACKAGE
+from app.config.character_loader import CharacterConfigError, CharacterRegistry, THEME_SOURCE_PACKAGE, load_system_prompt
 from app.config.character_packages import ensure_legacy_voice_extensions, repair_character_packages
+
+
+def test_binary_character_card_reports_its_path_and_preserves_decode_error(tmp_path: Path) -> None:
+    card = tmp_path / "角色卡.png"
+    card.write_bytes(b"\x89PNG\r\n\x1a\n")
+    with pytest.raises(CharacterConfigError) as caught:
+        load_system_prompt(card)
+    assert str(card) in str(caught.value)
+    assert isinstance(caught.value.__cause__, UnicodeDecodeError)
+    card.write_text("角色设定", encoding="utf-8")
+    assert "角色设定" in load_system_prompt(card)
+
+
+def test_invalid_manifest_encoding_does_not_hide_other_characters(tmp_path: Path) -> None:
+    _write_package(tmp_path, "valid", "valid")
+    broken = _write_package(tmp_path, "broken", "broken") / "character.json"
+    broken.write_bytes(b"\x89PNG")
+    registry = CharacterRegistry(tmp_path, issue_sink=lambda *_: None)
+    assert [profile.id for profile in registry.all()] == ["valid"]
+    assert registry.load_errors[0].manifest_path == broken
 
 
 def test_registry_accepts_legacy_theme_source_without_rewriting_package(tmp_path: Path) -> None:

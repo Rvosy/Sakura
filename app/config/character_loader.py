@@ -143,6 +143,10 @@ def load_system_prompt(path: Path) -> str:
 
     try:
         content = path.read_text(encoding="utf-8").strip()
+    except UnicodeError as error:
+        raise CharacterConfigError(
+            f"角色卡不是 UTF-8 文本：{path}。请将角色卡保存为 UTF-8 文本，并检查角色清单中的 card 路径。"
+        ) from error
     except OSError as error:
         raise CharacterConfigError(f"角色卡无法读取：{path}") from error
 
@@ -160,7 +164,7 @@ def _load_profile(manifest_path: Path) -> CharacterProfile:
     package_dir = manifest_path.parent
     try:
         raw_data = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise CharacterConfigError(f"角色清单无法读取：{manifest_path}") from exc
     if not isinstance(raw_data, dict):
         raise CharacterConfigError(f"角色清单必须是 JSON 对象：{manifest_path}")

@@ -33,7 +33,7 @@ import { createBubbleScroll } from "./pet/bubble-scroll.js";
 import { createControlSurfaceTransactions } from "./pet/control-surface-transactions.js";
 import {
   loadCurrentCharacterPresentation,
-  validateCharacterPresentation,
+  normalizeCharacterPresentation,
 } from "./pet/character-presentation.js";
 import { isNewCharacterGeneration, rebindCharacterPresentation } from "./pet/character-generation.js";
 import { PetContextMenu } from "./pet/context_menu.js";
@@ -180,22 +180,8 @@ let surfaceVisibilityCommitQueue = Promise.resolve();
 chatBubble.dataset.surfaceVisible = "true";
 composer.dataset.surfaceVisible = "true";
 
-async function initialSessionBlocker() {
-  for (let attempt = 0; attempt < 80; attempt += 1) {
-    try {
-      const publication = await invoke("runtime_lifecycle_snapshot");
-      const readiness = publication?.snapshot?.readiness;
-      if (["ready", "degraded"].includes(readiness)) return false;
-      if (["setup_required", "failed"].includes(readiness)) return true;
-    } catch {
-      // Core startup can briefly publish without a complete Snapshot.
-    }
-    await new Promise((resolve) => window.setTimeout(resolve, 50));
-  }
-  return false;
-}
-
-const sessionBlockedAtStartup = await initialSessionBlocker();
+const presentationLoad = new AbortController();
+window.addEventListener("beforeunload", () => presentationLoad.abort(), { once: true });
 const composerActionIndicator = createComposerActionIndicator({ button: send });
 
 let lastInputVisualEffectFallback = "";
@@ -408,13 +394,15 @@ let characterPresentation;
 try {
   characterPresentation = await loadCurrentCharacterPresentation({
     invoke,
-    attempts: sessionBlockedAtStartup ? 1 : 160,
+    signal: presentationLoad.signal,
   });
 } catch (error) {
-  if (!sessionBlockedAtStartup) runtimeDiagnostics.reportError(error, { command: "visual_startup", code: "VISUAL_STARTUP_FAILED" });
+  runtimeDiagnostics.reportError(error, { command: "visual_startup", code: "VISUAL_STARTUP_FAILED" });
+  showRecoverableError("角色加载失败，请重启 Sakura 后再试。");
+}
+if (!characterPresentation) {
   presentationUnavailable = true;
-  if (!sessionBlockedAtStartup) showRecoverableError("角色加载失败，请重启 Sakura 后再试。");
-  characterPresentation = validateCharacterPresentation({
+  characterPresentation = normalizeCharacterPresentation({
     generationId: "unavailable",
     characterId: "unavailable",
     displayName: "当前角色",
@@ -1658,15 +1646,19 @@ await listenAppEvent("sakura://subtitle-language-changed", (event) => {
 
 let coreRebindRevision = 0;
 let coreRebindTarget = "";
+let coreRebindLoad = null;
 
 async function rebindCoreGeneration(generationId, { refresh = false } = {}) {
   if (!refresh && !presentationUnavailable && generationId === characterPresentation.generationId
     && (!characterPresentation.visual || rendererHost.current()?.bindingId === characterPresentation.visual.bindingId)) return true;
   if (disposed || !generationId || coreRebindTarget === generationId) return false;
+  coreRebindLoad?.abort();
+  const load = new AbortController();
+  coreRebindLoad = load;
   const revision = ++coreRebindRevision;
   coreRebindTarget = generationId;
   try {
-    const next = await loadCurrentCharacterPresentation({ invoke, expectedGenerationId: generationId });
+    const next = await loadCurrentCharacterPresentation({ invoke, expectedGenerationId: generationId, signal: load.signal });
     if (!next || disposed || revision !== coreRebindRevision) return false;
     if (next.generationId === characterPresentation.generationId && next.characterId === characterPresentation.characterId
       && next.visual?.bindingId === characterPresentation.visual?.bindingId && next.visualReasonCode === characterPresentation.visualReasonCode
@@ -1709,7 +1701,12 @@ async function rebindCoreGeneration(generationId, { refresh = false } = {}) {
     }
     return false;
   }
-  finally { if (revision === coreRebindRevision) coreRebindTarget = ""; }
+  finally {
+    if (revision === coreRebindRevision) {
+      coreRebindTarget = "";
+      coreRebindLoad = null;
+    }
+  }
 }
 
 await listenAppEvent("sakura://character-visual-preview", async (event) => {
@@ -1717,7 +1714,7 @@ await listenAppEvent("sakura://character-visual-preview", async (event) => {
     const publication = event?.payload;
     const token = characterVisualPreviewSessions.begin(publication);
     if (!token) return;
-    const next = validateCharacterPresentation(publication.presentation);
+    const next = normalizeCharacterPresentation(publication.presentation);
     const appearance = validateAppearancePublication(publication.appearance, next);
     if (next.generationId !== token.coreGenerationId) return;
     if (next.characterId === characterPresentation.characterId) {
@@ -2180,6 +2177,8 @@ document.addEventListener("visibilitychange", () => {
 function dispose() {
   if (disposed) return;
   disposed = true;
+  presentationLoad.abort();
+  coreRebindLoad?.abort();
   asrController?.dispose();
   asrAvailability.dispose();
   waveform.stop();
