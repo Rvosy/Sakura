@@ -202,7 +202,7 @@ def run():
             reinstall.click()
             failure = page.locator('.sakura-error-dialog')
             expect(failure).to_be_visible()
-            expect(failure.locator('pre')).to_contain_text('PLUGIN_DOWNLOAD_FAILED')
+            expect(failure.locator('pre')).to_contain_text('archive download failed')
             expect(failure.locator('pre')).to_contain_text('tcp connect error 10061')
             expect(dialog.locator('.task-error')).not_to_contain_text('10061')
             failure.get_by_role('button', name='关闭', exact=True).click()
