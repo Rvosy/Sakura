@@ -5191,7 +5191,10 @@ mod tests {
         let shutdown_written_at = Arc::new(Mutex::new(None));
         host.observe_shutdown_write_for_test(Arc::clone(&shutdown_written_at));
         let failure = host
-            .shutdown()
+            .shutdown_with_policy(ShutdownPolicy {
+                graceful: Duration::from_millis(100),
+                total: Duration::from_secs(5),
+            })
             .expect_err("ignored shutdown must preserve its protocol timeout diagnostic");
         let elapsed = shutdown_written_at
             .lock()
