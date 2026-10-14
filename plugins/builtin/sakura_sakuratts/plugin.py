@@ -14,11 +14,13 @@ try:
     from ._runtime import Runtime, probe
     from ._updates import UpdateAnnouncement
     from ._diagnostics import operation
+    from ._storage import runtime_directory
 except ImportError:
     from _bundle import BundleStore, Cancelled
     from _runtime import Runtime, probe
     from _updates import UpdateAnnouncement
     from _diagnostics import operation
+    from _storage import runtime_directory
 
 PROVIDER_ID = 'sakura.tts.sakuratts'
 SERVICE_KEY = 'sakura.tts.provider.sakuratts'
@@ -86,7 +88,10 @@ class Provider:
         self.hub = context.get('sakura.tts')
         self.logger = context.get('sakura.host.logging')
         self.directory = Path(context.data_path('.'))
-        self.runtime = Runtime(self.directory / 'runtime-data', self.log)
+        storage = context.get('sakura.host.storage').resolve('tts', 'sakura')
+        runtime_path = runtime_directory(self.directory, storage / 'runtime-data',
+            lambda level, message, **fields: getattr(self.logger, level)(message, fields=fields))
+        self.runtime = Runtime(runtime_path, self.log)
         self.config = configuration(context.config.get())
         self.executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix='sakuratts')
         self.lock = threading.RLock()
@@ -96,7 +101,8 @@ class Provider:
         self.wake = None
         self.error = ''
         self.bundle = None
-        self.bundle = BundleStore(self.directory / 'bundles', probe, self.publish, self.log)
+        self.bundle = BundleStore(self.directory / 'bundles', probe, self.publish, self.log,
+                                  default_storage=storage)
 
     def log(self, level, message, **fields):
         bundle = self.bundle.current() if self.bundle is not None else None

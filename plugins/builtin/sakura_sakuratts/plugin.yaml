@@ -11,6 +11,7 @@ provides:
   - sakura.tts.provider.sakuratts
 requires:
   - sakura.host.logging
+  - sakura.host.storage
   - sakura.tts
   - sakura.host.artifacts
   - sakura.host.character

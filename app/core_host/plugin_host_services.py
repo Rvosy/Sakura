@@ -585,6 +585,8 @@ class _StorageHostService:
             parent = self._data_root
         elif scope == "cache":
             parent = self._data_root / "cache"
+        elif scope == "tts":
+            parent = self._data_root.parent / "tts"
         else:
             raise HostServiceError("STORAGE_DESCRIPTOR_INVALID")
         path = (parent / name).resolve(strict=False)
