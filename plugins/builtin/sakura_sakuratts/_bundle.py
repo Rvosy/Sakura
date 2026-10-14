@@ -10,12 +10,12 @@ import shutil
 import stat
 import subprocess
 import sys
+import tempfile
 
 from sakura_process import terminate_process_tree
 import tarfile
 import threading
 import time
-import uuid
 import zipfile
 from urllib.parse import quote
 from urllib.request import Request
@@ -24,6 +24,15 @@ from sakura_http import urlopen_direct_for_loopback as urlopen
 
 
 REPOSITORY_URL = 'https://modelscope.cn/models/SuzushimaArisu/SakuraTTS/resolve/master/'
+
+
+def filesystem_path(value):
+    path = Path(value).expanduser().absolute()
+    text = str(path)
+    if os.name != 'nt' or text.startswith('\\\\?\\'):
+        return path
+    # 迁移和解压必须能访问已存在的长路径，不依赖系统启用长路径选项。
+    return Path('\\\\?\\UNC\\' + text[2:] if text.startswith('\\\\') else '\\\\?\\' + text)
 
 
 def local_target():
@@ -130,7 +139,7 @@ def unpack(archive, destination, cancel):
                     if cancel.wait(.1):
                         raise Cancelled()
                 if process.returncode:
-                    raise ValueError(log.read_text(encoding='utf-8', errors='replace')[-4000:])
+                    raise ValueError(log.read_text(encoding='utf-8', errors='replace'))
                 check()
             finally:
                 terminate_process_tree(process, timeout=5)
@@ -160,7 +169,7 @@ def seven_zip_executable():
 
 
 def inspect_bundle(root):
-    root = Path(root).resolve()
+    root = filesystem_path(root).resolve()
     marker = root / 'runtime/portable.json'
     if not marker.is_file():
         candidates = [p for p in root.iterdir() if p.is_dir() and (p / 'runtime/portable.json').is_file()]
@@ -185,8 +194,9 @@ def inspect_bundle(root):
 
 class BundleStore:
     def __init__(self, directory, probe, publish, log=lambda *_args, **_fields: None):
-        self.directory = Path(directory)
+        self.directory = filesystem_path(directory)
         self.directory.mkdir(parents=True, exist_ok=True)
+        self.storage_directory = self.directory
         self.probe, self.publish = probe, publish
         self.log = log
         self.lock = threading.RLock()
@@ -225,12 +235,52 @@ class BundleStore:
         if not marker.exists():
             return None
         value = json.loads(marker.read_text(encoding='utf-8'))
-        root = (self.directory / value['directory']).resolve()
-        if not root.is_relative_to(self.directory.resolve()):
+        relocation = self.directory / 'relocation.json'
+        if relocation.exists():
+            pending = json.loads(relocation.read_text(encoding='utf-8'))
+            destination = self.directory / pending['destination']
+            if value == pending['current'] and destination.is_dir():
+                value = {**value, 'directory': pending['destination']}
+                self._write_record(value)
+            self._finish_relocation()
+        self.storage_directory = filesystem_path(value.get('storageDirectory', self.directory))
+        root = (self.storage_directory / value['directory']).resolve()
+        if not root.is_relative_to(self.storage_directory.resolve()):
             raise ValueError('运行环境目录无效。')
+        if self.storage_directory == self.directory and Path(value['directory']).parts[0] == 'versions':
+            root = self._shorten_current(root, value)
         current = inspect_bundle(root)
         self.release_id = value.get('releaseId')
         return current
+
+    def _write_record(self, value):
+        temporary = self.directory / 'current.json.tmp'
+        temporary.write_text(json.dumps(value), encoding='utf-8')
+        os.replace(temporary, self.directory / 'current.json')
+
+    def _shorten_current(self, root, record):
+        destination = Path(tempfile.mkdtemp(prefix='v-', dir=self.directory))
+        destination.rmdir()
+        relative = destination.relative_to(self.directory).as_posix()
+        relocation = self.directory / 'relocation.json'
+        temporary = relocation.with_suffix('.tmp')
+        temporary.write_text(json.dumps({'current': record, 'destination': relative}), encoding='utf-8')
+        os.replace(temporary, relocation)
+        self.log('info', '正在缩短 SakuraTTS 安装目录', event='tts.bundle.relocating',
+                 source=str(root), destination=str(destination))
+        # 同一存储目录内重命名，不复制模型，也不依赖旧引擎能够启动。
+        root.rename(destination)
+        self._write_record({**record, 'directory': relative})
+        self._finish_relocation()
+        self.log('info', 'SakuraTTS 安装目录已调整', event='tts.bundle.relocated',
+                 destination=str(destination))
+        return destination
+
+    def _finish_relocation(self):
+        try:
+            (self.directory / 'relocation.json').unlink()
+        except OSError as error:
+            self.log('warning', '安装目录迁移记录清理失败', diagnostic=str(error))
 
     def load(self):
         current = self.current()
@@ -240,6 +290,8 @@ class BundleStore:
         elif not self.available or not self.is_current(self.available):
             actions.append('downloadBundle')
         actions.extend(['checkUpdate', 'importBundle'])
+        if current:
+            actions.extend(['relocateBundle', 'reinstallBundle'])
         if self.state == 'running':
             actions = ['cancelImport']
         message = self.message
@@ -247,11 +299,11 @@ class BundleStore:
             downloaded_message = f"{self.downloaded[1]['releaseId']} 已下载，尚未安装"
             if downloaded_message != message:
                 message = '；'.join(filter(None, (message, downloaded_message)))
-        return {'bundlePath': '', 'bundle': {
+        return {'bundlePath': '', 'bundleDirectory': str(self.storage_directory), 'bundle': {
             'applicability': 'required', 'ready': current is not None,
             'subtitle': f"{current[1]['version']} · {current[1]['target']}" if current else '未安装',
-            'taskState': self.state, 'message': message[:240],
-            'detail': self.error[-240:], 'progress': self.progress,
+            'taskState': self.state, 'message': message,
+            'detail': self.error, 'progress': self.progress,
             'availableActionIds': actions,
         }}
 
@@ -309,21 +361,28 @@ class BundleStore:
 
     def download(self, values=None):
         with self.lock:
-            return self._start_task(self._download_and_install, '正在准备安装')
+            return self._start_task(self._download_and_install, '正在准备安装', False, self._destination(values))
 
-    def _download_and_install(self):
+    def reinstall(self, values=None):
+        return self._start_task(self._download_and_install, '正在准备重新安装', True, self._destination(values))
+
+    def _destination(self, values):
+        value = (values or {}).get('bundleDirectory')
+        return filesystem_path(value).resolve() if value else self.storage_directory
+
+    def _download_and_install(self, force=False, destination=None):
         package = self.available or online_package()
         if self.cancel_event.is_set():
             raise Cancelled()
         self.available = package
-        if self.is_current(package):
+        if self.is_current(package) and not force:
             self.state, self.message = 'succeeded', '已是最新版本'
             return
         if not self.downloaded or self.downloaded[1] != package:
             self._download(package)
         if self.cancel_event.is_set():
             raise Cancelled()
-        self._install(*self.downloaded)
+        self._install(*self.downloaded, destination=destination)
 
     def _download(self, package):
         downloads = self.directory / 'downloads'
@@ -338,8 +397,6 @@ class BundleStore:
                 if old in (archive, downloads / 'ready.json'):
                     raise
                 self.log('warning', '旧下载文件清理失败', diagnostic=str(error))
-        if shutil.disk_usage(self.directory).free < package['bytes'] + package['unpackedBytes']:
-            raise ValueError('磁盘空间不足以下载和解压整合包。')
         completed = False
         received = 0
         started = time.monotonic()
@@ -377,27 +434,76 @@ class BundleStore:
             if self.downloaded is None:
                 raise ValueError('请先下载整合包。')
             archive, package = self.downloaded
-            return self._start_task(self._install, '正在解压整合包', archive, package)
+            return self._start_task(self._install, '正在解压整合包', archive, package, self._destination(values))
 
     def start(self, values):
-        archive = Path(values.get('bundlePath', ''))
-        if not archive.is_absolute() or not archive.is_file():
-            raise ValueError('请选择本地整合包。')
-        return self._start_task(self._install, '正在解压整合包', archive)
+        archive = filesystem_path(values['bundlePath'])
+        return self._start_task(self._install, '正在解压整合包', archive, None, self._destination(values))
 
-    def _install(self, archive, package=None):
+    def relocate(self, values):
+        destination = filesystem_path(values['bundleDirectory']).resolve()
+        return self._start_task(self._relocate, '正在迁移运行环境', destination)
+
+    def _relocate(self, destination):
+        source, release = self.current()
+        if destination.is_relative_to(source):
+            raise ValueError('迁移目标不能放在正在迁移的整合包内部。')
+        destination.mkdir(parents=True, exist_ok=True)
+        storage = Path(tempfile.mkdtemp(prefix='sakura-tts-', dir=destination))
+        candidate = storage / 'v-1'
+        published = False
+        started_at = time.monotonic()
+        try:
+            self.log('info', '正在迁移 SakuraTTS 运行环境', event='tts.bundle.relocating',
+                     source=str(source), destination=str(candidate))
+
+            def copy_file(source_file, target_file):
+                if self.cancel_event.is_set():
+                    raise Cancelled()
+                with open(source_file, 'rb') as reader, open(target_file, 'wb') as writer:
+                    while chunk := reader.read(1024 * 1024):
+                        if self.cancel_event.is_set():
+                            raise Cancelled()
+                        writer.write(chunk)
+                shutil.copystat(source_file, target_file)
+                return target_file
+
+            # 复制期间旧服务仍可使用；检查与切换复用安装入口。
+            shutil.copytree(source, candidate, copy_function=copy_file, symlinks=True)
+            self.message = '正在检查迁移后的运行环境'
+            self.probe(candidate, release, self.cancel_event)
+            self.publish(lambda: self._activate(candidate, release, storage=storage, release_id=self.release_id))
+            published = True
+            self.state, self.message, self.error = 'succeeded', '', ''
+            self.log('info', 'SakuraTTS 运行环境已迁移', event='tts.bundle.relocated',
+                     destination=str(candidate), elapsed_ms=round((time.monotonic() - started_at) * 1000))
+        finally:
+            if not published:
+                try:
+                    shutil.rmtree(storage)
+                except OSError as error:
+                    self.log('warning', '迁移临时目录清理失败', diagnostic=str(error), directory=str(storage))
+
+    def _install(self, archive, package=None, destination=None):
         started_at = time.monotonic()
         self.message = '正在解压整合包'
         self.progress = None
-        candidate = self.directory / ('versions/' + uuid.uuid4().hex)
+        storage = self.storage_directory
+        if destination is not None and destination != storage:
+            destination.mkdir(parents=True, exist_ok=True)
+            storage = Path(tempfile.mkdtemp(prefix='sakura-tts-', dir=destination))
+        candidate = Path(tempfile.mkdtemp(prefix='v-', dir=storage))
         published = False
         try:
-            if package and shutil.disk_usage(self.directory).free < package['unpackedBytes']:
-                raise ValueError('磁盘空间不足以解压整合包。')
             self.log('info', '正在解压 SakuraTTS 整合包', event='tts.bundle.extracting')
-            candidate.mkdir(parents=True)
             unpack(archive, candidate, self.cancel_event)
             root, release = inspect_bundle(candidate)
+            if root != candidate:
+                flattened = Path(tempfile.mkdtemp(prefix='v-', dir=storage))
+                flattened.rmdir()
+                root.rename(flattened)
+                previous_candidate, candidate, root = candidate, flattened, flattened
+                shutil.rmtree(previous_candidate)
             if package and (release.get('source_commit') != package['sourceCommit'] or release.get('source_dirty', True)):
                 raise ValueError('整合包源码版本与下载索引不一致。')
             self.message = '正在检查运行环境'
@@ -406,7 +512,7 @@ class BundleStore:
             if self.cancel_event.is_set():
                 raise Cancelled()
             # publish serializes against synthesis and configuration changes.
-            self.publish(lambda: self._activate(root, release, package))
+            self.publish(lambda: self._activate(root, release, package, storage=storage))
             published = True
             self.state, self.message, self.error = 'succeeded', '', ''
             if package:
@@ -424,6 +530,8 @@ class BundleStore:
             if not published and candidate.exists():
                 try:
                     shutil.rmtree(candidate)
+                    if storage != self.storage_directory:
+                        storage.rmdir()
                 except OSError as error:
                     self.error += f'；临时目录清理失败：{error}'
                     self.state = 'failed'
@@ -436,22 +544,25 @@ class BundleStore:
                      **({'diagnostic': self.error} if self.state == 'failed' else {}))
 
 
-    def _activate(self, root, release, package=None):
+    def _activate(self, root, release, package=None, *, storage=None, release_id=None):
         if self.cancel_event.is_set():
             raise Cancelled()
         retained = [root]
         if self._current:
             retained.append(self._current[0])
-        temporary = self.directory / 'current.json.tmp'
-        release_id = package['releaseId'] if package else None
-        temporary.write_text(json.dumps({'directory': root.relative_to(self.directory).as_posix(),
-                                         'releaseId': release_id}), encoding='utf-8')
-        os.replace(temporary, self.directory / 'current.json')
+        storage = storage or self.storage_directory
+        release_id = package['releaseId'] if package else release_id
+        record = {'directory': root.relative_to(storage).as_posix(), 'releaseId': release_id}
+        if storage != self.directory:
+            record['storageDirectory'] = str(storage)
+        self._write_record(record)
+        self.storage_directory = storage
         self._current = root, release
         self.release_id = release_id
         self.installation_error = ''
         try:
-            for version in (self.directory / 'versions').iterdir():
+            versions = [*storage.glob('v-*'), *(storage / 'versions').glob('*')]
+            for version in versions:
                 if version.is_dir() and not any(path.is_relative_to(version) for path in retained):
                     shutil.rmtree(version)
         except OSError as error:

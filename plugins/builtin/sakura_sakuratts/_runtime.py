@@ -50,7 +50,7 @@ def probe(root, release, cancel, backend=None, cache=None):
                 if cancel.wait(.1):
                     raise Cancelled()
             if process.returncode:
-                raise RuntimeError(log.read_text(encoding='utf-8', errors='replace')[-4000:])
+                raise RuntimeError(log.read_text(encoding='utf-8', errors='replace'))
         finally:
             terminate_process_tree(process, timeout=5)
 

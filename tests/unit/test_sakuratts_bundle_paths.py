@@ -1,0 +1,218 @@
+import json
+import os
+from pathlib import Path
+import zipfile
+
+import pytest
+
+from plugins.builtin.sakura_sakuratts import _bundle
+
+
+@pytest.fixture
+def tmp_path(tmp_path):
+    return Path('\\\\?\\' + str(tmp_path)) if os.name == 'nt' else tmp_path
+
+
+@pytest.fixture(autouse=True)
+def local_platform(monkeypatch):
+    monkeypatch.setattr(_bundle, 'local_target', lambda: 'windows-x64')
+
+
+def write_bundle(root):
+    (root / 'runtime/main').mkdir(parents=True)
+    release = {'target': 'windows-x64', 'version': 'fixture', 'backend': 'cpu',
+               'python_executable': 'runtime/main/python.exe', 'source_commit': 'first', 'source_dirty': False}
+    (root / 'runtime/portable.json').write_text(json.dumps({
+        'format': 'sakuratts-portable-v1', 'has_preparation': True, 'release': release}), encoding='utf-8')
+    (root / 'runtime/main/python.exe').write_bytes(b'interpreter fixture')
+    (root / 'launcher.py').write_text('launcher fixture', encoding='utf-8')
+    module = root / 'runtime/main/Lib/site-packages/torch/ao/nn/intrinsic/quantized/dynamic/modules/linear_relu.py'
+    module.parent.mkdir(parents=True)
+    module.write_bytes(b'class LinearReLU: pass\n')
+    return release
+
+
+def legacy_install(tmp_path):
+    directory = tmp_path / 'Sakura Desktop Pet/data/plugins/sakura.tts.sakuratts/bundles'
+    root = directory / 'versions/54e64b773ac8450bafa984a82ce0ca29/SakuraTTS-windows-x64'
+    write_bundle(root)
+    record = {'directory': root.relative_to(directory).as_posix(), 'releaseId': 'preview-1'}
+    (directory / 'current.json').write_text(json.dumps(record), encoding='utf-8')
+    return directory, root, record
+
+
+def store_at(directory, probe=lambda *_: None, publish=lambda action: action()):
+    return _bundle.BundleStore(directory, probe, publish)
+
+
+def finish(store):
+    store.thread.join(5)
+    assert not store.thread.is_alive()
+
+
+def test_existing_install_moves_before_any_engine_check_and_preserves_data(tmp_path):
+    directory, old, record = legacy_install(tmp_path)
+    config = directory.parent / 'config.json'
+    config.write_bytes(b'{"backend":"cuda","idleSeconds":90}')
+    cache = directory.parent / 'runtime-data/cache/model.bin'
+    cache.parent.mkdir(parents=True)
+    cache.write_bytes(b'user model cache')
+    original = {path.relative_to(old): path.read_bytes() for path in old.rglob('*') if path.is_file()}
+    with_probe = lambda *_: pytest.fail('path migration must not start the old engine')
+    store = store_at(directory, with_probe)
+    root, _ = store.current()
+    assert len(str(root)) < len(str(old))
+    assert {path.relative_to(root): path.read_bytes() for path in root.rglob('*') if path.is_file()} == original
+    assert config.read_bytes() == b'{"backend":"cuda","idleSeconds":90}'
+    assert cache.read_bytes() == b'user model cache'
+    assert store.release_id == record['releaseId']
+    assert store_at(directory).current() == store.current()
+
+
+@pytest.mark.parametrize('interrupted_at', ['rename', 'pointer', 'cleanup'])
+def test_interrupted_automatic_migration_recovers_on_restart(tmp_path, monkeypatch, interrupted_at):
+    directory, old, record = legacy_install(tmp_path)
+    with monkeypatch.context() as patch:
+        if interrupted_at == 'rename':
+            rename = Path.rename
+            def fail_rename(path, destination):
+                if path == old:
+                    raise PermissionError('file busy')
+                return rename(path, destination)
+            patch.setattr(Path, 'rename', fail_rename)
+        elif interrupted_at == 'pointer':
+            patch.setattr(_bundle.BundleStore, '_write_record', lambda *_: (_ for _ in ()).throw(OSError('pointer write failed')))
+        else:
+            unlink = Path.unlink
+            def fail_cleanup(path, *args, **kwargs):
+                if path == directory / 'relocation.json':
+                    raise PermissionError('journal busy')
+                return unlink(path, *args, **kwargs)
+            patch.setattr(Path, 'unlink', fail_cleanup)
+        first = store_at(directory)
+        if interrupted_at == 'cleanup':
+            assert first.current() is not None
+        else:
+            assert first.installation_error
+    recovered = store_at(directory)
+    assert recovered.current() is not None, recovered.error
+    assert (recovered.current()[0] / 'launcher.py').read_text() == 'launcher fixture'
+    assert recovered.release_id == record['releaseId']
+    assert store_at(directory).current() == recovered.current()
+
+
+def test_old_relocation_journal_does_not_replace_a_later_install(tmp_path):
+    directory, old, record = legacy_install(tmp_path)
+    store = store_at(directory)
+    previous = store.current()[0]
+    newer = directory / 'v-newer'
+    release = write_bundle(newer)
+    store._activate(newer, release, release_id='preview-2')
+    (directory / 'relocation.json').write_text(json.dumps({
+        'current': record, 'destination': previous.relative_to(directory).as_posix()}), encoding='utf-8')
+    reopened = store_at(directory)
+    assert reopened.current()[0] == newer
+    assert reopened.release_id == 'preview-2'
+
+
+def test_new_archive_is_flattened_before_runtime_check(tmp_path):
+    root = tmp_path / 'SakuraTTS-windows-x64'
+    write_bundle(root)
+    archive = tmp_path / 'bundle.zip'
+    with zipfile.ZipFile(archive, 'w') as zipped:
+        for file in root.rglob('*'):
+            if file.is_file():
+                zipped.write(file, file.relative_to(tmp_path))
+    checked = []
+    store = store_at(tmp_path / 'bundles', lambda path, *_: checked.append(path))
+    store.start({'bundlePath': str(archive)})
+    finish(store)
+    assert store.state == 'succeeded', store.error
+    installed = store.current()[0]
+    assert checked == [installed]
+    assert installed.parent == store.directory
+    assert (installed / 'runtime/main/python.exe').read_bytes() == b'interpreter fixture'
+
+
+@pytest.mark.parametrize('outcome', ['success', 'check_failed', 'cancelled', 'pointer_failed'])
+def test_external_relocation_preserves_original_until_switch_and_reopens(tmp_path, outcome, monkeypatch):
+    directory, _, _ = legacy_install(tmp_path)
+    store = store_at(directory)
+    old = store.current()
+    old_record = (directory / 'current.json').read_bytes()
+    selected = tmp_path / 'tts'
+    selected.mkdir()
+    unrelated = selected / 'keep.txt'
+    unrelated.write_bytes(b'unrelated user file')
+    checked = []
+    def probe(root, *_):
+        checked.append(root)
+        assert old[0].is_dir()
+        assert store.current() == old
+        assert root.is_relative_to(selected)
+        if outcome == 'check_failed':
+            raise RuntimeError('missing torch module')
+        if outcome == 'cancelled':
+            store.cancel()
+    store.probe = probe
+    if outcome == 'pointer_failed':
+        monkeypatch.setattr(store, '_write_record', lambda *_: (_ for _ in ()).throw(OSError('cannot save current')))
+    store.relocate({'bundleDirectory': str(selected)})
+    finish(store)
+    assert unrelated.read_bytes() == b'unrelated user file'
+    assert old[0].is_dir()
+    if outcome == 'success':
+        assert store.state == 'succeeded', store.error
+        assert store.current()[0] == checked[0]
+        reopened = store_at(directory)
+        assert reopened.current() == store.current()
+        assert reopened.release_id == 'preview-1'
+        next_root = reopened.storage_directory / 'v-next'
+        release = write_bundle(next_root)
+        reopened._activate(next_root, release)
+        assert store_at(directory).current()[0] == next_root
+        assert old[0].is_dir()
+    else:
+        assert store.current() == old
+        assert (directory / 'current.json').read_bytes() == old_record
+        assert list(selected.iterdir()) == [unrelated]
+        if outcome == 'cancelled':
+            assert store.state == 'idle'
+        else:
+            assert store.error
+
+
+@pytest.mark.skipif(os.name == 'nt', reason='POSIX interpreter symlinks')
+def test_external_relocation_keeps_relative_interpreter_symlink(tmp_path):
+    directory, _, _ = legacy_install(tmp_path)
+    store = store_at(directory)
+    python = store.current()[0] / 'runtime/main/python.exe'
+    python.rename(python.with_name('python-real'))
+    python.symlink_to('python-real')
+    store.relocate({'bundleDirectory': str(tmp_path / 'tts')})
+    finish(store)
+    relocated_python = store.current()[0] / 'runtime/main/python.exe'
+    assert relocated_python.is_symlink()
+    assert relocated_python.read_bytes() == b'interpreter fixture'
+
+
+def test_reinstall_same_release_can_repair_missing_files_at_selected_location(tmp_path):
+    directory, _, record = legacy_install(tmp_path)
+    store = store_at(directory)
+    (store.current()[0] / 'launcher.py').write_bytes(b'damaged')
+    archive_root = tmp_path / 'package'
+    write_bundle(archive_root)
+    archive = tmp_path / 'bundle.zip'
+    with zipfile.ZipFile(archive, 'w') as zipped:
+        for file in archive_root.rglob('*'):
+            if file.is_file():
+                zipped.write(file, file.relative_to(archive_root))
+    package = {'releaseId': record['releaseId'], 'sourceCommit': 'first'}
+    store.available = package
+    store.downloaded = archive, package
+    store.reinstall({'bundleDirectory': str(tmp_path / 'tts')})
+    finish(store)
+    assert store.state == 'succeeded', store.error
+    assert store.current()[0].is_relative_to(tmp_path / 'tts')
+    assert (store.current()[0] / 'launcher.py').read_text() == 'launcher fixture'
+    assert store_at(directory).current() == store.current()

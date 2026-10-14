@@ -105,7 +105,7 @@ def test_import_keeps_old_environment_when_check_fails_or_cancelled(tmp_path, mo
     store.close()
     assert store.state == 'idle' and store.current()[0] == original
     assert store.load()['bundle']['message'] == ''
-    assert len(list((store.directory / 'versions').iterdir())) == 1
+    assert list(store.directory.rglob('runtime/portable.json')) == [original / 'runtime/portable.json']
     assert [fields['event'] for _, _, fields in logs] == [
         'tts.bundle.extracting', 'tts.bundle.checking', 'tts.bundle.succeeded',
         'tts.bundle.extracting', 'tts.bundle.checking', 'tts.bundle.failed',
@@ -704,7 +704,8 @@ def test_online_download_install_and_new_published_index(tmp_path, online_repo):
     assert store.current()[1]['source_commit'] == 'third'
     assert not old[0].exists()
     assert second.is_dir()
-    assert len(list((store.directory / 'versions').iterdir())) == 2
+    assert set(store.directory.rglob('runtime/portable.json')) == {
+        second / 'runtime/portable.json', store.current()[0] / 'runtime/portable.json'}
     store.close()
 
 
@@ -768,7 +769,7 @@ def test_online_failure_preserves_installed_bundle(tmp_path, online_repo, failur
         assert not list((store.directory / 'downloads').glob('*.zip'))
     assert store.state == 'failed' and store.error
     assert store.current() == old
-    assert len(list((store.directory / 'versions').iterdir())) == 1
+    assert list(store.directory.rglob('runtime/portable.json')) == [old[0] / 'runtime/portable.json']
     store.close()
 
 
