@@ -35,6 +35,7 @@ def roots_for(tmp_path, *, old=True):
     roots = RuntimeRoots(tmp_path / "distribution", tmp_path / "user")
     shutil.copytree(SOURCE, roots.distribution_root / "plugins/builtin" / PLUGIN)
     shutil.copytree(SOURCE, roots.distribution_root / PAYLOAD_PATH / "plugins" / PLUGIN)
+    (roots.distribution_root / PAYLOAD_PATH / "revision.txt").write_text("test-bundle", encoding="utf-8")
     shutil.copyfile(SOURCE.parents[2] / "VERSION", roots.distribution_root / "VERSION")
     if old:
         (roots.user_root / "config").mkdir(parents=True)
