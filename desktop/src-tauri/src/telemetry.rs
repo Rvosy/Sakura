@@ -960,6 +960,26 @@ impl TelemetryService {
     }
 
     fn submit_error_candidate(&self, mut candidate: TelemetryErrorCandidate) -> Result<bool, ()> {
+        if candidate.details.stage.as_deref() != Some("cleanup")
+            && [
+                Some(candidate.code.as_str()),
+                candidate.details.reason_code.as_deref(),
+            ]
+            .into_iter()
+            .flatten()
+            .any(|code| {
+                matches!(
+                    code,
+                    "TTS_DISABLED"
+                        | "TTS_PROVIDER_NOT_SELECTED"
+                        | "MEMORY_NOT_READY"
+                        | "GENERATION_INVALIDATED"
+                        | "SERVICE_BINDING_EXPIRED"
+                )
+            })
+        {
+            return Ok(false);
+        }
         evidence::bound(&mut candidate.evidence);
         candidate
             .details
@@ -3729,6 +3749,9 @@ mod tests {
         let server = TestServer::start(202, Duration::ZERO);
         let (root, service) = service_for(&server, "cancelled-diagnostics", 128, TEST_WAIT);
         for attributes in [
+            json!({"reason_code":"TTS_DISABLED"}),
+            json!({"code":"MEMORY_NOT_READY"}),
+            json!({"reason_code":"SERVICE_BINDING_EXPIRED"}),
             json!({"reason_code":"REQUEST_CANCELLED"}),
             json!({"code":"TTS_SYNTHESIS_CANCELLED"}),
             json!({"error_type":"OperationCancelled"}),

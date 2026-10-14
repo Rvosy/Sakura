@@ -90,7 +90,7 @@ class MemoryRecallService:
                     "reason_code": "MEMORY_NOT_READY",
                 },
                 event="memory.recall.unavailable",
-                severity="warning",
+                severity="debug",
                 verbosity=0,
             )
             return MemoryRecallResult(status=status, query=query)

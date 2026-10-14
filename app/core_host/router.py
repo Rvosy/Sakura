@@ -16,13 +16,14 @@ from dataclasses import dataclass, field as dataclass_field
 from time import monotonic
 from typing import Any, BinaryIO
 
+from app.plugins.runtime_v4 import CLOSE_TIMEOUT_SECONDS
+
 from .protocol import read_frame, response
 
 
 DISPATCH_QUEUE_LIMIT = 32
 FIXTURE_QUEUE_LIMIT = 8
 FIXTURE_WORKER_COUNT = 4
-ROUTER_CLOSE_TIMEOUT_SECONDS = 3.0
 
 _STOP = object()
 
@@ -114,19 +115,19 @@ class ConcurrentHostRouter:
                     break
                 ticket = _Ticket(request)
                 try:
-                    self._dispatch.put(ticket, timeout=ROUTER_CLOSE_TIMEOUT_SECONDS)
+                    self._dispatch.put(ticket, timeout=CLOSE_TIMEOUT_SECONDS)
                 except queue.Full as error:
                     raise RouterFailure("DISPATCH_QUEUE_FULL", "dispatcher queue is full") from error
                 if not self._is_fixture(request):
                     # Control acknowledgements are bounded and keep the reader
                     # from consuming unbounded input after a writer failure.
-                    ticket.done.wait(ROUTER_CLOSE_TIMEOUT_SECONDS)
+                    ticket.done.wait(CLOSE_TIMEOUT_SECONDS)
                     if ticket.error is not None:
                         raise ticket.error
                 if request.get("name") == "system.shutdown":
                     # Shutdown response is handled by the dispatcher; do not
                     # read an unbounded stream after the terminal control item.
-                    ticket.done.wait(ROUTER_CLOSE_TIMEOUT_SECONDS)
+                    ticket.done.wait(CLOSE_TIMEOUT_SECONDS)
                     break
             if self.fatal_error is not None:
                 raise self.fatal_error
@@ -146,7 +147,7 @@ class ConcurrentHostRouter:
             invalidate()
         self._put_stop(self._dispatch)
         self._put_stop(self._fixtures)
-        deadline = monotonic() + ROUTER_CLOSE_TIMEOUT_SECONDS
+        deadline = monotonic() + CLOSE_TIMEOUT_SECONDS
         for thread in self._threads:
             thread.join(timeout=max(0.0, deadline - monotonic()))
         while True:

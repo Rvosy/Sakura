@@ -54,9 +54,7 @@ import {
   runInitialLayoutWithBootstrapRecovery,
 } from "./pet/layout-controller.js";
 import {
-  isNativePetDragPointRejected,
   shouldRevealBubbleAfterNativeDrag,
-  startNativePetDragWithRevisionRecovery,
 } from "./pet/native-drag.js";
 import {
   applyBootstrapPetLayout,
@@ -1129,11 +1127,7 @@ if (surfaceVisibilityCapabilities.bubbleAutoHide && surfaceVisibilityCapabilitie
   }
   surfaceVisibilityController.setInputPinned(inputIsPinned());
   surfaceHoverProbe = createSurfaceHoverProbe({
-    // Report only the first failed read until native hover becomes available again.
     readHover: () => nativeInvoke("pet_surface_hovered"),
-    onFailure: (error) => runtimeDiagnostics.reportError(error, {
-      command: "pet_surface_hovered", stage: "surface_hover_probe",
-    }),
     onHoverChange: (active) => {
       if (active) surfaceHoverTracker.enter("native-surface");
       else surfaceHoverTracker.leave("native-surface");
@@ -1497,7 +1491,6 @@ for (const dragRegion of dragRegions) {
     if (!shouldStartNativeDrag({ hitKind, button: event.button, isPrimary: event.isPrimary })) return;
     const dragGesture = interactionLatencyTrace.createGesture("pet-drag");
     const dragTrace = interactionLatencyTrace.atRevision(dragGesture, activeSurfaceRevision);
-    const pointerClientPoint = [event.clientX, event.clientY];
     const initialPortraitAnchor = activePortraitAnchor;
     const bubbleWasHidden = surfaceVisibilityController?.snapshot().bubbleVisible === false;
     interactionLatencyTrace.mark("pet-drag.pointerdown", dragTrace, { event });
@@ -1506,46 +1499,9 @@ for (const dragRegion of dragRegions) {
     dragRegion.classList.add("is-native-dragging");
     surfaceVisibilityController?.setSuspended(true);
     try {
-      const dragResult = await startNativePetDragWithRevisionRecovery({
-        revision: activeSurfaceRevision,
-        point,
-        start: ({ revision, point: nextPoint }) => tracedInteractionInvoke(
-          "start_pet_drag",
-          {
-            revision,
-            surfaceX: nextPoint[0],
-            surfaceY: nextPoint[1],
-          },
-          dragTrace,
-          "pet-drag.start-native",
-        ),
-        readSurfaceDiagnostics: () => invoke("current_pet_surface_diagnostics"),
-        syncSurface: (diagnostics) => {
-          const nextContentScale = Number(diagnostics?.contentScale);
-          const nextBounds = diagnostics?.logicalBounds;
-          if (
-            !Number.isFinite(nextContentScale)
-            || nextContentScale <= 0
-            || !Array.isArray(nextBounds)
-            || nextBounds.length !== 4
-            || nextBounds.some((value) => !Number.isSafeInteger(value) || value < 0)
-          ) {
-            throw new Error("PET_SURFACE_DIAGNOSTICS_INVALID");
-          }
-          commitSurfaceApplication({
-            contentScale: nextContentScale,
-            activeBounds: nextBounds,
-            revision: diagnostics.revision,
-          });
-        },
-        getPoint: () => {
-          const [surfaceX, surfaceY] = currentSurfaceOffset();
-          return [
-            pointerClientPoint[0] / contentScale + surfaceX,
-            pointerClientPoint[1] / contentScale + surfaceY,
-          ];
-        },
-      });
+      const dragResult = await tracedInteractionInvoke(
+        "start_pet_drag", {}, dragTrace, "pet-drag.start-native",
+      );
       if (shouldRevealBubbleAfterNativeDrag({
         bubbleWasHidden,
         initialAnchor: initialPortraitAnchor,
@@ -1555,7 +1511,6 @@ for (const dragRegion of dragRegions) {
       }
       if (dragResult?.portraitAnchor) activePortraitAnchor = dragResult.portraitAnchor;
     } catch (error) {
-      if (isNativePetDragPointRejected(error)) return;
       showRecoverableError("窗口拖动暂时不可用。");
     } finally {
       dragRegion.classList.remove("is-native-dragging");
@@ -1597,10 +1552,7 @@ document.addEventListener("contextmenu", async (event) => {
   try {
     await screenAttachment.close();
     if (portraitSurfaceMutationDepth > 0 || portraitScaleGestureActive) return;
-    const manifest = await invoke("open_pet_context_menu", {
-      surfaceX: point[0],
-      surfaceY: point[1],
-    });
+    const manifest = await invoke("open_pet_context_menu");
     if (portraitSurfaceMutationDepth > 0 || portraitScaleGestureActive) {
       await contextMenu.dismissForSurfaceTransition();
       return;

@@ -137,7 +137,7 @@ def provider(tmp_path, monkeypatch):
                               config=SimpleNamespace(get=lambda: {}))
     result = Provider(context)
     monkeypatch.setattr(result.bundle, 'current', lambda: (tmp_path, {}))
-    monkeypatch.setattr('plugins.builtin.sakura_sakuratts.plugin.character_voice', lambda *_: {
+    monkeypatch.setattr('plugins.builtin.sakura_sakuratts.plugin.character_voice', lambda *_, **_kwargs: {
         'gpt': 'gpt', 'sovits': 'sovits', 'text_lang': 'ja', 'ref_audio_path': 'a.wav', 'prompt_lang': 'ja', 'prompt_text': 'a'})
     return result, released
 
@@ -1005,6 +1005,23 @@ def test_cancel_online_install_restores_status_and_reuses_download_after_restart
     assert store.current()[1]['source_commit'] == 'first'
     assert store.downloaded is None
     store.close()
+
+
+def test_prewake_skips_character_without_voice_configuration(tmp_path):
+    import threading
+    root = tmp_path / 'character'
+    root.mkdir()
+    (root / 'character.json').write_text('{}')
+    provider = object.__new__(Provider)
+    provider.lock = threading.RLock()
+    provider.wake = threading.Event()
+    provider.character = SimpleNamespace(resolve_resource=lambda *_: root / 'character.json', get=lambda _: {})
+    records = []
+    provider.log = lambda level, message, **fields: records.append((level, fields))
+    provider._prewake('test', provider.wake)
+    assert provider.wake is None
+    assert provider.error == ''
+    assert not any(level == 'error' for level, _ in records)
 
 
 def test_missing_character_model_returns_diagnostic_with_source_location(tmp_path):

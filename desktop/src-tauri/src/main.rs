@@ -131,10 +131,6 @@ struct WindowGeometrySession {
     deferred_drag_pending: bool,
     portrait_alpha_mask: Option<character_presentation::PortraitAlphaMask>,
     portrait_transition_active: bool,
-    portrait_transition_drag: Option<(
-        character_presentation::PortraitAlphaMask,
-        window_interaction::LogicalHitRect,
-    )>,
     portrait_transition_pending: Option<PendingPortraitTransition>,
     input_surface_transition_pending: Option<PendingInputSurfaceTransition>,
     bubble_surface_transition_pending: Option<PendingBubbleSurfaceTransition>,
@@ -190,7 +186,6 @@ impl Default for WindowGeometrySession {
             deferred_drag_pending: false,
             portrait_alpha_mask: None,
             portrait_transition_active: false,
-            portrait_transition_drag: None,
             portrait_transition_pending: None,
             input_surface_transition_pending: None,
             bubble_surface_transition_pending: None,
@@ -2614,21 +2609,11 @@ fn commit_dragged_window_position_on_main_thread(
 #[tauri::command]
 async fn start_pet_drag(
     window: WebviewWindow,
-    revision: u64,
-    surface_x: f64,
-    surface_y: f64,
     trace: Option<interaction_latency::InteractionTraceContext>,
 ) -> Result<Option<PetLayoutApplication>, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let session = window.state::<Mutex<WindowGeometrySession>>();
-        start_pet_drag_blocking(
-            &window,
-            revision,
-            surface_x,
-            surface_y,
-            trace,
-            session.inner(),
-        )
+        start_pet_drag_blocking(&window, trace, session.inner())
     })
     .await
     .map_err(|source_error| {
@@ -2638,17 +2623,11 @@ async fn start_pet_drag(
 
 fn start_pet_drag_blocking(
     window: &WebviewWindow,
-    revision: u64,
-    surface_x: f64,
-    surface_y: f64,
     trace: Option<interaction_latency::InteractionTraceContext>,
     session: &Mutex<WindowGeometrySession>,
 ) -> Result<Option<PetLayoutApplication>, String> {
     let commit_trace = trace.clone();
     interaction_latency::command("main.start-pet-drag", trace, || {
-        if !surface_x.is_finite() || !surface_y.is_finite() {
-            return Err("PET_DRAG_POINT_INVALID".to_string());
-        }
         let expects_deferred_completion = matches!(
             window_interaction::native_drag_completion(),
             window_interaction::NativeDragCompletion::DeferredWindowMoved
@@ -2664,44 +2643,6 @@ fn start_pet_drag_blocking(
             interaction_latency::stage("drag-authorization-start");
             if session.state.is_none() {
                 return Err("pet layout is not ready for dragging".to_string());
-            }
-            if revision != session.applied_revision {
-                return Err("PET_DRAG_REVISION_STALE".to_string());
-            }
-            let state = session.state.expect("checked above");
-            let regions = window_interaction::logical_hit_regions_with_control_surface(
-                layout_contract()?,
-                state,
-                session
-                    .portrait_alpha_mask
-                    .as_ref()
-                    .map(character_presentation::PortraitAlphaMask::source_size),
-                session.portrait_scale_percent,
-                session.control_surface.as_ref(),
-            )?;
-            let point = [surface_x.floor() as i32, surface_y.floor() as i32];
-            let mut drag_authorized = window_interaction::classify_logical_point_with_alpha(
-                &regions,
-                session.portrait_alpha_mask.as_ref(),
-                point,
-            )? == window_interaction::HitKind::Drag;
-            if !drag_authorized {
-                if let Some((mask, target)) = session.portrait_transition_drag.as_ref() {
-                    let transition = window_interaction::LogicalHitRegions {
-                        state,
-                        interactive: regions.interactive.clone(),
-                        drag: vec![*target],
-                        neutral: regions.neutral.clone(),
-                    };
-                    drag_authorized = window_interaction::classify_logical_point_with_alpha(
-                        &transition,
-                        Some(mask),
-                        point,
-                    )? == window_interaction::HitKind::Drag;
-                }
-            }
-            if !drag_authorized {
-                return Err("PET_DRAG_POINT_REJECTED".to_string());
             }
             #[cfg(windows)]
             {
@@ -2793,13 +2734,11 @@ fn start_pet_drag_blocking(
 #[tauri::command]
 fn open_pet_context_menu(
     window: WebviewWindow,
-    surface_x: f64,
-    surface_y: f64,
     session: tauri::State<'_, Mutex<WindowGeometrySession>>,
     subtitle: tauri::State<'_, chat_settings::SubtitleLanguageState>,
     topmost: tauri::State<'_, product_shell::PetTopmostState>,
 ) -> Result<product_shell::ProductMenuCapabilityManifest, String> {
-    if window.label() != "main" || !surface_x.is_finite() || !surface_y.is_finite() {
+    if window.label() != "main" {
         return Err("PRODUCT_MENU_REQUEST_REJECTED".to_string());
     }
     let mut geometry = session.lock().map_err(|source_error| {
@@ -2813,28 +2752,6 @@ fn open_pet_context_menu(
             x: position.x,
             y: position.y,
         })?;
-    }
-    let state = geometry
-        .state
-        .ok_or_else(|| "PET_LAYOUT_NOT_READY".to_string())?;
-    let regions = window_interaction::logical_hit_regions_with_control_surface(
-        layout_contract()?,
-        state,
-        geometry
-            .portrait_alpha_mask
-            .as_ref()
-            .map(character_presentation::PortraitAlphaMask::source_size),
-        geometry.portrait_scale_percent,
-        geometry.control_surface.as_ref(),
-    )?;
-    let point = [surface_x.floor() as i32, surface_y.floor() as i32];
-    if window_interaction::classify_logical_point_with_alpha(
-        &regions,
-        geometry.portrait_alpha_mask.as_ref(),
-        point,
-    )? == window_interaction::HitKind::Transparent
-    {
-        return Err("PRODUCT_MENU_SURFACE_REJECTED".to_string());
     }
     let manifest =
         product_shell::product_menu_capability_manifest(subtitle.get()?, topmost.enabled()?);
@@ -3181,19 +3098,18 @@ fn pet_surface_visibility_capabilities(
 fn pet_surface_hovered(
     window: WebviewWindow,
     session: State<'_, Mutex<WindowGeometrySession>>,
-) -> Result<bool, String> {
+) -> Result<Option<bool>, String> {
     if window.label() != "main" {
         return Err("PET_WINDOW_REQUIRED".to_string());
     }
     if !window.is_visible().map_err(|error| error.to_string())?
         || window.is_minimized().map_err(|error| error.to_string())?
     {
-        return Ok(false);
+        return Ok(Some(false));
     }
-    let cursor = window
-        .app_handle()
-        .cursor_position()
-        .map_err(|error| error.to_string())?;
+    let Ok(cursor) = window.app_handle().cursor_position() else {
+        return Ok(None);
+    };
     let origin = window.inner_position().map_err(|error| error.to_string())?;
     let geometry = session.lock().map_err(|source_error| {
         crate::runtime_log::diagnostic_error("window geometry state is unavailable", source_error)
@@ -3204,6 +3120,7 @@ fn pet_surface_hovered(
         [cursor.x, cursor.y],
         [origin.x, origin.y],
     )
+    .map(Some)
 }
 
 fn surface_hover_contains(
@@ -5696,13 +5613,6 @@ fn prepare_portrait_transition(
     )?;
     let next_native_portrait_alpha_mask =
         window_interaction::apply_portrait_alpha_bounds(&mut next_logical, Some(&next_mask))?;
-    let next_target = next_native_portrait_alpha_mask
-        .as_ref()
-        .and_then(|_| next_logical.drag.first().copied());
-    let next_transition_drag = next_native_portrait_alpha_mask
-        .as_ref()
-        .zip(next_target)
-        .map(|(mask, target)| (mask.clone(), target));
     let next_physical = window_interaction::scale_hit_regions_for_surface(
         &next_logical,
         application.scale_factor * application.content_scale,
@@ -5767,7 +5677,6 @@ fn prepare_portrait_transition(
     }
     geometry.portrait_transition_active =
         cfg!(target_os = "macos") || defer_native_commit == Some(true);
-    geometry.portrait_transition_drag = next_transition_drag;
     geometry.portrait_transition_pending = None;
     geometry.portrait_hit_generation = Some(generation_id);
     geometry.portrait_hit_revision = revision;
@@ -5821,7 +5730,6 @@ fn begin_portrait_scale_preview(
         // stale transition rather than letting it resize the window later.
         geometry.portrait_transition_pending = None;
         geometry.portrait_transition_active = false;
-        geometry.portrait_transition_drag = None;
 
         // Beginning a gesture does not itself change the native surface. Publishing the current
         // application again would make the WebView rewrite every stage offset and layout variable
@@ -6277,7 +6185,6 @@ fn activate_portrait_hit_test(
         geometry.portrait_scale_preview_active = stabilize_portrait_scale;
         geometry.portrait_scale_percent = portrait_scale_percent;
         geometry.portrait_transition_active = false;
-        geometry.portrait_transition_drag = None;
         geometry.portrait_anchor = Some(application.portrait_anchor);
         geometry.physical_local_anchor = Some(application.physical_local_anchor);
         geometry.active_bounds = Some(application.active_bounds);
@@ -6349,7 +6256,6 @@ fn commit_portrait_transition(
     geometry.portrait_hit_relaxed = false;
     geometry.portrait_scale_preview_active = false;
     geometry.portrait_transition_active = false;
-    geometry.portrait_transition_drag = None;
     geometry.portrait_anchor = Some(pending.application.portrait_anchor);
     geometry.physical_local_anchor = Some(pending.application.physical_local_anchor);
     geometry.active_bounds = Some(pending.application.active_bounds);

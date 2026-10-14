@@ -527,6 +527,25 @@ def test_recall_preserves_explicit_source_case_compatibility(tmp_path: Path, sou
         boundary.close()
 
 
+def test_empty_curation_response_preserves_failure_without_requesting_repair() -> None:
+    class Api:
+        def complete_raw(self, *_args, **kwargs):
+            if kwargs["trace_metadata"].purpose == "memory_curation_repair":
+                pytest.fail("空响应不应提交格式修复")
+            return ""
+
+    class Store:
+        def list_memories(self, *, limit=None):
+            return []
+
+    with pytest.raises(ValueError):
+        MemoryCurator(Api(), Store()).curate_entries([
+            ChatHistoryEntry(created_at="2026-10-14T12:00:00+08:00", role="user",
+                             content="记住我喜欢樱花", entry_id="entry-1", turn_id="turn-1",
+                             evidence_ready=True)
+        ])
+
+
 def test_memory_curation_requests_at_most_one_provider_repair_for_invalid_json() -> None:
     class Api:
         def __init__(self) -> None:

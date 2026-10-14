@@ -91,9 +91,11 @@ struct ShutdownPolicy {
     total: Duration,
 }
 
+pub(crate) const CORE_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(35);
+
 const PRODUCTION_SHUTDOWN_POLICY: ShutdownPolicy = ShutdownPolicy {
-    graceful: Duration::from_millis(3000),
-    total: Duration::from_millis(5000),
+    graceful: Duration::from_secs(30),
+    total: CORE_SHUTDOWN_TIMEOUT,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -3182,18 +3184,6 @@ mod tests {
             .starts_with("TRANSPORT_WRITE_FAILED: Core Host credential bootstrap failed"));
         assert_eq!(finalize_calls.load(Ordering::SeqCst), 1);
         assert!(failure.into_recovery().is_none());
-    }
-
-    #[test]
-    fn production_shutdown_policy_is_exactly_3000ms_graceful_and_5000ms_total() {
-        assert_eq!(
-            PRODUCTION_SHUTDOWN_POLICY.graceful,
-            Duration::from_millis(3000)
-        );
-        assert_eq!(
-            PRODUCTION_SHUTDOWN_POLICY.total,
-            Duration::from_millis(5000)
-        );
     }
 
     #[test]

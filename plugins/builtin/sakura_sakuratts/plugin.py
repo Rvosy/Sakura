@@ -41,13 +41,15 @@ def configuration(values):
     return result
 
 
-def character_voice(character, character_id, tone='中性'):
+def character_voice(character, character_id, tone='中性', *, optional=False):
     manifest_path = character.resolve_resource(character_id, 'character.json')
     manifest = json.loads(Path(manifest_path).read_text(encoding='utf-8'))
     extension = dict(manifest.get('extensions', {}).get('sakura.tts.gpt-sovits', {}))
     extension.update(character.get(character_id))
     for key, label in (('toneRefs', '参考音频表'), ('gptModel', 'GPT 模型'), ('sovitsModel', 'SoVITS 模型')):
         if not extension.get(key):
+            if optional:
+                return None
             raise ValueError(f'角色尚未配置{label}，请在角色工坊中添加。')
     package_dir = Path(manifest_path).parent
     resources = {key: Path(character.resolve_resource(character_id, extension[key]))
@@ -167,7 +169,9 @@ class Provider:
         try:
             with operation(self.log, 'preload', cancel=cancel):
                 self.error = ''
-                voice = character_voice(self.character, character_id)
+                voice = character_voice(self.character, character_id, optional=True)
+                if voice is None:
+                    return
                 self.runtime.start(self.bundle.current(), self.config, voice, cancel)
                 if not cancel.is_set():
                     self.log('info', 'SakuraTTS 正在提前加载模型', backend=self.runtime.backend)

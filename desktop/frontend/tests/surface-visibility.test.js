@@ -31,6 +31,24 @@ test("native hover reveals a hidden detached input without DOM entry or focus", 
   assert.equal(tick, null);
 });
 
+test("hover probe keeps controls visible during an unavailable read and resumes tracking", async () => {
+  const values = [true, null, false];
+  const changes = [];
+  let tick;
+  const probe = createSurfaceHoverProbe({
+    readHover: async () => values.shift(),
+    onHoverChange: (active) => changes.push(active),
+    setTimer: (callback) => { tick = callback; return 1; },
+    clearTimer: () => {},
+  });
+  await Promise.resolve();
+  await tick();
+  assert.deepEqual(changes, [true]);
+  await tick();
+  assert.deepEqual(changes, [true, false]);
+  probe.dispose();
+});
+
 test("hover probe serializes native reads and ignores results after teardown", async () => {
   let resolveRead;
   const changes = [];
