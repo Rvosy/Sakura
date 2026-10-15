@@ -22,9 +22,19 @@ except ImportError:
     from _diagnostics import nvidia_device, operation
 
 
+def process_path(path):
+    value = str(path)
+    if os.name == 'nt' and value.startswith('\\\\?\\'):
+        plain = '\\\\' + value[8:] if value[4:8].upper() == 'UNC\\' else value[4:]
+        # 短路径不把扩展前缀带入引擎；超过 Win32 MAX_PATH 的路径仍保留前缀。
+        if len(plain) < 260:
+            return plain
+    return value
+
+
 def command(root, release, *args):
-    return [str(root / release.get('python_executable', 'runtime/main/python.exe')),
-            '-I', '-X', 'utf8', str(root / 'launcher.py'), *args]
+    return [process_path(root / release.get('python_executable', 'runtime/main/python.exe')),
+            '-I', '-X', 'utf8', process_path(root / 'launcher.py'), *args]
 
 
 def environment(cache):
@@ -42,7 +52,7 @@ def probe(root, release, cancel, backend=None, cache=None):
     log.parent.mkdir(exist_ok=True)
     with log.open('wb') as output:
         process = subprocess.Popen(command(root, release, 'check-runtime', '--backend', backend),
-                                   cwd=root, env=environment(cache or root / 'cache'),
+                                   cwd=process_path(root), env=environment(cache or root / 'cache'),
                                    stdin=subprocess.DEVNULL, stdout=output, stderr=subprocess.STDOUT,
                                    start_new_session=os.name != 'nt')
         try:
@@ -150,7 +160,7 @@ class Runtime:
             with self.log.open('wb') as output:
                 self.process = subprocess.Popen(command(root, release, 'serve', '--runtime-mode', self.mode,
                     *sleep_args, '--backend', backend,
-                    '-c', str(settings), '-a', '127.0.0.1', '-p', str(port)), cwd=root,
+                    '-c', str(settings), '-a', '127.0.0.1', '-p', str(port)), cwd=process_path(root),
                     env=environment(self.directory / 'cache'), stdin=subprocess.DEVNULL,
                     stdout=output, stderr=subprocess.STDOUT, start_new_session=os.name != 'nt')
             self.key = key

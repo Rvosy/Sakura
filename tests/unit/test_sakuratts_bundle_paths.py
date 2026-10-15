@@ -1,11 +1,42 @@
 import json
 import os
 from pathlib import Path
+import sys
+import threading
+from types import SimpleNamespace
 import zipfile
 
 import pytest
 
-from plugins.builtin.sakura_sakuratts import _bundle
+from plugins.builtin.sakura_sakuratts import _bundle, _runtime
+
+
+@pytest.mark.parametrize(('plain', 'preserve_prefix'), [
+    (r'C:\Users\z\engine', False),
+    (r'\\server\share\engine', False),
+    ('C:\\' + 'long-directory\\' * 20, True),
+])
+def test_process_paths_keep_extended_prefix_only_when_needed(monkeypatch, plain, preserve_prefix):
+    monkeypatch.setattr(_runtime, 'os', SimpleNamespace(name='nt'))
+    extended = '\\\\?\\UNC\\' + plain[2:] if plain.startswith('\\\\') else '\\\\?\\' + plain
+    assert _runtime.process_path(extended) == (extended if preserve_prefix else plain)
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='Windows process working directory semantics')
+def test_probe_launches_from_prefixed_root_with_spaces_and_apostrophes(tmp_path):
+    root = tmp_path / "z'm'f 中文/Sakura TTS"
+    root.mkdir(parents=True)
+    (root / 'launcher.py').write_text('''import os
+from pathlib import Path
+root = Path(__file__).resolve().parent
+os.chdir(root)
+# 上游模块使用普通路径，与继承的工作目录计算相对路径。
+plain = str(root).removeprefix('\\\\\\\\?\\\\')
+assert os.path.relpath(plain) == '.'
+print('runtime ready')
+''', encoding='utf-8')
+    _runtime.probe(root, {'python_executable': sys.executable, 'backend': 'cpu'}, threading.Event())
+    assert 'runtime ready' in (root / 'logs/plugin-check.log').read_text()
 
 
 @pytest.fixture
