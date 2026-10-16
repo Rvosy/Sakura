@@ -466,10 +466,10 @@ impl ChatBridge {
                 })
                 .flatten(),
             presentation: host_event.then(|| {
-                if payload.get("presentation").and_then(Value::as_str) == Some("interactive") {
-                    "interactive".to_string()
-                } else {
-                    "silent".to_string()
+                match payload.get("presentation").and_then(Value::as_str) {
+                    Some("interactive") => "interactive".to_string(),
+                    Some("queued") => "queued".to_string(),
+                    _ => "silent".to_string(),
                 }
             }),
             cancel_handle: (host_event && event_type == "chat.started")
@@ -745,7 +745,7 @@ mod tests {
 
     #[test]
     fn host_interaction_uses_the_existing_slot_and_cancel_handle() {
-        for presentation in ["silent", "interactive"] {
+        for presentation in ["silent", "interactive", "queued"] {
             let bridge = bridge();
             assert!(bridge.listen_host("settings", channel()).is_err());
             bridge.listen_host("main", channel()).unwrap();

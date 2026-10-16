@@ -85,6 +85,27 @@ def test_conversation_keeps_human_text_and_publishes_normal_tts_flow(tmp_path, l
         turn.boundary.close()
 
 
+def test_queued_presentation_does_not_delay_model_or_result(tmp_path):
+    turn = setup_host(tmp_path, gate_at="inference")
+    try:
+        with caller():
+            accepted = turn.host.begin("sakura", "下一步棋", None, "queued")
+            job = turn.host._jobs[accepted["jobId"]]
+        assert turn.entered.wait(3)
+        assert turn.events[0][1]["presentation"] == "queued"
+        turn.resume.set()
+        assert job.done.wait(3)
+        with caller():
+            result = turn.host.poll(accepted["jobId"])
+        assert result["result"]["reply_raw"] == "spoken reply"
+        assert turn.events[-1][1]["presentation"] == "queued"
+        assert turn.speech[0]["operation_id"] == job.operation_id
+    finally:
+        turn.resume.set()
+        turn.host.close()
+        turn.boundary.close()
+
+
 @pytest.mark.parametrize("gate_at", ["inference", "release"])
 def test_revocation_keeps_realchat_terminal_after_started(tmp_path, gate_at):
     turn = setup_host(tmp_path, gate_at=gate_at)

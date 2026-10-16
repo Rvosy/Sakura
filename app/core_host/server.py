@@ -39,7 +39,7 @@ PLUGINS_CAPABILITY = "assistant.plugins-v1"
 TTS_CAPABILITY = "assistant.tts-v1"
 SCREEN_CAPTURE_CAPABILITY = "assistant.screen-capture-v2"
 HOST_DESKTOP_REQUESTS = frozenset({"host.interaction.current", "host.interaction.state", "host.interaction.detach",
-    "host.screen.result", "host.visual.claim", "host.visual.result"})
+    "host.interaction.presented", "host.screen.result", "host.visual.claim", "host.visual.result"})
 SUPPORTED_CAPABILITIES = (
     *CAPABILITIES,
     ROUTER_CAPABILITY,
@@ -1707,6 +1707,8 @@ def run_host(
                             result = application.chat.current()
                         elif name == "host.interaction.state":
                             result = application.chat.set_ui_state(payload)
+                        elif name == "host.interaction.presented":
+                            result = application.chat.presentation_changed(payload)
                         elif name == "host.interaction.detach":
                             if payload:
                                 raise ValueError("INVALID_REQUEST")

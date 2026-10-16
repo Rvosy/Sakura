@@ -64,6 +64,11 @@ class ChatHost:
         self.notify_state()
         return {"accepted": True}
 
+    def presentation_changed(self, payload: Mapping) -> dict:
+        self._notify("sakura.host.chat.presentation." + payload["status"],
+                     {"operationId": payload["operationId"]})
+        return {"accepted": True}
+
     def notify_state(self) -> None:
         # Notifications are hints to reread current(); revision-only updates do
         # not constitute a user-visible state change.

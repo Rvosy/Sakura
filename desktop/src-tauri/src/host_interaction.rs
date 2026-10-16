@@ -65,6 +65,15 @@ pub async fn host_interaction_state(
 }
 
 #[tauri::command]
+pub async fn host_interaction_presented(
+    window: WebviewWindow,
+    lifecycle: State<'_, ShellLifecycleState>,
+    payload: Value,
+) -> Result<Value, String> {
+    request(window, lifecycle, "host.interaction.presented", payload).await
+}
+
+#[tauri::command]
 pub async fn host_visual_claim(
     window: WebviewWindow,
     lifecycle: State<'_, ShellLifecycleState>,

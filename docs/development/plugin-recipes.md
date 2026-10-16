@@ -134,6 +134,14 @@ ASR poll 返回 running、succeeded（text/language）、failed（errorCode/diag
 
 手机端等用户输入使用 `sakura.host.conversation`：`begin(character_id, text, artifact_or_none)` 返回 jobId/operationId；`poll(jobId)` 返回 running 或 completed/result，结果只交付一次。cancel 请求取消，release 放弃并回收未结束的任务。输入归类为用户消息，沿用桌面聊天链路和历史。结果包括 `reply/reply_raw/segments/actions/historyEntryId/operationId`，段落保留原始 segmentIndex。
 
+`poll` 交付完成结果或任务失败时都会回收任务，调用方不要再次 release。日志沿用 begin 返回的 operationId，关联模型请求和语音播放。
+
+可选第四个参数 `presentation="queued"` 用于五子棋等连续互动：模型请求和结果交付立即进行，桌面字幕与语音等正在播放的回复结束后接续；默认 `interactive` 保留普通用户输入的打断行为。
+
+需要把动作与回复播放同步时，订阅 `sakura.host.chat.presentation.started`，用事件的 `operationId` 对应 `begin` 返回的操作编号。事件在第一段语音开始播放时发出；未启用语音或播放失败时，随文字显示发出。模型结果仍由 `poll` 获取。结束活动或切换角色时停止等待，丢弃旧操作。
+
+回复在播放前被新输入打断或从队列移除时，会收到 `sakura.host.chat.presentation.cancelled`，同样通过 `operationId` 对应操作。已经开始播放的动作不因后续取消撤销。
+
 需要回复录音时使用 `sakura.host.speech.begin(character_id, history_entry_id, segment_index, options=None)` 取得 jobId，再 poll/cancel。poll 返回 `status: running` 或 `status: completed` 与 result。result 含 `recordingId/characterId/historyEntryId/segmentIndex`，仅在 `exportAudio` 为 true 时附带 artifact，默认导出。它读取已经保存的历史段落，不接受任意待合成文本，也不触发桌面播放。Artifact 是导出副本，接收者读完 release_received，不删除历史原录音。
 
 后台补全可以传 `{background: true, exportAudio: false}`。`cache_status(headroom=0)` 返回当前角色、idleFill/busy/hasRoom/latestCursor；`cache_page(character_id, before_cursor, limit)` 返回 entries/nextCursor/hasMore，各段标明 hasText/suppressed/recorded。消费者按需要补全，不重新合成已有录音。

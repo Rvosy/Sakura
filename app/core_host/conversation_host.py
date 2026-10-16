@@ -48,7 +48,8 @@ class ConversationHostService:
         self._closed = False
 
     def begin(self, character_id: str, text: str,
-              artifact_descriptor: Mapping[str, Any] | None = None) -> dict[str, str]:
+              artifact_descriptor: Mapping[str, Any] | None = None,
+              presentation: str = "interactive") -> dict[str, str]:
         owner = caller_identity()
         boundary = None
         artifact_id = ""
@@ -77,7 +78,8 @@ class ConversationHostService:
                     raise
                 except Exception as error:
                     raise ConversationHostError("CHAT_IMAGE_INVALID") from error
-            if not isinstance(character_id, str) or not isinstance(text, str):
+            if (not isinstance(character_id, str) or not isinstance(text, str)
+                    or presentation not in {"interactive", "queued"}):
                 raise ConversationHostError("INVALID_CHAT_PAYLOAD")
             boundary = self._boundary_provider()
             if boundary is None:
@@ -104,7 +106,7 @@ class ConversationHostService:
             raise
 
         metadata = {"operationId": operation_id, "sessionId": state["sessionId"],
-                    "characterId": requested, "sourcePluginId": owner[0], "presentation": "interactive"}
+                    "characterId": requested, "sourcePluginId": owner[0], "presentation": presentation}
 
         def publish(name: str, payload: Mapping) -> None:
             # Once started, only RealChat decides the terminal, including a late

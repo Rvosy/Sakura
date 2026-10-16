@@ -7871,6 +7871,7 @@ fn main() {
             host_interaction::host_chat_listen,
             host_interaction::host_interaction_current,
             host_interaction::host_interaction_state,
+            host_interaction::host_interaction_presented,
             host_interaction::host_visual_claim,
             host_interaction::host_visual_result,
             cancel_screen_capture,

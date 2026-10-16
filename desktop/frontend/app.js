@@ -8,6 +8,7 @@ import { createAsrAvailability } from "./audio/asr-availability.js";
 import { createComposerActionIndicator } from "./chat/composer-action-indicator.js";
 import { createComposerToolRegistry } from "./chat/composer-tool-dock.js";
 import { createRealChatClient } from "./chat/real-chat-client.js";
+import { createReplyQueue } from "./chat/reply-queue.js";
 import { createScreenAttachmentController } from "./chat/screen-attachment-controller.js";
 import { createHostInteractionController, createHostVisualController } from "./chat/host-interaction.js";
 import { createUpdateAnnouncementController } from "./chat/update-announcement-controller.js";
@@ -1239,7 +1240,10 @@ const typewriter = createTypewriter({
         onStarted: () => {
           const current = presentation.current();
           if (current.operationId !== state.operationId || current.segments[index] !== segment) return;
-          if (index === 0) waitingIndicator.stop();
+          if (index === 0) {
+            waitingIndicator.stop();
+            if (state.operationId) notifyReplyPresentation(state, "started");
+          }
           const result = presentation.setTypingSegment(segment, index);
           if (result.applied) {
             void rendererHost.play(control, state.operationId, index, segment);
@@ -1254,6 +1258,7 @@ const typewriter = createTypewriter({
   onComplete: () => {
     const result = presentation.finishTyping();
     if (result.applied) render(result.state);
+    replyQueue.flush();
   },
 });
 
@@ -1305,7 +1310,24 @@ function render(state, bubbleUpdate = {}) {
   return Promise.resolve({ applied: true });
 }
 
+function notifyReplyPresentation(event, status) {
+  void invoke("host_interaction_presented", { payload: {
+    generationId: event.generationId, operationId: event.operationId, status,
+  } }).catch(error => runtimeDiagnostics.reportError(error, {
+    code: "CHAT_PRESENTATION_NOTIFY_FAILED", stage: "chat.presentation",
+  }));
+}
+
+const replyQueue = createReplyQueue({
+  isPresenting: () => typewriter.isActive(), publish: presentCoreEvent,
+  onDiscard: event => notifyReplyPresentation(event, "cancelled"),
+});
+
 function handleCoreEvent(event) {
+  replyQueue.receive(event);
+}
+
+function presentCoreEvent(event) {
   updateAnnouncement.handleChatEvent(event);
   if (["chat.completed", "chat.failed", "chat.cancelled"].includes(event.type)) {
     runtimeDiagnostics.record({
@@ -1333,6 +1355,9 @@ function handleCoreEvent(event) {
   }
   const result = presentation.reduce(event);
   if (!result.applied) return;
+  if (before.phase === "typing" && before.operationId && before.operationId !== result.state.operationId) {
+    notifyReplyPresentation(before, "cancelled");
+  }
   if (event.type === "chat.failed" && !before.silentInteraction) {
     showRecoverableError(event.error, { title: "回复失败" });
   } else if (event.type === "lifecycle" && event.status === "failed"
@@ -1620,6 +1645,7 @@ async function rebindCoreGeneration(generationId, { refresh = false } = {}) {
     ++portraitHitRevision;
     const rebound = rebindCharacterPresentation({ currentCharacterId: characterPresentation.characterId, nextPresentation: next, currentReducer: presentation });
     if (rebound.characterChanged || next.generationId !== characterPresentation.generationId) {
+      replyQueue.clear();
       waitingIndicator.stop(); typewriter.cancel(""); ttsController.cancel();
       void asrController?.cancel({ restore: false });
       asrPresentation.reset();

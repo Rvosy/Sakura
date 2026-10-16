@@ -648,7 +648,7 @@ test("queued cancellation failure does not reject an already accepted send", asy
   client.dispose();
 });
 
-for (const presentation of ["silent", "interactive"]) {
+for (const presentation of ["silent", "interactive", "queued"]) {
   test(`host ${presentation} messages enter the ordinary cancellable operation`, async () => {
     const response = { accepted: true, operationId: "screen", cancelHandle: "cancel", generationId: "generation-1", generationNumber: 1, presentation };
     const env = harness();
