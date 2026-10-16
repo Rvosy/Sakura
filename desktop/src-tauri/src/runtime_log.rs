@@ -2655,7 +2655,7 @@ fn viewer_correlation(record: &RuntimeLogRecord) -> Option<String> {
         ("action", record.action_id.as_deref()),
     ]
     .into_iter()
-    .find_map(|(kind, value)| value.map(|value| format!("{kind}:{}", short_correlation_id(value))))
+    .find_map(|(kind, value)| value.map(|value| format!("{kind}:{value}")))
 }
 
 fn display_channel(channel: &str, event: &str) -> String {
@@ -2739,16 +2739,12 @@ fn human_message<'a>(event: &str, fallback: &'a str) -> &'a str {
 fn correlation_summary(record: &RuntimeLogRecord) -> Vec<String> {
     let mut parts = Vec::new();
     if let Some(operation_id) = record.operation_id.as_deref() {
-        parts.push(format!("op={}", short_correlation_id(operation_id)));
+        parts.push(format!("op={operation_id}"));
     }
     if let Some(trace_id) = record.trace_id.as_deref() {
-        parts.push(format!("trace={}", short_correlation_id(trace_id)));
+        parts.push(format!("trace={trace_id}"));
     }
     parts
-}
-
-fn short_correlation_id(value: &str) -> String {
-    value.chars().take(8).collect()
 }
 
 fn format_human_summary(event: &str, attributes: Option<&Value>) -> String {
@@ -4560,7 +4556,7 @@ mod tests {
         log.drain_and_shutdown_for_test();
         let line = fs::read_to_string(path).unwrap();
         assert!(line.contains("[CONTEXT]"));
-        assert!(line.contains("op=chat-123 trace=17 call=2 purpose=agent_step"));
+        assert!(line.contains("op=chat-1234567890 trace=17 call=2 purpose=agent_step"));
         assert!(line.contains("history=8 memories=3 tools=18 estimated_tokens=11684"));
         assert!(!line.contains("ignored"));
         let _ = fs::remove_dir_all(root);
@@ -4635,7 +4631,8 @@ mod tests {
         log.drain_and_shutdown_for_test();
         let line = fs::read_to_string(path).unwrap();
         assert!(line.contains("[CONTEXT]"));
-        assert!(line.contains("op=chat-123 dependency=memory stage=process_exit status=degraded"));
+        assert!(line
+            .contains("op=chat-1234567890 dependency=memory stage=process_exit status=degraded"));
         assert!(line.contains("reason_code=PROCESS_EXITED elapsed_ms=5021ms"));
         assert!(line.contains("category=process_exited"));
         assert!(line.contains("error_type=ChildProcessExit"));
@@ -5258,7 +5255,10 @@ mod tests {
             record.description.as_deref(),
             Some("模型服务没有接受当前凭据，这次回复无法生成。")
         );
-        assert_eq!(record.correlation_id.as_deref(), Some("op:operatio"));
+        assert_eq!(
+            record.correlation_id.as_deref(),
+            Some("op:operation-1234567890")
+        );
         assert_eq!(
             record
                 .details

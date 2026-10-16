@@ -772,7 +772,10 @@ class RealChatBoundary:
                 if isinstance(error, Mapping)
                 else "chat failed"
             )
-            raise RealChatRejection(code, message_text)
+            rejection = RealChatRejection(code, message_text)
+            if isinstance(error, Mapping):
+                rejection.diagnostics = error.get("details", {}).get("diagnostics", {})
+            raise rejection
         reply = result.get("reply")
         raw_segments = reply.get("segments") if isinstance(reply, Mapping) else None
         if not isinstance(raw_segments, list):

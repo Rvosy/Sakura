@@ -122,10 +122,12 @@ class ConversationHostService:
                 job.result = {"character_id": requested, "operationId": operation_id, **result}
             except Exception as error:
                 job.error = error
-                log_event("Conversation", "用户对话失败",
-                    {"operation_id": operation_id, **diagnostic_attributes(error,
-                        reason_code=getattr(error, "code", "CHAT_FAILED"), stage="conversation_chat")},
-                    event="conversation.chat.failed", severity="error")
+                # 聊天边界已记录有终态的失败或取消，只记录此前的工作线程异常。
+                if not job.terminal:
+                    log_event("Conversation", "用户对话失败",
+                        {"operation_id": operation_id, **diagnostic_attributes(error,
+                            reason_code=getattr(error, "code", "CHAT_FAILED"), stage="conversation_chat")},
+                        event="conversation.chat.failed", severity="error")
             finally:
                 self._release_artifact(artifact_id)
                 job.done.set()

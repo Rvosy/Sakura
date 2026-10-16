@@ -203,6 +203,39 @@ def test_worker_failure_preserves_cause_and_diagnostic(tmp_path, monkeypatch):
         turn.boundary.close()
 
 
+def test_provider_failure_keeps_original_diagnostics_through_poll(tmp_path, monkeypatch):
+    from app.core.diagnostics import exception_diagnostics
+    from app.core_host.assistant_adapter import AssistantFailure
+
+    turn = setup_host(tmp_path)
+    forwarded_logs = []
+
+    def fail(request, cancel_checker):
+        try:
+            raise TimeoutError("provider read timed out after 60 seconds")
+        except TimeoutError as cause:
+            raise AssistantFailure("PROVIDER_REQUEST_FAILED") from cause
+
+    turn.session.assistant.run_turn = fail
+    monkeypatch.setattr("app.core_host.conversation_host.log_event", lambda *args, **kwargs: forwarded_logs.append(args))
+    try:
+        with caller():
+            accepted = turn.host.begin("sakura", "下一步棋")
+            assert turn.host._jobs[accepted["jobId"]].done.wait(3)
+            with pytest.raises(ConversationHostError) as caught:
+                turn.host.poll(accepted["jobId"])
+        diagnostics = exception_diagnostics(caught.value, reason_code="CHAT_FAILED", stage="poll")
+        assert "provider read timed out after 60 seconds" in diagnostics["diagnostic"]
+        assert diagnostics["cause_type"] == "TimeoutError"
+        assert "TimeoutError" in diagnostics["exception_chain"]
+        assert not forwarded_logs  # 失败已经由聊天边界报告，不逐层重复记录。
+        assert turn.events[-1][0] == "host.chat.failed"
+        assert [entry.kind for entry in turn.timeline.read_all("sakura")] == [TimelineKind.HUMAN]
+    finally:
+        turn.host.close()
+        turn.boundary.close()
+
+
 
 def test_foreign_image_descriptor_is_not_read_or_released(tmp_path, monkeypatch):
     turn = setup_host(tmp_path)
