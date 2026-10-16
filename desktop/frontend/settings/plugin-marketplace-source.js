@@ -39,7 +39,7 @@ export function catalogPlugins(catalog, context) {
       return { number: release.version, commit: release.commit, api: manifest?.api, yanked: release.yanked ? release.yank_reason : "",
         prerelease: release.prerelease, compatible, package: release.package,
         manifest, reasonCode,
-        date: release.date || "", notes: release.notes || "",
+        date: release.date || "", notes: release.notes || "", releaseUrl: release.release_url || "",
         size: Number.isFinite(bytes) && bytes > 0 ? `${(bytes / unit[0]).toLocaleString("zh-CN", { maximumFractionDigits: 1 })} ${unit[1]}` : "",
         reason };
     }).sort((a, b) => {
@@ -69,7 +69,6 @@ export function createMarketplaceSource({ invoke, Channel, host, randomUUID = ()
   return {
     canUpdate: true,
     cacheFirst: true,
-    prefetchReadmes: true,
     peekReadme(plugin) {
       const current = documents.get(keyOf(plugin, versionOf(plugin)));
       if (current) return current;

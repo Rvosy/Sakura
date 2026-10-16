@@ -667,7 +667,7 @@
     {
       "id": "plugin-marketplace-frontend",
       "description": "验证市场目录版本选择、加载取消和安装更新门禁",
-      "argv": ["node", "--test", "desktop/frontend/tests/plugin-marketplace-runtime.test.js", "desktop/frontend/tests/plugin-marketplace-source.test.js", "desktop/frontend/tests/plugin-readme.test.js"],
+      "argv": ["node", "--test", "desktop/frontend/tests/plugin-marketplace-runtime.test.js", "desktop/frontend/tests/plugin-marketplace-source.test.js", "desktop/frontend/tests/plugin-readme.test.js", "desktop/frontend/tests/update-check.test.js", "desktop/frontend/tests/update-announcement-controller.test.js", "desktop/frontend/tests/settings-plugin-list.test.js"],
       "timeout_seconds": 120
     },
     {

@@ -1223,12 +1223,21 @@ class RealChatBoundary:
             raise RealChatRejection("INVALID_CHAT_PAYLOAD", "update event type is invalid")
         payload = value.get("payload")
         expected = {"currentVersion", "version", "notes", "pubDate", "mode"}
-        if not isinstance(payload, Mapping) or set(payload) != expected:
+        if not isinstance(payload, Mapping) or set(payload) not in (expected, expected | {"plugins"}):
             raise RealChatRejection("INVALID_CHAT_PAYLOAD", "update event payload is invalid")
         version_pattern = re.compile(
             r"^v?\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$"
         )
+        plugins = payload.get("plugins", [])
+        if not isinstance(plugins, list) or any(
+            not isinstance(plugin, Mapping) or set(plugin) != {"id", "name", "currentVersion", "version"}
+            or any(not isinstance(plugin[key], str) or not plugin[key] for key in plugin)
+            for plugin in plugins
+        ):
+            raise RealChatRejection("INVALID_CHAT_PAYLOAD", "plugin update facts are invalid")
         for key in ("currentVersion", "version"):
+            if key == "version" and payload.get(key) is None and plugins:
+                continue
             version = payload.get(key)
             if (
                 not isinstance(version, str)

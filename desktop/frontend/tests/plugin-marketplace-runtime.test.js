@@ -107,9 +107,10 @@ test("installation respects upstream recommendation, withdrawn versions and upda
 });
 
 
-test("update visibility follows compatible stable recommendations even when updating is blocked", () => {
+test("update visibility excludes blocked installations and unavailable releases", () => {
   const plugin = { installed: "1.0.0", recommendedVersion: "1.1.0", versions: [{ number: "1.1.0" }], updateBlocked: "内置插件随应用更新" };
-  assert.equal(hasUpdate(plugin), true);
+  assert.equal(hasUpdate(plugin), false);
+  assert.equal(hasUpdate({ ...plugin, updateBlocked: "" }), true);
   assert.equal(canInstall(plugin, { install() {}, canUpdate: true }), false);
   for (const installed of [undefined, "1.1.0"]) {
     assert.equal(hasUpdate({ ...plugin, installed }), false);

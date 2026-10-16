@@ -1,7 +1,7 @@
 import { iconMarkup as icon } from "../core/icons.js";
 import { enhanceSelect, refreshSelect, closeSelects } from "./select-control.js";
 import { marketplaceMarkup } from "./plugin-marketplace-view.js";
-import { recommended, hasUpdate as updating, canInstall, createCatalogLoader } from "./plugin-marketplace-runtime.js";
+import { recommended, hasUpdate as updating, canInstall, createCatalogLoader, syncInstalledPlugins, updateCandidates } from "./plugin-marketplace-runtime.js";
 import { documentationUrl, renderPluginReadme } from "./plugin-readme.js";
 
 const escape = (value) => String(value ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
@@ -40,13 +40,10 @@ export function createPluginMarketplace({ document, host, notify, showError = ({
     listeners.push(() => target.removeEventListener(event, callback));
   }
   function syncInstalled() {
-    const installed = host.installedPlugins();
-    for (const p of plugins) {
-      const local = installed.find(item => item.pluginId === p.id && !item.reasonCode?.startsWith("PLUGIN_MIGRATION_"));
-      p.installed = local?.version; p.enabled = local?.enabled;
-      p.updateBlocked = local?.source === "bundled" ? "内置插件随应用更新"
-        : local?.reasonCode === "PLUGIN_ID_CONFLICT" ? "请先在已安装列表中卸载冲突的插件副本。" : "";
-    }
+    syncInstalledPlugins(plugins, host.installedPlugins());
+    const updates = updateCandidates(plugins);
+    $("installed-tab").textContent = updates.length ? `已安装 · ${updates.length} 个可更新` : "已安装";
+    host.setUpdates?.(updates, openDetail);
   }
   function actionButton(p) {
     return `<button class="card-action detail" data-action="detail" data-id="${escape(p.id)}" aria-label="详情 ${escape(p.name)}">详情</button>`;
@@ -91,7 +88,7 @@ export function createPluginMarketplace({ document, host, notify, showError = ({
       tab.tabIndex = active ? 0 : -1;
     });
     $("content").setAttribute("aria-labelledby", "market-tab");
-    $("refresh").hidden = view !== "market";
+    $("refresh").hidden = false;
     $("categories").innerHTML = categories.map(c => `<button aria-pressed="${category === c}" data-category="${c}">${c}</button>`).join("");
     const cached = view === "market" && catalogState === "cached" && catalogError;
     $("notice").hidden = !cached;
@@ -147,7 +144,7 @@ export function createPluginMarketplace({ document, host, notify, showError = ({
       : doc?.state === "failed" ? documentFailure : "";
     const description = p.description?.trim() || "";
     const body = p.body?.trim() || "";
-    const versionRow = v => `<div class="version-row"><div class="version-title"><strong>v${escape(v.number)}</strong>${v.yanked ? '<span class="version-label warning">已撤回</span>' : v.prerelease ? '<span class="version-label warning">预发布</span>' : v.compatible === false ? '<span class="version-label warning">不兼容</span>' : ""}${v.date ? `<time>${escape(v.date)}</time>` : ""}</div>${v.notes?.trim() ? `<p>${escape(v.notes)}</p>` : ""}${v.yanked || v.reason ? `<p>${escape(v.yanked || v.reason)}</p>` : ""}</div>`;
+    const versionRow = v => `<div class="version-row"><div class="version-title"><strong>v${escape(v.number)}</strong>${v.yanked ? '<span class="version-label warning">已撤回</span>' : v.prerelease ? '<span class="version-label warning">预发布</span>' : v.compatible === false ? '<span class="version-label warning">不兼容</span>' : ""}${v.date ? `<time>${escape(v.date)}</time>` : ""}</div>${v.notes?.trim() ? `<p>${escape(v.notes)}</p>` : ""}${documentationUrl(v.releaseUrl) ? `<a href="${escape(documentationUrl(v.releaseUrl))}" data-document-link>查看发布说明</a>` : ""}${v.yanked || v.reason ? `<p>${escape(v.yanked || v.reason)}</p>` : ""}</div>`;
     const recent = next?.notes?.trim() ? next : null;
     const history = p.versions.filter(v => v !== recent && (v.notes?.trim() || v.yanked || v.reason));
     const apiVersion = next || p.versions.find(v => v.api != null);
@@ -165,7 +162,7 @@ export function createPluginMarketplace({ document, host, notify, showError = ({
     else if (p.compatibilityReason) compatibility = `<div class="compat-note">${escape(p.compatibilityReason)}</div>`;
     else if (updating(p) && p.enabled) compatibility = '<div class="compat-note">更新时会短暂停止插件，完成后自动恢复启用。</div>';
     const taskMarkup = task?.state === "running"
-      ? `<div class="task-state" role="status"><span class="task-label">${task.phase === "installing" ? task.reinstall ? "正在重新安装" : task.replace ? "正在替换" : task.update ? "正在更新" : "正在安装" : "正在下载"}${task.source ? ` · ${escape(task.source)}` : ""} · ${Math.round(task.progress)}%</span><div class="resource-progress" role="progressbar" aria-label="安装进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${task.progress}"><span style="width:${task.progress}%"></span></div></div>`
+      ? `<div class="task-state" role="status"><span class="task-label">${task.phase === "installing" ? task.reinstall ? "正在重新安装" : task.replace ? "正在替换" : task.update ? "正在准备依赖并更新" : "正在准备依赖并安装" : "正在下载"}${task.source ? ` · ${escape(task.source)}` : ""}${task.phase === "downloading" ? ` · ${Math.round(task.progress)}%` : ""}</span><div class="resource-progress" role="progressbar" aria-label="安装进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${task.progress}"><span style="width:${task.progress}%"></span></div></div>`
       : task?.state === "failed" ? `<div class="task-state task-error" role="alert">${task.installed ? "插件列表刷新失败" : "安装失败"} <button class="plain" data-task-error>查看错误详情</button></div>` : "";
     $("detail").innerHTML = `<div class="drawer-top"><span>插件详情</span><button class="icon-button" data-close aria-label="关闭插件详情">${icon("x")}</button></div>
       <div class="drawer-scroll"><div class="drawer-identity">${mark(p)}<div><h2 id="detail-title">${escape(p.name)}</h2><div class="detail-byline">${escape([p.author, p.category === "表现" ? "角色表现" : p.category].filter(Boolean).join(" · "))}${example(p)}</div></div></div>
@@ -221,21 +218,6 @@ export function createPluginMarketplace({ document, host, notify, showError = ({
     }
     if (selected === p.id) refreshDetail();
   }
-  let prefetching = false;
-  async function prefetchDocuments() {
-    if (!source?.prefetchReadmes || prefetching || disposed) return;
-    prefetching = true;
-    try {
-      const worker = async () => {
-        while (!disposed) {
-          const next = plugins.find(p => p.repository && !documents.has(documentKey(p)));
-          if (!next) return;
-          await loadDocument(next);
-        }
-      };
-      await Promise.all([worker(), worker()]);
-    } finally { prefetching = false; }
-  }
   function refreshDetail() {
     if (!$("detail-dialog").open) return;
     const scroll = $("detail").querySelector(".drawer-scroll")?.scrollTop || 0;
@@ -260,7 +242,6 @@ export function createPluginMarketplace({ document, host, notify, showError = ({
     }
     render(); refreshDetail();
     if ($("detail-dialog").open) void loadDocument(plugins.find(p => p.id === selected));
-    void prefetchDocuments();
   });
   async function startTask(id) {
     const p = plugins.find(p => p.id === id);
@@ -270,7 +251,8 @@ export function createPluginMarketplace({ document, host, notify, showError = ({
     const task = { state: "running", progress: installed ? 100 : 0, phase: installed ? "installing" : "downloading", abort, installed, update: Boolean(p.installed), reinstall: Boolean(p.installed && p.installed === recommended(p)?.number), replace: Boolean(p.installed && p.installed !== recommended(p)?.number && !updating(p)) };
     tasks.set(id, task); render(); refreshDetail();
     try {
-      if (!task.installed) await source.install(p, { signal: abort.signal, onProgress(progress, phase = "downloading", sourceName = "") {
+      let result;
+      if (!task.installed) result = await source.install(p, { signal: abort.signal, onProgress(progress, phase = "downloading", sourceName = "") {
         if (disposed || tasks.get(id) !== task) return;
         task.progress = Math.max(0, Math.min(100, Number(progress) || 0)); task.phase = phase; task.source = sourceName;
         if (selected === id) refreshDetail();
@@ -280,7 +262,9 @@ export function createPluginMarketplace({ document, host, notify, showError = ({
       task.phase = "installing";
       await host.refreshCurrent();
       if (disposed) return;
-      tasks.delete(id); notify(task.reinstall ? "已重新安装" : task.replace ? "已替换" : task.update ? "已更新" : "已安装", "success");
+      tasks.delete(id);
+      if (result?.warning) showError({ title: result.warning.message, error: result.warning.detail });
+      notify(task.reinstall ? "已重新安装" : task.replace ? "已替换" : task.update ? "已更新" : "已安装", "success");
     } catch (error) {
       if (disposed || tasks.get(id) !== task) return;
       if (abort.signal.aborted && task.phase !== "installing") { tasks.delete(id); notify("已取消安装"); }
@@ -299,7 +283,7 @@ export function createPluginMarketplace({ document, host, notify, showError = ({
   }
   function clearFilters() { category = "全部"; $("search").value = ""; $("compatible").checked = true; $("hide-installed").checked = false; $("sort").value = "default"; render(); }
   function refreshVisibleMarket() {
-    if (disposed || !source || view !== "market" || !page.classList.contains("is-active") || document.hidden
+    if (disposed || !source || !page.classList.contains("is-active") || document.hidden
       || refreshing || ["loading", "restoring"].includes(catalogState)) return;
     void loader.load();
   }

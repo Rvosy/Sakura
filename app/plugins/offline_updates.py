@@ -1,9 +1,6 @@
 """用当前发行包覆盖已安装的官方插件，保留用户配置与启停状态。"""
 from __future__ import annotations
 
-import json
-import os
-import re
 import shutil
 import uuid
 from pathlib import Path
@@ -11,115 +8,24 @@ from pathlib import Path
 import yaml
 
 from app.core.runtime_log import diagnostic_attributes, log_event
+from app.plugins import update_transaction
+from app.plugins.update_transaction import recover_installed_plugins
 from app.plugins.bundled_migrations import PAYLOAD_PATH, SOURCES
 from app.storage.atomic import atomic_write_text
 from app.storage.paths import StoragePaths
 from app.storage.runtime_roots import RuntimeRoots
 
 
-def _clear_transaction(transaction: Path) -> None:
-    # Keep the journal until all backup/staging contents are gone. A crash in
-    # cleanup must leave enough state to resume it on the next launch.
-    journal = transaction / "transaction.json"
-    for path in transaction.iterdir():
-        if path == journal:
-            continue
-        if path.is_dir() and not path.is_symlink():
-            shutil.rmtree(path)
-        else:
-            path.unlink()
-    journal.unlink()
-    transaction.rmdir()
-
-
-def _recover(transaction: Path, code: Path, dependencies: Path, state: dict, receipt: Path) -> None:
-    """Roll back interrupted publication before inventory or plugin imports."""
-    if not state["committed"]:
-        for name, target in (("code", code), ("dependencies", dependencies)):
-            saved = transaction / ("old-" + name)
-            if saved.exists():
-                if target.exists():
-                    shutil.rmtree(target)
-                os.replace(saved, target)
-            elif not state["existed"][name] and target.exists():
-                shutil.rmtree(target)
-        # Rollback is also a completed publication. A leftover cleanup journal
-        # must never roll back a later successful update on the next startup.
-        state = {**state, "committed": True}
-        state.pop("revision", None)
-        atomic_write_text(transaction / "transaction.json", json.dumps(state))
-    if "revision" in state:
-        atomic_write_text(receipt, state.pop("revision"))
-        atomic_write_text(transaction / "transaction.json", json.dumps(state))
-    try:
-        _clear_transaction(transaction)
-    except OSError as error:
-        log_event("Plugin", "插件更新备份清理失败", diagnostic_attributes(
-            error, reason_code="PLUGIN_UPDATE_CLEANUP_FAILED", stage="offline_update_cleanup"),
-            event="plugin.update.cleanup_failed", severity="warning")
-
-
-def recover_installed_plugins(roots: RuntimeRoots) -> dict[str, dict]:
-    """Restore pending updates independently of the current distribution payload."""
-    from app.plugins.inventory import PLUGIN_ID_PATTERN
-
-    paths = StoragePaths(roots.user_root)
-    failures = {}
-    for journal in sorted(paths.user_plugins_dir.glob(".update-*/transaction.json")):
-        transaction = journal.parent
-        plugin_id = re.sub(r"--[0-9a-f]{32}$", "", transaction.name.removeprefix(".update-"))
-        try:
-            state = json.loads(journal.read_text(encoding="utf-8"))
-            directory = state["directory"]
-            if (not PLUGIN_ID_PATTERN.fullmatch(plugin_id) or state["pluginId"] != plugin_id
-                    or transaction.is_symlink() or journal.is_symlink()
-                    or not isinstance(directory, str) or not directory or directory in {".", ".."}
-                    or "/" in directory or "\\" in directory or ":" in directory
-                    or directory.startswith(".update-")
-                    or not isinstance(state["committed"], bool)
-                    or set(state["existed"]) != {"code", "dependencies"}
-                    or any(not isinstance(value, bool) for value in state["existed"].values())):
-                raise ValueError("PLUGIN_UPDATE_STATE_INVALID")
-            code = paths.user_plugins_dir / directory
-            dependencies = paths.plugin_dependency_root_for(plugin_id)
-            if code.is_symlink() or dependencies.is_symlink():
-                raise ValueError("PLUGIN_UPDATE_STATE_INVALID")
-            _recover(transaction, code, dependencies, state, paths.config_dir / "plugin-updates" / plugin_id)
-        except Exception as error:
-            log_event("Plugin", "插件离线更新恢复失败", diagnostic_attributes(
-                error, reason_code="PLUGIN_UPDATE_RECOVERY_FAILED", stage="offline_update_recovery"),
-                event="plugin.update.failed", severity="error")
-            failures[plugin_id] = {
-                "reasonCode": "PLUGIN_UPDATE_RECOVERY_FAILED",
-                "diagnostics": diagnostic_attributes(error, reason_code="PLUGIN_UPDATE_RECOVERY_FAILED",
-                                                       stage="offline_update_recovery"),
-            }
-    return failures
-
-
 def _publish(transaction: Path, code: Path, dependencies: Path, plugin_id: str, revision: str, receipt: Path) -> None:
-    state = {"pluginId": plugin_id, "directory": code.name, "committed": False, "revision": revision,
-             "existed": {"code": code.exists(), "dependencies": dependencies.exists()}}
-    journal = transaction / "transaction.json"
-    atomic_write_text(journal, json.dumps(state))
     try:
-        for name, target in (("dependencies", dependencies), ("code", code)):
-            target.parent.mkdir(parents=True, exist_ok=True)
-            if target.exists():
-                os.replace(target, transaction / ("old-" + name))
-            prepared = transaction / ("new-" + name)
-            if prepared.exists():
-                os.replace(prepared, target)
-        state["committed"] = True
-        atomic_write_text(journal, json.dumps(state))
-    except Exception:
+        state = update_transaction.begin(transaction, code, dependencies, plugin_id, revision)
+    except Exception as error:
         try:
-            _recover(transaction, code, dependencies, {**state, "committed": False}, receipt)
-        except Exception as error:
+            update_transaction.rollback(transaction, code, dependencies)
+        except Exception:
             error.plugin_update_recovery_failed = True
-            raise
         raise
-    _recover(transaction, code, dependencies, state, receipt)
+    update_transaction.commit(transaction, code, dependencies, state, receipt)
 
 
 def update_installed_plugins(roots: RuntimeRoots, *, progress=None, recovery_failures=None) -> dict[str, dict]:

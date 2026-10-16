@@ -202,7 +202,8 @@ def test_invalid_optional_control_preserves_text_history_and_playback(tmp_path: 
         boundary.close()
 
 
-def test_update_event_creates_only_one_proactive_assistant_entry(tmp_path: Path) -> None:
+@pytest.mark.parametrize("plugin_only", [False, True])
+def test_update_event_creates_only_one_proactive_assistant_entry(tmp_path: Path, plugin_only: bool) -> None:
     events: list[dict[str, object]] = []
     received = []
 
@@ -232,12 +233,16 @@ def test_update_event_creates_only_one_proactive_assistant_entry(tmp_path: Path)
         event_publisher=events.append,
     )
     request = _update_request("update-available")
+    if plugin_only:
+        request["payload"]["event"]["payload"].update(version=None, plugins=[{
+            "id": "fixture.plugin", "name": "Fixture", "currentVersion": "1.0.0", "version": "1.1.0",
+        }])
 
     boundary.reserve_send(request)
     boundary.handle_send(request)
 
     assert received[0]["type"] == "update_available"
-    assert received[0]["payload"]["version"] == "1.2.0"
+    assert received[0]["payload"] == request["payload"]["event"]["payload"]
     entries = store.read_all("sakura")
     assert [entry.kind for entry in entries] == [TimelineKind.ASSISTANT]
     assert entries[0].origin == "proactive"

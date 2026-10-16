@@ -7981,6 +7981,8 @@ fn main() {
             autostart_settings::settings_autostart_get,
             autostart_settings::settings_autostart_save,
             update_settings::startup_update_check,
+            update_settings::plugin_update_candidates,
+            plugin_marketplace::startup_plugin_catalog,
             update_settings::chat_update_announce,
             update_settings::settings_update_install,
             update_settings::settings_update_open_portable_download,

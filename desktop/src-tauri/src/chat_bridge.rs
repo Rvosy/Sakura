@@ -69,7 +69,7 @@ pub struct ChatEventPublication {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub character_id: Option<String>,
     #[serde(skip)]
-    pub(crate) update_version: Option<String>,
+    pub(crate) update_versions: Option<Value>,
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
@@ -107,7 +107,7 @@ struct ActiveChat {
     publication: ChatSendPublication,
     started: bool,
     cancel_in_flight: bool,
-    update_version: Option<String>,
+    update_versions: Option<Value>,
     on_event: Channel<ChatEventPublication>,
     acceptance: Option<SyncSender<Result<ChatSendPublication, String>>>,
 }
@@ -191,7 +191,7 @@ impl ChatBridge {
         &self,
         window_label: &str,
         event: Value,
-        version: String,
+        version: Value,
         on_event: Channel<ChatEventPublication>,
     ) -> Result<PendingChatSend, String> {
         self.send_payload(
@@ -206,7 +206,7 @@ impl ChatBridge {
         &self,
         window_label: &str,
         mut payload: Value,
-        update_version: Option<String>,
+        update_versions: Option<Value>,
         on_event: Channel<ChatEventPublication>,
     ) -> Result<PendingChatSend, String> {
         authorize_window(window_label)?;
@@ -233,7 +233,7 @@ impl ChatBridge {
             publication: publication.clone(),
             started: false,
             cancel_in_flight: false,
-            update_version,
+            update_versions,
             on_event,
             acceptance: Some(acceptance),
         });
@@ -300,7 +300,7 @@ impl ChatBridge {
                                 "message": "回复状态无法确认，请检查连接。",
                                 "retryable": false,
                             })),
-                            update_version: active.update_version.clone(),
+                            update_versions: active.update_versions.clone(),
                         };
                         let _ = active.on_event.send(publication);
                     }
@@ -427,7 +427,7 @@ impl ChatBridge {
                 },
                 started: false,
                 cancel_in_flight: false,
-                update_version: None,
+                update_versions: None,
                 on_event: channel,
                 acceptance: None,
             });
@@ -480,7 +480,7 @@ impl ChatBridge {
             error: (event_type == "chat.failed")
                 .then(|| project_error(payload.get("error")))
                 .transpose()?,
-            update_version: active.update_version.clone(),
+            update_versions: active.update_versions.clone(),
         };
         // Channel::send queues into the WebView; it does not wait for a JS listener.
         // Send under the owner lock so a dispatch failure cannot overtake started.
@@ -628,13 +628,22 @@ fn validate_update_available_event(event: Option<&Value>) -> Result<(), String> 
         .get("payload")
         .and_then(Value::as_object)
         .filter(|payload| {
-            payload.len() == 5
+            (payload.len() == 5 || (payload.len() == 6 && payload["plugins"].is_array()))
                 && ["currentVersion", "version", "notes", "pubDate", "mode"]
                     .iter()
                     .all(|key| payload.contains_key(*key))
         })
         .ok_or_else(|| "INVALID_CHAT_PAYLOAD: update event payload is invalid".to_string())?;
     for key in ["currentVersion", "version"] {
+        if key == "version"
+            && payload[key].is_null()
+            && payload
+                .get("plugins")
+                .and_then(Value::as_array)
+                .is_some_and(|items| !items.is_empty())
+        {
+            continue;
+        }
         if !payload
             .get(key)
             .and_then(Value::as_str)
@@ -895,7 +904,7 @@ mod tests {
                         "mode": "installed",
                     }
                 }),
-                "1.2.0".to_string(),
+                json!({"application":"1.2.0","plugins":[]}),
                 channel(),
             )
             .unwrap();
@@ -905,15 +914,52 @@ mod tests {
             .observe_event(&event(&operation_id, "chat.started"))
             .unwrap()
             .unwrap();
-        assert_eq!(started.update_version.as_deref(), Some("1.2.0"));
+        assert_eq!(
+            started.update_versions,
+            Some(json!({"application":"1.2.0","plugins":[]}))
+        );
         assert!(!serde_json::to_string(&started).unwrap().contains("1.2.0"));
 
         let completed = bridge
             .observe_event(&event(&operation_id, "chat.completed"))
             .unwrap()
             .unwrap();
-        assert_eq!(completed.update_version.as_deref(), Some("1.2.0"));
+        assert_eq!(
+            completed.update_versions,
+            Some(json!({"application":"1.2.0","plugins":[]}))
+        );
         assert!(!serde_json::to_string(&completed).unwrap().contains("1.2.0"));
+    }
+
+    #[test]
+    fn plugin_only_notice_uses_the_normal_chat_slot() {
+        let bridge = bridge();
+        let plugins = json!([{"id":"fixture.plugin","name":"Fixture","currentVersion":"1.0.0","version":"1.1.0"}]);
+        let versions = json!({"application":null,"plugins":plugins});
+        let pending = bridge
+            .send_update_available(
+                "main",
+                json!({
+                    "type":"update_available", "payload":{"currentVersion":"1.0.0","version":null,
+                        "notes":null,"pubDate":null,"mode":"installed","plugins":plugins}
+                }),
+                versions.clone(),
+                channel(),
+            )
+            .unwrap();
+        let operation_id = pending.publication.operation_id.clone();
+        pending.wait().unwrap();
+        bridge
+            .observe_event(&event(&operation_id, "chat.started"))
+            .unwrap();
+        let completed = bridge
+            .observe_event(&event(&operation_id, "chat.completed"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(completed.update_versions, Some(versions));
+        assert!(!serde_json::to_string(&completed)
+            .unwrap()
+            .contains("fixture.plugin"));
     }
 
     #[test]

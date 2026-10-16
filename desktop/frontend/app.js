@@ -1,3 +1,4 @@
+import { checkUpdates } from "./chat/update-check.js";
 import { errorText } from "./core/error-display.js";
 import { composerPlaceholder, createChatPresentationReducer } from "./chat/chat-presentation.js";
 import { createTtsControllerHost } from "./audio/tts-controller.js";
@@ -1414,7 +1415,7 @@ const chatClient = createRealChatClient({
 });
 
 const updateAnnouncement = createUpdateAnnouncementController({
-  check: () => invoke("startup_update_check"),
+  check: () => checkUpdates(invoke, error => runtimeDiagnostics.record({ level: "warn", event: "update.auto_check.failed", error: String(error) })),
   announce: () => chatClient.announceUpdate(),
   isIdle: () => {
     const state = presentation.current();
@@ -2069,6 +2070,7 @@ await listenAppEvent("sakura-host-visual", event => {
 await listenAppEvent("sakura://update-preferences-changed", (event) => {
   updateAnnouncement.applyPreferences(event?.payload);
 });
+await listenAppEvent("sakura://plugin-updates-changed", () => { void updateAnnouncement.refresh(); });
 input.addEventListener("compositionstart", (event) => {
   updateAnnouncement.noteActivity();
   inputFocus.handleCompositionStart(event.data);

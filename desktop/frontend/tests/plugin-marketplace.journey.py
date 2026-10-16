@@ -349,9 +349,12 @@ def run():
             expect(page.locator('.card-open')).to_have_text('Latest plugin')
             page.locator('#installed-tab').click()
             page.evaluate("window.dispatchEvent(new Event('focus'))")
-            assert page.evaluate('fixture.catalogRequests') == 4
+            expect(page.locator('#refresh')).to_be_disabled()
+            page.evaluate("fixture.completeRefresh(fixture.disk)")
+            expect(page.locator('#refresh')).to_be_enabled()
+            before_dispose = page.evaluate('fixture.catalogRequests')
             page.evaluate("fixture.market.dispose();window.dispatchEvent(new Event('focus'))")
-            assert page.evaluate('fixture.catalogRequests') == 4
+            assert page.evaluate('fixture.catalogRequests') == before_dispose
             # Download failures and source names are external text, not markup.
             page.evaluate("""async () => {
               const {createPluginMarketplace} = await import('/desktop/frontend/settings/plugin-marketplace.js');

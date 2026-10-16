@@ -37,20 +37,21 @@ export function createUpdateAnnouncementController({
   let failedAttempts = 0;
   let idleSince = null;
   let timer = null;
+  let revision = 0;
+  let refreshRequested = false;
 
   function resetIdle() {
     idleSince = null;
   }
 
   async function refresh() {
-    if (disposed || checking || !enabled) return;
+    if (disposed || !enabled) return;
+    if (checking || dispatching || operationId) { refreshRequested = true; return; }
+    const current = revision;
     checking = true;
     try {
       const snapshot = await check();
-      if (!enabled) {
-        pending = false;
-        return;
-      }
+      if (disposed || !enabled || current !== revision) return;
       pending = snapshot?.status === "pending";
       if (!pending) {
         operationId = null;
@@ -61,11 +62,13 @@ export function createUpdateAnnouncementController({
         version: typeof snapshot?.version === "string" ? snapshot.version : null,
       });
     } catch (error) {
+      if (disposed || current !== revision) return;
       pending = false;
       onDiagnostic("update.auto_check.failed", { code: errorCode(error) });
     } finally {
       checking = false;
       resetIdle();
+      if (refreshRequested) { refreshRequested = false; void refresh(); }
     }
   }
 
@@ -83,8 +86,10 @@ export function createUpdateAnnouncementController({
     if (timestamp - idleSince < UPDATE_ANNOUNCEMENT_IDLE_MS) return;
     resetIdle();
     dispatching = true;
+    const current = revision;
     try {
       const response = await announce();
+      if (disposed || current !== revision) return;
       operationId = String(response?.operationId || "");
       if (!operationId) throw new Error("UPDATE_ANNOUNCEMENT_RESPONSE_INVALID");
       onDiagnostic("update.announcement.started", { operationId });
@@ -94,6 +99,7 @@ export function createUpdateAnnouncementController({
         settleTerminal(terminal);
       }
     } catch (error) {
+      if (disposed || current !== revision) return;
       const code = errorCode(error);
       if (code === "UPDATE_ANNOUNCEMENT_NOT_PENDING") pending = false;
       if (!TRANSIENT_DISPATCH_CODES.has(code) && code !== "UPDATE_ANNOUNCEMENT_NOT_PENDING") {
@@ -104,6 +110,7 @@ export function createUpdateAnnouncementController({
     } finally {
       dispatching = false;
       earlyTerminal = null;
+      if (refreshRequested && !operationId) { refreshRequested = false; void refresh(); }
     }
   }
 
@@ -115,6 +122,7 @@ export function createUpdateAnnouncementController({
       pending = false;
       failedAttempts = 0;
       onDiagnostic("update.announcement.completed", {});
+      if (refreshRequested) { refreshRequested = false; void refresh(); }
       return;
     }
     if (event.error?.code === "CHAT_DELIVERY_UNCONFIRMED") pending = false;
@@ -136,6 +144,7 @@ export function createUpdateAnnouncementController({
     refresh,
     tick,
     applyPreferences(snapshot) {
+      revision += 1;
       enabled = snapshot?.autoCheckEnabled === true;
       if (!enabled) {
         pending = false;
@@ -158,9 +167,11 @@ export function createUpdateAnnouncementController({
       resetIdle();
     },
     generationChanged() {
+      revision += 1;
       operationId = null;
       earlyTerminal = null;
       resetIdle();
+      void refresh();
     },
     isPending() {
       return pending || dispatching || Boolean(operationId);
@@ -178,6 +189,7 @@ export function createUpdateAnnouncementController({
     },
     dispose() {
       disposed = true;
+      revision += 1;
       if (timer !== null) clearInterval(timer);
       timer = null;
       pending = false;

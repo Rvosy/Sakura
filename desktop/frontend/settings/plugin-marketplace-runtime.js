@@ -8,7 +8,7 @@ export function recommended(plugin) {
 
 export function hasUpdate(plugin) {
   const version = recommended(plugin);
-  if (!plugin?.installed || !version) return false;
+  if (!plugin?.installed || plugin.updateBlocked || !version) return false;
   try { return compareVersions(version.number, plugin.installed) > 0; }
   catch { return false; }
 }
@@ -49,4 +49,22 @@ export function createCatalogLoader(source, onChange) {
     },
     dispose() { disposed = true; request?.abort(); },
   };
+}
+
+export function syncInstalledPlugins(plugins, installed) {
+  for (const plugin of plugins) {
+    const local = installed.find(item => item.pluginId === plugin.id && !item.reasonCode?.startsWith("PLUGIN_MIGRATION_"));
+    plugin.installed = local?.version;
+    plugin.enabled = local?.enabled;
+    plugin.updateBlocked = local?.source === "bundled" ? "内置插件随应用更新"
+      : local?.reasonCode === "PLUGIN_ID_CONFLICT" ? "请先卸载冲突的插件副本。" : "";
+  }
+  return plugins;
+}
+
+export function updateCandidates(plugins) {
+  return plugins.filter(hasUpdate).map(plugin => ({
+    id: plugin.id, name: plugin.name, currentVersion: plugin.installed,
+    version: recommended(plugin).number,
+  }));
 }

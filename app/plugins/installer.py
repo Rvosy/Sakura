@@ -10,6 +10,7 @@ import tempfile
 import time
 import unicodedata
 import zipfile
+import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -238,6 +239,32 @@ class LocalPluginInstaller:
                 shutil.rmtree(staging, ignore_errors=True)
             if rollback_error is not None:
                 raise rollback_error
+
+    @contextmanager
+    def prepare_update(self, source: Path, plugin_id: str, version: str):
+        """旧插件继续运行，候选代码和依赖准备完成后才交给调用方切换。"""
+        parent = self._paths.user_plugins_dir
+        transaction = parent / f".update-{plugin_id}--{uuid.uuid4().hex}"
+        transaction.mkdir()
+        try:
+            payload = transaction / "payload"
+            payload.mkdir()
+            self._extract_zip(source, payload)
+            root = self._payload_root(payload)
+            spec = self._validated_spec(root)
+            if (spec.plugin_id, spec.version) != (plugin_id, version):
+                raise PluginInstallError("PLUGIN_PACKAGE_IDENTITY_MISMATCH")
+            with self._dependencies.prepare(plugin_id, root, entry=spec.entry) as dependencies:
+                os.replace(root, transaction / "new-code")
+                if dependencies is not None:
+                    os.replace(dependencies, transaction / "new-dependencies")
+                yield transaction
+        except PluginDependencyError as error:
+            raise PluginInstallError(error.code) from error
+        finally:
+            # 已开始切换的目录由事务恢复负责，不能在退出时删掉旧版。
+            if not (transaction / "transaction.json").exists():
+                shutil.rmtree(transaction, ignore_errors=True)
 
     def uninstall(self, install_id: str) -> None:
         pending = self.begin_uninstall(install_id)

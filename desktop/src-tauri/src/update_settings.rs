@@ -7,7 +7,7 @@ use std::{
 };
 
 use crate::download_sources::{self, DownloadSources};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use tauri::Manager;
 use tauri::{AppHandle, Emitter, State, WebviewWindow};
@@ -56,7 +56,7 @@ pub struct UpdateSnapshot {
 #[serde(rename_all = "camelCase")]
 pub struct UpdatePreferencesSnapshot {
     schema_version: u32,
-    auto_check_enabled: bool,
+    pub(crate) auto_check_enabled: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -67,11 +67,21 @@ pub struct StartupUpdateSnapshot {
     version: Option<String>,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PluginUpdateCandidate {
+    pub id: String,
+    pub name: String,
+    pub current_version: String,
+    pub version: String,
+}
+
 #[derive(Clone, Debug)]
 struct UpdatePreferences {
-    auto_check_enabled: bool,
+    pub(crate) auto_check_enabled: bool,
     last_announced_version: Option<String>,
     last_announced_local_date: Option<String>,
+    plugin_announcements: Map<String, Value>,
 }
 
 #[derive(Clone, Debug)]
@@ -103,6 +113,7 @@ struct UpdateCoordinatorState {
     check_attempted: bool,
     checked_snapshot: Option<UpdateSnapshot>,
     candidate: Option<UpdateCandidate>,
+    plugins: Vec<PluginUpdateCandidate>,
     status: String,
 }
 
@@ -145,15 +156,9 @@ impl UpdateCoordinator {
             preferences.auto_check_enabled = enabled;
         })?;
         if !enabled {
-            self.state
-                .lock()
-                .map_err(|source_error| {
-                    crate::runtime_log::diagnostic_error(
-                        "UPDATE_COORDINATOR_UNAVAILABLE",
-                        source_error,
-                    )
-                })?
-                .candidate = None;
+            let mut state = self.state.lock().map_err(|error| error.to_string())?;
+            state.candidate = None;
+            state.plugins.clear();
         }
         self.preferences()
     }
@@ -252,39 +257,86 @@ impl UpdateCoordinator {
         startup_snapshot("pending", Some(&version))
     }
 
-    pub fn pending_event(&self) -> Result<(Value, String), String> {
+    pub fn pending_event(&self) -> Result<(Value, Value), String> {
         let state = self.state.lock().map_err(|source_error| {
             crate::runtime_log::diagnostic_error("UPDATE_COORDINATOR_UNAVAILABLE", source_error)
         })?;
-        let candidate = state
-            .candidate
-            .as_ref()
-            .ok_or_else(|| "UPDATE_ANNOUNCEMENT_NOT_PENDING".to_string())?;
-        Ok((candidate.event(), candidate.version().to_string()))
+        if state.candidate.is_none() && state.plugins.is_empty() {
+            return Err("UPDATE_ANNOUNCEMENT_NOT_PENDING".into());
+        }
+        let mut event = state.candidate.as_ref().map(|candidate| candidate.event()).unwrap_or_else(|| json!({
+            "type":"update_available", "payload":{"currentVersion":env!("CARGO_PKG_VERSION"),
+                "version":null,"notes":null,"pubDate":null,"mode":"installed"}
+        }));
+        event["payload"]["plugins"] = json!(state.plugins);
+        let versions = json!({"application":state.candidate.as_ref().map(|candidate| candidate.version()), "plugins":state.plugins});
+        Ok((event, versions))
+    }
+
+    pub(crate) fn set_plugins(
+        &self,
+        plugins: Vec<PluginUpdateCandidate>,
+    ) -> Result<StartupUpdateSnapshot, String> {
+        let preferences = load_preferences(&self.repository)?;
+        let today = local_date();
+        let mut state = self.state.lock().map_err(|error| error.to_string())?;
+        state.plugins = plugins
+            .into_iter()
+            .filter(|plugin| {
+                preferences.auto_check_enabled
+                    && preferences.plugin_announcements.get(&plugin.id)
+                        != Some(&json!({"version":plugin.version,"date":today}))
+            })
+            .collect();
+        Ok(startup_snapshot(
+            if state.candidate.is_some() || !state.plugins.is_empty() {
+                "pending"
+            } else {
+                "up_to_date"
+            },
+            None,
+        ))
     }
 
     pub fn observe_chat_event(&self, event: &ChatEventPublication) -> Result<(), String> {
-        let Some(version) = event.update_version.as_deref() else {
+        let Some(versions) = event.update_versions.as_ref() else {
             return Ok(());
         };
         if event.event_type != "chat.completed" {
             return Ok(());
         }
         save_preferences(&self.repository, |preferences| {
-            preferences.last_announced_version = Some(version.to_string());
-            preferences.last_announced_local_date = Some(local_date());
+            if let Some(version) = versions["application"].as_str() {
+                preferences.last_announced_version = Some(version.to_string());
+                preferences.last_announced_local_date = Some(local_date());
+            }
+            for plugin in versions["plugins"].as_array().into_iter().flatten() {
+                if let Some(id) = plugin["id"].as_str() {
+                    preferences.plugin_announcements.insert(
+                        id.to_string(),
+                        json!({"version":plugin["version"],"date":local_date()}),
+                    );
+                }
+            }
         })?;
-        let mut state = self.state.lock().map_err(|source_error| {
-            crate::runtime_log::diagnostic_error("UPDATE_COORDINATOR_UNAVAILABLE", source_error)
-        })?;
+        let mut state = self.state.lock().map_err(|error| error.to_string())?;
         if state
             .candidate
             .as_ref()
-            .is_some_and(|candidate| candidate.version() == version)
+            .is_some_and(|candidate| Some(candidate.version()) == versions["application"].as_str())
         {
             state.candidate = None;
             state.status = "announced".to_string();
         }
+        state.plugins.retain(|candidate| {
+            !versions["plugins"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .any(|plugin| {
+                    plugin["id"] == candidate.id && plugin["version"] == candidate.version
+                })
+        });
         Ok(())
     }
 }
@@ -537,6 +589,7 @@ fn preferences_from_document(document: &Value) -> Result<UpdatePreferences, Stri
             auto_check_enabled: true,
             last_announced_version: None,
             last_announced_local_date: None,
+            plugin_announcements: Map::new(),
         });
     };
     let update = update
@@ -550,6 +603,11 @@ fn preferences_from_document(document: &Value) -> Result<UpdatePreferences, Stri
     Ok(UpdatePreferences {
         auto_check_enabled,
         last_announced_version: optional_bounded_setting(update, "last_announced_version", 64)?,
+        plugin_announcements: update
+            .get("plugin_announcements")
+            .and_then(Value::as_object)
+            .cloned()
+            .unwrap_or_default(),
         last_announced_local_date: optional_bounded_setting(
             update,
             "last_announced_local_date",
@@ -566,13 +624,21 @@ fn save_preferences(
         let mut preferences = preferences_from_document(document)?;
         mutate(&mut preferences);
         let settings = validated_settings_mut(document)?;
-        settings.insert(
-            "update".to_string(),
+        let update = settings
+            .entry("update")
+            .or_insert_with(|| json!({}))
+            .as_object_mut()
+            .ok_or("UPDATE_SETTINGS_INVALID")?;
+        update.extend(
             json!({
                 "auto_check_enabled": preferences.auto_check_enabled,
                 "last_announced_version": preferences.last_announced_version,
                 "last_announced_local_date": preferences.last_announced_local_date,
-            }),
+                "plugin_announcements": preferences.plugin_announcements,
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
         );
         Ok(())
     })
@@ -1323,6 +1389,18 @@ pub(crate) async fn startup_update_check(
 }
 
 #[tauri::command]
+pub(crate) fn plugin_update_candidates(
+    window: WebviewWindow,
+    coordinator: State<'_, UpdateCoordinator>,
+    plugins: Vec<PluginUpdateCandidate>,
+) -> Result<StartupUpdateSnapshot, String> {
+    if window.label() != "main" {
+        return Err("PET_WINDOW_REQUIRED".into());
+    }
+    coordinator.set_plugins(plugins)
+}
+
+#[tauri::command]
 pub(crate) async fn chat_update_announce(
     window: WebviewWindow,
     on_event: tauri::ipc::Channel<chat_bridge::ChatEventPublication>,
@@ -1332,6 +1410,35 @@ pub(crate) async fn chat_update_announce(
     if window.label() != "main" {
         return Err("PET_WINDOW_REQUIRED".to_string());
     }
+    if !coordinator.preferences()?.auto_check_enabled {
+        return Err("UPDATE_ANNOUNCEMENT_NOT_PENDING".into());
+    }
+    let current = crate::shell_lifecycle::settings_response_payload(
+        crate::shell_lifecycle::dispatch_settings_request(
+            crate::shell_lifecycle::settings_core_handle(&lifecycle)?,
+            None,
+            "plugins.settings.get",
+            json!({}),
+        )
+        .await?,
+    )?;
+    coordinator
+        .state
+        .lock()
+        .map_err(|error| error.to_string())?
+        .plugins
+        .retain(|candidate| {
+            current["plugins"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .any(|plugin| {
+                    plugin["pluginId"] == candidate.id
+                        && plugin["source"] == "user"
+                        && plugin["version"] == candidate.current_version
+                        && plugin["reasonCode"] != "PLUGIN_ID_CONFLICT"
+                })
+        });
     let (event, version) = coordinator.pending_event()?;
     let handle = lifecycle
         .handle
@@ -1560,14 +1667,7 @@ mod tests {
         let document: Value =
             serde_json::from_slice(&fs::read(fixture.config_path()).unwrap()).unwrap();
         assert_eq!(document["settings"]["future"]["kept"], true);
-        assert_eq!(
-            document["settings"]["update"],
-            json!({
-                "auto_check_enabled": false,
-                "last_announced_version": null,
-                "last_announced_local_date": null,
-            })
-        );
+        assert_eq!(document["settings"]["update"]["auto_check_enabled"], false);
         assert!(fs::read_dir(&fixture.0).unwrap().all(|entry| !entry
             .unwrap()
             .file_name()
@@ -1604,7 +1704,7 @@ mod tests {
                         operation_id: "operation".to_string(),
                         reply: Some(json!({"segments": []})),
                         error: None,
-                        update_version: Some("1.2.0".to_string()),
+                        update_versions: Some(json!({"application":"1.2.0","plugins":[]})),
                     })
                     .unwrap();
             });
@@ -1629,6 +1729,7 @@ mod tests {
             auto_check_enabled: true,
             last_announced_version: Some("1.2.0".to_string()),
             last_announced_local_date: Some("2026-08-29".to_string()),
+            plugin_announcements: Map::new(),
         };
         assert!(!announcement_due(&preferences, "1.2.0", "2026-08-29"));
         assert!(announcement_due(&preferences, "1.3.0", "2026-08-29"));
@@ -1652,7 +1753,7 @@ mod tests {
             operation_id: "operation".to_string(),
             reply: Some(json!({"segments": []})),
             error: None,
-            update_version: Some("1.2.0".to_string()),
+            update_versions: Some(json!({"application":"1.2.0","plugins":[]})),
         };
 
         coordinator.observe_chat_event(&event).unwrap();
@@ -1673,8 +1774,11 @@ mod tests {
     fn failed_or_unrelated_terminals_never_write_the_daily_marker() {
         let fixture = Fixture::new();
         let coordinator = fixture.coordinator();
-        for (event_type, update_version) in [
-            ("chat.failed", Some("1.2.0".to_string())),
+        for (event_type, update_versions) in [
+            (
+                "chat.failed",
+                Some(json!({"application":"1.2.0","plugins":[]})),
+            ),
             ("chat.completed", None),
         ] {
             coordinator
@@ -1688,7 +1792,7 @@ mod tests {
                     operation_id: "operation".to_string(),
                     reply: None,
                     error: None,
-                    update_version,
+                    update_versions,
                 })
                 .unwrap();
         }
@@ -1985,5 +2089,71 @@ mod tests {
             prepare_installed_update_exit(true, || Err("shutdown failed".to_string())),
             Err("shutdown failed".to_string())
         );
+    }
+    #[test]
+    fn plugin_reminders_are_grouped_and_recorded_only_after_completion() {
+        let fixture = Fixture::new();
+        let coordinator = fixture.coordinator();
+        let plugin = |id: &str, version: &str| PluginUpdateCandidate {
+            id: id.into(),
+            name: id.into(),
+            current_version: "1.0.0".into(),
+            version: version.into(),
+        };
+        coordinator.state.lock().unwrap().candidate = Some(UpdateCandidate {
+            snapshot: available_snapshot("1.2.0"),
+        });
+        assert_eq!(
+            coordinator
+                .set_plugins(vec![plugin("a", "1.1.0"), plugin("b", "2.0.0")])
+                .unwrap()
+                .status,
+            "pending"
+        );
+        let (event, versions) = coordinator.pending_event().unwrap();
+        assert_eq!(event["payload"]["plugins"].as_array().unwrap().len(), 2);
+        assert_eq!(event["payload"]["version"], "1.2.0");
+        let mut terminal = ChatEventPublication {
+            character_id: None,
+            presentation: None,
+            cancel_handle: None,
+            event_type: "chat.failed".into(),
+            generation_id: "generation".into(),
+            generation_number: 1,
+            operation_id: "update".into(),
+            reply: None,
+            error: None,
+            update_versions: Some(versions),
+        };
+        coordinator.observe_chat_event(&terminal).unwrap();
+        assert!(!fixture.config_path().exists());
+        terminal.event_type = "chat.completed".into();
+        coordinator.observe_chat_event(&terminal).unwrap();
+        let reopened = fixture.coordinator();
+        assert_eq!(
+            reopened
+                .set_plugins(vec![plugin("a", "1.1.0"), plugin("b", "2.0.0")])
+                .unwrap()
+                .status,
+            "up_to_date"
+        );
+        assert_eq!(
+            reopened
+                .set_plugins(vec![plugin("a", "1.2.0")])
+                .unwrap()
+                .status,
+            "pending"
+        );
+        let (event, _) = reopened.pending_event().unwrap();
+        assert!(event["payload"]["version"].is_null());
+        reopened.set_auto_check_enabled(false).unwrap();
+        assert_eq!(
+            reopened
+                .set_plugins(vec![plugin("a", "1.2.0")])
+                .unwrap()
+                .status,
+            "up_to_date"
+        );
+        assert!(reopened.pending_event().is_err());
     }
 }

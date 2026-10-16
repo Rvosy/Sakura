@@ -13,6 +13,7 @@ import pytest
 from app.core_host.plugin_application import PluginApplicationHost
 from app.core_host.plugin_settings import PluginSettingsBoundary, PluginSettingsError
 from app.plugin_sdk.sakura_tools import ToolRegistry
+from app.plugins import update_transaction
 from app.plugins.installer import LocalPluginInstaller
 from app.plugins.inventory import PluginDesiredStateStore
 from app.plugins.dependencies import PluginDependencyRoots
@@ -79,17 +80,17 @@ def test_enabled_update_restores_processes_and_keeps_data(tmp_path, monkeypatch,
                 yield
 
             application._chat_boundary = SimpleNamespace(idle_runtime_update=busy)
-        original_begin = LocalPluginInstaller.begin_uninstall
+        original_begin = update_transaction.begin
 
-        def begin(stager, identity, **kwargs):
+        def begin(*args, **kwargs):
             # Windows must release loaded modules before the installer moves their directories.
             assert not psutil.pid_exists(old_pid)
             assert not psutil.pid_exists(consumer_pid)
             if outcome == "move_failure":
                 raise OSError("cannot move old code")
-            return original_begin(stager, identity, **kwargs)
+            return original_begin(*args, **kwargs)
 
-        monkeypatch.setattr(LocalPluginInstaller, "begin_uninstall", begin)
+        monkeypatch.setattr(update_transaction, "begin", begin)
         new = package(tmp_path / "new.zip", "fixture.provider", "1.1.0", fail=outcome == "setup_failure")
         request = {"revision": boundary.snapshot()["revision"], "sourcePath": str(new), "pluginId": "fixture.provider", "version": "2.0.0" if outcome == "wrong_version" else "1.1.0"}
         if outcome == "success":
@@ -251,3 +252,72 @@ def test_missing_migration_failed_install_releases_runtime_record_before_retry(t
         assert application.call_service(plugin_id, "ping") == "1.0.0"
     finally:
         application.close()
+
+
+@pytest.fixture
+def running_update(tmp_path):
+    roots = RuntimeRoots(tmp_path / "distribution", tmp_path / "user")
+    plugin_id = "fixture.update"
+    original = LocalPluginInstaller(roots).install(package(tmp_path / "old.zip", plugin_id), "zip", initial_enabled=True)
+    application = PluginApplicationHost(roots, "prepared-update", ToolRegistry())
+    boundary = PluginSettingsBoundary("prepared-update", "credential", roots, application_provider=lambda: application)
+    application.start()
+    request = {"revision": boundary.snapshot()["revision"], "sourcePath": str(package(tmp_path / "new.zip", plugin_id, "1.1.0")),
+               "pluginId": plugin_id, "version": "1.1.0"}
+    try:
+        yield roots, original, application, boundary, request
+    finally:
+        application.close()
+
+
+def test_dependency_preparation_failure_keeps_the_old_process_running(running_update, monkeypatch):
+    from app.plugins.dependencies import PluginDependencyError
+    _, original, application, boundary, request = running_update
+    pid = application.call_service(original.plugin_id, "pid")
+
+    @contextmanager
+    def fail_preparation(*args, **kwargs):
+        assert application.call_service(original.plugin_id, "ping") == "1.0.0"
+        raise PluginDependencyError("PLUGIN_DEPENDENCY_INSTALL_FAILED", "fixture download failed")
+        yield
+
+    monkeypatch.setattr(PluginDependencyRoots, "prepare", fail_preparation)
+    with pytest.raises(PluginSettingsError) as caught:
+        boundary.marketplace_install(request)
+    assert caught.value.code == "PLUGIN_DEPENDENCY_INSTALL_FAILED"
+    assert application.call_service(original.plugin_id, "pid") == pid
+    assert application.call_service(original.plugin_id, "ping") == "1.0.0"
+
+
+def test_cleanup_warning_keeps_new_version_and_startup_retries_only_cleanup(running_update, monkeypatch):
+    roots, original, application, boundary, request = running_update
+    with monkeypatch.context() as patch:
+        def fail_cleanup(*args):
+            raise PermissionError("backup locked")
+        patch.setattr(update_transaction, "_clear_transaction", fail_cleanup)
+        result = boundary.marketplace_install(request)
+    assert result["managementAction"] == "updated"
+    assert "backup locked" in result["warning"]["detail"]
+    assert application.call_service(original.plugin_id, "ping") == "1.1.0"
+    application.close()
+    assert update_transaction.recover_installed_plugins(roots) == {}
+    assert not list(original.code_dir.parent.glob(".update-*"))
+    assert '1.1.0' in (original.code_dir / "plugin.yaml").read_text()
+
+
+def test_interrupted_market_update_restores_old_code_on_startup(running_update, monkeypatch):
+    roots, original, application, boundary, request = running_update
+    before = (original.code_dir / "plugin.yaml").read_bytes()
+    replace = update_transaction.os.replace
+    def interrupt(source, target):
+        if Path(source).name == "new-code":
+            raise SystemExit("interrupted file switch")
+        return replace(source, target)
+    with monkeypatch.context() as patch:
+        patch.setattr(update_transaction.os, "replace", interrupt)
+        with pytest.raises(SystemExit):
+            boundary.marketplace_install(request)
+    application.close()
+    assert update_transaction.recover_installed_plugins(roots) == {}
+    assert (original.code_dir / "plugin.yaml").read_bytes() == before
+    assert not list(original.code_dir.parent.glob(".update-*"))

@@ -79,7 +79,7 @@ def test_updates_only_code_and_dependencies_preserving_user_state(installation, 
     assert record.can_uninstall
     assert (code / "plugin.py").read_bytes() == (replacement / "plugin.py").read_bytes()
     assert not (dependencies / "old.txt").exists()
-    assert (dependencies / "new.txt").read_text() == "new environment"
+    assert (dependencies / "new.txt").read_text(encoding="utf-8") == "new environment"
     assert settings.read_bytes() == saved_settings
     assert (roots.user_root / "config/plugins.yaml").read_bytes() == desired
 
@@ -94,7 +94,7 @@ def test_manifest_default_does_not_change_existing_enabled_choice(installation):
 def test_overwrites_every_installed_official_copy(installation, scenario):
     roots, code, dependencies, replacement = installation
     if scenario in {"equal", "newer"}:
-        manifest = yaml.safe_load((code / "plugin.yaml").read_text())
+        manifest = yaml.safe_load((code / "plugin.yaml").read_text(encoding="utf-8"))
         manifest["version"] = "0.2.0" if scenario == "equal" else "9.0.0"
         (code / "plugin.yaml").write_text(yaml.safe_dump(manifest))
     elif scenario == "modified":
@@ -133,11 +133,11 @@ def test_publish_failure_restores_both_old_directories(installation, monkeypatch
         if str(source).endswith("new-code"):
             raise OSError("code publication denied")
         return replace(source, target)
-    monkeypatch.setattr(updates.os, "replace", fail_new_code)
+    monkeypatch.setattr(updates.update_transaction.os, "replace", fail_new_code)
     failures = updates.update_installed_plugins(roots)
     assert "code publication denied" in str(failures[PLUGIN]["diagnostics"])
     assert _files(code) == before
-    assert (dependencies / "old.txt").read_text() == "old environment"
+    assert (dependencies / "old.txt").read_text(encoding="utf-8") == "old environment"
     assert not (dependencies / "new.txt").exists()
 
 
@@ -150,7 +150,7 @@ def test_interrupted_publication_recovers_before_plugin_discovery(installation, 
             raise SystemExit("power loss")
         return replace(source, target)
     with monkeypatch.context() as crash:
-        crash.setattr(updates.os, "replace", crash_before_code)
+        crash.setattr(updates.update_transaction.os, "replace", crash_before_code)
         with pytest.raises(SystemExit):
             updates.update_installed_plugins(roots)
     assert not code.exists()
@@ -160,7 +160,7 @@ def test_interrupted_publication_recovers_before_plugin_discovery(installation, 
     failures = updates.update_installed_plugins(roots)
     assert failures == {}
     assert _files(code) == before
-    assert (dependencies / "old.txt").read_text() == "old environment"
+    assert (dependencies / "old.txt").read_text(encoding="utf-8") == "old environment"
 
 
 def test_offline_replacement_does_not_import_code_or_reinstall_uninstalled_plugin(installation, monkeypatch):
@@ -182,7 +182,7 @@ def _interrupt_publication(roots, monkeypatch):
             raise SystemExit("power loss")
         return replace(source, target)
     with monkeypatch.context() as crash:
-        crash.setattr(updates.os, "replace", crash_before_code)
+        crash.setattr(updates.update_transaction.os, "replace", crash_before_code)
         with pytest.raises(SystemExit):
             updates.update_installed_plugins(roots)
 
@@ -195,7 +195,7 @@ def test_missing_update_catalog_does_not_prevent_recovery(installation, monkeypa
     shutil.rmtree(roots.distribution_root / updates.PAYLOAD_PATH)
     assert updates.update_installed_plugins(roots) == {}
     assert _files(code) == before
-    assert (dependencies / "old.txt").read_text() == "old environment"
+    assert (dependencies / "old.txt").read_text(encoding="utf-8") == "old environment"
     assert not (dependencies / "new.txt").exists()
 
 
@@ -229,7 +229,7 @@ def test_recovery_rejects_a_journal_that_escapes_the_plugin_directory(installati
     _interrupt_publication(roots, monkeypatch)
     transaction = _transaction(code)
     journal = transaction / "transaction.json"
-    state = json.loads(journal.read_text())
+    state = json.loads(journal.read_text(encoding="utf-8"))
     state["directory"] = "../outside"
     journal.write_text(json.dumps(state))
     outside = code.parent.parent / "outside"
@@ -237,7 +237,7 @@ def test_recovery_rejects_a_journal_that_escapes_the_plugin_directory(installati
     (outside / "keep.txt").write_text("original")
     failures = updates.recover_installed_plugins(roots)
     assert failures[PLUGIN]["reasonCode"] == "PLUGIN_UPDATE_RECOVERY_FAILED"
-    assert (outside / "keep.txt").read_text() == "original"
+    assert (outside / "keep.txt").read_text(encoding="utf-8") == "original"
     assert (transaction / "old-code/plugin.py").exists()
 
 
@@ -269,7 +269,7 @@ def test_locked_committed_backup_does_not_block_startup_or_next_update(installat
         return remove(path, *args, **kwargs)
     monkeypatch.setattr(updates.shutil, "rmtree", deny_backup)
     assert updates.update_installed_plugins(roots) == {}
-    assert json.loads((_transaction(code) / "transaction.json").read_text())["committed"]
+    assert json.loads((_transaction(code) / "transaction.json").read_text(encoding="utf-8"))["committed"]
     assert updates.recover_installed_plugins(roots) == {}
     (replacement / "plugin.py").write_text("class Plugin: upgraded_again = True\n")
     (roots.distribution_root / updates.PAYLOAD_PATH / "revision.txt").write_text("bundle-two")
@@ -293,7 +293,7 @@ def test_failed_recovery_isolates_plugin_without_aborting_core(installation, mon
         if str(source).endswith("old-code"):
             raise PermissionError("restore denied")
         return replace(source, target)
-    monkeypatch.setattr(updates.os, "replace", deny_restore)
+    monkeypatch.setattr(updates.update_transaction.os, "replace", deny_restore)
     def migrate(roots, **kwargs):
         assert PLUGIN in kwargs["excluded_plugin_ids"]
         return {}
@@ -321,7 +321,7 @@ def test_real_historical_release_sources_are_replaced(tmp_path, monkeypatch, dir
     code = roots.user_root / "plugins/user" / directory
     with zipfile.ZipFile(repo / "tests/fixtures/plugin_upgrade" / f"{directory}-{tag}.zip") as archive:
         archive.extractall(code)
-    manifest = yaml.safe_load((code / "plugin.yaml").read_text())
+    manifest = yaml.safe_load((code / "plugin.yaml").read_text(encoding="utf-8"))
     plugin_id = manifest["id"]
     monkeypatch.setattr(updates, "SOURCES", {plugin_id: {"directory": directory}})
     replacement = roots.distribution_root / updates.PAYLOAD_PATH / "plugins" / directory
@@ -337,7 +337,7 @@ def test_real_historical_release_sources_are_replaced(tmp_path, monkeypatch, dir
     assert updates.update_installed_plugins(roots) == {}
     assert (code / "plugin.py").read_bytes() == (replacement / "plugin.py").read_bytes()
     assert not PluginInventory(roots).scan().records[0].desired_enabled
-    assert private.read_text() == "existing model and configuration"
+    assert private.read_text(encoding="utf-8") == "existing model and configuration"
 
 
 def test_missing_payload_dependencies_does_not_publish_code_alone(installation):
@@ -364,11 +364,11 @@ def test_rollback_cleanup_journal_cannot_erase_a_later_update(installation, monk
             raise PermissionError("staging cleanup denied")
         return remove(path, *args, **kwargs)
     with monkeypatch.context() as failing:
-        failing.setattr(updates.os, "replace", fail_publication)
+        failing.setattr(updates.update_transaction.os, "replace", fail_publication)
         failing.setattr(updates.shutil, "rmtree", fail_cleanup)
         assert updates.update_installed_plugins(roots)[PLUGIN]["reasonCode"] == "PLUGIN_UPDATE_FAILED"
     transaction = _transaction(code)
-    assert json.loads((transaction / "transaction.json").read_text())["committed"]
+    assert json.loads((transaction / "transaction.json").read_text(encoding="utf-8"))["committed"]
     # Publish again before the leftover journal gets a chance to clean up.
     assert updates.update_installed_plugins(roots, recovery_failures={}) == {}
     assert updates.recover_installed_plugins(roots) == {}
@@ -388,7 +388,7 @@ def test_same_bundle_does_not_republish_or_undo_market_install(installation, mon
     package = tmp_path / "market-plugin"
     shutil.copytree(replacement, package)
     (package / "requirements.txt").unlink()
-    manifest = yaml.safe_load((package / "plugin.yaml").read_text())
+    manifest = yaml.safe_load((package / "plugin.yaml").read_text(encoding="utf-8"))
     manifest["version"] = "9.0.0"
     (package / "plugin.yaml").write_text(yaml.safe_dump(manifest))
     (package / "plugin.py").write_text("class Plugin: market = True\n")
@@ -413,13 +413,13 @@ def test_same_bundle_does_not_republish_or_undo_market_install(installation, mon
 
 def test_committed_update_recovers_receipt_before_skipping_republication(installation, monkeypatch):
     roots, code, _, _ = installation
-    write = updates.atomic_write_text
+    write = updates.update_transaction.atomic_write_text
     def crash_before_receipt(path, content):
         if path.parent.name == "plugin-updates":
             raise SystemExit("power loss after publication")
         return write(path, content)
     with monkeypatch.context() as patch:
-        patch.setattr(updates, "atomic_write_text", crash_before_receipt)
+        patch.setattr(updates.update_transaction, "atomic_write_text", crash_before_receipt)
         with pytest.raises(SystemExit):
             updates.update_installed_plugins(roots)
     def no_publish(*args, **kwargs):

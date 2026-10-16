@@ -12,15 +12,20 @@ use std::{
     collections::HashMap,
     fs,
     path::{Path, PathBuf},
-    sync::Mutex,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Mutex,
+    },
 };
-use tauri::{ipc::Channel, State, WebviewWindow};
+use tauri::{ipc::Channel, Emitter, State, WebviewWindow};
 use tokio::sync::watch;
 
 const CATALOG_URL: &str =
     "https://github.com/Rvosy/Sakura-Registry/releases/latest/download/catalog.json";
 pub struct MarketplaceState {
     cache_root: PathBuf,
+    startup_checked: AtomicBool,
+    fresh: AtomicBool,
     refresh: tokio::sync::Mutex<()>,
     catalog: Mutex<Option<Value>>,
     tasks: Mutex<HashMap<String, watch::Sender<bool>>>,
@@ -30,6 +35,8 @@ impl MarketplaceState {
     pub fn new(user_root: PathBuf) -> Self {
         Self {
             cache_root: user_root.join("data/cache/plugin-marketplace"),
+            startup_checked: AtomicBool::new(false),
+            fresh: AtomicBool::new(false),
             refresh: tokio::sync::Mutex::new(()),
             catalog: Mutex::new(None),
             tasks: Mutex::new(HashMap::new()),
@@ -254,6 +261,7 @@ pub(crate) fn settings_marketplace_open_url(
 #[tauri::command]
 pub(crate) async fn settings_marketplace_catalog(
     window: WebviewWindow,
+    app_handle: tauri::AppHandle,
     sources: State<'_, DownloadSources>,
     market: State<'_, MarketplaceState>,
     progress: Channel<Value>,
@@ -283,6 +291,16 @@ pub(crate) async fn settings_marketplace_catalog(
             json!({"catalog":catalog,"context":context,"readmes":market.cached_readmes(&catalog)}),
         );
     }
+    let catalog = refresh_catalog(&sources, &market, Some(&progress)).await?;
+    let _ = app_handle.emit_to("main", "sakura://plugin-updates-changed", ());
+    Ok(json!({"catalog":catalog,"context":context,"readmes":market.cached_readmes(&catalog)}))
+}
+
+async fn refresh_catalog(
+    sources: &DownloadSources,
+    market: &MarketplaceState,
+    progress: Option<&Channel<Value>>,
+) -> Result<Value, String> {
     // Reopened windows can read the cache while an older window's fetch finishes.
     // Serialize publication so an older response cannot overwrite a newer catalog.
     let _refresh = market.refresh.lock().await;
@@ -291,7 +309,9 @@ pub(crate) async fn settings_marketplace_catalog(
         &sources.load()?,
         8 * 1024 * 1024,
         |source, _, _| {
-            let _ = progress.send(json!({"source":source}));
+            if let Some(progress) = progress {
+                let _ = progress.send(json!({"source":source}));
+            }
         },
     )
     .await?;
@@ -305,7 +325,61 @@ pub(crate) async fn settings_marketplace_catalog(
     *market.catalog.lock().map_err(|source_error| {
         crate::runtime_log::diagnostic_error("MARKETPLACE_STATE_UNAVAILABLE", source_error)
     })? = Some(catalog.clone());
-    Ok(json!({"catalog":catalog,"context":context,"readmes":market.cached_readmes(&catalog)}))
+    market.fresh.store(true, Ordering::Relaxed);
+    Ok(catalog)
+}
+
+#[tauri::command]
+pub(crate) async fn startup_plugin_catalog(
+    window: WebviewWindow,
+    sources: State<'_, DownloadSources>,
+    market: State<'_, MarketplaceState>,
+    lifecycle: State<'_, ShellLifecycleState>,
+    coordinator: State<'_, crate::update_settings::UpdateCoordinator>,
+) -> Result<Option<Value>, String> {
+    if window.label() != "main" {
+        return Err("PET_WINDOW_REQUIRED".into());
+    }
+    if !coordinator.preferences()?.auto_check_enabled {
+        return Ok(None);
+    }
+    let handle = settings_core_handle(&lifecycle)?;
+    let context = settings_response_payload(
+        dispatch_settings_request(
+            handle.clone(),
+            None,
+            "plugins.marketplace.context",
+            json!({}),
+        )
+        .await?,
+    )?;
+    let installed = settings_response_payload(
+        dispatch_settings_request(handle, None, "plugins.settings.get", json!({})).await?,
+    )?;
+    if !installed["plugins"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .any(|plugin| plugin["source"] == "user")
+    {
+        return Ok(None);
+    }
+    if !market.startup_checked.swap(true, Ordering::Relaxed)
+        && !market.fresh.load(Ordering::Relaxed)
+    {
+        refresh_catalog(&sources, &market, None).await?;
+    }
+    if !market.fresh.load(Ordering::Relaxed) {
+        return Ok(None);
+    }
+    let catalog = market
+        .catalog
+        .lock()
+        .map_err(|error| error.to_string())?
+        .clone();
+    Ok(Some(
+        json!({"catalog":catalog,"context":context,"installed":installed["plugins"]}),
+    ))
 }
 
 // Temp packages live until Core has acknowledged installation, including when

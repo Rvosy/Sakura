@@ -1929,6 +1929,7 @@ async function startSettingsFrontend() {
         source: createMarketplaceSource({ invoke, Channel: window.__TAURI__.core.Channel, host: runtimePluginController }),
         openSources: () => openDownloadSources({ document, invoke, notify }).catch(error => setError(error)),
       });
+      runtimePluginMarketplace.onPageChanged("plugins");
     });
   }
   await initializeRuntimeSettingsSection(async () => {

@@ -120,3 +120,22 @@ test("screen settings surface edits and saves the ordinary plugin section", asyn
   assert.deepEqual(ui.errors, []);
   ui.feature.dispose();
 });
+
+
+test("installed plugin update opens its release without changing settings", async () => {
+  const ui = featureFixture(async () => assert.fail("viewing updates must not write settings"));
+  const data = catalog();
+  ui.feature.initialize(data);
+  const plugin = data.plugins[0];
+  const opened = [];
+  ui.feature.setUpdates([{ id: plugin.pluginId, currentVersion: "1.0.0", version: "1.1.0" }], id => opened.push(id));
+  ui.feature.openPlugin(plugin.installId);
+  const button = ui.document.getElementById("pluginDetail").querySelectorAll("button").find(item => item.textContent.includes("1.0.0 → 1.1.0"));
+  assert.ok(button);
+  await button.fire("click");
+  assert.deepEqual(opened, [plugin.pluginId]);
+  assert.equal(ui.feature.isDirty(), false);
+  ui.feature.setUpdates([], () => {});
+  assert.equal(ui.document.getElementById("pluginDetail").textContent.includes("1.0.0 → 1.1.0"), false);
+  ui.feature.dispose();
+});

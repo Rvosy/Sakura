@@ -221,3 +221,22 @@ test("a terminal that wins the announce response race is applied exactly once", 
   assert.equal(controller.isPending(), false);
   assert.equal(controller.snapshot().operationId, null);
 });
+
+
+test("a generation change replaces an in-flight check and disposal ignores its result", async () => {
+  const requests = [];
+  const controller = createUpdateAnnouncementController({
+    check: () => new Promise(resolve => requests.push(resolve)),
+    announce: async () => ({ operationId: "unused" }), isIdle: () => false,
+  });
+  const first = controller.refresh();
+  controller.generationChanged();
+  requests[0]({ status: "pending" });
+  await first;
+  assert.equal(controller.snapshot().pending, false);
+  assert.equal(requests.length, 2);
+  controller.dispose();
+  requests[1]({ status: "pending" });
+  await Promise.resolve();
+  assert.equal(controller.isPending(), false);
+});

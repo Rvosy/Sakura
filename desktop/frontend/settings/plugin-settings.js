@@ -70,6 +70,7 @@ export function createPluginSettingsFeature({
     managementBusy: false,
   };
   let pluginSettingsDialog = null;
+  let availableUpdates = [], openUpdate = () => {};
   const pluginModules = new Map();
   const pendingApplication = new Set();
   const settingsUI = createSettingsUI({ document, showPage, createSection: createContributedSection });
@@ -624,7 +625,8 @@ export function createPluginSettingsFeature({
         const metadata = pluginPresentation.pluginMetadata(plugin);
         const activity = pluginLiveStatus(plugin);
         const selected = plugin.id === pluginState.selectedId;
-        const signature = JSON.stringify([plugin.name, plugin.description, plugin.source, metadata, activity, selected]);
+        const update = availableUpdates.find(item => item.id === plugin.plugin_id);
+        const signature = JSON.stringify([update, plugin.name, plugin.description, plugin.source, metadata, activity, selected]);
         let card = oldCards.get(plugin.id);
         if (!card || card.dataset.signature !== signature) {
           card = pluginNode('button', `plugin-card${selected ? ' is-selected' : ''}`);
@@ -638,6 +640,7 @@ export function createPluginSettingsFeature({
           live.dataset.tooltip = activity.label;
           live.setAttribute('aria-label', `运行状态：${activity.label}`);
           titleLine.append(title, live);
+          if (update) titleLine.append(pluginNode("span", "plugin-system-problems", "可更新"));
           main.append(titleLine);
           if (plugin.description) main.append(pluginNode('span', 'card-desc', plugin.description));
           card.append(pluginIcon(plugin), main);
@@ -2373,6 +2376,13 @@ export function createPluginSettingsFeature({
     if (aside.childElementCount) heading.append(aside);
     fields.pluginDetail.append(heading);
     if (plugin.description) fields.pluginDetail.append(pluginNode('p', 'detail-desc', plugin.description));
+    const update = availableUpdates.find(item => item.id === plugin.plugin_id);
+    if (update) {
+      const button = pluginNode("button", "secondary-button", `查看更新 ${update.currentVersion} → ${update.version}`);
+      button.type = "button";
+      button.addEventListener("click", () => openUpdate(update.id));
+      fields.pluginDetail.append(button);
+    }
     if (status.message || status.diagnostic) {
       const notice = pluginNode('div', 'plugin-health-notice');
       if (plugin.diagnostics?.diagnostic) notice.append(pluginNode('p', '', status.message));
@@ -2980,6 +2990,13 @@ export function createPluginSettingsFeature({
   }
 
   return Object.freeze({
+    setUpdates(updates, open) {
+      openUpdate = open;
+      if (JSON.stringify(updates) === JSON.stringify(availableUpdates)) return;
+      availableUpdates = updates;
+      renderPluginList();
+      renderPluginDetail();
+    },
     installedPlugins: () => runtimePluginController.snapshot()?.plugins || [],
     initialize: runtimePluginController.initialize,
     openPlugin(installId, configure = false) {
