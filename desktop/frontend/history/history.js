@@ -8,7 +8,6 @@ import { createTtsControllerHost } from "../audio/tts-controller.js";
 import {
   preservePrependScroll,
   projectHistoryEntries,
-  validateHistoryPage,
 } from "./history-presentation.js";
 import {
   createHistoryLoadGuard,
@@ -123,9 +122,10 @@ function render({ animateRecent = false, animatedEntryIds = null } = {}) {
       meta.textContent = item.metaText;
       column.append(meta);
     }
-    const bubble = document.createElement(item.detailsContent ? "details" : "p");
+    const expandable = item.detailsContent || item.actionLabel;
+    const bubble = document.createElement(expandable ? "details" : "p");
     bubble.className = `entry-bubble entry-bubble-${item.role}`;
-    if (item.detailsContent) {
+    if (expandable) {
       bubble.dataset.entryId = item.entryId;
       bubble.open = expandedEntries.has(item.entryId);
       const summary = document.createElement("summary");
@@ -134,6 +134,27 @@ function render({ animateRecent = false, animatedEntryIds = null } = {}) {
       const detailsContent = document.createElement("div");
       detailsContent.className = "entry-details-content";
       detailsContent.textContent = item.detailsContent;
+      if (item.actionLabel) {
+        const open = document.createElement("button");
+        open.type = "button";
+        open.className = "button button-secondary";
+        open.textContent = item.actionLabel;
+        open.addEventListener("click", async () => {
+          open.disabled = true;
+          try {
+            await invoke("history_open_record", { request: {
+              coreGenerationId: identity.coreGenerationId,
+              characterId: identity.characterId, entryId: item.entryId,
+            } });
+          } catch (error) {
+            errors.show({ title: "无法打开记录", message: String(error).includes("HISTORY_PLUGIN_UNAVAILABLE")
+              ? "请启用对应插件后再试。" : "记录未能打开，请查看错误详情。", error });
+          } finally {
+            open.disabled = false;
+          }
+        });
+        detailsContent.append(document.createElement("br"), open);
+      }
       bubble.append(summary, detailsContent);
       bubble.addEventListener("toggle", () => {
         if (bubble.open) expandedEntries.add(item.entryId);
@@ -255,13 +276,13 @@ async function loadInitial() {
       characterId: bootstrap?.characterId,
       beforeCursor: null,
     });
-    const page = validateHistoryPage(await invoke("history_page", {
+    const page = await invoke("history_page", {
       request: {
         coreGenerationId: identity.coreGenerationId,
         characterId: identity.characterId,
         beforeCursor: null,
       },
-    }));
+    });
     if (!loadGuard.isCurrent(revision)) return;
     await ttsController?.rebind(page.coreGenerationId);
     if (!loadGuard.isCurrent(revision)) return;
@@ -312,13 +333,13 @@ async function loadEarlier() {
   const previous = { scrollTop: scroll.scrollTop, scrollHeight: scroll.scrollHeight };
   setLoading(true, "正在读取更早记录…");
   try {
-    const page = validateHistoryPage(await invoke("history_page", {
+    const page = await invoke("history_page", {
       request: {
         coreGenerationId: identity.coreGenerationId,
         characterId: identity.characterId,
         beforeCursor: identity.beforeCursor,
       },
-    }));
+    });
     if (!loadGuard.isCurrent(revision)) return;
     applyPage(page);
     const newEntryIds = new Set(page.entries.map((entry) => entry.entryId));

@@ -7904,6 +7904,7 @@ fn main() {
             chat_settings::current_subtitle_language,
             history_window::history_bootstrap,
             history_window::history_page,
+            history_window::history_open_record,
             history_window::close_history_window,
             history_window::reveal_history_window,
             runtime_log_window::runtime_log_viewer_bootstrap,

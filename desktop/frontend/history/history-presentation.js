@@ -1,6 +1,5 @@
 import { selectSegmentText, selectSegmentTracks } from "../pet/typewriter.js";
 
-const ENTRY_KINDS = new Set(["human", "assistant", "observation", "system"]);
 const SCHEDULED_SCREEN_DISPLAY_TEXT = "刚才留意了一下屏幕状态。";
 const SCHEDULED_SCREEN_TRIGGER_PREFIX = "定时屏幕观察已提交给对话模型";
 const LEGACY_MANUAL_SCREEN_TEXT = /^用户手动选择的 (\d+) 张屏幕截图已提交给对话模型。$/u;
@@ -120,6 +119,8 @@ function entryBubbles(entry, { assistantName, subtitleLanguage, formatTime }) {
     roleName,
     createdAt,
     content: entryDisplayText(entry),
+    detailsContent: text(entry.payload.activity?.details),
+    actionLabel: text(entry.payload.activity?.actionLabel),
   }];
 }
 
@@ -131,12 +132,8 @@ export function projectHistoryEntries(
     formatTime = formatHistoryTime,
   } = {},
 ) {
-  if (!Array.isArray(entries)) throw new Error("HISTORY_ENTRIES_INVALID");
   const scheduledEntriesByTurn = new Map();
   for (const entry of entries) {
-    if (!entry || !ENTRY_KINDS.has(entry.kind) || !entry.payload) {
-      throw new Error("HISTORY_ENTRY_INVALID");
-    }
     if (isScreenObservation(entry)) {
       const turnEntries = scheduledEntriesByTurn.get(entry.turnId) || [];
       turnEntries.push(entry);
@@ -160,7 +157,7 @@ export function projectHistoryEntries(
   }
   let previousGroup = "";
   return bubbles.map((bubble) => {
-    const showMeta = bubble.group !== previousGroup;
+    const showMeta = bubble.role === "system" || bubble.group !== previousGroup;
     previousGroup = bubble.group;
     return Object.freeze({
       ...bubble,
@@ -168,25 +165,6 @@ export function projectHistoryEntries(
       metaText: `${bubble.roleName} · ${bubble.createdAt}`,
     });
   });
-}
-
-export function validateHistoryPage(page) {
-  if (
-    !page
-    || page.schemaVersion !== 1
-    || typeof page.coreGenerationId !== "string"
-    || !page.coreGenerationId
-    || typeof page.characterId !== "string"
-    || !page.characterId
-    || !Number.isSafeInteger(page.totalCount)
-    || page.totalCount < 0
-    || !Array.isArray(page.entries)
-    || typeof page.hasMore !== "boolean"
-    || (page.hasMore ? typeof page.beforeCursor !== "string" || !page.beforeCursor : page.beforeCursor !== null)
-  ) {
-    throw new Error("HISTORY_PAGE_INVALID");
-  }
-  return page;
 }
 
 export function preservePrependScroll(previous, currentScrollHeight) {

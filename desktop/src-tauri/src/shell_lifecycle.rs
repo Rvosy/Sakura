@@ -889,7 +889,12 @@ fn drain_chat_events(state: &mut WorkerState, events: &Sender<DesktopProjection>
             }
         } else if matches!(
             event.get("name").and_then(Value::as_str),
-            Some("host.screen.capture" | "host.visual.apply" | "host.visual.cancel")
+            Some(
+                "host.screen.capture"
+                    | "host.visual.apply"
+                    | "host.visual.cancel"
+                    | "host.history.changed"
+            )
         ) {
             let _ = events.send(DesktopProjection::Host(event));
         }

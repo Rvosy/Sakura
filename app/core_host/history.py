@@ -1,19 +1,18 @@
-"""Read-only current-character history boundary for the Runtime v2 shell."""
+"""当前角色的历史读取与活动记录入口。"""
 
 from __future__ import annotations
 
 import hmac
-import json
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
 from app.core_host.protocol import response
 from app.storage.paths import StoragePaths
-from app.storage.timeline import TimelineDataError, TimelineStore
+from app.storage.timeline import TimelineDataError, TimelineEntry, TimelineStore
 
 
-HISTORY_REQUEST_NAMES = frozenset({"ui.history.page"})
+HISTORY_REQUEST_NAMES = frozenset({"ui.history.page", "ui.history.open_record"})
 HISTORY_PAGE_LIMIT = 50
 _HISTORY_RESPONSE_BYTES = 700 * 1024
 
@@ -42,10 +41,12 @@ class HistoryBoundary:
         user_root: Path,
         *,
         session_provider: Callable[[], object | None],
+        application_provider: Callable[[], object | None] = lambda: None,
     ) -> None:
         self._generation_id = generation_id
         self._generation_credential = generation_credential
         self._session_provider = session_provider
+        self._application_provider = application_provider
         self._timeline = TimelineStore(StoragePaths(user_root).timeline_database())
 
     def handle(self, request: dict[str, Any]) -> dict[str, Any]:
@@ -57,6 +58,10 @@ class HistoryBoundary:
         ):
             raise RuntimeError("GENERATION_IDENTITY_MISMATCH")
         try:
+            if request.get("name") == "ui.history.open_record":
+                self._open_record(request.get("payload"))
+                return response(request, generation_id=self._generation_id,
+                    generation_credential=self._generation_credential, payload={"opened": True})
             if request.get("name") != "ui.history.page":
                 raise HistoryBoundaryError("UNKNOWN_COMMAND", "不支持的聊天记录请求。")
             payload = request.get("payload")
@@ -137,6 +142,26 @@ class HistoryBoundary:
                 ),
             )
 
+    def _open_record(self, payload) -> None:
+        if (not isinstance(payload, Mapping) or set(payload) != {"expectedCharacterId", "entryId"}
+                or not isinstance(payload["entryId"], str)):
+            raise HistoryBoundaryError("INVALID_REQUEST", "活动记录请求格式无效。")
+        character_id = self._current_character_id()
+        if character_id != payload["expectedCharacterId"]:
+            raise HistoryBoundaryError("HISTORY_CHARACTER_MISMATCH", "当前角色已经变化，请刷新聊天记录。")
+        entry = self._timeline.get_entry(character_id, payload["entryId"])
+        activity = entry.payload.get("activity") if entry else None
+        if not activity:
+            raise HistoryBoundaryError("HISTORY_RECORD_NOT_FOUND", "这条记录没有可打开的页面。")
+        application = self._application_provider()
+        if application is None:
+            raise HistoryBoundaryError("HISTORY_PLUGIN_UNAVAILABLE", "插件尚未就绪，请稍后重试。")
+        try:
+            application.chat.open_record(activity["sourcePluginId"], activity["recordId"])
+        except Exception as error:
+            raise HistoryBoundaryError(getattr(error, "code", "HISTORY_RECORD_OPEN_FAILED"),
+                getattr(error, "public_message", str(error))) from error
+
     def _current_character_id(self) -> str:
         session = self._session_provider()
         character = getattr(session, "character", None) if session is not None else None
@@ -163,48 +188,40 @@ class HistoryBoundary:
         )
 
 
-def _entry_mapping(entry: object) -> dict[str, Any]:
-    kind = getattr(entry, "kind")
-    kind_value = getattr(kind, "value", kind)
-    payload = getattr(entry, "payload")
-    if not isinstance(payload, Mapping):
-        raise HistoryBoundaryError("TIMELINE_READ_FAILED", "聊天记录读取失败，请稍后刷新。")
-    kind_text = str(kind_value)
+def _entry_mapping(entry: TimelineEntry) -> dict[str, Any]:
+    payload = entry.payload
+    kind_text = entry.kind.value
     if kind_text == "assistant":
-        segments = payload.get("segments")
-        if not isinstance(segments, list):
-            raise HistoryBoundaryError("TIMELINE_READ_FAILED", "聊天记录读取失败，请稍后刷新。")
         public_payload: dict[str, Any] = {
             "segments": [
                 {
-                    "text": str(segment.get("text", "")),
-                    "translation": str(segment.get("translation", "")),
-                    "suppressTts": segment.get("suppressTts") is True,
+                    "text": segment["text"],
+                    "translation": segment["translation"],
+                    "suppressTts": segment["suppressTts"],
                 }
-                for segment in segments
-                if isinstance(segment, Mapping)
+                for segment in payload["segments"]
             ]
         }
     else:
-        public_payload = {"text": str(payload.get("text", ""))}
+        public_payload = {"text": payload["text"]}
         if kind_text == "observation":
-            if "sourcePluginId" in payload:
-                public_payload["sourcePluginId"] = payload["sourcePluginId"]
-            for field in ("sourcePluginName", "notificationKind"):
+            for field in ("sourcePluginId", "sourcePluginName", "notificationKind"):
                 if field in payload:
                     public_payload[field] = payload[field]
             visual = payload.get("visual")
             if visual and "imageCount" in visual:
                 public_payload["visual"] = {"imageCount": visual["imageCount"]}
-        elif kind_text == "system" and "eventType" in payload:
-            public_payload["eventType"] = payload["eventType"]
+        elif kind_text == "system":
+            for field in ("eventType", "activity"):
+                if field in payload:
+                    public_payload[field] = payload[field]
     return {
-        "entryId": str(getattr(entry, "entry_id")),
-        "turnId": str(getattr(entry, "turn_id")),
+        "entryId": entry.entry_id,
+        "turnId": entry.turn_id,
         "kind": kind_text,
-        "origin": str(getattr(entry, "origin")),
-        "createdAt": str(getattr(entry, "created_at")),
-        "payload": json.loads(json.dumps(public_payload, ensure_ascii=False)),
+        "origin": entry.origin,
+        "createdAt": entry.created_at,
+        "payload": public_payload,
     }
 
 

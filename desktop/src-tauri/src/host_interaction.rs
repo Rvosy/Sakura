@@ -120,6 +120,14 @@ pub fn dispatch(app: &tauri::AppHandle, handle: &ShellLifecycleHandle, event: Va
     let Some(mut payload) = event.get("payload").cloned().filter(Value::is_object) else {
         return;
     };
+    if name == "host.history.changed" {
+        let _ = app.emit_to(
+            crate::history_window::HISTORY_WINDOW_LABEL,
+            crate::history_window::HISTORY_REFRESH_REQUESTED_EVENT,
+            (),
+        );
+        return;
+    }
     if matches!(name, "host.visual.apply" | "host.visual.cancel") {
         payload["generationId"] = json!(generation_id);
         payload["type"] = json!(name);

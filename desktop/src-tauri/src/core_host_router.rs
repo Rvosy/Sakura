@@ -547,7 +547,12 @@ fn route_message(shared: &Arc<Shared>, message: Value) -> Result<(), String> {
             let event_name = object.get("name").and_then(Value::as_str);
             let host_request = matches!(
                 event_name,
-                Some("host.screen.capture" | "host.visual.apply" | "host.visual.cancel")
+                Some(
+                    "host.screen.capture"
+                        | "host.visual.apply"
+                        | "host.visual.cancel"
+                        | "host.history.changed"
+                )
             );
             let host_start = event_name == Some("host.chat.started");
             if pending.is_none() && !active_chat {
@@ -951,6 +956,14 @@ mod tests {
                 .unwrap()
                 .unwrap()["name"],
             "host.screen.capture"
+        );
+        super::route_message(&router.shared, host_event("record", "host.history.changed")).unwrap();
+        assert_eq!(
+            router
+                .recv_event_timeout(Duration::from_millis(10))
+                .unwrap()
+                .unwrap()["name"],
+            "host.history.changed"
         );
         router.close().unwrap();
     }

@@ -31,11 +31,14 @@ class ChatHost:
 
     def __init__(self, *, boundary_provider: Callable, screen_host: ScreenHost,
                  emit_callback: Callable, commit_scope: Callable | None = None,
-                 notify_callback: Callable = lambda name, payload: None) -> None:
+                 notify_callback: Callable = lambda name, payload: None,
+                 invoke_callback: Callable | None = None) -> None:
         self._boundary_provider = boundary_provider
         self._screen = screen_host
         self._emit = emit_callback
         self._notify = notify_callback
+        self._invoke_callback = invoke_callback
+        self._record_openers: dict[str, str] = {}
         self._last_state = None
         self._commit_scope = commit_scope or (lambda owner, commit: commit())
         self._lock = threading.RLock()
@@ -100,6 +103,35 @@ class ChatHost:
                     or self._ui["activityRevision"] != expected.get("activityRevision")):
                 raise RealChatRejection("CHAT_BUSY", "当前互动状态已变化")
             return commit()
+
+    def register_record_opener(self, handle: str) -> None:
+        owner = caller_identity()
+        with self._lock:
+            self._commit_scope(owner, lambda: self._record_openers.__setitem__(owner[0], handle))
+
+    def open_record(self, plugin_id: str, record_id: str) -> None:
+        with self._lock:
+            handle = self._record_openers.get(plugin_id)
+        if handle is None:
+            raise RealChatRejection("HISTORY_PLUGIN_UNAVAILABLE", "请启用对应插件后再打开记录")
+        self._invoke_callback(handle, "chat.history.open", record_id)
+
+    def record_activity(self, request: Mapping) -> dict:
+        owner = caller_identity()
+        if not isinstance(request, Mapping) or set(request) != {
+            "sessionId", "text", "details", "recordId", "actionLabel"
+        }:
+            raise RealChatRejection("INVALID_CHAT_PAYLOAD", "活动记录格式无效")
+        boundary = self._boundary_provider()
+        if boundary is None:
+            raise RealChatRejection("CHAT_SESSION_STALE", "当前角色会话尚未就绪")
+        result = self._commit_scope(owner, lambda: boundary.record_plugin_activity(owner[0], request))
+        try:
+            self._emit("host.history.changed", {**result, "requestId": result["entryId"]})
+        except Exception as error:
+            log_message("warning", "活动已保存，历史刷新通知失败",
+                fields={"entry_id": result["entryId"], "error": str(error)}, component="plugin", plugin_id=owner[0])
+        return result
 
     def submit(self, request: Mapping) -> dict:
         owner = caller_identity()
@@ -224,6 +256,7 @@ class ChatHost:
 
     def revoke_scope(self, plugin_id: str) -> None:
         with self._lock:
+            self._record_openers.pop(plugin_id, None)
             self._owner_revisions[plugin_id] = self._owner_revisions.get(plugin_id, 0) + 1
             active = [(key, value) for key, value in self._active.items() if value.owner[0] == plugin_id]
         self._revoke(active)

@@ -688,6 +688,26 @@ class RealChatBoundary:
                     "idle": available and not self._executions and not self._runtime_update_pending,
                     "interactionRevision": self._interaction_revision}
 
+    def record_plugin_activity(self, source_plugin_id: str, request: Mapping) -> dict:
+        from app.storage.timeline import NewTimelineEntry, TimelineKind
+
+        with self._lock:
+            state = self.current_host_state()
+            if not state["sessionId"] or state["sessionId"] != request["sessionId"]:
+                raise RealChatRejection("CHAT_SESSION_STALE", "当前角色会话已变化")
+            if self._timeline is None:
+                raise RealChatRejection("TIMELINE_NOT_READY", "聊天记录尚未就绪") from self._timeline_error
+            entry_id = uuid.uuid4().hex
+            self._timeline.append(NewTimelineEntry(
+                entry_id=entry_id, turn_id=entry_id, character_id=state["characterId"],
+                kind=TimelineKind.SYSTEM, origin="host", created_at=datetime.now().astimezone().isoformat(),
+                payload={"text": request["text"], "activity": {
+                    "sourcePluginId": source_plugin_id, "recordId": request["recordId"],
+                    "details": request["details"], "actionLabel": request["actionLabel"],
+                }},
+            ))
+            return {"entryId": entry_id, "characterId": state["characterId"]}
+
     def reserve_plugin_message(self, source_plugin_id: str, session_id: str, message: str,
                                observations: Sequence[Any] = (), *, history_metadata: Mapping[str, Any] | None = None) -> str:
         if (not isinstance(source_plugin_id, str) or not source_plugin_id

@@ -833,12 +833,20 @@ def _validate_payload(kind: TimelineKind, payload: dict[str, Any]) -> None:
             _validate_visual_metadata(visual)
         return
     if kind is TimelineKind.SYSTEM:
-        allowed = {"text", "eventType"}
+        allowed = {"text", "eventType", "activity"}
         if not set(payload) <= allowed or "text" not in payload:
             raise TimelineDataError("TIMELINE_PAYLOAD_SHAPE_INVALID")
         _bounded_text("text", payload.get("text"), MAX_TEXT_CHARS, allow_empty=True)
         if "eventType" in payload:
             _bounded_text("eventType", payload["eventType"], MAX_ORIGIN_CHARS)
+        if "activity" in payload:
+            activity = payload["activity"]
+            if not isinstance(activity, dict):
+                raise TimelineDataError("TIMELINE_PAYLOAD_SHAPE_INVALID")
+            _exact_keys(activity, {"sourcePluginId", "recordId", "details", "actionLabel"})
+            for key, limit in (("sourcePluginId", 64), ("recordId", MAX_ID_CHARS),
+                               ("details", MAX_TEXT_CHARS), ("actionLabel", 100)):
+                _bounded_text(key, activity[key], limit, allow_empty=key == "details")
         return
     raise TimelineDataError("TIMELINE_KIND_INVALID")
 

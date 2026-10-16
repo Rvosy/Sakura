@@ -152,6 +152,10 @@ ASR poll 返回 running、succeeded（text/language）、failed（errorCode/diag
 
 `sakura.host.chat.current()` 返回当前 sessionId、characterId、characterName 与 idle。主动插件调用 `submit({sessionId, message, resources})`，resources 为本次截图的 resourceId 列表。受理返回操作身份；繁忙或会话变化时返回 accepted false 及 reasonCode，不排队等待旧意图变得可执行。需要在历史中保留更新通知时可附 `notification: {kind: "update", text}`。
 
+只需留下活动记录时，调用 `chat.record_activity({sessionId, text, details, recordId, actionLabel})`。`text` 是收起时的摘要，`details` 是展开后的文字，可为空；`actionLabel` 是展开后的入口名称。成功返回 `entryId/characterId`。宿主写入带来源和时间的系统记录，不请求模型、不等待空闲，也不播放语音。
+
+插件用 `context._register_callback("chat.history.open", open_record)` 注册接收 `recordId` 的回调，再把返回的 handle 传给 `chat.register_record_opener(handle)`。点击历史入口时，宿主核对条目所属角色，再调用当前插件的回调；插件重启后需重新登记。`recordId` 应是插件保存的稳定业务编号，不能使用临时端口或回调句柄。插件停用后，历史仍保留，入口提示先启用插件。
+
 `sakura.host.screen.capture({operationId, sessionId, resolution})` 请求受控截图，resolution 为 fullscreen/720p/1080p/2160p。返回 resourceId、尺寸与拍摄信息；宿主保管图像正文。未交付的资源调用 release(resourceId)，未完成或结果未知的采集调用 release_capture(operationId)。不能把旧会话截图用于新会话。
 
 `sakura.host.visual.current()` 返回 characterId/bindingId/resourceId 目标；`apply({target, control: {version, resourceId, payload}})` 返回 accepted/requestId/status，后续 status/release 管理请求。`list(character_id?)` 取得资源目录，`select({target, resourceId})` 选择资源，null 恢复包默认。保存偏好与实际应用分别报告；繁忙时拒绝，不覆盖用户正在进行的互动。表现格式和前端接入见[角色与表现](characters.md)。

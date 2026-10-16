@@ -221,9 +221,10 @@ class PluginRuntimeApplication:
             emit_callback=self._emit_desktop_event)
         self.chat = ChatHost(boundary_provider=lambda: self._chat_boundary,
             screen_host=self.screen, emit_callback=self._emit_desktop_event, commit_scope=commit_scope,
-            notify_callback=self.emit_event)
+            notify_callback=self.emit_event, invoke_callback=self.invoke_callback)
         self._manager.install_host_service(HOST_SCREEN_SERVICE, self.screen, exports=("capture", "release", "release_capture"))
-        self._manager.install_host_service(HOST_CHAT_SERVICE, self.chat, exports=("current", "submit", "cancel"))
+        self._manager.install_host_service(HOST_CHAT_SERVICE, self.chat,
+            exports=("current", "submit", "cancel", "record_activity", "register_record_opener"))
         self.visual_controls = HostVisualService(binding_provider=self._current_visual_binding,
             emit_callback=self._emit_desktop_event, is_idle=lambda: self.chat.current()["idle"],
             select_callback=self._select_visual_resource, list_callback=self._list_visual_resources,

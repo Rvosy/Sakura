@@ -4,7 +4,6 @@ import test from "node:test";
 import {
   preservePrependScroll,
   projectHistoryEntries,
-  validateHistoryPage,
 } from "../history/history-presentation.js";
 
 const NOW = "2026-08-29T12:00:00+08:00";
@@ -55,6 +54,39 @@ test("observation content is preserved as plain text", () => {
   ], { formatTime: () => "now" });
 
   assert.equal(projected[0].content, unsafe);
+});
+
+test("consecutive lifecycle records each display their own timestamp", () => {
+  const events = [
+    ["app.closed", "2026-10-15T03:29:13+08:00"],
+    ["app.started", "2026-10-15T08:10:00+08:00"],
+    ["app.closed", "2026-10-15T20:45:02+08:00"],
+    ["app.started", "2026-10-16T00:30:00+08:00"],
+  ];
+  const projected = projectHistoryEntries(events.map(([eventType, createdAt], index) =>
+    entry("system", { text: eventType, eventType }, {
+      entryId: `lifecycle-${index}`, turnId: `lifecycle-${index}`, origin: "host", createdAt,
+    })), { formatTime: value => value });
+
+  assert.equal(projected.length, events.length);
+  projected.forEach((bubble, index) => {
+    assert.equal(bubble.showMeta, true);
+    assert.ok(bubble.metaText.includes(events[index][1]));
+  });
+});
+
+test("game notices keep the summary short and put results and record actions in details", () => {
+  const projected = projectHistoryEntries([
+    entry("system", { text: "开始了五子棋", activity: {
+      sourcePluginId: "sakura.gomoku", recordId: "game-1", details: "", actionLabel: "查看棋谱",
+    } }),
+    entry("system", { text: "结束了五子棋", activity: {
+      sourcePluginId: "sakura.gomoku", recordId: "game-1", details: "你获胜，共 9 手。", actionLabel: "查看棋谱",
+    } }, { entryId: "game-end" }),
+  ]);
+  assert.deepEqual(projected.map(item => item.content), ["开始了五子棋", "结束了五子棋"]);
+  assert.deepEqual(projected.map(item => item.detailsContent), ["", "你获胜，共 9 手。"]);
+  assert.ok(projected.every(item => item.showMeta && item.actionLabel === "查看棋谱"));
 });
 
 test("only assistant bubbles carry stable recording identity with original segment indices", () => {
@@ -127,27 +159,6 @@ test("plugin screen observations retain the character perspective and fold only 
     assert.equal(projected[4].content, trigger);
     assert.deepEqual(entries, saved);
   }
-});
-
-test("page validation keeps generation identity and cursor shape strict", () => {
-  const page = {
-    schemaVersion: 1,
-    coreGenerationId: "generation-a",
-    characterId: "sakura",
-    totalCount: 1,
-    entries: [entry("human", { text: "hello" })],
-    beforeCursor: null,
-    hasMore: false,
-  };
-  assert.equal(validateHistoryPage(page), page);
-  assert.throws(
-    () => validateHistoryPage({ ...page, hasMore: true }),
-    /HISTORY_PAGE_INVALID/,
-  );
-  assert.throws(
-    () => validateHistoryPage({ ...page, totalCount: -1 }),
-    /HISTORY_PAGE_INVALID/,
-  );
 });
 
 test("prepending earlier messages preserves the visible reading anchor", () => {
