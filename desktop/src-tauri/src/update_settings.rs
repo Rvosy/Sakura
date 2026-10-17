@@ -378,6 +378,14 @@ fn mirrored_updater(app: &AppHandle) -> Result<tauri_plugin_updater::UpdaterBuil
             .connect_timeout(Duration::from_secs(10))
             .read_timeout(Duration::from_secs(20))
     });
+    #[cfg(windows)]
+    {
+        // NSIS 的 /D 必须放在最后，路径带空格时也不能加引号。
+        let mut directory = std::ffi::OsString::from("/D=");
+        directory.push(current_executable_directory()?);
+        builder =
+            builder.installer_args([std::ffi::OsString::from("/SAKURA_CURRENT_DIR"), directory]);
+    }
     if let Some(endpoints) = app
         .config()
         .plugins

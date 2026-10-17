@@ -118,7 +118,7 @@ def inspect_installation(source: Path, target: Path) -> LegacyInspection:
     domains["tasks"] = _domain_file(source / "data" / "tasks.json")
     domains["characterStudio"] = _domain(source / "data" / "character_studio")
     domains["pluginData"] = _domain(source / "data" / "plugins")
-    domains["legacyPlugins"] = _domain(source / "plugins")
+    domains["legacyPlugins"] = _domain(source / "plugins", skip_noise=True)
     domains["screenState"] = _domain_file(source / "data" / "screen_awareness_state.json")
     domains["visualRecords"] = _domain(source / "data" / "visual_observations")
     domains["runtimeEvents"] = _domain(source / "data" / "runtime_events")
@@ -524,8 +524,8 @@ def _detect_structural_version(source: Path) -> str:
     return ""
 
 
-def _domain(path: Path, *, items: int = 0, follow_root_link: bool = False) -> DomainInspection:
-    files, size = tree_stats(path, follow_root_link=follow_root_link)
+def _domain(path: Path, *, items: int = 0, follow_root_link: bool = False, skip_noise: bool = False) -> DomainInspection:
+    files, size = tree_stats(path, follow_root_link=follow_root_link, skip_noise=skip_noise)
     return DomainInspection(present=path.exists(), files=files, bytes=size, items=items)
 
 

@@ -4,6 +4,25 @@
 Var SakuraTelemetryCheckbox
 Var SakuraTelemetryChoice
 
+; Tauri 在本文件之后声明 UpdateMode 和 PassiveMode；随 MUI 初始化函数展开。
+!macroundef MUI_FUNCTION_GUIINIT
+!macro MUI_FUNCTION_GUIINIT
+Function .onGUIInit
+  !insertmacro MUI_GUIINIT_OUTERDIALOG ""
+  !ifdef MUI_PAGE_FUNCTION_GUIINIT
+    Call "${MUI_PAGE_FUNCTION_GUIINIT}"
+  !endif
+  ; 旧客户端没有传入运行目录，恢复目录选择页，不能直接使用注册表里的路径。
+  ${If} $UpdateMode = 1
+    ${GetOptions} $CMDLINE "/SAKURA_CURRENT_DIR" $0
+    ${If} ${Errors}
+      StrCpy $PassiveMode 0
+    ${EndIf}
+  ${EndIf}
+FunctionEnd
+!macroend
+
+!define MUI_DIRECTORYPAGE_TEXT_TOP "升级时请选择原来的 Sakura 目录，以继续使用已有角色、插件和设置。"
 !define MUI_WELCOMEPAGE_TITLE "欢迎安装 Sakura"
 !define MUI_WELCOMEPAGE_TEXT ""
 !define MUI_PAGE_CUSTOMFUNCTION_SHOW SakuraPrivacyShow
