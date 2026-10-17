@@ -75,6 +75,22 @@ test("manual chat or greeting activity resets the idle gate but keeps the candid
   assert.equal(env.announcements.length, 1);
 });
 
+for (const type of ["chat.completed", "chat.cancelled", "chat.failed"]) {
+  test(`a requested catalog refresh resumes after ${type}`, async () => {
+    const checkResult = { status: "pending", version: "1.2.0" };
+    const env = harness({ checkResult });
+    await env.controller.refresh();
+    await env.controller.tick();
+    env.advance(UPDATE_ANNOUNCEMENT_IDLE_MS);
+    await env.controller.tick();
+    checkResult.status = "up_to_date";
+    await env.controller.refresh();
+    env.controller.handleChatEvent({ type, operationId: "update-op-1" });
+    await Promise.resolve();
+    assert.equal(env.controller.isPending(), false);
+  });
+}
+
 test("completed update clears pending and a failed model terminal retries only once", async () => {
   const completed = harness();
   await completed.controller.refresh();
@@ -133,6 +149,7 @@ test("an unconfirmed delivery never automatically repeats the accepted announcem
   await env.controller.tick();
   env.advance(UPDATE_ANNOUNCEMENT_IDLE_MS);
   await env.controller.tick();
+  await env.controller.refresh();
   env.controller.handleChatEvent({
     type: "chat.failed", operationId: "update-op-1",
     error: { code: "CHAT_DELIVERY_UNCONFIRMED", retryable: false },

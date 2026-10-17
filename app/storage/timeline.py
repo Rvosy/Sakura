@@ -844,9 +844,10 @@ def _validate_payload(kind: TimelineKind, payload: dict[str, Any]) -> None:
             if not isinstance(activity, dict):
                 raise TimelineDataError("TIMELINE_PAYLOAD_SHAPE_INVALID")
             _exact_keys(activity, {"sourcePluginId", "recordId", "details", "actionLabel"})
-            for key, limit in (("sourcePluginId", 64), ("recordId", MAX_ID_CHARS),
-                               ("details", MAX_TEXT_CHARS), ("actionLabel", 100)):
-                _bounded_text(key, activity[key], limit, allow_empty=key == "details")
+            for key in ("sourcePluginId", "recordId", "details", "actionLabel"):
+                value = activity[key]
+                if not isinstance(value, str) or (key != "details" and not value.strip()):
+                    raise TimelineDataError(f"TIMELINE_{key.upper()}_INVALID")
         return
     raise TimelineDataError("TIMELINE_KIND_INVALID")
 

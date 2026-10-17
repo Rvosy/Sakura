@@ -24,7 +24,6 @@ const CATALOG_URL: &str =
     "https://github.com/Rvosy/Sakura-Registry/releases/latest/download/catalog.json";
 pub struct MarketplaceState {
     cache_root: PathBuf,
-    startup_checked: AtomicBool,
     fresh: AtomicBool,
     refresh: tokio::sync::Mutex<()>,
     catalog: Mutex<Option<Value>>,
@@ -35,7 +34,6 @@ impl MarketplaceState {
     pub fn new(user_root: PathBuf) -> Self {
         Self {
             cache_root: user_root.join("data/cache/plugin-marketplace"),
-            startup_checked: AtomicBool::new(false),
             fresh: AtomicBool::new(false),
             refresh: tokio::sync::Mutex::new(()),
             catalog: Mutex::new(None),
@@ -364,13 +362,8 @@ pub(crate) async fn startup_plugin_catalog(
     {
         return Ok(None);
     }
-    if !market.startup_checked.swap(true, Ordering::Relaxed)
-        && !market.fresh.load(Ordering::Relaxed)
-    {
-        refresh_catalog(&sources, &market, None).await?;
-    }
     if !market.fresh.load(Ordering::Relaxed) {
-        return Ok(None);
+        refresh_catalog(&sources, &market, None).await?;
     }
     let catalog = market
         .catalog

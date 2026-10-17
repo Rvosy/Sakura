@@ -586,7 +586,6 @@ impl ShellLifecycleSession {
                     DesktopProjection::Host(event) => {
                         crate::host_interaction::dispatch(&app, &handle, event)
                     }
-
                 }
             }
         }));
@@ -1074,7 +1073,6 @@ fn spawn_and_initialize(
     }
 }
 
-
 #[track_caller]
 fn log_lifecycle(
     state: &WorkerState,
@@ -1398,7 +1396,6 @@ mod tests {
         assert!(error.contains("at save_settings:42 (C:/config/ui.json)"));
         assert!(error.ends_with("保存失败"));
     }
-
 
     fn copy_fixture_tree(source: &std::path::Path, target: &std::path::Path) {
         std::fs::create_dir_all(target).expect("temporary fixture directory");
