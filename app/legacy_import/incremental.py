@@ -9,7 +9,7 @@ import stat
 import tempfile
 import uuid
 from collections import defaultdict
-from contextlib import closing
+from contextlib import ExitStack, closing
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
@@ -682,8 +682,24 @@ def _qdrant_client(path: Path):
     memory._install_disabled_qdrant_grpc_module()
     memory._install_synchronous_qdrant_client_facade()
     from qdrant_client import QdrantClient
+    from qdrant_client.local import local_collection
 
-    return QdrantClient(path=path.as_posix())
+    # Qdrant 构造失败时不会关闭已打开的集合，Windows 因而无法清理转换副本。
+    # 导入 worker 同步创建客户端；构造成功后，连接仍由 Qdrant 正常关闭。
+    persistence = local_collection.CollectionPersistence
+    with ExitStack() as opened:
+        def open_collection(*args, **kwargs):
+            collection = persistence(*args, **kwargs)
+            opened.callback(collection.close)
+            return collection
+
+        local_collection.CollectionPersistence = open_collection
+        try:
+            client = QdrantClient(path=path.as_posix())
+        finally:
+            local_collection.CollectionPersistence = persistence
+        opened.pop_all()
+        return client
 
 
 def _qdrant_points(memory: Path) -> tuple[dict[str, tuple[Any, Any]], Any | None]:

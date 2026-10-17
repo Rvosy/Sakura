@@ -4,6 +4,7 @@ import json
 import threading
 import uuid
 from collections.abc import Callable, Mapping, Sequence
+from contextlib import ExitStack
 from pathlib import Path
 from typing import Any
 
@@ -591,9 +592,13 @@ def _model_download_error_detail(code: str) -> str:
 class SakuraMem0Plugin:
     def __init__(
         self,
-        runtime_factory: Callable[[object], SakuraMem0Runtime] | None = None,
+        runtime_factory: Callable[[object], SakuraMem0Runtime | None] | None = None,
     ) -> None:
         self._runtime_factory = runtime_factory or _default_runtime
+        self._scope = ExitStack()
+        self._lock = threading.RLock()
+        self._runtime: SakuraMem0Runtime | None = None
+        self._closed = False
 
     def setup(self, context: object) -> None:
         try:
@@ -601,27 +606,63 @@ class SakuraMem0Plugin:
             getattr(context, "effect")(lambda: bind_logger(None))
         except Exception:
             bind_logger(None)
-        runtime = self._runtime_factory(context)
-        getattr(context, "effect")(runtime.close)
-        getattr(context, "on")(HOST_CHAT_COMPLETED_EVENT, runtime.note_completed_chat)
-        getattr(context, "get")("sakura.host.context").register(
+        getattr(context, "effect")(self.close)
+        getattr(context, "on")("sakura.host.character.changed", lambda event: self._bind_character(context, event))
+        getattr(context, "on")(HOST_CHAT_COMPLETED_EVENT, self._note_completed_chat)
+        self._bind_character(context)
+
+    def close(self) -> None:
+        with self._lock:
+            self._closed = True
+            self._scope.close()
+            self._runtime = None
+
+    def _note_completed_chat(self, event: Mapping[str, object]) -> None:
+        with self._lock:
+            if self._runtime is not None:
+                self._runtime.note_completed_chat(event)
+
+    def _bind_character(self, context: object, event: Mapping[str, object] | None = None) -> None:
+        with self._lock:
+            if self._closed or (event is not None and self._runtime is not None
+                               and event["characterId"] == self._runtime.character_id):
+                return
+            self._scope.close()
+            self._runtime = None
+            with ExitStack() as scope:
+                runtime = self._runtime_factory(context)
+                if runtime is None:
+                    scope.callback(getattr(context, "get")("sakura.host.settings").register({
+                        "sectionId": MEMORY_SETTINGS_SECTION_ID, "title": "长期记忆", "order": 40,
+                        "fields": [{"key": "status", "label": "运行状态", "type": "status",
+                                    "default": {"state": "neutral", "label": "等待选择角色",
+                                                "message": "请先导入并选择角色。"}}],
+                    }))
+                else:
+                    scope.callback(runtime.close)
+                    self._register(context, runtime, scope)
+                self._runtime = runtime
+                self._scope = scope.pop_all()
+
+    def _register(self, context: object, runtime: SakuraMem0Runtime, scope: ExitStack) -> None:
+        scope.callback(getattr(context, "get")("sakura.host.context").register(
             {
                 "providerId": MEMORY_CONTEXT_PROVIDER_ID,
                 "description": "从当前角色的本地长期记忆中选择与本轮相关的少量事实。",
                 "order": 60,
             },
             runtime.context,
-        )
+        ))
         tools = getattr(context, "get")("sakura.host.tools")
         for descriptor, callback in _tool_registrations(runtime):
-            tools.register(descriptor, callback)
+            scope.callback(tools.register(descriptor, callback))
         settings = getattr(context, "get")("sakura.host.settings")
-        settings.register(
+        scope.callback(settings.register(
             runtime.settings_descriptor(),
             load=runtime.load_settings,
             save=runtime.save_settings,
-        )
-        settings.register(
+        ))
+        scope.callback(settings.register(
             runtime.component_descriptor(),
             load=runtime.load_component_settings,
             actions={
@@ -629,25 +670,25 @@ class SakuraMem0Plugin:
                 "retryEmbedding": runtime.start_model_download,
                 "cancelEmbedding": runtime.cancel_model_download,
             },
-        )
-        getattr(context, "get")("sakura.host.settings.surface-v0").register(
+        ))
+        scope.callback(getattr(context, "get")("sakura.host.settings.surface-v0").register(
             MEMORY_COMPONENT_SECTION_ID,
             "about",
-        )
-        settings.register(runtime.memory_management_descriptor())
-        getattr(context, "get")("sakura.host.settings.surface-v0").register(
+        ))
+        scope.callback(settings.register(runtime.memory_management_descriptor()))
+        scope.callback(getattr(context, "get")("sakura.host.settings.surface-v0").register(
             MEMORY_MANAGEMENT_SECTION_ID,
             "memory",
-        )
-        getattr(context, "get")("sakura.host.settings.collection-v0").register(
+        ))
+        scope.callback(getattr(context, "get")("sakura.host.settings.collection-v0").register(
             MEMORY_MANAGEMENT_SECTION_ID,
             runtime.memory_collection_descriptor(),
             query=runtime.query_collection,
             create=runtime.create_collection_item,
             update=runtime.update_collection_item,
             delete=runtime.delete_collection_item,
-        )
-        getattr(context, "get")("sakura.host.model_slots.v2").register(
+        ))
+        scope.callback(getattr(context, "get")("sakura.host.model_slots.v2").register(
             {
                 "slotId": "curation",
                 "label": "记忆整理模型",
@@ -658,7 +699,7 @@ class SakuraMem0Plugin:
             },
             load=runtime.load_model_slot,
             save=runtime.save_model_slot,
-        )
+        ))
         # Backlog catch-up may scan and curate a large Timeline. Plugin setup is serial, so it
         # must not hold up unrelated plugins such as the TTS Hub and its providers.
         threading.Thread(
@@ -668,11 +709,16 @@ class SakuraMem0Plugin:
         ).start()
 
 
-def _default_runtime(context: object) -> SakuraMem0Runtime:
+def _default_runtime(context: object) -> SakuraMem0Runtime | None:
     from sakura_model_client import ModelClient
     plugin_data_root = Path(getattr(context, "data_path")("."))
     storage = getattr(context, "get")("sakura.host.storage")
-    character = getattr(context, "get")("sakura.host.character").current()
+    try:
+        character = getattr(context, "get")("sakura.host.character").current()
+    except Exception as error:
+        if getattr(error, "code", None) == "CHARACTER_NOT_FOUND":
+            return None
+        raise
     model_slots = getattr(context, "get")("sakura.host.model_slots.v2")
     character_id = str(character.get("id", ""))
     system_prompt = str(character.get("systemPrompt", ""))

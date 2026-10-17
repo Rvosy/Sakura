@@ -2378,3 +2378,26 @@ def test_partial_configuration_preserves_existing_missing_domains(tmp_path, miss
     assert {path: path.read_bytes() for path in original} == original
     if missing == "all":
         assert (target / "data/notes/saved.txt").read_text() == "old note"
+
+
+def test_legacy_plugin_backup_does_not_block_inspection_or_copy(tmp_path, monkeypatch):
+    source = _legacy_fixture(tmp_path)
+    plugin = source / "plugins/user/custom/plugin.py"
+    plugin.parent.mkdir(parents=True)
+    plugin.write_text("saved plugin", encoding="utf-8")
+    backup = source / "plugins/migration-backups/old"
+    backup.mkdir(parents=True)
+    original_scandir = os.scandir
+
+    def scandir(path):
+        if not isinstance(path, int) and "migration-backups" in Path(path).parts:
+            raise PermissionError("backup inaccessible")
+        return original_scandir(path)
+
+    monkeypatch.setattr(os, "scandir", scandir)
+    inspection = inspect_legacy_installation(source, tmp_path / "target")
+    assert inspection.domains["legacyPlugins"].files == 1
+    copied = tmp_path / "copied"
+    legacy_files.copy_tree_checked(source / "plugins", copied, cancelled=lambda: False, skip_noise=True)
+    assert (copied / "user/custom/plugin.py").read_text() == "saved plugin"
+    assert backup.is_dir()

@@ -28,6 +28,7 @@ _SKIP_NAMES = {
     "cache",
     "migration_backup",
     "migration_backups",
+    "migration-backups",
     "_tmp",
     "tmp",
 }
@@ -51,7 +52,7 @@ def safe_relative(path: Path, root: Path) -> str:
         raise LegacyImportError("LEGACY_PATH_ESCAPE", "inspect") from exc
 
 
-def tree_stats(root: Path, *, follow_root_link: bool = False) -> tuple[int, int]:
+def tree_stats(root: Path, *, follow_root_link: bool = False, skip_noise: bool = False) -> tuple[int, int]:
     if not root.exists():
         return 0, 0
     actual = root.resolve(strict=True) if follow_root_link else root
@@ -64,6 +65,8 @@ def tree_stats(root: Path, *, follow_root_link: bool = False) -> tuple[int, int]
         except OSError as exc:
             raise LegacyImportError("LEGACY_SOURCE_UNREADABLE", "inspect") from exc
         for entry in entries:
+            if skip_noise and (entry.name.casefold() in _SKIP_NAMES or entry.name.casefold().endswith(_SKIP_SUFFIXES)):
+                continue
             path = Path(entry.path)
             if entry.is_symlink():
                 continue

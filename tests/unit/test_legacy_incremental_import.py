@@ -1201,3 +1201,27 @@ def test_aliases_can_join_package_imported_in_same_operation(tmp_path: Path) -> 
     assert len(store.read_all('Sakura')) == 2
     assert not store.read_all('sakura')
     assert not store.read_all('sakura1')
+
+
+def test_corrupt_qdrant_preview_releases_sqlite_and_preserves_source(tmp_path):
+    from contextlib import closing
+    import psutil
+    from qdrant_client import QdrantClient, models
+
+    source = _source(tmp_path)
+    target = tmp_path / "target"
+    target.mkdir()
+    database_root = source / "data/memory/qdrant"
+    with closing(QdrantClient(path=str(database_root))) as client:
+        client.create_collection("sakura_memories", vectors_config=models.VectorParams(size=2, distance=models.Distance.COSINE))
+        client.upsert("sakura_memories", [models.PointStruct(id=1, vector=[1., 0.], payload={"user_id": "Sakura"})])
+    database = database_root / "collection/sakura_memories/storage.sqlite"
+    with closing(sqlite3.connect(database)) as connection:
+        connection.execute("UPDATE points SET point=?", (b"broken record",))
+        connection.commit()
+    before = database.read_bytes()
+    plan = inspect_character_data_import(source, target)
+    assert plan["totals"]["recoverableErrors"] > 0
+    assert database.read_bytes() == before
+    assert not any(str(tmp_path) in file.path and file.path.endswith("storage.sqlite")
+                   for file in psutil.Process().open_files())

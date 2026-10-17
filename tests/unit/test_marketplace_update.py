@@ -310,3 +310,25 @@ def test_interrupted_market_update_restores_old_code_on_startup(running_update, 
     assert update_transaction.recover_installed_plugins(roots) == {}
     assert (original.code_dir / "plugin.yaml").read_bytes() == before
     assert not list(original.code_dir.parent.glob(".update-*"))
+
+
+def test_market_repairs_plugin_using_retired_model_service(tmp_path):
+    plugin_id = "fixture.memory"
+    roots = RuntimeRoots(tmp_path / "distribution", tmp_path / "user")
+    installer = LocalPluginInstaller(roots)
+    installer.install(package(tmp_path / "old.zip", plugin_id, requires=("sakura.host.model_slots",)),
+                      "zip", initial_enabled=True)
+    application = PluginApplicationHost(roots, "repair-old-model", ToolRegistry())
+    boundary = PluginSettingsBoundary("repair-old-model", "credential", roots, application_provider=lambda: application)
+    try:
+        application.start()
+        snapshot = boundary.snapshot()
+        old = next(p for p in snapshot["plugins"] if p["pluginId"] == plugin_id)
+        assert old["reasonCode"] == "MODEL_API_UPDATE_REQUIRED"
+        result = boundary.marketplace_install({"revision": snapshot["revision"],
+            "sourcePath": str(package(tmp_path / "new.zip", plugin_id, "1.1.0")),
+            "pluginId": plugin_id, "version": "1.1.0"})
+        assert result["managementAction"] == "updated"
+        assert application.call_service(plugin_id, "ping") == "1.1.0"
+    finally:
+        application.close()

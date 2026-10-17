@@ -19,7 +19,7 @@ def installer(tmp_path_factory):
     executable = root / "installer.exe"
     hooks = Path(__file__).resolve().parents[2] / "desktop/src-tauri/installer-hooks.nsh"
     script = root / "installer.nsi"
-    script.write_text(f'''Unicode true
+    script.write_text(fr'''Unicode true
 !include MUI2.nsh
 !include FileFunc.nsh
 !include "{hooks}"
@@ -27,7 +27,9 @@ Name "Sakura installer test"
 OutFile "{executable}"
 RequestExecutionLevel user
 Var UpdateMode
+Var PassiveMode
 Var ProbeResult
+Var ModeProbe
 !undef MUI_PAGE_CUSTOMFUNCTION_SHOW
 !define MUI_PAGE_CUSTOMFUNCTION_SHOW TestWelcomeShow
 !insertmacro MUI_PAGE_WELCOME
@@ -37,8 +39,16 @@ Function .onInit
   ${{GetOptions}} $CMDLINE "/CHOICE=" $SakuraTelemetryChoice
   ${{GetOptions}} $CMDLINE "/UPDATE=" $UpdateMode
   ${{GetOptions}} $CMDLINE "/PROBE=" $ProbeResult
+  ${{GetOptions}} $CMDLINE "/PASSIVE=" $PassiveMode
+  ${{GetOptions}} $CMDLINE "/MODEPROBE=" $ModeProbe
 FunctionEnd
 Function TestWelcomeShow
+  ${{If}} $ModeProbe != ""
+    FileOpen $2 $ModeProbe w
+    FileWriteUTF16LE $2 "$PassiveMode$\r$\n$INSTDIR"
+    FileClose $2
+    Quit
+  ${{EndIf}}
   Call SakuraPrivacyShow
   ${{If}} $ProbeResult != ""
     ${{NSD_GetState}} $SakuraTelemetryCheckbox $1
@@ -57,7 +67,7 @@ Section
   !insertmacro NSIS_HOOK_POSTINSTALL
 SectionEnd
 ''', encoding="utf-8")
-    subprocess.run([str(compiler), "/V2", str(script)], check=True, capture_output=True)
+    subprocess.run([str(compiler), "/V2", str(script)], check=True)
     return executable
 
 
@@ -86,3 +96,19 @@ def test_reinstall_preserves_existing_user_settings(installer, tmp_path, update)
     config.write_text(saved, encoding="utf-8")
     subprocess.run([str(installer), "/S", "/CHOICE=1", f"/UPDATE={int(update)}", f"/D={tmp_path}"], check=True)
     assert config.read_text(encoding="utf-8") == saved
+
+
+@pytest.mark.parametrize("explicit_directory", [False, True])
+def test_automatic_upgrade_selects_directory_for_old_clients(installer, tmp_path, explicit_directory):
+    result = tmp_path / "upgrade-mode.txt"
+    destination = tmp_path / "Sakura 空格目录"
+    arguments = [str(installer), "/PASSIVE=1", "/UPDATE=1", f"/MODEPROBE={result}"]
+    if explicit_directory:
+        arguments.extend(["/SAKURA_CURRENT_DIR", f"/D={destination}"])
+    # NSIS consumes /D through its own parser: it must remain the unquoted final argument.
+    command = subprocess.list2cmdline(arguments[:-1]) + " " + arguments[-1] if explicit_directory else subprocess.list2cmdline(arguments)
+    subprocess.run(command, check=True, timeout=15)
+    lines = result.read_text(encoding="utf-16-le").splitlines()
+    assert lines[0] == ("1" if explicit_directory else "0")
+    if explicit_directory:
+        assert lines[1] == str(destination)
