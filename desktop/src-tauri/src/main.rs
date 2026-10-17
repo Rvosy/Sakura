@@ -6988,7 +6988,6 @@ fn retry_core(lifecycle: State<'_, ShellLifecycleState>) -> Result<(), String> {
         .retry()
 }
 
-
 #[tauri::command]
 fn exit_runtime(
     lifecycle: State<'_, ShellLifecycleState>,
