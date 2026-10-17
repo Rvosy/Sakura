@@ -166,21 +166,6 @@ pub struct SnapshotPublication {
     generation_id: String,
     revision: u64,
     readiness: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    plugin_migration: Option<PluginMigrationPublication>,
-}
-
-#[derive(Clone, Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PluginMigrationPublication {
-    state: String,
-    completed: u64,
-    total: u64,
-    plugin_id: Option<String>,
-}
-
-fn plugin_migration(snapshot: &Value) -> Option<PluginMigrationPublication> {
-    serde_json::from_value(snapshot.get("pluginMigration")?.clone()).ok()
 }
 
 #[derive(Clone, Serialize)]
@@ -494,7 +479,6 @@ pub struct ShellLifecycleSession {
 enum DesktopProjection {
     Chat(ChatEventPublication),
     Host(Value),
-    PluginMigrationStarted(String),
     GenerationInvalidated(String),
 }
 
@@ -602,26 +586,7 @@ impl ShellLifecycleSession {
                     DesktopProjection::Host(event) => {
                         crate::host_interaction::dispatch(&app, &handle, event)
                     }
-                    DesktopProjection::PluginMigrationStarted(generation_id) => {
-                        let migration_app = app.clone();
-                        let migration_handle = handle.clone();
-                        let _ = app.run_on_main_thread(move || {
-                            let current = migration_handle.snapshot().ok();
-                            if !current.as_ref().is_some_and(|publication| {
-                                migration_window_needed(publication, &generation_id)
-                            }) {
-                                return;
-                            }
-                            if let Err(error) =
-                                crate::product_shell::show_or_focus_settings(&migration_app)
-                            {
-                                crate::product_shell::emit_product_menu_error(
-                                    &migration_app,
-                                    error,
-                                );
-                            }
-                        });
-                    }
+
                 }
             }
         }));
@@ -752,7 +717,6 @@ fn run_worker(
                         &commands,
                         &mut actions,
                         &publication,
-                        &chat_events,
                     ) {
                         drain_commands(&commands, &mut state, &mut actions);
                         if state.supervisor.snapshot().state == SupervisorState::Stopping {
@@ -944,7 +908,6 @@ fn spawn_and_initialize(
     commands: &Receiver<ShellCommand>,
     actions: &mut VecDeque<LifecycleAction>,
     publication: &Arc<Mutex<ShellLifecyclePublication>>,
-    desktop_events: &Sender<DesktopProjection>,
 ) -> Result<(), FailureReason> {
     state.failure_diagnostic = None;
     let layout = FilesystemRuntimeLocator
@@ -1071,7 +1034,6 @@ fn spawn_and_initialize(
     if let Ok(mut target) = state.settings_transport.lock() {
         *target = settings_handle;
     }
-    let mut migration_window_requested = false;
     loop {
         match commands.try_recv() {
             Ok(command) => {
@@ -1086,12 +1048,6 @@ fn spawn_and_initialize(
         }
         refresh_snapshot(state).map_err(|_| FailureReason::ConnectionLost)?;
         publish(state, publication);
-        request_migration_window(
-            state.snapshot.as_ref(),
-            &generation_text,
-            &mut migration_window_requested,
-            desktop_events,
-        );
         let readiness = state
             .snapshot
             .as_ref()
@@ -1118,34 +1074,6 @@ fn spawn_and_initialize(
     }
 }
 
-fn request_migration_window(
-    snapshot: Option<&Value>,
-    generation_id: &str,
-    requested: &mut bool,
-    events: &Sender<DesktopProjection>,
-) {
-    if !*requested
-        && snapshot
-            .and_then(plugin_migration)
-            .is_some_and(|migration| migration.state == "running")
-    {
-        *requested = true;
-        let _ = events.send(DesktopProjection::PluginMigrationStarted(
-            generation_id.to_string(),
-        ));
-    }
-}
-
-fn migration_window_needed(publication: &ShellLifecyclePublication, generation_id: &str) -> bool {
-    !publication.supervisor.app_shutdown
-        && publication.supervisor.generation_id.as_deref() == Some(generation_id)
-        && publication.snapshot.as_ref().is_some_and(|snapshot| {
-            snapshot.generation_id == generation_id
-                && snapshot.plugin_migration.as_ref().is_some_and(|migration| {
-                    matches!(migration.state.as_str(), "running" | "failed")
-                })
-        })
-}
 
 #[track_caller]
 fn log_lifecycle(
@@ -1293,7 +1221,6 @@ fn publish(state: &WorkerState, target: &Arc<Mutex<ShellLifecyclePublication>>) 
                 .pointer("/components/assistant")
                 .cloned()
                 .unwrap_or(Value::Null),
-            plugin_migration: plugin_migration(snapshot),
             generation_id,
             revision: snapshot.get("revision").and_then(Value::as_u64)?,
             readiness: snapshot
@@ -1472,82 +1399,6 @@ mod tests {
         assert!(error.ends_with("保存失败"));
     }
 
-    #[test]
-    fn migration_progress_survives_publication() {
-        let status = json!({"pluginMigration": {"state": "running", "completed": 0,
-            "total": 6, "pluginId": "sakura.memory.mem0", "stage": "download"}});
-        let migration = plugin_migration(&status).expect("public migration progress");
-        assert_eq!(migration.plugin_id.as_deref(), Some("sakura.memory.mem0"));
-    }
-
-    #[test]
-    fn migration_opens_settings_once_before_core_readiness() {
-        let (events, received) = mpsc::channel();
-        let mut requested = false;
-        request_migration_window(None, "current", &mut requested, &events);
-        assert!(received.try_recv().is_err());
-        let running = json!({"readiness": "initializing", "pluginMigration": {
-            "state": "running", "completed": 0, "total": 6, "pluginId": "sakura_mobile"
-        }});
-        request_migration_window(Some(&running), "current", &mut requested, &events);
-        assert!(
-            matches!(received.try_recv(), Ok(DesktopProjection::PluginMigrationStarted(id)) if id == "current")
-        );
-        // A user closing settings during migration must not have it reopened by a later poll.
-        request_migration_window(Some(&running), "current", &mut requested, &events);
-        assert!(received.try_recv().is_err());
-        let finished = json!({"pluginMigration": {"state": "completed", "completed": 6,
-            "total": 6, "pluginId": null}});
-        let mut fresh_start = false;
-        request_migration_window(Some(&finished), "next", &mut fresh_start, &events);
-        assert!(received.try_recv().is_err());
-    }
-
-    #[test]
-    fn migration_window_discards_finished_stale_and_shutdown_notifications() {
-        let mut publication = ShellLifecyclePublication {
-            supervisor: SupervisorPublication {
-                state: "running",
-                generation_id: Some("current".into()),
-                generation_number: 1,
-                app_shutdown: false,
-                failure: None,
-            },
-            snapshot: Some(SnapshotPublication {
-                assistant: Value::Null,
-                generation_id: "current".into(),
-                revision: 1,
-                readiness: "initializing".into(),
-                plugin_migration: Some(PluginMigrationPublication {
-                    state: "running".into(),
-                    completed: 0,
-                    total: 6,
-                    plugin_id: None,
-                }),
-            }),
-            character_presentation: None,
-            versions: VersionPublication {
-                desktop_version: "1.2.1",
-                core_version: "1.2.1".into(),
-                protocol_version: "2.2".into(),
-                log_location: "Sakura application logs",
-            },
-        };
-        assert!(migration_window_needed(&publication, "current"));
-        assert!(!migration_window_needed(&publication, "previous"));
-        publication.supervisor.app_shutdown = true;
-        assert!(!migration_window_needed(&publication, "current"));
-        publication.supervisor.app_shutdown = false;
-        publication
-            .snapshot
-            .as_mut()
-            .unwrap()
-            .plugin_migration
-            .as_mut()
-            .unwrap()
-            .state = "completed".into();
-        assert!(!migration_window_needed(&publication, "current"));
-    }
 
     fn copy_fixture_tree(source: &std::path::Path, target: &std::path::Path) {
         std::fs::create_dir_all(target).expect("temporary fixture directory");
@@ -1705,7 +1556,6 @@ mod tests {
             publication.supervisor.generation_number = 1;
             publication.snapshot = Some(SnapshotPublication {
                 assistant: Value::Null,
-                plugin_migration: None,
                 generation_id: "generation-ready".to_string(),
                 revision: 1,
                 readiness: "ready".to_string(),
@@ -2485,7 +2335,6 @@ mod tests {
             },
             snapshot: Some(SnapshotPublication {
                 assistant: Value::Null,
-                plugin_migration: None,
                 generation_id: generation.clone(),
                 revision: 7,
                 readiness: "ready".to_string(),
@@ -2531,7 +2380,6 @@ mod tests {
         assert!(available_generation_id(&publication).is_none());
         publication.snapshot = Some(SnapshotPublication {
             assistant: Value::Null,
-            plugin_migration: None,
             generation_id: "stale-generation".to_string(),
             revision: 8,
             readiness: "failed".to_string(),
@@ -2540,7 +2388,6 @@ mod tests {
         assert!(available_generation_id(&publication).is_none());
         publication.snapshot = Some(SnapshotPublication {
             assistant: Value::Null,
-            plugin_migration: None,
             generation_id: "generation-safe".to_string(),
             revision: 9,
             readiness: "failed".to_string(),
@@ -2578,7 +2425,6 @@ mod tests {
             },
             snapshot: Some(SnapshotPublication {
                 assistant: Value::Null,
-                plugin_migration: None,
                 generation_id: generation.clone(),
                 revision: 1,
                 readiness: "degraded".to_string(),

@@ -53,7 +53,7 @@ export function createCatalogLoader(source, onChange) {
 
 export function syncInstalledPlugins(plugins, installed) {
   for (const plugin of plugins) {
-    const local = installed.find(item => item.pluginId === plugin.id && !item.reasonCode?.startsWith("PLUGIN_MIGRATION_"));
+    const local = installed.find(item => item.pluginId === plugin.id);
     plugin.installed = local?.version;
     plugin.enabled = local?.enabled;
     plugin.updateBlocked = local?.source === "bundled" ? "内置插件随应用更新"

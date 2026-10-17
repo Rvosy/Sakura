@@ -19,7 +19,6 @@ from typing import Any, Mapping, Sequence
 
 import yaml
 
-from app.plugins.bundled_migrations import MIGRATIONS
 from app.plugins.models import PLUGIN_API_V4_VERSION, PluginSpec
 from app.core.diagnostics import exception_diagnostics, safe_diagnostic_text
 from app.config.plugin_requirements import tts_resource_types
@@ -84,7 +83,6 @@ class RuntimePluginSpec:
             source=self.source,
             visuals=self.visuals,
         )
-
 
 
 @dataclass(frozen=True)
@@ -216,13 +214,13 @@ class PluginInventory:
         roots: RuntimeRoots | Path,
         desired: PluginDesiredStateStore | None = None,
         *,
-        migration_failures: Mapping[str, Mapping[str, Any]] | None = None,
+        recovery_failures: Mapping[str, Mapping[str, Any]] | None = None,
     ) -> None:
         self._roots = coerce_runtime_roots(roots)
         self._distribution = DistributionPaths(self._roots.distribution_root)
         self._paths = StoragePaths(self._roots.user_root)
         self._desired = desired or PluginDesiredStateStore(self._roots.user_root)
-        self._migration_failures = migration_failures or {}
+        self._recovery_failures = recovery_failures or {}
 
     def scan(self) -> PluginInventorySnapshot:
         with _REVISION_LOCK:
@@ -261,27 +259,12 @@ class PluginInventory:
                 if not directory.is_dir():
                     continue
                 record = self._record(source, directory, desired)
-                update_failure = self._migration_failures.get(record.plugin_id, {})
+                update_failure = self._recovery_failures.get(record.plugin_id, {})
                 if source == "user" and update_failure.get("reasonCode") == "PLUGIN_UPDATE_RECOVERY_FAILED":
                     record = replace(record, runtime_eligible=False,
                         reason_code=update_failure["reasonCode"], diagnostics=dict(update_failure["diagnostics"]))
-                if source == "bundled" and (record.plugin_id in MIGRATIONS or directory.name in MIGRATIONS.values()):
-                    continue
                 records.append(record)
 
-        installed_ids = {record.plugin_id for record in records}
-        for plugin_id, failure in self._migration_failures.items():
-            if plugin_id not in MIGRATIONS or plugin_id in installed_ids:
-                continue
-            directory = MIGRATIONS[plugin_id]
-            # A missing migrated plugin must remain visible in Settings. An
-            # ordinary user installation replaces this diagnostic on refresh.
-            records.append(replace(
-                _invalid_record(_install_id("bundled", directory), "bundled", directory,
-                                plugin_id=plugin_id),
-                desired_enabled=desired.get(plugin_id, True), reason_code=failure["reasonCode"],
-                diagnostics=dict(failure["diagnostics"]),
-            ))
         records = self._resolve_duplicates(records)
         runtime_specs = tuple(
             spec

@@ -215,28 +215,6 @@ def test_dependency_repair_failure_preserves_previous_root_and_config(
     assert not (StoragePaths(tmp_path / "user").user_plugins_dir / "com.example.local").exists()
 
 
-def test_offline_dependency_repair_copies_bundled_root_without_uv(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    installer, source, dependency_root, uv = _dependency_install_fixture(tmp_path, monkeypatch)
-    dependency_root.mkdir(parents=True)
-    (dependency_root / "incomplete.txt").write_text("old", encoding="utf-8")
-    bundled = tmp_path / "distribution" / "plugins" / "dependencies" / "com.example.local"
-    bundled.mkdir(parents=True)
-    (bundled / "fixture_dependency.py").write_text("VALUE = 42\n", encoding="utf-8")
-    (bundled / ".sakura-dependencies.json").write_text(json.dumps({
-        "schemaVersion": 1, "kind": "requirements.txt", "python": f"{sys.version_info.major}.{sys.version_info.minor}",
-    }), encoding="utf-8")
-    monkeypatch.setattr(installer._dependencies, "_uv_command", lambda: pytest.fail("offline repair invoked uv"))
-
-    installed = installer.install(source, "folder", reuse_dependencies=True, offline_dependencies=True)
-
-    assert (installed.code_dir / "imported.marker").is_file()
-    assert (dependency_root / "fixture_dependency.py").read_bytes() == (bundled / "fixture_dependency.py").read_bytes()
-    assert not (dependency_root / "incomplete.txt").exists()
-    assert not uv.with_name("invoked").exists()
-
-
 class _BoundaryWorker:
     state = "ready"
     reason_code = "READY"
@@ -564,8 +542,6 @@ def test_core_boundary_rolls_back_uninstall_when_plugin_lifecycle_fails(tmp_path
     }
 
 
-
-
 def test_uninstall_cleanup_failure_is_not_reported_as_success(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -635,8 +611,6 @@ def test_uninstall_rollback_keeps_quarantine_when_code_restore_fails(
     assert failed.value.code == "PLUGIN_UNINSTALL_ROLLBACK_FAILED"
     assert not (StoragePaths(app_root).user_plugins_dir / "com.example.local").exists()
     assert list(StoragePaths(app_root).user_plugins_dir.glob(".uninstall-*/code"))
-
-
 
 
 def test_zip_install_accepts_one_wrapper_and_rejects_duplicate_id(tmp_path: Path) -> None:
@@ -722,8 +696,6 @@ def test_zip_install_rejects_windows_reserved_paths(tmp_path: Path) -> None:
         LocalPluginInstaller(tmp_path / "app").install(archive, "zip")
 
 
-
-
 def test_install_rejects_unsupported_required_and_bundled_id_conflicts(tmp_path: Path) -> None:
     app_root = tmp_path / "app"
     bundled = app_root / "plugins" / "builtin" / "bundled"
@@ -774,12 +746,6 @@ def test_install_rejects_malformed_manifest_field_types(
         LocalPluginInstaller(tmp_path / "app").install(source, "folder")
 
 
-
-
-
-
-
-
 def test_user_plugin_import_names_do_not_collide_after_normalization(tmp_path: Path) -> None:
     app_root = tmp_path / "app"
     installer = LocalPluginInstaller(app_root)
@@ -825,8 +791,6 @@ class LocalPlugin:
             assert runtime.call_service(plugin_id, "ping") == result
     finally:
         runtime.close()
-
-
 
 
 def test_marketplace_install_checks_identity_before_writing(tmp_path):

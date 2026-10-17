@@ -6988,16 +6988,6 @@ fn retry_core(lifecycle: State<'_, ShellLifecycleState>) -> Result<(), String> {
         .retry()
 }
 
-#[tauri::command]
-fn settings_restart_after_migration(
-    window: WebviewWindow,
-    lifecycle: State<'_, ShellLifecycleState>,
-) -> Result<(), String> {
-    product_shell::validate_settings_window(&window)?;
-    settings_core_handle(&lifecycle)?
-        .restart()
-        .map_err(|error| error.to_string())
-}
 
 #[tauri::command]
 fn exit_runtime(
@@ -7285,27 +7275,11 @@ fn ensure_user_layout(root: &std::path::Path) -> Result<std::path::PathBuf, Stri
         .try_exists()
         .map_err(|error| format!("USER_ROOT_UNAVAILABLE: {error}"))?
     {
-        // Publish both defaults together so an interrupted first start cannot
-        // classify a new user as an upgrade on the next launch.
-        let staging = root.join(format!(".config-init-{}", uuid::Uuid::new_v4()));
-        let result = (|| -> Result<(), String> {
-            ui_config::atomic_write(
-                &staging.join("plugin-migrations.json"),
-                include_bytes!("new_user_plugin_migrations.json"),
-                "USER_ROOT",
-            )?;
-            ui_config::atomic_write(
-                &staging.join("plugins.yaml"),
-                include_bytes!("new_user_plugins.yaml"),
-                "USER_ROOT",
-            )?;
-            std::fs::rename(&staging, &config)
-                .map_err(|error| format!("USER_ROOT_UNAVAILABLE: {error}"))
-        })();
-        if result.is_err() {
-            let _ = std::fs::remove_dir_all(&staging);
-        }
-        result?;
+        ui_config::atomic_write(
+            &config.join("plugins.yaml"),
+            include_bytes!("new_user_plugins.yaml"),
+            "USER_ROOT",
+        )?;
     }
     for relative in ["config", "data", "characters", "plugins/user", "tts"] {
         std::fs::create_dir_all(root.join(relative))
@@ -7935,7 +7909,6 @@ fn main() {
             record_interaction_latency_trace,
             record_runtime_diagnostics,
             retry_core,
-            settings_restart_after_migration,
             first_run_start_core,
             exit_runtime,
             product_shell::settings_capability_manifest,
@@ -8139,16 +8112,6 @@ mod tests {
     fn new_user_plugin_defaults_are_written_once_and_preserve_later_choices() {
         let root = std::env::temp_dir().join(format!("sakura-new-user-{}", uuid::Uuid::new_v4()));
         ensure_user_layout(&root).unwrap();
-        assert_eq!(
-            serde_json::from_slice::<serde_json::Value>(
-                &std::fs::read(root.join("config/plugin-migrations.json")).unwrap()
-            )
-            .unwrap(),
-            serde_json::from_str::<serde_json::Value>(include_str!(
-                "new_user_plugin_migrations.json"
-            ))
-            .unwrap()
-        );
         let path = root.join("config/plugins.yaml");
         let defaults: serde_yaml::Value =
             serde_yaml::from_slice(&std::fs::read(&path).unwrap()).unwrap();
@@ -8170,7 +8133,6 @@ mod tests {
         std::fs::create_dir_all(root.join("config")).unwrap();
         ensure_user_layout(&root).unwrap();
         assert!(!root.join("config/plugins.yaml").exists());
-        assert!(!root.join("config/plugin-migrations.json").exists());
         std::fs::remove_dir_all(root).unwrap();
     }
 

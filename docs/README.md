@@ -23,7 +23,8 @@
 | [插件与资源](guide/plugins.md) | 安装、更新、设置、资源与联网工具 |
 | [数据管理](guide/data.md) | 数据目录、备份、迁移与清理 |
 | [故障排查](guide/diagnostics.md) | 按操作步骤定位失败与读取日志 |
-| [统计与隐私](guide/privacy.md) | 发送范围、开关与保存期限 |
+| [隐私政策](guide/privacy.md) | 模型与插件的数据流向、统计开关与保存期限 |
+| [Code signing policy](guide/code-signing.md) | 签名状态、维护职责与发行范围 |
 
 ## 开发接口与维护
 

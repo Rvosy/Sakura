@@ -27,7 +27,7 @@ def _clear_transaction(transaction: Path) -> None:
     transaction.rmdir()
 
 
-def recover(transaction: Path, code: Path, dependencies: Path, state: dict, receipt: Path | None = None) -> str | None:
+def recover(transaction: Path, code: Path, dependencies: Path, state: dict) -> str | None:
     """发现和加载插件前恢复未完成的切换。"""
     if not state["committed"]:
         for name, target in (("code", code), ("dependencies", dependencies)):
@@ -40,11 +40,6 @@ def recover(transaction: Path, code: Path, dependencies: Path, state: dict, rece
                 shutil.rmtree(target)
         # 恢复完成后只允许继续清理，避免下次启动撤销后来的更新。
         state = {**state, "committed": True}
-        state.pop("revision", None)
-        atomic_write_text(transaction / "transaction.json", json.dumps(state))
-    if "revision" in state:
-        assert receipt is not None
-        atomic_write_text(receipt, state.pop("revision"))
         atomic_write_text(transaction / "transaction.json", json.dumps(state))
     try:
         _clear_transaction(transaction)
@@ -57,7 +52,7 @@ def recover(transaction: Path, code: Path, dependencies: Path, state: dict, rece
 
 
 def recover_installed_plugins(roots: RuntimeRoots) -> dict[str, dict]:
-    """恢复不依赖当前发行包，市场更新和离线更新使用同一入口。"""
+    """恢复插件市场更新留下的事务，保留已提交的版本。"""
     from app.plugins.inventory import PLUGIN_ID_PATTERN
 
     paths = StoragePaths(roots.user_root)
@@ -81,7 +76,7 @@ def recover_installed_plugins(roots: RuntimeRoots) -> dict[str, dict]:
             dependencies = paths.plugin_dependency_root_for(plugin_id)
             if code.is_symlink() or dependencies.is_symlink():
                 raise ValueError("PLUGIN_UPDATE_STATE_INVALID")
-            recover(transaction, code, dependencies, state, paths.config_dir / "plugin-updates" / plugin_id)
+            recover(transaction, code, dependencies, state)
         except Exception as error:
             log_event("Plugin", "插件更新恢复失败", diagnostic_attributes(
                 error, reason_code="PLUGIN_UPDATE_RECOVERY_FAILED", stage="update_recovery"),
@@ -94,11 +89,9 @@ def recover_installed_plugins(roots: RuntimeRoots) -> dict[str, dict]:
     return failures
 
 
-def begin(transaction: Path, code: Path, dependencies: Path, plugin_id: str, revision: str | None = None) -> dict:
+def begin(transaction: Path, code: Path, dependencies: Path, plugin_id: str) -> dict:
     state = {"pluginId": plugin_id, "directory": code.name, "committed": False,
              "existed": {"code": code.exists(), "dependencies": dependencies.exists()}}
-    if revision is not None:
-        state["revision"] = revision
     atomic_write_text(transaction / "transaction.json", json.dumps(state))
     for name, target in (("dependencies", dependencies), ("code", code)):
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -110,14 +103,12 @@ def begin(transaction: Path, code: Path, dependencies: Path, plugin_id: str, rev
     return state
 
 
-def commit(transaction: Path, code: Path, dependencies: Path, state: dict, receipt: Path | None = None) -> str | None:
+def commit(transaction: Path, code: Path, dependencies: Path, state: dict) -> str | None:
     state = {**state, "committed": True}
     atomic_write_text(transaction / "transaction.json", json.dumps(state))
-    return recover(transaction, code, dependencies, state, receipt)
+    return recover(transaction, code, dependencies, state)
 
 
 def rollback(transaction: Path, code: Path, dependencies: Path) -> None:
     state = json.loads((transaction / "transaction.json").read_text(encoding="utf-8"))
     recover(transaction, code, dependencies, state)
-
-

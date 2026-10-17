@@ -23,8 +23,6 @@ def _roots(tmp_path):
     healthy.mkdir()
     (healthy / "plugin.yaml").write_text("api: 4\nid: fixture.healthy\nname: Healthy\nversion: 1.0.0\nentry: plugin:Plugin\nenabled: true\nprovides: []\nrequires: []\n", encoding="utf-8")
     (healthy / "plugin.py").write_text("class Plugin:\n    def setup(self, context):\n        pass\n", encoding="utf-8")
-    from app.plugins.bundled_migrations import migrate_bundled_plugins
-    migrate_bundled_plugins(roots)
     return roots
 
 

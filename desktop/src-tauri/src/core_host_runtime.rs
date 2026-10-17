@@ -3624,8 +3624,7 @@ mod tests {
         assert!(cache.store_minimal_python_snapshot(&reused).is_err());
         let mut extended = first.clone();
         extended["revision"] = json!(2);
-        extended["pluginMigration"] = json!({"state": "running", "completed": 0,
-            "total": 6, "pluginId": "sakura.memory.mem0", "stage": "download"});
+        extended["futureProgress"] = json!({"completed": 0, "total": 6});
         cache
             .store_minimal_python_snapshot(&extended)
             .expect("additional progress fields are accepted");

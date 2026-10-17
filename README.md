@@ -10,6 +10,8 @@
 
 [安装与配置](docs/guide/setup.md) · [文档](docs/README.md)
 
+[Code signing policy](docs/guide/code-signing.md) · [隐私政策](docs/guide/privacy.md)
+
 </div>
 
 Sakura 是一个可扩展的 AI 桌宠框架。你可以在角色工坊中加入喜欢的角色立绘、编写人设、配置表情和语音，再导出角色包分享。

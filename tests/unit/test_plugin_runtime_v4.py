@@ -142,7 +142,6 @@ class Plugin:
         host.close()
 
 
-
 def test_service_and_settings_callbacks_wait_for_slow_host_work(tmp_path: Path) -> None:
     roots = _roots(tmp_path)
     _plugin_source(roots.distribution_root / "plugins/builtin", "fixture.slow", "fixture.slow",
@@ -670,8 +669,6 @@ def _roots(tmp_path: Path) -> RuntimeRoots:
     shutil.copyfile(Path(__file__).parents[2] / "VERSION", distribution / "VERSION")
     user.mkdir()
     roots = RuntimeRoots(distribution, user)
-    from app.plugins.bundled_migrations import migrate_bundled_plugins
-    migrate_bundled_plugins(roots)
     return roots
 
 

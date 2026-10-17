@@ -307,6 +307,7 @@ def _legacy_fixture(
             "CREATE TABLE messages (id TEXT PRIMARY KEY, session_scope TEXT, role TEXT, "
             "content TEXT, name TEXT, created_at DATETIME)"
         )
+    connection.close()
     return root
 
 

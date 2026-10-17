@@ -141,8 +141,6 @@ def chat(tmp_path: Path, request: pytest.FixtureRequest, monkeypatch, assistant_
     user.mkdir()
     # Match desktop new-user initialization; this fixture has no legacy plugins.
     (user / "config").mkdir()
-    shutil.copy2(Path(__file__).resolve().parents[2] / "desktop/src-tauri/src/new_user_plugin_migrations.json",
-                 user / "config/plugin-migrations.json")
     _write_plugin(distribution)
     shutil.copytree(Path(__file__).resolve().parents[2] / "plugins" / "builtin" / "sakura_assistant", distribution / "plugins" / "builtin" / "sakura_assistant", ignore=shutil.ignore_patterns("__pycache__"))
     shutil.copytree(Path(__file__).resolve().parents[2] / "plugins/builtin/sakura_model_openai_compatible", distribution / "plugins/builtin/sakura_model_openai_compatible", ignore=shutil.ignore_patterns("__pycache__"))

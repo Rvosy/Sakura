@@ -169,7 +169,6 @@ class ReadinessController:
         self._readiness = "transport_ready"
         self._revision = 0
         self._component: dict[str, object] | None = None
-        self._plugin_migration: dict[str, object] | None = None
         self._current_character_summary: dict[str, object] | None = None
         self._current_character_presentation: dict[str, object] | None = None
         self._session: object | None = None
@@ -557,7 +556,6 @@ class ReadinessController:
                 "revision": self._revision,
                 "readiness": self._readiness,
                 "components": components,
-                "pluginMigration": dict(self._plugin_migration) if self._plugin_migration else None,
                 "capabilities": list(CAPABILITIES),
                 "currentCharacterSummary": self._copy_summary(
                     self._current_character_summary
@@ -575,7 +573,6 @@ class ReadinessController:
             readiness = self._readiness
             revision = self._revision
             components = {"assistant": dict(self._component)} if self._component else {}
-            migration = dict(self._plugin_migration) if self._plugin_migration else None
             summary = self._copy_summary(self._current_character_summary)
             presentation = self._copy_presentation(
                 self._current_character_presentation
@@ -586,7 +583,6 @@ class ReadinessController:
                 "revision": revision,
                 "readiness": readiness,
                 "components": components,
-                "pluginMigration": migration,
                 "currentCharacterSummary": summary,
                 "characterPresentation": presentation,
                 "activeInteractionSummary": None,
@@ -598,7 +594,6 @@ class ReadinessController:
         )
         snapshot["characterPresentation"] = presentation
         snapshot["components"] = components
-        snapshot["pluginMigration"] = migration
         return snapshot
 
     def close(self) -> None:
@@ -662,11 +657,6 @@ class ReadinessController:
                     else:
                         self._add_cleanup_note(self._background_close_error, error)
 
-    def _migration_progress(self, status: dict) -> None:
-        with self._lock:
-            if not self._closed:
-                self._plugin_migration = dict(status)
-                self._revision += 1
 
     def _initialize(self) -> None:
         initializer: object | None = None
@@ -694,7 +684,6 @@ class ReadinessController:
                     self._config.roots,
                     self._config.generation_id,
                     application_tools,
-                    migration_progress=self._migration_progress,
                 )
                 unpublished_resources.append(plugin_application)
                 with self._lock:

@@ -74,7 +74,6 @@ def run():
             shutil.copy2(ROOT / "VERSION", roots.distribution_root / "VERSION")
             # Match desktop initialization instead of treating fixture config as a legacy install.
             (roots.user_root/'config').mkdir()
-            shutil.copy2(ROOT/'desktop/src-tauri/src/new_user_plugin_migrations.json', roots.user_root/'config/plugin-migrations.json')
             for name in ('sakura_assistant', 'sakura_model_openai_compatible', 'sakura_screen_awareness'):
                 shutil.copytree(ROOT/'plugins/builtin'/name, roots.distribution_root/'plugins/builtin'/name, ignore=shutil.ignore_patterns('__pycache__'))
             config = roots.user_root/'data/plugins'/OPENAI_SERVICE/'config.json'; config.parent.mkdir(parents=True)

@@ -13,10 +13,6 @@ def _write_plugin(root: Path, plugin_id: str) -> None:
     import shutil
     config = root / "config"
     config.mkdir(exist_ok=True, parents=True)
-    shutil.copy2(
-        Path(__file__).parents[2] / "desktop/src-tauri/src/new_user_plugin_migrations.json",
-        config / "plugin-migrations.json",
-    )
     directory = root / "plugins" / "user" / plugin_id
     directory.mkdir(parents=True)
     (directory / "plugin.yaml").write_text(

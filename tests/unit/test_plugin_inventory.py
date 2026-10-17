@@ -298,12 +298,9 @@ def test_new_user_plugin_defaults_disable_only_requested_plugins_and_keep_existi
     roots = RuntimeRoots(repository, tmp_path)
     desired = PluginDesiredStateStore(tmp_path)
     inventory = PluginInventory(roots, desired)
-    from app.plugins.bundled_migrations import MIGRATIONS
     before = {item.plugin_id: item.enabled for item in inventory.scan().runtime_specs}
-    assert not (set(before) & MIGRATIONS.keys())
     desired.path.parent.mkdir(parents=True)
     desired.path.write_bytes((repository / "desktop/src-tauri/src/new_user_plugins.yaml").read_bytes())
     assert {item.plugin_id: item.enabled for item in inventory.scan().runtime_specs} == before
     desired.write({"sakura.tts.genie": True, "sakura_mobile": False})
     assert desired.read() == {"sakura.tts.genie": True, "sakura_mobile": False}
-    assert not (set(item.plugin_id for item in inventory.scan().records) & MIGRATIONS.keys())

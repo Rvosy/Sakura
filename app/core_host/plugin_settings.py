@@ -406,12 +406,11 @@ class PluginSettingsBoundary:
         revision = _revision_value(payload["revision"])
         plugins = self.snapshot()["plugins"]
         matching = [p for p in plugins if p["pluginId"] == plugin_id]
-        migration = next((p for p in matching if p["reasonCode"].startswith("PLUGIN_MIGRATION_")), None)
-        installations = [p for p in matching if not p["reasonCode"].startswith("PLUGIN_MIGRATION_")]
+        installations = matching
         if len(installations) > 1 or any(p["reasonCode"] == "PLUGIN_ID_CONFLICT" for p in installations):
             raise PluginSettingsError("PLUGIN_ID_CONFLICT", "请先在已安装列表中卸载冲突的插件副本。")
         existing = next(iter(installations), None)
-        restored_enabled = PluginDesiredStateStore(self._user_root).read().get(plugin_id, bool(migration and migration["enabled"]))
+        restored_enabled = PluginDesiredStateStore(self._user_root).read().get(plugin_id, False)
         if existing is None:
             # A failed copy can leave its canonical code directory without a
             # readable manifest. Only that exact directory belongs to this

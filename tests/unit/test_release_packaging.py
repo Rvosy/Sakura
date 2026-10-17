@@ -15,7 +15,6 @@ import pytest
 import yaml
 
 from app.plugins.inventory import PluginInventory
-from app.plugins.bundled_migrations import MIGRATIONS
 from app.plugins.runtime_v4 import PluginRuntimeManager
 from app.storage.runtime_roots import RuntimeRoots
 from scripts import runtime_v2_archive
@@ -24,8 +23,6 @@ from tools.release.package_optional_plugin import build as build_optional_plugin
 from tools.release import prepare_python_runtime
 from tools.release import stage_distribution
 from tools.release.stage_distribution import (
-    MIGRATION_PAYLOAD,
-    MIGRATION_PLUGINS,
     copy_tree,
     forbidden_paths,
     move_tools,
@@ -39,28 +36,6 @@ from tools.release.verify_updater_signature import UpdaterSignatureError, verify
 
 
 ROOT = Path(__file__).resolve().parents[2]
-
-
-def test_release_smoke_audits_real_subprocess_arguments() -> None:
-    probe = r'''
-import subprocess
-import sys
-from pathlib import Path
-from tools.release.smoke_plugin_upgrade import subprocess_audit_command
-
-command = [sys.executable, "-c", "pass", "path with spaces", 'embedded"quote', "trailing\\"]
-observed = []
-def audit(event, args):
-    if event == "subprocess.Popen":
-        executable, arguments = subprocess_audit_command(args)
-        assert executable == Path(sys.executable).resolve()
-        assert arguments == command, (arguments, command)
-        observed.append(arguments)
-sys.addaudithook(audit)
-subprocess.run(command, check=True)
-assert len(observed) == 1
-'''
-    subprocess.run([sys.executable, "-c", probe], cwd=ROOT, check=True)
 
 
 def _runtime_zip() -> bytes:
@@ -372,10 +347,6 @@ def test_development_dependency_publish_failure_restores_previous_root(
     assert not list((repo / "plugins").glob(".dependencies-*"))
 
 
-
-
-
-
 def test_release_identity_and_1_0x_upgrade_modes_are_frozen() -> None:
     config = json.loads(
         (ROOT / "desktop/src-tauri/tauri.conf.json").read_text(encoding="utf-8")
@@ -405,17 +376,10 @@ def test_release_overlay_contains_only_the_program_domain() -> None:
         "release-staging/python": "python",
         "release-staging/core": "core",
         "release-staging/plugins": "plugins",
-        "release-staging/migration_payload": "migration_payload",
     }
     resources = "\n".join(config["bundle"]["resources"])
     for user_domain in ("config", "data", "characters", "plugins/user", "tts"):
         assert user_domain not in resources
-
-
-
-
-
-
 
 
 def test_python_updater_signature_verifier_matches_the_tauri_outer_base64_contract(
@@ -515,7 +479,6 @@ def test_portable_1_0x_overlay_preserves_every_user_domain_byte_for_byte(
         "core/app.bin": b"core-1.0.1",
         "plugins/builtin/current/plugin.yaml": b"version: 1.0.1\n",
         "plugins/dependencies/current/module.bin": b"dependency-1.0.1",
-        "migration_payload/builtin-extraction-v1/plugins/example/plugin.yaml": b"id: example\n",
         "portable.flag": b"",
     }
     with zipfile.ZipFile(archive, "w") as package:
@@ -532,7 +495,7 @@ def test_portable_1_0x_overlay_preserves_every_user_domain_byte_for_byte(
         members = {name.rstrip("/") for name in package.namelist() if name.rstrip("/")}
         assert all(
             member in {"VERSION", "runtime-manifest.json", "sakura.exe", "portable.flag"}
-            or member.startswith(("python/", "core/", "plugins/builtin/", "plugins/dependencies/", "migration_payload/"))
+            or member.startswith(("python/", "core/", "plugins/builtin/", "plugins/dependencies/"))
             for member in members
         )
         package.extractall(install)
@@ -601,21 +564,14 @@ def _minimal_stage(root: Path, target: str) -> Path:
         "sakura_screen_awareness": "sakura.screen_awareness",
         "sakura_mcp": "sakura.mcp",
         "sakura_portrait": "sakura.portrait",
-        "sakura_spine": "sakura.visual.spine",
         "sakura_web": "sakura.web",
-        "sakura_mem0": "sakura.memory.mem0",
         "sakura_tts_hub": "sakura.tts",
         "sakura_sakuratts": "sakura.tts.sakuratts",
         "sakura_asr_hub": "sakura.asr",
-        "sakura_asr_sensevoice": "sakura.asr.sensevoice",
-        "sakura_genie": "sakura.tts.genie",
-        "sakura_gpt_sovits": "sakura.tts.gpt-sovits",
-        "sakura_mobile": "sakura_mobile",
     }
     dependency_plugins = {"sakura_model_openai_compatible", "sakura_mem0", "sakura_genie", "sakura_gpt_sovits", "sakura_asr_sensevoice", "sakura_web", "sakura_mcp", "sakura_sakuratts"}
     for plugin, plugin_id in plugin_ids.items():
-        payload = stage / MIGRATION_PAYLOAD if plugin in MIGRATIONS.values() else stage
-        directory = payload / "plugins" / plugin if payload != stage else stage / "plugins/builtin" / plugin
+        directory = stage / "plugins/builtin" / plugin
         directory.mkdir(parents=True)
         (directory / "plugin.yaml").write_text(
             f"api: 4\nid: {plugin_id}\n",
@@ -624,7 +580,7 @@ def _minimal_stage(root: Path, target: str) -> Path:
         if plugin in dependency_plugins:
             requirements = directory / "requirements.txt"
             requirements.write_text("fixture==1.0\n", encoding="utf-8")
-            dependency_parent = payload / "dependencies" if payload != stage else stage / "plugins/dependencies"
+            dependency_parent = stage / "plugins/dependencies"
             dependency = dependency_parent / plugin_id
             dependency.mkdir(parents=True)
             (dependency / ".sakura-dependencies.json").write_text(
@@ -667,21 +623,7 @@ def test_distribution_validator_accepts_only_the_bundled_api4_plugins(tmp_path: 
         validate_layout(stage, "macos-arm64", portable=False)
 
 
-def test_release_stages_migration_code_outside_the_plugin_inventory(tmp_path: Path) -> None:
-    stage_distribution.stage_migration_plugins(ROOT, tmp_path)
-
-    payload_plugins = tmp_path / MIGRATION_PAYLOAD / "plugins"
-    assert {path.name for path in payload_plugins.iterdir()} == MIGRATION_PLUGINS
-    inventory = PluginInventory(RuntimeRoots(tmp_path, tmp_path / "user")).scan()
-    assert not inventory.records
-    for plugin_id, directory in MIGRATIONS.items():
-        manifest = yaml.safe_load((payload_plugins / directory / "plugin.yaml").read_text(encoding="utf-8"))
-        assert manifest["id"] == plugin_id
-        assert "sakura.host.model_slots" not in manifest.get("requires", [])
-
-
-
-def test_release_builds_private_dependencies_for_builtins_and_migration_payload(
+def test_release_builds_private_dependencies_for_builtins(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     stage = _minimal_stage(tmp_path, "macos-arm64")
@@ -698,24 +640,12 @@ def test_release_builds_private_dependencies_for_builtins_and_migration_payload(
 
     stage_distribution.stage_bundled_dependencies(stage, "macos-arm64")
 
-    assert len(commands) == 8
     assert all(command[0] == str(stage / "python/tools/uv") for command in commands)
     assert {Path(command[command.index("--target") + 1]).name for command in commands} == {
         "sakura.mcp", "sakura.web", "sakura.model.openai_compatible",
-        "sakura.asr.sensevoice", "sakura.memory.mem0", "sakura.tts.genie", "sakura.tts.gpt-sovits",
         "sakura.tts.sakuratts",
     }
     validate_layout(stage, "macos-arm64", portable=False)
-
-
-def test_release_rejects_a_missing_migration_dependency_root(tmp_path: Path) -> None:
-    stage = _minimal_stage(tmp_path, "macos-arm64")
-    dependency = stage / MIGRATION_PAYLOAD / "dependencies/sakura.memory.mem0"
-    (dependency / ".sakura-dependencies.json").unlink()
-    dependency.rmdir()
-
-    with pytest.raises(ValueError, match="STAGING_PLUGIN_DEPENDENCIES_INVALID"):
-        validate_layout(stage, "macos-arm64", portable=False)
 
 
 def test_bundled_dependency_roots_use_manifest_ids_through_runtime_start(
@@ -726,7 +656,7 @@ def test_bundled_dependency_roots_use_manifest_ids_through_runtime_start(
     user.mkdir()
     expected_ids: set[str] = set()
     for directory_name in development_plugin_dependencies.PLUGIN_DIRECTORIES:
-        if directory_name in MIGRATIONS.values():
+        if directory_name not in stage_distribution.BUILTIN_PLUGINS:
             continue
         source = ROOT / "plugins/builtin" / directory_name
         plugin_root = distribution / "plugins/builtin" / directory_name
@@ -775,8 +705,6 @@ def test_bundled_dependency_roots_use_manifest_ids_through_runtime_start(
         manager.close()
 
 
-
-
 def test_optional_plugin_release_zip_keeps_one_installable_root(tmp_path: Path) -> None:
     output = tmp_path / "playwright.sakplugin.zip"
     build_optional_plugin(ROOT / "plugins/optional/playwright_browser", output)
@@ -785,8 +713,6 @@ def test_optional_plugin_release_zip_keeps_one_installable_root(tmp_path: Path) 
     assert "playwright_browser/plugin.yaml" in names
     assert "playwright_browser/requirements.txt" in names
     assert not any("__pycache__" in name for name in names)
-
-
 
 
 def test_distribution_validator_rejects_user_data_and_heavy_optional_payloads(tmp_path: Path) -> None:
@@ -823,14 +749,11 @@ def test_distribution_validator_allows_python_pth_but_rejects_weights_and_model_
         "import dependency_bootstrap\n",
         encoding="utf-8",
     )
-    payload_dependency = stage / MIGRATION_PAYLOAD / "dependencies/sakura.memory.mem0"
-    (payload_dependency / "dependency-path.pth").write_text("package\n", encoding="utf-8")
     validate_layout(stage, "windows-x64", portable=False)
 
     for weights in (
         packages / "example/model.pth",
         dependency_root / "example/model.pth",
-        payload_dependency / "example/model.pth",
     ):
         weights.parent.mkdir(exist_ok=True)
         weights.write_bytes(b"model")
@@ -859,13 +782,12 @@ def test_distribution_copy_excludes_forbidden_runtime_caches(tmp_path: Path) -> 
     assert not (target / "hf-cache").exists()
 
 
-@pytest.mark.parametrize("dependency_path", ["plugins/dependencies", f"{MIGRATION_PAYLOAD}/dependencies"])
 def test_distribution_prunes_dependency_tests_and_generated_console_scripts(
-    tmp_path: Path, dependency_path: str,
+    tmp_path: Path,
 ) -> None:
     stage = tmp_path / "stage"
     site = stage / "python/Lib/site-packages"
-    dependency = stage / dependency_path / "sakura.memory.mem0"
+    dependency = stage / "plugins/dependencies/sakura.mcp"
     (site / "runtime_package").mkdir(parents=True)
     (site / "runtime_package/module.py").write_text("VALUE = 1\n", encoding="utf-8")
     (site / "runtime_package/tests").mkdir()

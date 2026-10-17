@@ -18,8 +18,6 @@ def _install_spine(roots):
     repository = Path(__file__).resolve().parents[2]
     shutil.copytree(repository / "plugins/optional/sakura_spine", roots.user_root / "plugins/user/sakura_spine", ignore=shutil.ignore_patterns("__pycache__"))
     PluginDesiredStateStore(roots.user_root).set("sakura.visual.spine", True)
-    (roots.user_root / "config/plugin-migrations.json").write_bytes((repository / "desktop/src-tauri/src/new_user_plugin_migrations.json").read_bytes())
-
 
 
 PNG = base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9ZQmcAAAAASUVORK5CYII=')

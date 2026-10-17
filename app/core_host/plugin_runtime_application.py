@@ -118,8 +118,6 @@ class PluginRuntimeApplication:
         generation_id: str,
         tool_registry: object,
         specs: Sequence[RuntimePluginSpec] | None = None,
-        *,
-        migration_progress=None,
     ) -> None:
         self._roots = roots
         self._generation_id = generation_id
@@ -133,26 +131,16 @@ class PluginRuntimeApplication:
         self._loaded = threading.Event()
         self._bound = threading.Event()
         self._model_configuration_issue = None
-        from app.plugins.bundled_migrations import migrate_bundled_plugins
+        from app.plugins.update_transaction import recover_installed_plugins
 
-        recovery_failures = {}
-        if specs is None:
-            from app.plugins.offline_updates import recover_installed_plugins
-
-            recovery_failures = recover_installed_plugins(roots)
-        # Classify the user before model migration creates config/model_slots.json.
-        migration_failures = migrate_bundled_plugins(roots, progress=migration_progress, excluded_plugin_ids=recovery_failures) if specs is None else {}
-        if specs is None:
-            from app.plugins.offline_updates import update_installed_plugins
-
-            migration_failures.update(update_installed_plugins(roots, progress=migration_progress, recovery_failures=recovery_failures))
+        recovery_failures = recover_installed_plugins(roots) if specs is None else {}
         try:
             migrate_legacy_model_configuration(roots.user_root)
         except (OSError, ValueError) as error:
             diagnostics = exception_diagnostics(error, reason_code="CONFIG_DATA_INVALID", stage="model.migration")
             self._model_configuration_issue = {"code": "CONFIG_DATA_INVALID", "message": diagnostics["diagnostic"], "diagnostics": diagnostics}
             log_event("Plugin", "模型配置迁移失败", diagnostics, event="model.configuration.failed", severity="error")
-        self._inventory = PluginInventory(roots, migration_failures=migration_failures)
+        self._inventory = PluginInventory(roots, recovery_failures=recovery_failures)
         self._inventory_snapshot = self._inventory.scan()
         self._manager = PluginRuntimeManager(
             roots,

@@ -49,7 +49,6 @@ def test_enabled_update_restores_processes_and_keeps_data(tmp_path, monkeypatch,
     roots = RuntimeRoots(tmp_path / "distribution", user)
     (roots.distribution_root / "plugins/builtin").mkdir(parents=True)
     (user / "config").mkdir(parents=True)
-    shutil.copy2(Path(__file__).parents[2] / "desktop/src-tauri/src/new_user_plugin_migrations.json", user / "config/plugin-migrations.json")
     installer = LocalPluginInstaller(roots)
     for plugin_id, requires, enabled in [
         ("fixture.provider", (), True),
@@ -129,9 +128,6 @@ def test_market_reinstalls_same_version_and_keeps_existing_user_state(tmp_path, 
         (original.code_dir / "plugin.py").write_text('class Plugin:\n    def setup(self, context):\n        raise RuntimeError("old installation broken")\n')
     else:
         (original.code_dir / "plugin.yaml").unlink()
-    monkeypatch.setattr("app.plugins.bundled_migrations.migrate_bundled_plugins", lambda *args, **kwargs: {
-        plugin_id: {"reasonCode": "PLUGIN_MIGRATION_FAILED", "diagnostics": {"diagnostic": "fixture migration failed"}},
-    })
     config = paths.plugins_config().read_bytes()
     private = paths.plugin_data_for(plugin_id) / "settings.json"
     private.parent.mkdir(parents=True)
@@ -163,7 +159,6 @@ def test_failed_market_repair_preserves_broken_copy_and_can_be_retried(tmp_path,
     original = LocalPluginInstaller(roots).install(package(tmp_path / "old.zip", plugin_id, fail=True), "zip", initial_enabled=True)
     if damage == "missing_manifest":
         (original.code_dir / "plugin.yaml").unlink()
-    monkeypatch.setattr("app.plugins.bundled_migrations.migrate_bundled_plugins", lambda *args, **kwargs: {})
     before = {p.name: p.read_bytes() for p in original.code_dir.iterdir() if p.is_file()}
     config = paths.plugins_config().read_bytes()
     application = PluginApplicationHost(roots, "repair-generation", ToolRegistry())
@@ -187,7 +182,7 @@ def test_failed_market_repair_preserves_broken_copy_and_can_be_retried(tmp_path,
 
 @pytest.mark.parametrize("enabled", [True, False])
 @pytest.mark.parametrize("valid_marker", [True, False])
-def test_market_restores_missing_migration_with_orphan_dependencies(tmp_path, monkeypatch, enabled, valid_marker):
+def test_market_installs_missing_plugin_with_orphan_dependencies(tmp_path, monkeypatch, enabled, valid_marker):
     plugin_id = "sakura_mobile"
     roots = RuntimeRoots(tmp_path / "distribution", tmp_path / "user")
     paths = StoragePaths(roots.user_root)
@@ -202,9 +197,6 @@ def test_market_restores_missing_migration_with_orphan_dependencies(tmp_path, mo
     uv = tmp_path / "fake_uv.py"
     uv.write_text('import sys\nfrom pathlib import Path\ntarget = Path(sys.argv[sys.argv.index("--target") + 1])\n(target / "fixture_dependency.py").write_text("VALUE = 42\\n")\n')
     monkeypatch.setattr(PluginDependencyRoots, "_uv_command", lambda self: [sys.executable, str(uv)])
-    monkeypatch.setattr("app.plugins.bundled_migrations.migrate_bundled_plugins", lambda *args, **kwargs: {
-        plugin_id: {"reasonCode": "PLUGIN_MIGRATION_FAILED", "diagnostics": {"diagnostic": "fixture migration failed"}},
-    })
     archive_path = package(tmp_path / "plugin.zip", plugin_id, lazy_dependency=True)
     with zipfile.ZipFile(archive_path, "a") as archive:
         archive.writestr("requirements.txt", "fixture-dependency==1.0\n")
@@ -227,14 +219,11 @@ def test_market_restores_missing_migration_with_orphan_dependencies(tmp_path, mo
         application.close()
 
 
-def test_missing_migration_failed_install_releases_runtime_record_before_retry(tmp_path, monkeypatch):
+def test_failed_install_releases_runtime_record_before_retry(tmp_path, monkeypatch):
     plugin_id = "sakura_mobile"
     roots = RuntimeRoots(tmp_path / "distribution", tmp_path / "user")
     paths = StoragePaths(roots.user_root)
     PluginDesiredStateStore(roots.user_root).set(plugin_id, True)
-    monkeypatch.setattr("app.plugins.bundled_migrations.migrate_bundled_plugins", lambda *args, **kwargs: {
-        plugin_id: {"reasonCode": "PLUGIN_MIGRATION_FAILED", "diagnostics": {"diagnostic": "fixture migration failed"}},
-    })
     application = PluginApplicationHost(roots, "repair-generation", ToolRegistry())
     boundary = PluginSettingsBoundary("repair-generation", "credential", roots, application_provider=lambda: application)
     try:

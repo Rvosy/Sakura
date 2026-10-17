@@ -35,7 +35,7 @@ macOS arm64、Linux x64 与正式 Windows 构建使用 [Release 工作流](../..
 | 入口 | 用途 |
 |---|---|
 | [prepare_python_runtime.py](../../tools/release/prepare_python_runtime.py) | 准备平台 Python 及其依赖 |
-| [stage_distribution.py](../../tools/release/stage_distribution.py) | 整理程序、内置插件、依赖及迁移材料 |
+| [stage_distribution.py](../../tools/release/stage_distribution.py) | 整理程序、内置插件及对应依赖 |
 | [tauri_release_config.py](../../tools/release/tauri_release_config.py) | 生成本次打包配置 |
 | [updater_manifest.py](../../tools/release/updater_manifest.py) | 从实际资产生成更新清单 |
 | [diagnostic_build.py](../../tools/release/diagnostic_build.py) | 生成与构建身份对应的诊断映射 |

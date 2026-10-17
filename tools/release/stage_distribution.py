@@ -12,7 +12,6 @@ import stat
 import subprocess
 import sys
 import tempfile
-import uuid
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -32,14 +31,6 @@ BUILTIN_PLUGINS = {
     "sakura_sakuratts",
     "sakura_asr_hub",
 }
-# Keep this payload while supporting direct upgrades from 1.1.2 and the second
-# 1.2.0 release.
-# It is migration material, never part of the builtin plugin inventory.
-MIGRATION_PAYLOAD = Path("migration_payload/builtin-extraction-v1")
-MIGRATION_SOURCES = json.loads(
-    (Path(__file__).resolve().parents[2] / "app/plugins/migration_sources.json").read_text(encoding="utf-8")
-)
-MIGRATION_PLUGINS = {source["directory"] for source in MIGRATION_SOURCES.values()}
 CORE_IMPORTS = (
     "yaml",
     "py7zz",
@@ -152,20 +143,9 @@ def _python_version(executable: Path) -> str:
 
 
 def plugin_layouts(stage: Path) -> list[tuple[Path, set[str], Path]]:
-    payload = stage / MIGRATION_PAYLOAD
     return [
         (stage / "plugins/builtin", BUILTIN_PLUGINS, stage / "plugins/dependencies"),
-        (payload / "plugins", MIGRATION_PLUGINS, payload / "dependencies"),
     ]
-
-
-def stage_migration_plugins(repo: Path, stage: Path) -> None:
-    for directory_name in sorted(MIGRATION_PLUGINS):
-        copy_tree(
-            repo / "plugins/optional" / directory_name,
-            stage / MIGRATION_PAYLOAD / "plugins" / directory_name,
-        )
-    (stage / MIGRATION_PAYLOAD / "revision.txt").write_text(uuid.uuid4().hex, encoding="utf-8")
 
 
 def stage_bundled_dependencies(stage: Path, target: str) -> None:
@@ -428,7 +408,6 @@ def smoke(stage: Path, target: str) -> None:
     )
     subprocess.run([str(executable), "-I", "-B", "-c", script], check=True)
     smoke_bundled_entries(stage, target)
-    smoke_plugin_upgrade(stage, target)
     suffix = ".exe" if target == "windows-x64" else ""
     for name, argument in (("uv", "--version"), ("uvx", "--version"), ("7zz", "-h")):
         subprocess.run(
@@ -437,24 +416,6 @@ def smoke(stage: Path, target: str) -> None:
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
-
-
-def smoke_plugin_upgrade(stage: Path, target: str, *, historical_distribution: Path | None = None) -> None:
-    """Run only staged Core/runtime, outside the checkout, with no PATH fallback."""
-    environment = os.environ.copy()
-    environment.pop("PYTHONPATH", None)
-    environment.pop("PYTHONHOME", None)
-    environment.update(PATH="", PYTHONNOUSERSITE="1", PYTHONDONTWRITEBYTECODE="1",
-                       UV_OFFLINE="1", UV_NO_CACHE="1", UV_NO_INDEX="1")
-    command = [
-        str(python_executable(stage / "python", target)), "-I", "-B",
-        str(Path(__file__).with_name("smoke_plugin_upgrade.py")),
-        "--stage", str(stage),
-    ]
-    if historical_distribution is not None:
-        command.extend(["--historical-distribution", str(historical_distribution)])
-    with tempfile.TemporaryDirectory(prefix="sakura-release-upgrade-smoke-") as work:
-        subprocess.run(command, check=True, cwd=work, env=environment)
 
 
 def inventory(stage: Path, target: str) -> dict[str, object]:
@@ -496,7 +457,6 @@ def assemble(repo: Path, python_source: Path, output: Path, target: str, *, port
     copy_tree(repo / "plugins/builtin", output / "plugins/builtin")
     # The core input plugin's native crate is linked into the Shell binary.
     shutil.rmtree(output / "plugins/builtin/sakura_asr_hub/native")
-    stage_migration_plugins(repo, output)
     move_tools(output / "python", target)
     stage_bundled_dependencies(output, target)
     prune_non_runtime_files(output, target)

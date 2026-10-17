@@ -87,7 +87,6 @@ class LocalPluginInstaller:
         expected: tuple[str, str] | None = None,
         initial_enabled: bool = False,
         expected_plugin_id: str | None = None,
-        offline_dependencies: bool = False,
         reuse_dependencies: bool = False,
     ) -> InstalledPlugin:
         source_path = Path(source)
@@ -162,7 +161,6 @@ class LocalPluginInstaller:
                         spec.plugin_id,
                         plugin_root,
                         entry=spec.entry,
-                        bundled=offline_dependencies,
                     ) as prepared:
                         backup = staging / "previous-dependencies"
                         self._replace_path(dependency_target, backup)
@@ -171,8 +169,7 @@ class LocalPluginInstaller:
                             self._replace_path(prepared, dependency_target)
                             dependency_promoted = True
             else:
-                dependency_install = self._dependencies.install_bundled if offline_dependencies else self._dependencies.install
-                dependency_root = dependency_install(spec.plugin_id, plugin_root, entry=spec.entry)
+                dependency_root = self._dependencies.install(spec.plugin_id, plugin_root, entry=spec.entry)
                 dependency_promoted = dependency_root is not None and not dependency_existed
             self._replace_path(plugin_root, target)
             promoted = target

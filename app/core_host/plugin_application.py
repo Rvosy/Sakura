@@ -24,8 +24,6 @@ class PluginApplicationHost(PluginRuntimeApplication):
         roots: RuntimeRoots | Path,
         generation_id: str,
         tool_registry: object,
-        *,
-        migration_progress=None,
     ) -> None:
         resolved = coerce_runtime_roots(roots)
         self._user_root = resolved.user_root
@@ -34,7 +32,6 @@ class PluginApplicationHost(PluginRuntimeApplication):
             resolved,
             generation_id,
             tool_registry,
-            migration_progress=migration_progress,
         )
 
     def bind_character_presentation(self, character_id: str) -> None:
@@ -123,13 +120,12 @@ class PluginApplicationHost(PluginRuntimeApplication):
             self._public_record(record, runtime_records.get(record.plugin_id))
             for record in inventory.records
         ]
-        migration_failed = any(record.reason_code.startswith("PLUGIN_MIGRATION_") for record in inventory.records)
         state = runtime_snapshot.get("state", "ready")
         return {
             "schemaVersion": 1,
             "revision": inventory.revision,
-            "state": "degraded" if migration_failed and state == "ready" else state,
-            "reasonCode": "PLUGIN_MIGRATION_FAILED" if migration_failed and state == "ready" else runtime_snapshot.get("reasonCode", "READY"),
+            "state": state,
+            "reasonCode": runtime_snapshot.get("reasonCode", "READY"),
             "plugins": plugins,
         }
 

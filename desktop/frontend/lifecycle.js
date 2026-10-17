@@ -35,30 +35,6 @@ export const LIFECYCLE_COPY = Object.freeze({
   rehydrating: ["rehydrating", "正在恢复桌宠"],
 });
 
-export function migrationStatus(publication) {
-  const { supervisor, snapshot } = publication || {};
-  if (!snapshot || snapshot.generationId !== supervisor?.generationId) return null;
-  const migration = snapshot.pluginMigration;
-  if (!migration) return null;
-  const names = { sakura_mobile: "手机聊天", "sakura.asr.sensevoice": "SenseVoice",
-    "sakura.memory.mem0": "Mem0 长期记忆", "sakura.tts.gpt-sovits": "GPT-SoVITS",
-    "sakura.tts.genie": "Genie", "sakura.visual.spine": "Spine" };
-  const name = names[migration.pluginId] || migration.pluginId || "插件";
-  if (migration.state === "running") return {
-    state: "running", message: `正在迁移插件（${migration.completed}/${migration.total}）：${name}`,
-    completed: migration.completed, total: migration.total,
-  };
-  if (migration.state === "failed") return {
-    state: "failed", message: "部分插件迁移失败",
-  };
-  if (migration.state === "completed") return {
-    state: "completed", message: ["ready", "degraded", "setup_required"].includes(snapshot.readiness)
-      ? "插件迁移已完成" : snapshot.readiness === "failed"
-        ? "插件迁移完成，启动失败" : "正在启动 Sakura",
-  };
-  return null;
-}
-
 function readinessForCurrentGeneration(supervisor, snapshot) {
   if (!snapshot || snapshot.generationId !== supervisor.generationId) return null;
   return snapshot.readiness;
@@ -83,11 +59,10 @@ export function projectLifecycle({ supervisor, snapshot }) {
 
   const [label, defaultHeadline] = LIFECYCLE_COPY[status];
   const failure = safeFailure(supervisor.failure);
-  const migration = migrationStatus({ supervisor, snapshot });
   return Object.freeze({
     status,
     label,
-    headline: failure?.message || (migration && (migration.state !== "completed" || status === "initializing" || status === "failed") ? migration.message : defaultHeadline),
+    headline: failure?.message || defaultHeadline,
     code: STATUS_CODES[status],
     failure,
     canRetry: supervisor.state === "failed",

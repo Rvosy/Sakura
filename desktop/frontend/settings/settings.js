@@ -20,7 +20,6 @@ import {
 } from "../core/theme-runtime.js";
 import { FALLBACK_THEME_TOKENS } from "../core/theme.js";
 import { installDevtoolsShortcutGuard } from "../core/devtools-guard.js";
-import { createMigrationStatus } from "./migration-status.js";
 import { isRuntimeCancellation } from "../core/runtime-diagnostics.js";
 
 installDevtoolsShortcutGuard();
@@ -138,7 +137,6 @@ let runtimeVoiceController = null;
 let runtimeAsrController = null;
 let runtimeAutostartController = null;
 let firstRunGuideController = null;
-let migrationStatusController = null;
 let runtimeCapabilityManifest = null;
 let runtimeVisualEffectModes = Object.freeze([
   Object.freeze({ id: "solid", label: "纯色块", disabled: false, reason: "" }),
@@ -1724,7 +1722,6 @@ window.addEventListener("beforeunload", () => {
   beginSettingsWindowClose();
   errorDialog.dispose();
   runtimeAppearanceController?.dispose();
-  migrationStatusController?.dispose();
   runtimeCharacterFeature?.dispose();
   runtimeProviderFeature?.dispose();
   runtimeChatTimingController?.dispose();
@@ -1758,8 +1755,6 @@ async function startSettingsFrontend() {
     await invoke("reveal_settings_window");
     windowRevealed = true;
   };
-  migrationStatusController = createMigrationStatus({ document, window, invoke, onError: setError, reveal });
-  await migrationStatusController.ready;
   if (settingsWindowClosing) return;
   let manifest = await invoke("settings_capability_manifest");
   const { createCharacterSettingsFeature } = await import("./character-settings.js");
@@ -2007,7 +2002,6 @@ async function startSettingsFrontend() {
     await initializeRuntimeSettingsSection(refreshAboutSettings);
   }
   refreshDirty();
-  migrationStatusController.finishStartup();
   runtimeDiagnostics?.markReady({ settings: true });
 }
 
@@ -2025,7 +2019,6 @@ startSettingsFrontend()
   })
   .catch((error) => {
     if (!settingsWindowClosing && error?.code !== "MEMORY_INITIALIZATION_CANCELLED") {
-      migrationStatusController?.finishStartup();
       setError(error);
     }
   });
