@@ -591,7 +591,6 @@ fn validate_chat_payload(payload: &Value) -> Result<(), String> {
         .as_object()
         .ok_or_else(|| "INVALID_CHAT_PAYLOAD: payload must be an object".to_string())?;
     if object.len() == 1 && object.contains_key("event") {
-        validate_update_available_event(object.get("event"))?;
         return Ok(());
     }
     if object
@@ -611,61 +610,6 @@ fn validate_chat_payload(payload: &Value) -> Result<(), String> {
             .is_some_and(|value| crate::capture::valid_attachment_id(value));
         if !valid {
             return Err("INVALID_CHAT_PAYLOAD: attachment identity is invalid".to_string());
-        }
-    }
-    Ok(())
-}
-
-fn validate_update_available_event(event: Option<&Value>) -> Result<(), String> {
-    let event = event
-        .and_then(Value::as_object)
-        .filter(|event| event.len() == 2)
-        .ok_or_else(|| "INVALID_CHAT_PAYLOAD: update event is invalid".to_string())?;
-    if event.get("type").and_then(Value::as_str) != Some("update_available") {
-        return Err("INVALID_CHAT_PAYLOAD: update event type is invalid".to_string());
-    }
-    let payload = event
-        .get("payload")
-        .and_then(Value::as_object)
-        .filter(|payload| {
-            (payload.len() == 5 || (payload.len() == 6 && payload["plugins"].is_array()))
-                && ["currentVersion", "version", "notes", "pubDate", "mode"]
-                    .iter()
-                    .all(|key| payload.contains_key(*key))
-        })
-        .ok_or_else(|| "INVALID_CHAT_PAYLOAD: update event payload is invalid".to_string())?;
-    for key in ["currentVersion", "version"] {
-        if key == "version"
-            && payload[key].is_null()
-            && payload
-                .get("plugins")
-                .and_then(Value::as_array)
-                .is_some_and(|items| !items.is_empty())
-        {
-            continue;
-        }
-        if !payload
-            .get(key)
-            .and_then(Value::as_str)
-            .is_some_and(|value| !value.is_empty() && value.len() <= 64)
-        {
-            return Err("INVALID_CHAT_PAYLOAD: update version is invalid".to_string());
-        }
-    }
-    if !matches!(
-        payload.get("mode").and_then(Value::as_str),
-        Some("installed" | "portable")
-    ) {
-        return Err("INVALID_CHAT_PAYLOAD: update mode is invalid".to_string());
-    }
-    for (key, limit) in [("notes", 4_000), ("pubDate", 64)] {
-        if !payload.get(key).is_some_and(|value| {
-            value.is_null()
-                || value
-                    .as_str()
-                    .is_some_and(|text| text.chars().count() <= limit)
-        }) {
-            return Err(format!("INVALID_CHAT_PAYLOAD: update {key} is invalid"));
         }
     }
     Ok(())

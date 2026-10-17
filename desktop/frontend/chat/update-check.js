@@ -9,9 +9,13 @@ export async function checkUpdates(invoke, onError) {
     if (result.status === "rejected") onError(result.reason);
   }
   if (plugins.status === "fulfilled" && plugins.value) {
-    const { catalog, context, installed } = plugins.value;
-    const candidates = updateCandidates(syncInstalledPlugins(catalogPlugins(catalog, context), installed));
-    return invoke("plugin_update_candidates", { plugins: candidates });
+    try {
+      const { catalog, context, installed } = plugins.value;
+      const candidates = updateCandidates(syncInstalledPlugins(catalogPlugins(catalog, context), installed));
+      return await invoke("plugin_update_candidates", { plugins: candidates });
+    } catch (error) {
+      onError(error);
+    }
   }
   return application.status === "fulfilled" ? application.value : { status: "unavailable" };
 }

@@ -46,3 +46,20 @@ test("a disabled automatic check does not publish candidates", async () => {
   }, error => assert.fail(error));
   assert.equal(result.status, "disabled");
 });
+
+for (const failure of ["catalog", "publication"]) {
+  test(`a plugin ${failure} error preserves an available application update`, async () => {
+    const errors = [];
+    const result = await checkUpdates(async name => {
+      if (name === "startup_update_check") return { status: "pending", version: "2.0.0" };
+      if (name === "startup_plugin_catalog") {
+        const value = catalogResult();
+        if (failure === "catalog") value.catalog.schema_version = 2;
+        return value;
+      }
+      throw new Error("candidate publication failed");
+    }, error => errors.push(error));
+    assert.deepEqual(result, { status: "pending", version: "2.0.0" });
+    assert.equal(errors.length, 1);
+  });
+}

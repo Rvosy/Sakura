@@ -122,17 +122,17 @@ export function createUpdateAnnouncementController({
       pending = false;
       failedAttempts = 0;
       onDiagnostic("update.announcement.completed", {});
-      if (refreshRequested) { refreshRequested = false; void refresh(); }
-      return;
+    } else {
+      if (event.error?.code === "CHAT_DELIVERY_UNCONFIRMED") pending = false;
+      if (event.type === "chat.failed") failedAttempts += 1;
+      if (failedAttempts >= 2) pending = false;
+      onDiagnostic("update.announcement.retry_waiting", {
+        terminal: event.type,
+        failedAttempts,
+        pending,
+      });
     }
-    if (event.error?.code === "CHAT_DELIVERY_UNCONFIRMED") pending = false;
-    if (event.type === "chat.failed") failedAttempts += 1;
-    if (failedAttempts >= 2) pending = false;
-    onDiagnostic("update.announcement.retry_waiting", {
-      terminal: event.type,
-      failedAttempts,
-      pending,
-    });
+    if (refreshRequested && (completed || pending)) { refreshRequested = false; void refresh(); }
   }
 
   return Object.freeze({

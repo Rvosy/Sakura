@@ -22,7 +22,8 @@ def caller():
         HOST_CALLER.reset(owner)
 
 
-def test_activity_is_saved_while_chat_busy_and_reopens_through_reloaded_plugin(tmp_path):
+@pytest.mark.parametrize("extended", [False, True])
+def test_activity_is_saved_while_chat_busy_and_reopens_through_reloaded_plugin(tmp_path, extended):
     timeline = TimelineStore(StoragePaths(tmp_path).timeline_database())
     timeline.initialize()
     session = SimpleNamespace(character=SimpleNamespace(id="pet", display_name="伙伴"))
@@ -35,6 +36,9 @@ def test_activity_is_saved_while_chat_busy_and_reopens_through_reloaded_plugin(t
     assert not host.current()["idle"]
     request = {"sessionId": host.current()["sessionId"], "text": "结束了五子棋",
         "details": "你获胜，共 9 手。", "recordId": "game-1", "actionLabel": "查看棋谱"}
+    if extended:
+        request.update(recordId="game/" + "round/" * 30 + "1", details="1. A1 B2\n" * 9000,
+                       actionLabel="查看这场比赛的完整棋谱与逐回合说明" * 8)
     with caller():
         host.register_record_opener("old-handle")
         saved = host.record_activity(request)
@@ -47,8 +51,8 @@ def test_activity_is_saved_while_chat_busy_and_reopens_through_reloaded_plugin(t
     entries = page["payload"]["entries"]
     assert len(entries) == 1
     assert entries[0]["payload"] == {"text": request["text"], "activity": {
-        "sourcePluginId": "sakura.gomoku", "recordId": "game-1",
-        "details": request["details"], "actionLabel": "查看棋谱"}}
+        "sourcePluginId": "sakura.gomoku", "recordId": request["recordId"],
+        "details": request["details"], "actionLabel": request["actionLabel"]}}
     assert events[0][0] == "host.history.changed"
     assert events[0][1]["entryId"] == saved["entryId"]
 
@@ -58,7 +62,7 @@ def test_activity_is_saved_while_chat_busy_and_reopens_through_reloaded_plugin(t
     with caller():
         host.register_record_opener("new-handle")
     assert history.handle(envelope)["payload"] == {"opened": True}
-    assert opened == [("new-handle", "chat.history.open", "game-1")]
+    assert opened == [("new-handle", "chat.history.open", request["recordId"])]
 
     session.character.id = "another-pet"
     assert history.handle(envelope)["error"]["code"] == "HISTORY_CHARACTER_MISMATCH"
