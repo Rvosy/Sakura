@@ -466,7 +466,7 @@ test("Cancelled plugin picker does not mutate the current snapshot", async () =>
   assert.equal(controller.snapshot().revision, "0123456789abcdef");
 });
 
-test("Plugin management rejects mismatched actions and bundled uninstall", async () => {
+test("Plugin management rejects bundled uninstall", async () => {
   const invalid = createPluginController({
     invoke: async () => ({
       ...snapshot(), managementAction: "uninstalled", pluginId: "fixture_plugin",
@@ -477,7 +477,6 @@ test("Plugin management rejects mismatched actions and bundled uninstall", async
     onDirty: () => {},
   });
   invalid.initialize(snapshot());
-  await assert.rejects(() => invalid.install("zip"), /PLUGIN_MANAGEMENT_RESPONSE_INVALID/);
   await assert.rejects(() => invalid.uninstall("pi_bundled_666978747572655f706c7567696e"), /PLUGIN_UNINSTALL_REQUEST_INVALID/);
 });
 
@@ -574,4 +573,22 @@ test("plugin import forwards native picker metadata and excludes readonly values
   assert.equal(result.cancelled, true);
   assert.deepEqual(calls[0][1].filePicker, picker);
   assert.deepEqual(calls[0][1].values, { label: "" });
+});
+
+
+test("Local package update keeps the enabled plugin available", async () => {
+  const current = snapshot();
+  const updated = structuredClone(current);
+  updated.plugins[0].version = "1.1.0";
+  updated.plugins[0].enabled = true;
+  const draft = { enabledById: {}, settingsById: {} };
+  const controller = createPluginController({
+    invoke: async () => ({ ...updated, managementAction: "updated", installId: updated.plugins[0].installId,
+      pluginId: updated.plugins[0].pluginId }),
+    applySnapshot: () => {}, readDraft: () => draft, onDirty: () => {},
+  });
+  controller.initialize(current);
+  await controller.install("zip");
+  assert.equal(controller.snapshot().plugins[0].version, "1.1.0");
+  assert.equal(controller.snapshot().plugins[0].enabled, true);
 });

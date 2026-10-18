@@ -747,3 +747,57 @@ def test_two_memory_context_contributors_are_composable_and_failure_isolated() -
         and item.fragment.source == "plugin:fixture.memory.flat-file"
         for item in snapshot.selected
     )
+
+
+def test_plugin_waits_for_character_then_rebinds_and_releases_old_memory(tmp_path):
+    context = FakeContext()
+    created = []
+    selected = None
+
+    def factory(_context):
+        if selected is None:
+            return None
+        boundary = FakeBoundary()
+        runtime = SakuraMem0Runtime(tmp_path, selected, boundary=boundary)
+        created.append((runtime, boundary))
+        return runtime
+
+    plugin = SakuraMem0Plugin(factory)
+    plugin.setup(context)
+    waiting = context.services["sakura.host.settings"].calls[-1][0][0]
+    assert waiting["fields"][0]["default"]["state"] == "neutral"
+    assert created == []
+    changed = next(callback for event, callback in context.events if event == "sakura.host.character.changed")
+    selected = "alpha"
+    changed({"characterId": selected})
+    assert created[-1][0].character_id == "alpha"
+    selected = "beta"
+    changed({"characterId": selected})
+    assert created[0][1].closed
+    assert created[-1][0].character_id == "beta"
+    assert not created[-1][1].closed
+    plugin.close()
+    assert created[-1][1].closed
+    selected = "gamma"
+    changed({"characterId": selected})
+    assert len(created) == 2
+
+
+@pytest.mark.parametrize("code", ["CHARACTER_NOT_FOUND", "CHARACTER_RESOURCE_INVALID"])
+def test_default_runtime_waits_only_for_missing_character(tmp_path, code):
+    class CharacterError(RuntimeError):
+        pass
+
+    error = CharacterError(code)
+    error.code = code
+
+    def current():
+        raise error
+
+    context = SimpleNamespace(data_path=lambda _path: tmp_path,
+                              get=lambda key: SimpleNamespace(current=current))
+    if code == "CHARACTER_NOT_FOUND":
+        assert _default_runtime(context) is None
+    else:
+        with pytest.raises(CharacterError):
+            _default_runtime(context)

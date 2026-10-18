@@ -4,6 +4,7 @@ import json
 import os
 import shutil
 import sys
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -281,5 +282,43 @@ def test_mem0_v4_isolated_process_and_replaceable_contributions(tmp_path: Path) 
             item["pluginId"] for item in application.settings_sections("memory")
         ] == ["third.party.memory"]
         assert application.model_slots() == []
+    finally:
+        application.close()
+
+
+def test_mem0_v4_starts_without_character_and_activates_after_selection(tmp_path: Path) -> None:
+    roots = _roots(tmp_path)
+    character_path = roots.user_root / "characters/sakura"
+    saved_character = tmp_path / "saved-character"
+    character_path.rename(saved_character)
+    registry = ToolRegistry()
+    application = PluginRuntimeApplication(
+        roots, "generation-mem0-no-character", registry, PluginInventory(roots).scan().runtime_specs,
+    )
+    try:
+        application.start()
+        mem0 = next(item for item in application.public_snapshot()["plugins"]
+                    if item["pluginId"] == "sakura.memory.mem0")
+        assert mem0["state"] == "active"
+        assert registry.get("memory_search") is None
+        assert application.model_slots() == []
+
+        saved_character.rename(character_path)
+        application.bind_session(SimpleNamespace(
+            character=CharacterRegistry(roots.user_root).get("sakura"),
+            assistant=object(), visual_binding=None,
+        ))
+        deadline = time.monotonic() + 5
+        while not application.model_slots() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert registry.get("memory_search") is not None
+        assert [(item["ownerId"], item["slotId"]) for item in application.model_slots()] == [
+            ("sakura.memory.mem0", "curation")
+        ]
+        mem0_settings = next(item for item in application.settings_snapshot()["plugins"]
+                             if item["pluginId"] == "sakura.memory.mem0")
+        assert {item["sectionId"] for item in mem0_settings["sections"]} == {
+            "memory", "memory_embedding_component", "memory_management",
+        }
     finally:
         application.close()

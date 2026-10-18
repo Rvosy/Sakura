@@ -139,3 +139,22 @@ test("installed plugin update opens its release without changing settings", asyn
   assert.equal(ui.document.getElementById("pluginDetail").textContent.includes("1.0.0 → 1.1.0"), false);
   ui.feature.dispose();
 });
+
+
+test("duplicate installations show their own version and directory", () => {
+  const ui = featureFixture(async () => assert.fail("viewing duplicate copies must not change them"));
+  const data = catalog();
+  data.plugins = ["old-memory", "memory-copy"].map((directoryName, index) => ({
+    ...data.plugins[2], installId: installId(index + 1, "user"), pluginId: "memory", name: "Memory",
+    directoryName, version: index ? "0.2.1" : "0.1.0", source: "user", canUninstall: true,
+    state: "failed", reasonCode: "PLUGIN_ID_CONFLICT",
+  }));
+  ui.feature.initialize(data);
+  const cards = ui.document.getElementById("pluginList").querySelectorAll(".plugin-card");
+  assert.equal(cards.length, 2);
+  for (const [index, card] of cards.entries()) {
+    assert.ok(card.textContent.includes(data.plugins[index].directoryName));
+    assert.ok(card.textContent.includes(data.plugins[index].version));
+  }
+  ui.feature.dispose();
+});

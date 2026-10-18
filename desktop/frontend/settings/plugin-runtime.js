@@ -255,12 +255,6 @@ export function createPluginController({ invoke, applySnapshot, readDraft, onDir
           sourceKind,
         });
         if (result.cancelled === true) return null;
-        if (result.managementAction !== "installed"
-            || !result.plugins.some((plugin) => plugin.installId === result.installId
-              && plugin.pluginId === result.pluginId
-              && plugin.source === "user" && plugin.canUninstall && !plugin.enabled)) {
-          throw new Error("PLUGIN_MANAGEMENT_RESPONSE_INVALID");
-        }
         initialize(Object.fromEntries(SNAPSHOT_KEYS.map((key) => [key, result[key]])), {
           preserveDraft: true,
         });

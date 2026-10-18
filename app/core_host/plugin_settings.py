@@ -302,7 +302,7 @@ class PluginSettingsBoundary:
         *, expected: tuple[str, str] | None = None,
         initial_enabled: bool = False,
     ) -> dict[str, object]:
-        revision = _revision_value(raw_revision)
+        _revision_value(raw_revision)
         if raw_source_kind not in {"zip", "folder"}:
             raise PluginSettingsError("INVALID_REQUEST", "插件安装来源无效。")
         if (
@@ -312,55 +312,60 @@ class PluginSettingsBoundary:
             or not Path(raw_source_path).is_absolute()
         ):
             raise PluginSettingsError("INVALID_REQUEST", "插件安装路径无效。")
+        installer = LocalPluginInstaller(self._roots)
         with self._save_lock:
-            if revision != self._revision():
-                raise PluginSettingsError(
-                    "CONFIG_REVISION_CONFLICT",
-                    "插件设置已被其他窗口修改。",
-                    retryable=True,
-                )
             application = self._application()
             if application is None:
-                raise PluginSettingsError(
-                    "PLUGIN_SETTINGS_NOT_READY",
-                    "插件设置仍在初始化。",
-                    retryable=True,
-                )
-            installer = LocalPluginInstaller(self._roots)
+                raise PluginSettingsError("PLUGIN_SETTINGS_NOT_READY", "插件设置仍在初始化。", retryable=True)
             try:
-                installed = installer.install(Path(raw_source_path), str(raw_source_kind), expected=expected,
-                                              initial_enabled=initial_enabled)
+                with installer.prepare_package(Path(raw_source_path), raw_source_kind, expected=expected) as spec:
+                    inventory = self._refresh_inventory(application)
+                    matching = [p for p in inventory.records if p.plugin_id == spec.plugin_id]
+                    if len(matching) > 1 or any(p.reason_code == "PLUGIN_ID_CONFLICT" for p in matching):
+                        raise PluginSettingsError("PLUGIN_ID_CONFLICT", "请先卸载重复安装的插件副本。")
+                    record = next(iter(matching), None)
+                    if record is None:
+                        record = next((p for p in inventory.records if p.source == "user" and p.plugin_id is None
+                                       and p.directory_name == sanitize_directory_component(spec.plugin_id)), None)
+                    if record is not None:
+                        if record.source != "user":
+                            raise PluginSettingsError("BUNDLED_PLUGIN_LOCKED", "内置插件随应用更新。")
+                        current = next(p for p in self.snapshot()["plugins"] if p["installId"] == record.install_id)
+                        if record.plugin_id is None:
+                            current["enabled"] = PluginDesiredStateStore(self._user_root).read().get(spec.plugin_id, False)
+                        return self._update_plugin(application, installer, spec, record, current)
+                    enabled = PluginDesiredStateStore(self._user_root).read().get(spec.plugin_id, initial_enabled)
+                    return self._install_plugin(application, installer, spec, enabled)
             except PluginInstallError as error:
                 raise PluginSettingsError(error.code, "本地插件安装失败。") from error
+
+    def _install_plugin(self, application, installer, spec, initial_enabled):
+        installed = installer.install_prepared(spec, initial_enabled=initial_enabled)
+        try:
+            snapshot = getattr(application, "install_plugin")(installed.install_id)
+            current = next((p for p in snapshot.get("plugins", []) if p["pluginId"] == installed.plugin_id), None)
+            if initial_enabled and (current is None or current.get("state") != "active"):
+                raise PluginSettingsError("PLUGIN_INSTALL_START_FAILED", "安装后的插件未能启动。")
+        except Exception as apply_error:
+            rollback_error: BaseException | None = None
             try:
-                snapshot = getattr(application, "install_plugin")(installed.install_id)
-                current = next((p for p in snapshot.get("plugins", []) if p["pluginId"] == installed.plugin_id), None)
-                if initial_enabled and (current is None or current.get("state") != "active"):
-                    raise PluginSettingsError("PLUGIN_INSTALL_START_FAILED", "安装后的插件未能启动。")
-            except Exception as apply_error:
-                rollback_error: BaseException | None = None
-                try:
-                    application.uninstall_plugin(installed.plugin_id)
-                    installer.remove_installed_code(installed)
-                except Exception as error:
-                    rollback_error = error
-                application.refresh_inventory()
-                code = (
-                    getattr(rollback_error, "code", "PLUGIN_INSTALL_ROLLBACK_FAILED")
-                    if rollback_error is not None
-                    else str(getattr(apply_error, "code", "PLUGIN_INSTALL_APPLY_FAILED"))
-                )
-                raise PluginSettingsError(
-                    code,
-                    "插件安装未能应用到当前运行时。",
-                    recovery_error=rollback_error,
-                ) from apply_error
+                application.uninstall_plugin(installed.plugin_id)
+                installer.remove_installed_code(installed)
+            except Exception as error:
+                rollback_error = error
+            application.refresh_inventory()
+            code = (
+                getattr(rollback_error, "code", "PLUGIN_INSTALL_ROLLBACK_FAILED")
+                if rollback_error is not None
+                else str(getattr(apply_error, "code", "PLUGIN_INSTALL_APPLY_FAILED"))
+            )
+            raise PluginSettingsError(
+                code,
+                "插件安装未能应用到当前运行时。",
+                recovery_error=rollback_error,
+            ) from apply_error
         result = self.snapshot()
-        result.update(
-            managementAction="installed",
-            installId=installed.install_id,
-            pluginId=installed.plugin_id,
-        )
+        result.update(managementAction="installed", installId=installed.install_id, pluginId=installed.plugin_id)
         return result
 
     def frontend_module(self, service_key: object, module_name: object) -> dict[str, object]:
@@ -399,90 +404,63 @@ class PluginSettingsBoundary:
     def marketplace_install(self, payload: Mapping[str, Any]) -> dict[str, object]:
         plugin_id = _identifier(payload["pluginId"])
         version = payload["version"]
-        source_path = payload["sourcePath"]
-        if (not isinstance(version, str) or not version or not isinstance(source_path, str)
-                or not source_path or len(source_path) > 4096 or not Path(source_path).is_absolute()):
+        if not isinstance(version, str) or not version:
             raise PluginSettingsError("INVALID_REQUEST", "市场安装请求格式无效。")
-        revision = _revision_value(payload["revision"])
-        plugins = self.snapshot()["plugins"]
-        matching = [p for p in plugins if p["pluginId"] == plugin_id]
-        installations = matching
-        if len(installations) > 1 or any(p["reasonCode"] == "PLUGIN_ID_CONFLICT" for p in installations):
-            raise PluginSettingsError("PLUGIN_ID_CONFLICT", "请先在已安装列表中卸载冲突的插件副本。")
-        existing = next(iter(installations), None)
-        restored_enabled = PluginDesiredStateStore(self._user_root).read().get(plugin_id, False)
-        if existing is None:
-            # A failed copy can leave its canonical code directory without a
-            # readable manifest. Only that exact directory belongs to this
-            # package; never select an arbitrary malformed installation.
-            record = next((p for p in self._refresh_inventory(self._application()).records
-                           if p.source == "user" and p.plugin_id is None
-                           and p.directory_name == sanitize_directory_component(plugin_id)), None)
-            if record is not None:
-                existing = _project_plugin({}, record=record)
-                existing["enabled"] = restored_enabled
-        if existing is None:
-            return self.install(revision, "zip", source_path, expected=(plugin_id, version),
-                                initial_enabled=restored_enabled)
-        with self._save_lock:
-            if revision != self._revision():
-                raise PluginSettingsError("CONFIG_REVISION_CONFLICT", "插件列表已变化，请刷新后重试。")
-            application = self._application()
-            if application is None:
-                raise PluginSettingsError("PLUGIN_SETTINGS_NOT_READY", "插件服务尚未就绪。")
-            if existing["source"] != "user":
-                raise PluginSettingsError("BUNDLED_PLUGIN_LOCKED", "内置插件随应用更新。")
-            installer = LocalPluginInstaller(self._roots)
-            warning = None
-            started = perf_counter()
-            paths = StoragePaths(self._user_root)
-            record = self._refresh_inventory(application).record(existing["installId"])
-            code = paths.user_plugins_dir / record.directory_name
-            dependencies = paths.plugin_dependency_root_for(plugin_id)
-            try:
-                if installer._unsafe_node(code):
-                    raise PluginInstallError("PLUGIN_INSTALL_SYMLINK_FORBIDDEN")
-                log_event("Plugin", "正在准备插件更新", {"pluginId": plugin_id, "version": version}, event="plugin.update.preparing")
-                with installer.prepare_update(Path(source_path), plugin_id, version) as transaction:
-                    desired = PluginDesiredStateStore(self._user_root)
-                    if plugin_id not in desired.read():
-                        desired.set(plugin_id, existing["enabled"])
-                    log_event("Plugin", "正在切换插件版本", {"pluginId": plugin_id, "version": version}, event="plugin.update.switching")
-                    with application.plugin_update(plugin_id) as dependents:
-                        def activate(*, require_active):
-                            snapshot = application.install_plugin(existing["installId"])
-                            current = next((p for p in snapshot.get("plugins", []) if p["pluginId"] == plugin_id), None)
-                            if require_active and (current is None or current.get("state") != "active"):
-                                raise PluginSettingsError("PLUGIN_UPDATE_START_FAILED", "更新后的插件未能启动。")
-                            application.restore_update_dependents(dependents)
+        return self.install(payload["revision"], "zip", payload["sourcePath"], expected=(plugin_id, version))
 
+    def _update_plugin(self, application, installer, spec, record, existing):
+        plugin_id, version = spec.plugin_id, spec.version
+        warning = None
+        started = perf_counter()
+        paths = StoragePaths(self._user_root)
+        code = paths.user_plugins_dir / record.directory_name
+        dependencies = paths.plugin_dependency_root_for(plugin_id)
+        try:
+            if installer._unsafe_node(code):
+                raise PluginInstallError("PLUGIN_INSTALL_SYMLINK_FORBIDDEN")
+            application.check_plugin_update_idle()
+            log_event("Plugin", "正在准备插件更新", {"pluginId": plugin_id, "version": version}, event="plugin.update.preparing")
+            with installer.prepare_update(spec) as transaction:
+                desired = PluginDesiredStateStore(self._user_root)
+                if plugin_id not in desired.read():
+                    desired.set(plugin_id, existing["enabled"])
+                log_event("Plugin", "正在切换插件版本", {"pluginId": plugin_id, "version": version}, event="plugin.update.switching")
+                with application.plugin_update(plugin_id) as dependents:
+                    def activate(*, require_active):
+                        snapshot = application.install_plugin(existing["installId"])
+                        current = next((p for p in snapshot.get("plugins", []) if p["pluginId"] == plugin_id), None)
+                        if require_active and (current is None or current.get("state") != "active"):
+                            raise PluginSettingsError("PLUGIN_UPDATE_START_FAILED", "更新后的插件未能启动。")
+                        application.restore_update_dependents(dependents)
+
+                    try:
+                        application.uninstall_plugin(plugin_id)
+                        state = update_transaction.begin(transaction, code, dependencies, plugin_id)
+                        activate(require_active=existing["enabled"])
+                    except Exception as error:
+                        recovery_error = None
                         try:
                             application.uninstall_plugin(plugin_id)
-                            state = update_transaction.begin(transaction, code, dependencies, plugin_id)
-                            activate(require_active=existing["enabled"])
-                        except Exception as error:
-                            recovery_error = None
-                            try:
-                                application.uninstall_plugin(plugin_id)
-                                if (transaction / "transaction.json").exists():
-                                    update_transaction.rollback(transaction, code, dependencies)
-                                application.refresh_inventory()
-                                if existing["supported"]:
-                                    activate(require_active=existing["state"] == "active")
-                            except Exception as recovery:
-                                recovery_error = recovery
-                            error_code = "PLUGIN_UPDATE_ROLLBACK_FAILED" if recovery_error else getattr(error, "code", "PLUGIN_UPDATE_FAILED")
-                            message = "插件更新失败，原安装状态恢复失败。" if recovery_error else "插件更新失败，已恢复原安装状态。"
-                            raise PluginSettingsError(error_code, message, recovery_error=recovery_error) from error
-                        warning = update_transaction.commit(transaction, code, dependencies, state)
-            except PluginSettingsError:
-                raise
-            except Exception as error:
-                code = getattr(error, "code", "PLUGIN_UPDATE_FAILED")
-                message = "当前互动尚未结束，请结束后重试更新。" if code == "RUNTIME_UPDATE_BUSY" else "插件更新失败。"
-                raise PluginSettingsError(code, message, retryable=code == "RUNTIME_UPDATE_BUSY") from error
+                            if (transaction / "transaction.json").exists():
+                                update_transaction.rollback(transaction, code, dependencies)
+                            application.refresh_inventory()
+                            if existing["supported"]:
+                                activate(require_active=existing["state"] == "active")
+                        except Exception as recovery:
+                            recovery_error = recovery
+                        error_code = "PLUGIN_UPDATE_ROLLBACK_FAILED" if recovery_error else getattr(error, "code", "PLUGIN_UPDATE_FAILED")
+                        message = "插件更新失败，原安装状态恢复失败。" if recovery_error else "插件更新失败，已恢复原安装状态。"
+                        raise PluginSettingsError(error_code, message, recovery_error=recovery_error) from error
+                    warning = update_transaction.commit(transaction, code, dependencies, state)
+        except PluginSettingsError:
+            raise
+        except Exception as error:
+            code = getattr(error, "code", "PLUGIN_UPDATE_FAILED")
+            message = "当前互动尚未结束，请结束后重试更新。" if code == "RUNTIME_UPDATE_BUSY" else "插件更新失败。"
+            raise PluginSettingsError(code, message, retryable=code == "RUNTIME_UPDATE_BUSY") from error
         result = self.snapshot()
-        result.update(managementAction="updated", installId=existing["installId"], pluginId=plugin_id)
+        result.update(managementAction="updated", installId=existing["installId"], pluginId=plugin_id,
+                      previousVersion=existing["version"], version=version)
         log_event("Plugin", "插件更新完成", {"pluginId": plugin_id, "version": version, "elapsedMs": round((perf_counter() - started) * 1000)}, event="plugin.update.completed")
         if warning:
             result["warning"] = {"message": "插件已更新，旧文件将在下次启动时清理。", "detail": warning}
@@ -609,6 +587,7 @@ def _preview_plugin(spec: Any) -> dict[str, object]:
     enabled = bool(spec.desired_enabled)
     return {
         "installId": spec.install_id,
+        "directoryName": spec.directory_name,
         "pluginId": spec.plugin_id,
         "name": spec.name[:120],
         "version": spec.version[:64],
@@ -637,7 +616,7 @@ def _project_plugins(
     inventory: Any,
 ) -> list[dict[str, object]]:
     if values and all(isinstance(item.get("installId"), str) for item in values):
-        return [_project_plugin(item) for item in values]
+        return [_project_plugin(item, record=inventory.record(item["installId"])) for item in values]
     by_plugin_id = {
         item.get("pluginId"): item
         for item in values
@@ -662,12 +641,13 @@ def _project_plugin(
     plugin_id = raw.get("pluginId")
     if plugin_id is not None:
         plugin_id = _identifier(plugin_id)
-    model_update_required = (
+    model_update_required = raw.get("reasonCode") != "PLUGIN_ID_CONFLICT" and (
         "sakura.host.model_slots" in _identifier_list(raw.get("requires"))
         or raw.get("reasonCode") == "MODEL_API_UPDATE_REQUIRED"
     )
     return {
         "installId": _install_identifier(raw.get("installId")),
+        "directoryName": raw.get("directoryName", ""),
         "pluginId": plugin_id,
         "name": _text(raw.get("name"), 120, "Plugin"),
         "version": _text(raw.get("version"), 64, "0.0.0"),
