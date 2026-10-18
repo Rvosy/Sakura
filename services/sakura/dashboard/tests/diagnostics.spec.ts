@@ -109,6 +109,7 @@ test("SQL filters, pagination and export states preserve the selected scope", as
   });
   await page.goto("/admin/#diagnostics?tab=reports&build=release-one");
   await expect(page.getByRole("button", { name: "下一页" })).toBeEnabled();
+  expect(requests.some((u) => u.includes("/v2/quality"))).toBe(false);
   await page.getByRole("button", { name: "下一页" }).click();
   await expect
     .poll(() =>
