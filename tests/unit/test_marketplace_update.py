@@ -2,6 +2,7 @@
 import json
 import shutil
 import sys
+import threading
 import zipfile
 from contextlib import contextmanager
 from pathlib import Path
@@ -19,6 +20,7 @@ from app.plugins.inventory import PluginDesiredStateStore
 from app.plugins.dependencies import PluginDependencyRoots
 from app.storage.paths import StoragePaths
 from app.storage.runtime_roots import RuntimeRoots
+from tools.release.package_optional_plugin import build as build_plugin_package
 
 
 def package(path, plugin_id, version="1.0.0", *, requires=(), fail=False, reject_new_dependency=False, lazy_dependency=False):
@@ -37,9 +39,13 @@ class Plugin:
     def pid(self):
         return os.getpid()
 '''
-    with zipfile.ZipFile(path, "w") as archive:
-        archive.writestr("plugin.yaml", f"api: 4\nid: {plugin_id}\nname: Fixture\nversion: {version}\nentry: plugin:Plugin\nprovides: [{plugin_id}]\nrequires: [{', '.join(requires)}]\n")
-        archive.writestr("plugin.py", body)
+    source = path.parent / (path.stem + "-source")
+    source.mkdir()
+    (source / "plugin.yaml").write_text(f"api: 4\nid: {plugin_id}\nname: Fixture\nversion: {version}\nentry: plugin:Plugin\nprovides: [{plugin_id}]\nrequires: [{', '.join(requires)}]\n")
+    (source / "plugin.py").write_text(body)
+    if lazy_dependency:
+        (source / "requirements.txt").write_text("fixture-dependency==1.0\n")
+    build_plugin_package(source, path)
     return path
 
 
@@ -216,8 +222,6 @@ def test_market_installs_missing_plugin_with_orphan_dependencies(tmp_path, monke
     uv.write_text('import sys\nfrom pathlib import Path\ntarget = Path(sys.argv[sys.argv.index("--target") + 1])\n(target / "fixture_dependency.py").write_text("VALUE = 42\\n")\n')
     monkeypatch.setattr(PluginDependencyRoots, "_uv_command", lambda self: [sys.executable, str(uv)])
     archive_path = package(tmp_path / "plugin.zip", plugin_id, lazy_dependency=True)
-    with zipfile.ZipFile(archive_path, "a") as archive:
-        archive.writestr("requirements.txt", "fixture-dependency==1.0\n")
     application = PluginApplicationHost(roots, "repair-generation", ToolRegistry())
     boundary = PluginSettingsBoundary("repair-generation", "credential", roots, application_provider=lambda: application)
     try:
@@ -434,3 +438,140 @@ def test_interaction_started_during_preparation_keeps_the_old_plugin(running_upd
         assert application.call_service(original.plugin_id, "ping") == "1.0.0"
     finally:
         application._chat_boundary = None
+
+
+@pytest.mark.parametrize("persistent", [False, True])
+def test_failed_commit_can_be_retried_without_reverting_a_later_update(running_update, tmp_path, monkeypatch, persistent):
+    roots, original, application, boundary, request = running_update
+    write = update_transaction.atomic_write_text
+    failures = []
+
+    def fail_commit(path, content, **kwargs):
+        if path.name == "transaction.json" and json.loads(content)["committed"] and (persistent or not failures):
+            failures.append(path)
+            raise PermissionError("commit record is locked")
+        return write(path, content, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(update_transaction, "atomic_write_text", fail_commit)
+        with pytest.raises(PluginSettingsError):
+            boundary.marketplace_install(request)
+    assert "version: 1.0.0" in (original.code_dir / "plugin.yaml").read_text()
+    if not persistent:
+        assert application.call_service(original.plugin_id, "ping") == "1.0.0"
+    else:
+        current = next(p for p in boundary.snapshot()["plugins"] if p["pluginId"] == original.plugin_id)
+        assert current["reasonCode"] == "PLUGIN_UPDATE_RECOVERY_FAILED"
+    request.update(version="1.2.0", sourcePath=str(package(tmp_path / "later.zip", original.plugin_id, "1.2.0")))
+    boundary.marketplace_install(request)
+    application.close()
+    restarted = PluginApplicationHost(roots, "after-retry", ToolRegistry())
+    try:
+        restarted.start()
+        assert restarted.call_service(original.plugin_id, "ping") == "1.2.0"
+    finally:
+        restarted.close()
+
+
+def test_startup_recovery_failure_stays_visible_and_reinstall_recovers_without_restart(tmp_path, monkeypatch):
+    roots = RuntimeRoots(tmp_path / "distribution", tmp_path / "user")
+    installer = LocalPluginInstaller(roots)
+    plugin_id = "fixture.recovery"
+    original = installer.install(package(tmp_path / "old.zip", plugin_id), "zip", initial_enabled=True)
+    installer.install(package(tmp_path / "consumer.zip", "fixture.consumer", requires=(plugin_id,)), "zip", initial_enabled=True)
+    installer.install(package(tmp_path / "leaf.zip", "fixture.leaf", requires=("fixture.consumer",)), "zip", initial_enabled=True)
+    new = package(tmp_path / "new.zip", plugin_id, "1.1.0")
+    paths = StoragePaths(roots.user_root)
+    with installer.prepare_package(new, "zip") as spec:
+        with installer.prepare_installation(spec) as transaction:
+            update_transaction.begin(transaction, original.code_dir, paths.plugin_dependency_root_for(plugin_id), plugin_id)
+    replace = update_transaction.os.replace
+
+    def locked_old_code(source, target):
+        if Path(source).name == "old-code":
+            raise PermissionError("old code is locked")
+        return replace(source, target)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(update_transaction.os, "replace", locked_old_code)
+        application = PluginApplicationHost(roots, "failed-recovery", ToolRegistry())
+        application.start()
+        boundary = PluginSettingsBoundary("failed-recovery", "credential", roots, application_provider=lambda: application)
+        current = next(p for p in boundary.snapshot()["plugins"] if p["pluginId"] == plugin_id)
+        assert current["pluginId"] == plugin_id
+        assert current["reasonCode"] == "PLUGIN_UPDATE_RECOVERY_FAILED"
+        assert current["enabled"] is True
+        with pytest.raises(PluginSettingsError) as caught:
+            boundary.install(boundary.snapshot()["revision"], "zip", str(new))
+        assert caught.value.code == "PLUGIN_UPDATE_RECOVERY_FAILED"
+    try:
+        result = boundary.install(boundary.snapshot()["revision"], "zip", str(new))
+        current = next(p for p in result["plugins"] if p["pluginId"] == plugin_id)
+        assert current["state"] == "active"
+        assert current["version"] == "1.1.0"
+        assert application.call_service(plugin_id, "ping") == "1.1.0"
+        assert application.call_service("fixture.consumer", "ping") == "1.1.0"
+        assert application.call_service("fixture.leaf", "ping") == "1.1.0"
+    finally:
+        application.close()
+
+
+@pytest.mark.parametrize("change", ["disable_target", "uninstall_target", "disable_other"])
+def test_settings_remain_available_during_dependency_preparation(running_update, tmp_path, monkeypatch, change):
+    _, original, application, boundary, request = running_update
+    other = boundary.install(boundary.snapshot()["revision"], "zip", str(package(tmp_path / "other.zip", "fixture.other")))
+    entered, release = threading.Event(), threading.Event()
+    prepare = PluginDependencyRoots.prepare
+    results, errors = [], []
+
+    @contextmanager
+    def blocked_preparation(*args, **kwargs):
+        with prepare(*args, **kwargs) as dependencies:
+            entered.set()
+            assert release.wait(10), "依赖准备未收到继续信号"
+            yield dependencies
+
+    def update():
+        try:
+            results.append(boundary.marketplace_install(request))
+        except Exception as error:
+            errors.append(error)
+
+    monkeypatch.setattr(PluginDependencyRoots, "prepare", blocked_preparation)
+    worker = threading.Thread(target=update)
+    worker.start()
+    changed = threading.Event()
+    change_errors = []
+
+    def change_settings():
+        try:
+            revision = boundary.snapshot()["revision"]
+            if change == "uninstall_target":
+                boundary.uninstall(revision, original.install_id)
+            else:
+                boundary.set_enabled(revision, original.install_id if change == "disable_target" else other["installId"], False)
+        except Exception as error:
+            change_errors.append(error)
+        finally:
+            changed.set()
+
+    settings_worker = threading.Thread(target=change_settings)
+    try:
+        assert entered.wait(10), "更新未开始准备依赖"
+        settings_worker.start()
+        assert changed.wait(3), "准备依赖阻塞了其他设置操作"
+        assert not change_errors
+    finally:
+        release.set()
+        worker.join(10)
+        if settings_worker.ident is not None:
+            settings_worker.join(10)
+    assert not worker.is_alive()
+    if change == "uninstall_target":
+        assert errors[0].code == "PLUGIN_NOT_FOUND"
+        assert not any(p["pluginId"] == original.plugin_id for p in boundary.snapshot()["plugins"])
+    else:
+        assert not errors
+        current = next(p for p in results[0]["plugins"] if p["pluginId"] == original.plugin_id)
+        assert current["version"] == "1.1.0"
+        assert current["enabled"] is (change != "disable_target")

@@ -5,11 +5,13 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Mapping
 
+from app.core.diagnostics import exception_diagnostics
 from app.plugins.inventory import (
     InstalledPluginRecord,
     PluginDesiredStateStore,
 )
 from app.plugins.models import PLUGIN_API_V4_VERSION
+from app.plugins import update_transaction
 from app.plugins.runtime_v4 import PluginRuntimeError
 from app.storage.runtime_roots import RuntimeRoots, coerce_runtime_roots
 
@@ -54,6 +56,9 @@ class PluginApplicationHost(PluginRuntimeApplication):
         record = inventory.record(install_id)
         if record is None:
             raise PluginRuntimeError("PLUGIN_NOT_FOUND", "插件不存在。")
+        if record.plugin_id is not None:
+            self.recover_plugin_update(record.plugin_id)
+            record = self.inventory().record(install_id)
         if record.required and not enabled:
             raise PluginRuntimeError("REQUIRED_PLUGIN_LOCKED", "必需插件不能禁用。")
         if enabled and not record.supported:
@@ -105,6 +110,33 @@ class PluginApplicationHost(PluginRuntimeApplication):
         if spec is None or spec.api_version != PLUGIN_API_V4_VERSION:
             raise PluginRuntimeError(record.reason_code, "插件不受支持。")
         return super().install_plugin(spec)
+
+    def recover_plugin_update(self, plugin_id: str) -> None:
+        if not update_transaction.update_journals(self._roots, plugin_id) and not self._inventory.recovery_failed(plugin_id):
+            return
+        with self.plugin_update(plugin_id) as dependents:
+            self.uninstall_plugin(plugin_id)
+            failures = update_transaction.recover_installed_plugins(self._roots, plugin_id)
+            failure = failures.get(plugin_id)
+            self._inventory.set_recovery_failure(plugin_id, failure)
+            inventory = self.refresh_inventory()
+            if failure is not None:
+                raise PluginRuntimeError(failure["reasonCode"], failure["diagnostics"]["diagnostic"],
+                                         plugin_id=plugin_id, diagnostics=failure["diagnostics"])
+            record = next((item for item in inventory.records if item.plugin_id == plugin_id), None)
+            if record is not None and record.runtime_spec() is not None:
+                self.install_plugin(record.install_id)
+                self.restore_update_dependents(dependents)
+                for restored_id in self._manager.restore_waiting_dependents(plugin_id):
+                    self._refresh_visual_provider(restored_id)
+
+    def record_update_recovery_failure(self, plugin_id: str, directory: str, error: Exception) -> None:
+        self._inventory.set_recovery_failure(plugin_id, {
+            "directoryName": directory,
+            "reasonCode": "PLUGIN_UPDATE_RECOVERY_FAILED",
+            "diagnostics": exception_diagnostics(error, reason_code="PLUGIN_UPDATE_RECOVERY_FAILED", stage="update_recovery"),
+        })
+        self.refresh_inventory()
 
     def _merge_inventory(
         self,

@@ -87,12 +87,12 @@ class LocalPluginInstaller:
         expected: tuple[str, str] | None = None,
         initial_enabled: bool = False,
         expected_plugin_id: str | None = None,
-        reuse_dependencies: bool = False,
     ) -> InstalledPlugin:
         with self.prepare_package(source, source_kind, expected=expected) as spec:
             if expected_plugin_id is not None and spec.plugin_id != expected_plugin_id:
                 raise PluginInstallError("PLUGIN_PACKAGE_IDENTITY_MISMATCH")
-            return self.install_prepared(spec, initial_enabled=initial_enabled, reuse_dependencies=reuse_dependencies)
+            with self.prepare_installation(spec) as prepared:
+                return self.install_prepared(spec, prepared, initial_enabled=initial_enabled)
 
     @contextmanager
     def prepare_package(self, source: Path, source_kind: str, *, expected: tuple[str, str] | None = None):
@@ -138,8 +138,8 @@ class LocalPluginInstaller:
         finally:
             shutil.rmtree(staging, ignore_errors=True)
 
-    def install_prepared(self, spec: PluginSpec, *, initial_enabled: bool = False, reuse_dependencies: bool = False) -> InstalledPlugin:
-        plugin_root = spec.plugin_root
+    def install_prepared(self, spec: PluginSpec, prepared: Path, *, initial_enabled: bool = False) -> InstalledPlugin:
+        plugin_root = prepared / "new-code"
         destination = self._paths.user_plugins_dir
         staging = Path(tempfile.mkdtemp(prefix=".install-", dir=destination))
         promoted: Path | None = None
@@ -162,31 +162,14 @@ class LocalPluginInstaller:
             self._write_enabled_override(spec.plugin_id, initial_enabled)
             state_reserved = True
             dependency_target = self._paths.plugin_dependency_root_for(spec.plugin_id)
-            dependency_existed = dependency_target.exists()
-            if dependency_existed:
-                dependency_ready = False
-                if reuse_dependencies:
-                    try:
-                        dependency_root = self._dependencies.verified_root(spec.plugin_id, plugin_root)
-                        self._dependencies._validate_entry(spec.plugin_id, plugin_root, dependency_root, spec.entry)
-                        dependency_ready = True
-                    except PluginDependencyError:
-                        pass
-                if not dependency_ready:
-                    with self._dependencies.prepare(
-                        spec.plugin_id,
-                        plugin_root,
-                        entry=spec.entry,
-                    ) as prepared:
-                        backup = staging / "previous-dependencies"
-                        self._replace_path(dependency_target, backup)
-                        dependency_backup = backup
-                        if prepared is not None:
-                            self._replace_path(prepared, dependency_target)
-                            dependency_promoted = True
-            else:
-                dependency_root = self._dependencies.install(spec.plugin_id, plugin_root, entry=spec.entry)
-                dependency_promoted = dependency_root is not None and not dependency_existed
+            if dependency_target.exists():
+                backup = staging / "previous-dependencies"
+                self._replace_path(dependency_target, backup)
+                dependency_backup = backup
+            if (prepared / "new-dependencies").exists():
+                dependency_target.parent.mkdir(parents=True, exist_ok=True)
+                self._replace_path(prepared / "new-dependencies", dependency_target)
+                dependency_promoted = True
             self._replace_path(plugin_root, target)
             promoted = target
             assert config_before is None or isinstance(config_before, str)
@@ -254,7 +237,7 @@ class LocalPluginInstaller:
                 raise rollback_error
 
     @contextmanager
-    def prepare_update(self, spec: PluginSpec):
+    def prepare_installation(self, spec: PluginSpec):
         """旧插件继续运行，候选代码和依赖准备完成后才交给调用方切换。"""
         plugin_id, root = spec.plugin_id, spec.plugin_root
         parent = self._paths.user_plugins_dir

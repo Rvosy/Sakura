@@ -154,7 +154,7 @@ def test_install_uses_bundled_uv_with_no_path(tmp_path: Path, monkeypatch: pytes
 
 
 @pytest.mark.parametrize("broken", ["missing_marker", "python", "kind", "import"])
-def test_reuse_rebuilds_invalid_dependency_root_before_switching(
+def test_install_rebuilds_orphan_dependency_root_before_switching(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, broken: str,
 ) -> None:
     installer, source, dependency_root, uv = _dependency_install_fixture(tmp_path, monkeypatch)
@@ -174,7 +174,7 @@ def test_reuse_rebuilds_invalid_dependency_root_before_switching(
 
     monkeypatch.setattr(installer._dependencies, "_validate_entry", validate)
 
-    installed = installer.install(source, "folder", reuse_dependencies=True)
+    installed = installer.install(source, "folder")
 
     assert uv.with_name("invoked").is_file()
     assert (dependency_root / "fixture_dependency.py").read_text() == "VALUE = 42\n"
@@ -199,7 +199,7 @@ def test_dependency_repair_failure_preserves_previous_root_and_config(
         original_replace = installer._replace_path
 
         def replace(source_path: Path, target: Path) -> None:
-            if source_path.name == "folder":
+            if target == StoragePaths(tmp_path / "user").user_plugins_dir / "com.example.local":
                 raise OSError("code promotion failure")
             original_replace(source_path, target)
 
@@ -207,7 +207,7 @@ def test_dependency_repair_failure_preserves_previous_root_and_config(
 
     expected_error = "PLUGIN_DEPENDENCY_INSTALL_FAILED" if failure == "build" else "PLUGIN_INSTALL_IO_FAILED"
     with pytest.raises(PluginInstallError, match=expected_error):
-        installer.install(source, "folder", reuse_dependencies=True)
+        installer.install(source, "folder")
 
     assert list(dependency_root.iterdir()) == [dependency_root / "original.txt"]
     assert (dependency_root / "original.txt").read_text() == "previous dependencies"
@@ -279,6 +279,9 @@ class _BoundaryWorker:
         return {"plugins": plugins}
 
     def check_plugin_update_idle(self):
+        pass
+
+    def recover_plugin_update(self, _plugin_id):
         pass
 
     def public_snapshot(self) -> dict[str, object]:

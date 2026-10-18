@@ -226,9 +226,9 @@ def test_inventory_install_id_is_stable_and_public_preview_has_no_absolute_path(
 
     assert first.install_id == second.install_id
     assert first.install_id != first.plugin_id
-    assert "readable-directory" not in repr(preview)
+    assert preview["directoryName"] == "readable-directory"
     assert str(root) not in repr(preview)
-    assert set(preview).isdisjoint({"directoryName", "path", "entry"})
+    assert set(preview).isdisjoint({"path", "entry"})
 
 
 def test_inventory_rejects_linked_plugin_directories(tmp_path: Path) -> None:
