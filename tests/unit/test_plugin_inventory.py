@@ -141,6 +141,47 @@ def test_inventory_duplicate_policy_keeps_only_single_bundled_winner(tmp_path: P
     assert records["user_a"].can_uninstall is True
 
 
+@pytest.mark.parametrize(("plugin_id", "directory"), [
+    ("sakura.memory.mem0", "sakura_mem0"),
+    ("sakura_mobile", "sakura_mobile"),
+    ("sakura.asr.sensevoice", "sakura_asr_sensevoice"),
+    ("sakura.tts.gpt-sovits", "sakura_gpt_sovits"),
+    ("sakura.tts.genie", "sakura_genie"),
+    ("sakura.visual.spine", "sakura_spine"),
+])
+def test_external_plugin_remains_usable_with_retired_bundled_files(tmp_path, plugin_id, directory):
+    from app.plugins.discovery import PluginDiscovery
+
+    retired = _plugin(tmp_path, directory, plugin_id)
+    _plugin(tmp_path, "installed", plugin_id, source="user")
+    desired = PluginDesiredStateStore(tmp_path)
+    desired.set(plugin_id, False)
+    config = desired.path.read_bytes()
+    # 重命名残留目录后仍按插件身份识别，不能让旧内置副本重新抢占用户版。
+    retired.rename(retired.with_name("old-copy"))
+    snapshot = PluginInventory(tmp_path).scan()
+    assert len(snapshot.records) == 1
+    record = snapshot.records[0]
+    assert record.source == "user" and record.runtime_eligible and record.can_uninstall
+    assert record.desired_enabled is False
+    assert [spec.plugin_id for spec in snapshot.runtime_specs] == [plugin_id]
+    discovered = PluginDiscovery(tmp_path).discover()
+    assert [(spec.plugin_id, spec.source, spec.enabled) for spec in discovered] == [(plugin_id, "user", False)]
+    assert desired.path.read_bytes() == config
+
+
+def test_broken_retired_manifest_does_not_block_user_plugin(tmp_path):
+    from app.plugins.discovery import PluginDiscovery
+
+    old = _plugin(tmp_path, "sakura_mem0", "sakura.memory.mem0")
+    (old / "plugin.yaml").write_text("[broken", encoding="utf-8")
+    _plugin(tmp_path, "memory", "sakura.memory.mem0", source="user")
+    snapshot = PluginInventory(tmp_path).scan()
+    assert len(snapshot.records) == 1
+    assert snapshot.records[0].runtime_eligible
+    assert [spec.source for spec in PluginDiscovery(tmp_path).discover()] == ["user"]
+
+
 @pytest.mark.parametrize("source", ["bundled", "user"])
 def test_inventory_same_source_duplicates_all_conflict(tmp_path: Path, source: str) -> None:
     root = tmp_path / "app"

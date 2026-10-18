@@ -33,6 +33,16 @@ SERVICE_KEY_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,199}$")
 _PYTHON_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 INSTALL_ID_PATTERN = re.compile(r"^pi_(?:user|bundled)_(?:[0-9a-f]{2}){1,1024}$")
 
+# 已外置的插件可能仍留在覆盖升级目录中，不再作为内置插件加载。
+RETIRED_BUNDLED_PLUGINS = {
+    "sakura.memory.mem0": "sakura_mem0",
+    "sakura_mobile": "sakura_mobile",
+    "sakura.asr.sensevoice": "sakura_asr_sensevoice",
+    "sakura.tts.gpt-sovits": "sakura_gpt_sovits",
+    "sakura.tts.genie": "sakura_genie",
+    "sakura.visual.spine": "sakura_spine",
+}
+
 # Settings, application and installer create separate Inventory objects. Share
 # the last structured state per runtime root so their revisions agree.
 _REVISION_LOCK = threading.RLock()
@@ -141,6 +151,7 @@ class PluginInventorySnapshot:
     records: tuple[InstalledPluginRecord, ...]
     runtime_specs: tuple[RuntimePluginSpec, ...]
     revision: str
+    retired_bundled: tuple[tuple[str, str], ...] = ()
 
     def record(self, install_id: str) -> InstalledPluginRecord | None:
         return next((item for item in self.records if item.install_id == install_id), None)
@@ -259,6 +270,8 @@ class PluginInventory:
     def _scan(self) -> PluginInventorySnapshot:
         desired = self._desired.read()
         records: list[InstalledPluginRecord] = []
+        retired_bundled = []
+        retired_directories = {directory: plugin_id for plugin_id, directory in RETIRED_BUNDLED_PLUGINS.items()}
         roots = (
             ("bundled", self._distribution.builtin_plugins_dir),
             ("user", self._paths.user_plugins_dir),
@@ -275,8 +288,12 @@ class PluginInventory:
                 # installation.  The user root is different: every directory
                 # is user-owned installation state, so malformed/missing
                 # manifests must remain visible and uninstallable.
-                if source == "bundled" and not (directory / "plugin.yaml").is_file():
-                    continue
+                if source == "bundled":
+                    if directory.name in retired_directories:
+                        retired_bundled.append((retired_directories[directory.name], directory.name))
+                        continue
+                    if not (directory / "plugin.yaml").is_file():
+                        continue
                 if _unsafe_directory(directory):
                     records.append(
                         _invalid_record(
@@ -289,6 +306,9 @@ class PluginInventory:
                 if not directory.is_dir():
                     continue
                 record = self._record(source, directory, desired)
+                if source == "bundled" and record.plugin_id in RETIRED_BUNDLED_PLUGINS:
+                    retired_bundled.append((record.plugin_id, directory.name))
+                    continue
                 records.append(record)
 
         for plugin_id, failure in self._recovery_failures.items():
@@ -318,7 +338,7 @@ class PluginInventory:
         previous = _REVISIONS.get(key)
         revision = previous[1] if previous is not None and previous[0] == state else secrets.token_hex(8)
         _REVISIONS[key] = (state, revision)
-        return PluginInventorySnapshot(tuple(records), runtime_specs, revision)
+        return PluginInventorySnapshot(tuple(records), runtime_specs, revision, tuple(retired_bundled))
 
     def _record(
         self,

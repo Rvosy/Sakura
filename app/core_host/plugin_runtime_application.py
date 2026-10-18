@@ -142,6 +142,14 @@ class PluginRuntimeApplication:
             log_event("Plugin", "模型配置迁移失败", diagnostics, event="model.configuration.failed", severity="error")
         self._inventory = PluginInventory(roots, recovery_failures=recovery_failures)
         self._inventory_snapshot = self._inventory.scan()
+        for plugin_id, directory in self._inventory_snapshot.retired_bundled:
+            users = [record for record in self._inventory_snapshot.records
+                     if record.source == "user" and (record.plugin_id == plugin_id or record.directory_name == plugin_id)]
+            log_event("Plugin", "已忽略升级残留的内置插件", {
+                "plugin_id": plugin_id, "path": str(roots.distribution_root / "plugins/builtin" / directory),
+                "diagnostic": "; ".join(f"{record.directory_name}: {record.reason_code}" for record in users) or "未发现用户版，可从市场或本地包安装。",
+                "action": "load_user_plugin" if any(record.runtime_eligible for record in users) else "install_or_repair_user_plugin",
+            }, event="plugin.upgrade.retired_bundled_ignored")
         for record in self._inventory_snapshot.records:
             if record.reason_code == "PLUGIN_MANIFEST_INVALID":
                 log_event("Plugin", "插件清单无法读取", {

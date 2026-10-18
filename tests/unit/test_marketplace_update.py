@@ -443,6 +443,53 @@ def test_duplicate_legacy_plugin_can_be_removed_and_updated_without_losing_share
         application.close()
 
 
+@pytest.mark.parametrize("enabled", [False, True])
+@pytest.mark.parametrize("user_damage", ["missing", "manifest", "entry"])
+def test_retired_builtin_allows_install_update_and_reinstall_without_losing_data(tmp_path, enabled, user_damage):
+    plugin_id = "sakura.memory.mem0"
+    roots = RuntimeRoots(tmp_path / "distribution", tmp_path / "user")
+    paths = StoragePaths(roots.user_root)
+    package(tmp_path / "legacy.zip", plugin_id, requires=("sakura.host.model_slots",))
+    retired = roots.distribution_root / "plugins/builtin/sakura_mem0"
+    shutil.copytree(tmp_path / "legacy-source", retired)
+    retired_code = (retired / "plugin.py").read_bytes()
+    if user_damage != "missing":
+        user_plugin = paths.user_plugins_dir / plugin_id
+        shutil.copytree(tmp_path / "legacy-source", user_plugin)
+        if user_damage == "manifest":
+            (user_plugin / "plugin.yaml").write_text("id: [")
+        else:
+            (user_plugin / "plugin.py").unlink()
+    PluginDesiredStateStore(roots.user_root).set(plugin_id, enabled)
+    config = paths.plugins_config().read_bytes()
+    data = paths.plugin_data_for(plugin_id) / "memories.txt"
+    data.parent.mkdir(parents=True)
+    data.write_text("remember this")
+    application = PluginApplicationHost(roots, "retired-builtin", ToolRegistry())
+    boundary = PluginSettingsBoundary("retired-builtin", "credential", roots, application_provider=lambda: application)
+    try:
+        application.start()
+        for version in ("1.0.0", "1.1.0"):
+            new = package(tmp_path / f"{version}.zip", plugin_id, version)
+            result = boundary.install(boundary.snapshot()["revision"], "zip", str(new))
+            copies = [p for p in result["plugins"] if p["pluginId"] == plugin_id]
+            assert len(copies) == 1
+            assert copies[0]["source"] == "user" and copies[0]["version"] == version
+            assert copies[0]["enabled"] is enabled
+            if enabled:
+                assert application.call_service(plugin_id, "ping") == version
+            assert paths.plugins_config().read_bytes() == config
+        boundary.uninstall(result["revision"], copies[0]["installId"])
+        result = boundary.install(boundary.snapshot()["revision"], "zip", str(new))
+        copies = [p for p in result["plugins"] if p["pluginId"] == plugin_id]
+        assert len(copies) == 1 and copies[0]["source"] == "user"
+        assert copies[0]["enabled"] is False
+        assert data.read_text() == "remember this"
+        assert (retired / "plugin.py").read_bytes() == retired_code
+    finally:
+        application.close()
+
+
 def test_interaction_started_during_preparation_keeps_the_old_plugin(running_update, monkeypatch):
     from app.core_host.real_chat import RealChatRejection
     _, original, application, boundary, request = running_update

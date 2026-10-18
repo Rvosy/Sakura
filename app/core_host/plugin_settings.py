@@ -159,6 +159,12 @@ class PluginSettingsBoundary:
                 payload=result,
             )
         except PluginSettingsError as error:
+            if isinstance(payload, Mapping) and request.get("name") in {"plugins.install", "plugins.marketplace.install", "plugins.uninstall"}:
+                log_event("Plugin", error.message, {
+                    "plugin_id": payload.get("pluginId"), "install_id": payload.get("installId"),
+                    "path": payload.get("sourcePath"),
+                    **exception_diagnostics(error, reason_code=error.code, stage=str(request["name"])),
+                }, event="plugin.management.failed", severity="info" if error.retryable else "error")
             return response(
                 request,
                 generation_id=self._generation_id,
@@ -326,7 +332,7 @@ class PluginSettingsBoundary:
                         before = self._installed_record(application, spec.plugin_id)
                         if before is not None:
                             application.check_plugin_update_idle()
-                    log_event("Plugin", "正在准备插件安装", {"pluginId": spec.plugin_id, "version": spec.version}, event="plugin.install.preparing")
+                    log_event("Plugin", "正在准备插件安装", {"plugin_id": spec.plugin_id, "version": spec.version}, event="plugin.install.preparing")
                     with installer.prepare_installation(spec) as prepared:
                         with self._save_lock:
                             record = self._installed_record(application, spec.plugin_id)
@@ -361,6 +367,7 @@ class PluginSettingsBoundary:
         return record
 
     def _install_plugin(self, application, installer, spec, prepared, initial_enabled):
+        started = perf_counter()
         installed = installer.install_prepared(spec, prepared, initial_enabled=initial_enabled)
         try:
             getattr(application, "install_plugin")(installed.install_id)
@@ -385,6 +392,11 @@ class PluginSettingsBoundary:
         result = self.snapshot()
         result.update(managementAction="installed", installId=installed.install_id, pluginId=installed.plugin_id)
         self._add_startup_warning(result, {installed.plugin_id})
+        log_event("Plugin", "插件安装完成", {
+            "plugin_id": installed.plugin_id, "version": spec.version,
+            "elapsed_ms": round((perf_counter() - started) * 1000),
+            "diagnostic": result["warning"]["detail"] if result.get("warning") else None,
+        }, event="plugin.install.completed")
         return result
 
     @staticmethod
@@ -450,7 +462,7 @@ class PluginSettingsBoundary:
                 desired = PluginDesiredStateStore(self._user_root)
                 if plugin_id not in desired.read():
                     desired.set(plugin_id, existing["enabled"])
-                log_event("Plugin", "正在切换插件版本", {"pluginId": plugin_id, "version": version}, event="plugin.update.switching")
+                log_event("Plugin", "正在切换插件版本", {"plugin_id": plugin_id, "version": version}, event="plugin.update.switching")
                 try:
                     application.uninstall_plugin(plugin_id)
                     state = update_transaction.begin(transaction, code, dependencies, plugin_id)
@@ -481,10 +493,14 @@ class PluginSettingsBoundary:
         result = self.snapshot()
         result.update(managementAction="updated", installId=existing["installId"], pluginId=plugin_id,
                       previousVersion=existing["version"], version=version)
-        log_event("Plugin", "插件更新完成", {"pluginId": plugin_id, "version": version, "elapsedMs": round((perf_counter() - started) * 1000)}, event="plugin.update.completed")
         if warning:
             result["warning"] = {"message": "插件已更新，旧文件将在下次启动时清理。", "detail": warning}
         self._add_startup_warning(result, {plugin_id, *dependents})
+        log_event("Plugin", "插件更新完成", {
+            "plugin_id": plugin_id, "previous_version": existing["version"], "version": version,
+            "elapsed_ms": round((perf_counter() - started) * 1000),
+            "diagnostic": result["warning"]["detail"] if result.get("warning") else None,
+        }, event="plugin.update.completed")
         return result
 
     def uninstall(self, raw_revision: object, raw_install_id: object) -> dict[str, object]:
@@ -505,6 +521,8 @@ class PluginSettingsBoundary:
                     retryable=True,
                 )
             installer = LocalPluginInstaller(self._roots)
+            started = perf_counter()
+            log_event("Plugin", "正在卸载插件", {"install_id": install_id}, event="plugin.uninstall.started")
             try:
                 record = self._refresh_inventory(application).record(install_id)
                 if record is not None and record.plugin_id is not None:
@@ -545,6 +563,10 @@ class PluginSettingsBoundary:
             installId=install_id,
             pluginId=pending.plugin_id,
         )
+        log_event("Plugin", "插件卸载完成，数据已保留", {
+            "install_id": install_id, "plugin_id": pending.plugin_id,
+            "elapsed_ms": round((perf_counter() - started) * 1000),
+        }, event="plugin.uninstall.completed")
         return result
 
     def collection(
