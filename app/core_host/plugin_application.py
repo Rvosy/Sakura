@@ -111,12 +111,12 @@ class PluginApplicationHost(PluginRuntimeApplication):
             raise PluginRuntimeError(record.reason_code, "插件不受支持。")
         return super().install_plugin(spec)
 
-    def recover_plugin_update(self, plugin_id: str) -> None:
+    def recover_plugin_update(self, plugin_id: str, *, replace_invalid: bool = False) -> None:
         if not update_transaction.update_journals(self._roots, plugin_id) and not self._inventory.recovery_failed(plugin_id):
             return
         with self.plugin_update(plugin_id) as dependents:
             self.uninstall_plugin(plugin_id)
-            failures = update_transaction.recover_installed_plugins(self._roots, plugin_id)
+            failures = update_transaction.recover_installed_plugins(self._roots, plugin_id, replace_invalid=replace_invalid)
             failure = failures.get(plugin_id)
             self._inventory.set_recovery_failure(plugin_id, failure)
             inventory = self.refresh_inventory()

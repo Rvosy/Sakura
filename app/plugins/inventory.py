@@ -158,29 +158,36 @@ class PluginDesiredStateStore:
     def path(self) -> Path:
         return self._path
 
-    def read(self) -> dict[str, bool]:
+    def _entries(self) -> list:
         try:
             raw = yaml.safe_load(self._path.read_text(encoding="utf-8"))
         except FileNotFoundError:
-            return {}
+            return []
         except (OSError, UnicodeDecodeError, yaml.YAMLError, ValueError) as exc:
             raise ValueError("PLUGIN_CONFIG_INVALID") from exc
+        if raw is None:
+            return []
         if not isinstance(raw, list):
             raise ValueError("PLUGIN_CONFIG_INVALID")
+        return raw
+
+    def read(self) -> dict[str, bool]:
         result: dict[str, bool] = {}
-        for item in raw:
-            if not isinstance(item, Mapping) or set(item) != {"id", "enabled"}:
-                raise ValueError("PLUGIN_CONFIG_INVALID")
+        for item in self._entries():
+            if not isinstance(item, Mapping):
+                continue
             plugin_id = item.get("id")
             enabled = item.get("enabled")
             if (
                 not isinstance(plugin_id, str)
                 or not PLUGIN_ID_PATTERN.fullmatch(plugin_id)
-                or not isinstance(enabled, bool)
-                or plugin_id in result
             ):
-                raise ValueError("PLUGIN_CONFIG_INVALID")
-            result[plugin_id] = enabled
+                continue
+            if isinstance(enabled, bool):
+                result[plugin_id] = enabled
+            else:
+                # 无法识别的启停值不启用插件，也不覆盖已有的明确选择。
+                result.setdefault(plugin_id, False)
         return result
 
     def write(self, enabled_by_id: Mapping[str, bool]) -> bool:
@@ -189,6 +196,9 @@ class PluginDesiredStateStore:
             for plugin_id in sorted(enabled_by_id, key=str.casefold)
             if PLUGIN_ID_PATTERN.fullmatch(plugin_id)
         ]
+        return self._write_entries(entries)
+
+    def _write_entries(self, entries: list) -> bool:
         next_text = yaml.safe_dump(entries, allow_unicode=True, sort_keys=False)
         try:
             previous = self._path.read_text(encoding="utf-8")
@@ -203,9 +213,21 @@ class PluginDesiredStateStore:
     def set(self, plugin_id: str, enabled: bool) -> bool:
         if not PLUGIN_ID_PATTERN.fullmatch(plugin_id):
             raise ValueError("PLUGIN_ID_INVALID")
-        desired = self.read()
-        desired[plugin_id] = bool(enabled)
-        return self.write(desired)
+        entries = self._entries()
+        matching = [item for item in entries if isinstance(item, Mapping) and item.get("id") == plugin_id]
+        for item in matching:
+            item["enabled"] = bool(enabled)
+        if not matching:
+            entries.append({"id": plugin_id, "enabled": bool(enabled)})
+        return self._write_entries(entries)
+
+    def remove(self, plugin_id: str) -> bool:
+        entries = self._entries()
+        remaining = [item for item in entries if not (
+            isinstance(item, Mapping) and isinstance(item.get("id"), str)
+            and item["id"].casefold() == plugin_id.casefold()
+        )]
+        return self._write_entries(remaining) if len(remaining) != len(entries) else False
 
 
 class PluginInventory:

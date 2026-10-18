@@ -437,15 +437,7 @@ class LocalPluginInstaller:
     def _remove_config_entry(self, plugin_id: str) -> None:
         try:
             store = PluginDesiredStateStore(self._user_root)
-            desired = store.read()
-            matching = next(
-                (key for key in desired if key.casefold() == plugin_id.casefold()),
-                None,
-            )
-            if matching is None:
-                return
-            desired.pop(matching)
-            store.write(desired)
+            store.remove(plugin_id)
         except (OSError, ValueError) as error:
             raise PluginInstallError("PLUGIN_CONFIG_INVALID") from error
 

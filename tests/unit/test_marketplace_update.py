@@ -142,7 +142,7 @@ def test_enabled_update_restores_processes_and_keeps_data(tmp_path, monkeypatch,
 
 
 @pytest.mark.parametrize("enabled", [True, False])
-@pytest.mark.parametrize("damage", ["setup_failure", "missing_manifest"])
+@pytest.mark.parametrize("damage", ["setup_failure", "missing_manifest", "invalid_enabled"])
 def test_market_reinstalls_same_version_and_keeps_existing_user_state(tmp_path, monkeypatch, enabled, damage):
     plugin_id = "sakura_mobile"
     roots = RuntimeRoots(tmp_path / "distribution", tmp_path / "user")
@@ -150,8 +150,11 @@ def test_market_reinstalls_same_version_and_keeps_existing_user_state(tmp_path, 
     original = LocalPluginInstaller(roots).install(package(tmp_path / "old.zip", plugin_id), "zip", initial_enabled=enabled)
     if damage == "setup_failure":
         (original.code_dir / "plugin.py").write_text('class Plugin:\n    def setup(self, context):\n        raise RuntimeError("old installation broken")\n')
-    else:
+    elif damage == "missing_manifest":
         (original.code_dir / "plugin.yaml").unlink()
+    else:
+        with (original.code_dir / "plugin.yaml").open("a", encoding="utf-8") as manifest:
+            manifest.write('enabled: "broken"\n')
     config = paths.plugins_config().read_bytes()
     private = paths.plugin_data_for(plugin_id) / "settings.json"
     private.parent.mkdir(parents=True)
@@ -334,24 +337,43 @@ def test_interrupted_market_update_restores_old_code_on_startup(running_update, 
     assert not list(original.code_dir.parent.glob(".update-*"))
 
 
-def test_market_repairs_plugin_using_retired_model_service(tmp_path):
+@pytest.mark.parametrize("enabled", [True, False])
+def test_market_repairs_plugin_using_retired_model_service(tmp_path, enabled):
     plugin_id = "fixture.memory"
     roots = RuntimeRoots(tmp_path / "distribution", tmp_path / "user")
     installer = LocalPluginInstaller(roots)
     installer.install(package(tmp_path / "old.zip", plugin_id, requires=("sakura.host.model_slots",)),
-                      "zip", initial_enabled=True)
+                      "zip", initial_enabled=enabled)
+    paths = StoragePaths(roots.user_root)
+    config = (
+        f"- id: {plugin_id}\n  enabled: true\n  priority: 99\n"
+        f"- id: {plugin_id}\n  enabled: {str(enabled).lower()}\n"
+        f"- id: {plugin_id}\n  enabled: broken\n"
+        "- unfinished\n- id: fixture.other\n  enabled: false\n  custom: keep\n"
+    )
+    paths.plugins_config().write_text(config, encoding="utf-8")
+    data = paths.plugin_data_for(plugin_id) / "memories.txt"
+    data.parent.mkdir(parents=True)
+    data.write_text("remember this", encoding="utf-8")
     application = PluginApplicationHost(roots, "repair-old-model", ToolRegistry())
     boundary = PluginSettingsBoundary("repair-old-model", "credential", roots, application_provider=lambda: application)
     try:
         application.start()
         snapshot = boundary.snapshot()
         old = next(p for p in snapshot["plugins"] if p["pluginId"] == plugin_id)
-        assert old["reasonCode"] == "MODEL_API_UPDATE_REQUIRED"
+        if enabled:
+            assert old["reasonCode"] == "MODEL_API_UPDATE_REQUIRED"
         result = boundary.marketplace_install({"revision": snapshot["revision"],
             "sourcePath": str(package(tmp_path / "new.zip", plugin_id, "1.1.0")),
             "pluginId": plugin_id, "version": "1.1.0"})
         assert result["managementAction"] == "updated"
-        assert application.call_service(plugin_id, "ping") == "1.1.0"
+        current = next(p for p in result["plugins"] if p["pluginId"] == plugin_id)
+        assert current["enabled"] is enabled
+        assert current["state"] == ("active" if enabled else "disabled")
+        if enabled:
+            assert application.call_service(plugin_id, "ping") == "1.1.0"
+        assert paths.plugins_config().read_text(encoding="utf-8") == config
+        assert data.read_text(encoding="utf-8") == "remember this"
     finally:
         application.close()
 
@@ -514,6 +536,46 @@ def test_startup_recovery_failure_stays_visible_and_reinstall_recovers_without_r
         assert application.call_service("fixture.leaf", "ping") == "1.1.0"
     finally:
         application.close()
+
+
+@pytest.mark.parametrize("journal", ['{"committed":', '{"pluginId": "fixture.recovery"}'])
+def test_reinstall_preserves_broken_journal_and_repairs_missing_code(tmp_path, journal):
+    roots = RuntimeRoots(tmp_path / "distribution", tmp_path / "user")
+    plugin_id = "fixture.recovery"
+    paths = StoragePaths(roots.user_root)
+    installer = LocalPluginInstaller(roots)
+    original = installer.install(package(tmp_path / "old.zip", plugin_id), "zip", initial_enabled=True)
+    transaction = paths.user_plugins_dir / (f".update-{plugin_id}--" + "a" * 32)
+    transaction.mkdir()
+    original.code_dir.rename(transaction / "old-code")
+    (transaction / "transaction.json").write_text(journal, encoding="utf-8")
+    data = paths.plugin_data_for(plugin_id) / "memories.txt"
+    data.parent.mkdir(parents=True)
+    data.write_text("remember this", encoding="utf-8")
+    application = PluginApplicationHost(roots, "broken-journal", ToolRegistry())
+    boundary = PluginSettingsBoundary("broken-journal", "credential", roots, application_provider=lambda: application)
+    try:
+        application.start()
+        snapshot = boundary.snapshot()
+        current = next(p for p in snapshot["plugins"] if p["pluginId"] == plugin_id)
+        assert current["reasonCode"] == "PLUGIN_UPDATE_RECOVERY_FAILED"
+        result = boundary.marketplace_install({"revision": snapshot["revision"],
+            "sourcePath": str(package(tmp_path / "new.zip", plugin_id, "1.1.0")),
+            "pluginId": plugin_id, "version": "1.1.0"})
+        assert next(p for p in result["plugins"] if p["pluginId"] == plugin_id)["state"] == "active"
+        assert application.call_service(plugin_id, "ping") == "1.1.0"
+        assert data.read_text(encoding="utf-8") == "remember this"
+        saved = next(paths.user_plugins_dir.glob(".failed-update-*"))
+        assert (saved / "transaction.json").read_text(encoding="utf-8") == journal
+        assert (saved / "old-code" / "plugin.py").is_file()
+    finally:
+        application.close()
+    restarted = PluginApplicationHost(roots, "after-journal-repair", ToolRegistry())
+    try:
+        restarted.start()
+        assert restarted.call_service(plugin_id, "ping") == "1.1.0"
+    finally:
+        restarted.close()
 
 
 @pytest.mark.parametrize("change", ["disable_target", "uninstall_target", "disable_other"])

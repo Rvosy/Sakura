@@ -281,7 +281,7 @@ class _BoundaryWorker:
     def check_plugin_update_idle(self):
         pass
 
-    def recover_plugin_update(self, _plugin_id):
+    def recover_plugin_update(self, _plugin_id, *, replace_invalid=False):
         pass
 
     def public_snapshot(self) -> dict[str, object]:

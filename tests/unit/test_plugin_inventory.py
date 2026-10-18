@@ -190,7 +190,7 @@ def test_inventory_rejects_retired_manifest_fields(
     assert record.runtime_eligible is False
 
 
-def test_management_write_rejects_retired_fields_without_rewriting(
+def test_management_changes_only_selected_plugin_in_old_config(
     tmp_path: Path,
 ) -> None:
     root = tmp_path / "app"
@@ -198,15 +198,25 @@ def test_management_write_rejects_retired_fields_without_rewriting(
     store = PluginDesiredStateStore(root)
     store.path.parent.mkdir(parents=True)
     store.path.write_text(
-        "- id: com.example.fixture\n  enabled: false\n  priority: 99\n  required: true\n",
+        "- id: com.example.fixture\n  enabled: false\n  priority: 99\n  required: true\n"
+        "- id: com.example.other\n  enabled: false\n  custom: keep\n"
+        "- unfinished\n"
+        "- id: com.example.fixture\n  enabled: false\n",
         encoding="utf-8",
     )
     before = store.path.read_bytes()
 
-    with pytest.raises(ValueError, match="PLUGIN_CONFIG_INVALID"):
-        store.set("com.example.fixture", True)
-
+    assert store.read() == {"com.example.fixture": False, "com.example.other": False}
     assert store.path.read_bytes() == before
+    store.set("com.example.fixture", True)
+    assert store.read() == {"com.example.fixture": True, "com.example.other": False}
+    entries = yaml.safe_load(store.path.read_text(encoding="utf-8"))
+    assert entries[0] == {"id": "com.example.fixture", "enabled": True, "priority": 99, "required": True}
+    assert entries[1] == {"id": "com.example.other", "enabled": False, "custom": "keep"}
+    assert entries[2] == "unfinished"
+    assert entries[3]["enabled"] is True
+    store.remove("com.example.fixture")
+    assert yaml.safe_load(store.path.read_text(encoding="utf-8")) == entries[1:3]
 
 
 def test_inventory_install_id_is_stable_and_public_preview_has_no_absolute_path(

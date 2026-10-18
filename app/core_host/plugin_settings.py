@@ -323,7 +323,7 @@ class PluginSettingsBoundary:
                         application = self._application()
                         if application is None:
                             raise PluginSettingsError("PLUGIN_SETTINGS_NOT_READY", "插件设置仍在初始化。", retryable=True)
-                        application.recover_plugin_update(spec.plugin_id)
+                        application.recover_plugin_update(spec.plugin_id, replace_invalid=True)
                         before = self._installed_record(application, spec.plugin_id)
                         if before is not None:
                             application.check_plugin_update_idle()
@@ -335,8 +335,7 @@ class PluginSettingsBoundary:
                                 raise PluginSettingsError("PLUGIN_NOT_FOUND", "原插件已卸载，未应用本次更新。")
                             if record is not None:
                                 current = next(p for p in self.snapshot()["plugins"] if p["installId"] == record.install_id)
-                                if record.plugin_id is None:
-                                    current["enabled"] = PluginDesiredStateStore(self._user_root).read().get(spec.plugin_id, False)
+                                current["enabled"] = PluginDesiredStateStore(self._user_root).read().get(spec.plugin_id, current["enabled"])
                                 return self._update_plugin(application, installer, spec, prepared, record, current)
                             enabled = PluginDesiredStateStore(self._user_root).read().get(spec.plugin_id, initial_enabled)
                             return self._install_plugin(application, installer, spec, prepared, enabled)
