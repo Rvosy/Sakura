@@ -22,6 +22,8 @@ mod host_interaction;
 mod input_visual_effect;
 mod interaction_latency;
 mod legacy_import;
+#[cfg(target_os = "linux")]
+mod linux_input_glass;
 #[cfg(target_os = "macos")]
 mod macos_input_glass;
 mod macos_open_help;

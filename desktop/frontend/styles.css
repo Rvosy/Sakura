@@ -434,6 +434,33 @@ body[data-chat-state="thinking"] .bubble::after {
   border-color: transparent;
 }
 
+/* Linux has no compositor blur behind a transparent WebKit window. The sampled
+   desktop image sits under the same tint; Windows and macOS leave the variable unset. */
+:root[data-input-visual-effect="gaussian_blur"] .composer {
+  background-color: transparent;
+  background-image:
+    linear-gradient(
+      color-mix(in srgb, var(--input-background) 21.57%, transparent),
+      color-mix(in srgb, var(--input-background) 21.57%, transparent)
+    ),
+    var(--linux-input-desktop, none);
+  background-repeat: no-repeat;
+  background-position: center, center;
+  background-size: 100% 100%, 100% 100%;
+}
+
+:root[data-linux-input-capturing="1"] .composer {
+  transition: none;
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+  backdrop-filter: none;
+}
+
+:root[data-linux-input-capturing="1"] .composer * {
+  visibility: hidden;
+}
+
 .composer textarea {
   grid-column: 2;
   grid-row: 1;
