@@ -944,6 +944,25 @@ class PluginRuntimeManager:
                 if not self._start_one(record):
                     raise PluginRuntimeError(record.reason_code, plugin_id=plugin_id)
 
+    def restore_waiting_dependents(self, provider_id: str) -> list[str]:
+        """恢复因这个提供者缺失而未能启动的消费者。"""
+        restored = []
+        with self._operation_lock:
+            provided = set(self._records[provider_id].spec.provides)
+            while True:
+                with self._lock:
+                    record = next((item for item in self._records.values()
+                        if item.spec.enabled and item.state == "failed"
+                        and item.reason_code in {"MISSING_SERVICE", "DEPENDENCY_FAILED"}
+                        and provided.intersection(item.spec.requires)
+                        and all(key in self._services for key in item.spec.requires)), None)
+                if record is None:
+                    return restored
+                if not self._start_one(record):
+                    raise PluginRuntimeError(record.reason_code, plugin_id=record.spec.plugin_id)
+                restored.append(record.spec.plugin_id)
+                provided.update(record.spec.provides)
+
     def set_enabled(self, plugin_id: str, enabled: bool) -> dict[str, Any]:
         with self._operation_lock:
             with self._lock:

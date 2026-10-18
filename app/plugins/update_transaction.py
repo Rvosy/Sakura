@@ -51,19 +51,29 @@ def recover(transaction: Path, code: Path, dependencies: Path, state: dict) -> s
     return None
 
 
-def recover_installed_plugins(roots: RuntimeRoots) -> dict[str, dict]:
+def update_journals(roots: RuntimeRoots, plugin_id: str | None = None) -> list[Path]:
+    journals = sorted(StoragePaths(roots.user_root).user_plugins_dir.glob(".update-*/transaction.json"))
+    return [journal for journal in journals if plugin_id is None or _plugin_id(journal) == plugin_id]
+
+
+def _plugin_id(journal: Path) -> str:
+    return re.sub(r"--[0-9a-f]{32}$", "", journal.parent.name.removeprefix(".update-"))
+
+
+def recover_installed_plugins(roots: RuntimeRoots, plugin_id: str | None = None) -> dict[str, dict]:
     """恢复插件市场更新留下的事务，保留已提交的版本。"""
     from app.plugins.inventory import PLUGIN_ID_PATTERN
 
     paths = StoragePaths(roots.user_root)
     failures = {}
-    for journal in sorted(paths.user_plugins_dir.glob(".update-*/transaction.json")):
+    for journal in update_journals(roots, plugin_id):
         transaction = journal.parent
-        plugin_id = re.sub(r"--[0-9a-f]{32}$", "", transaction.name.removeprefix(".update-"))
+        recovering_id = _plugin_id(journal)
+        directory_name = recovering_id
         try:
             state = json.loads(journal.read_text(encoding="utf-8"))
             directory = state["directory"]
-            if (not PLUGIN_ID_PATTERN.fullmatch(plugin_id) or state["pluginId"] != plugin_id
+            if (not PLUGIN_ID_PATTERN.fullmatch(recovering_id) or state["pluginId"] != recovering_id
                     or transaction.is_symlink() or journal.is_symlink()
                     or not isinstance(directory, str) or not directory or directory in {".", ".."}
                     or "/" in directory or "\\" in directory or ":" in directory
@@ -72,8 +82,9 @@ def recover_installed_plugins(roots: RuntimeRoots) -> dict[str, dict]:
                     or set(state["existed"]) != {"code", "dependencies"}
                     or any(not isinstance(value, bool) for value in state["existed"].values())):
                 raise ValueError("PLUGIN_UPDATE_STATE_INVALID")
+            directory_name = directory
             code = paths.user_plugins_dir / directory
-            dependencies = paths.plugin_dependency_root_for(plugin_id)
+            dependencies = paths.plugin_dependency_root_for(recovering_id)
             if code.is_symlink() or dependencies.is_symlink():
                 raise ValueError("PLUGIN_UPDATE_STATE_INVALID")
             recover(transaction, code, dependencies, state)
@@ -81,7 +92,10 @@ def recover_installed_plugins(roots: RuntimeRoots) -> dict[str, dict]:
             log_event("Plugin", "插件更新恢复失败", diagnostic_attributes(
                 error, reason_code="PLUGIN_UPDATE_RECOVERY_FAILED", stage="update_recovery"),
                 event="plugin.update.failed", severity="error")
-            failures[plugin_id] = {
+            if not PLUGIN_ID_PATTERN.fullmatch(recovering_id):
+                continue
+            failures[recovering_id] = {
+                "directoryName": directory_name,
                 "reasonCode": "PLUGIN_UPDATE_RECOVERY_FAILED",
                 "diagnostics": diagnostic_attributes(error, reason_code="PLUGIN_UPDATE_RECOVERY_FAILED",
                                                        stage="update_recovery"),

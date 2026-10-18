@@ -2244,3 +2244,48 @@ def test_studio_publish_updates_live_character_without_restarting_core_or_plugin
     finally:
         _stop(process)
         _stop_provider(server, provider_thread)
+
+
+@pytest.mark.parametrize("valid_portrait", [True, False])
+def test_failed_local_assistant_update_preserves_error_and_restores_chat(tmp_path, valid_portrait):
+    import yaml
+    from app.plugins.installer import LocalPluginInstaller
+    from app.storage.runtime_roots import RuntimeRoots
+    from tools.release.package_optional_plugin import build
+
+    server, provider_thread = _start_provider("complete")
+    app_root = _configure_app_root(tmp_path, server.server_address[1])
+    if valid_portrait:
+        shutil.copyfile(REPO_ROOT / "desktop/frontend/prototypes/asr/assets/navi.png",
+                        app_root / "characters/sakura/portraits/neutral.txt")
+    distribution = tmp_path / "host-distribution"
+    (distribution / "plugins/builtin/sakura_assistant").mkdir(parents=True)
+    LocalPluginInstaller(RuntimeRoots(distribution, app_root)).install(
+        REPO_ROOT / "plugins/builtin/sakura_assistant", "folder", initial_enabled=True)
+    candidate = tmp_path / "candidate"
+    candidate.mkdir()
+    manifest = yaml.safe_load((REPO_ROOT / "plugins/builtin/sakura_assistant/plugin.yaml").read_text(encoding="utf-8"))
+    manifest["version"] = "0.1.1"
+    (candidate / "plugin.yaml").write_text(yaml.safe_dump(manifest), encoding="utf-8")
+    (candidate / "plugin.py").write_text('class AssistantPlugin:\n    def setup(self, context):\n        raise RuntimeError("candidate setup failed")\n')
+    archive = tmp_path / "candidate.zip"
+    build(candidate, archive)
+    process = _start_host(app_root, distribution_root=distribution)
+    try:
+        _wait_ready(process, ["transport.concurrent-router", "assistant.plugins-v1"])
+        snapshot = _exchange(process, _request("before-update", "plugins.settings.get", {}))["payload"]
+        result = _exchange(process, _request("update", "plugins.install", {
+            "revision": snapshot["revision"], "sourceKind": "zip", "sourcePath": str(archive),
+        }))
+        assert result["ok"] is False
+        assert result["error"]["code"] == "PLUGIN_UPDATE_START_FAILED", json.dumps(result, ensure_ascii=False)
+        if not valid_portrait:
+            state = _exchange(process, _request("after-update-state", "core.snapshot", {}))["payload"]
+            assert state["readiness"] == "failed"
+            return
+        _send(process, _request("after-update", "chat.send", {"message": "hello", "operationId": "after-update"}))
+        frames = [_read(process), _read(process), _read(process)]
+        assert any(frame.get("name") == "chat.completed" for frame in frames), frames
+    finally:
+        _stop(process)
+        _stop_provider(server, provider_thread)

@@ -222,6 +222,16 @@ class PluginInventory:
         self._desired = desired or PluginDesiredStateStore(self._roots.user_root)
         self._recovery_failures = recovery_failures or {}
 
+    def set_recovery_failure(self, plugin_id: str, failure: Mapping[str, Any] | None) -> None:
+        with _REVISION_LOCK:
+            if failure is None:
+                self._recovery_failures.pop(plugin_id, None)
+            else:
+                self._recovery_failures[plugin_id] = dict(failure)
+
+    def recovery_failed(self, plugin_id: str) -> bool:
+        return plugin_id in self._recovery_failures
+
     def scan(self) -> PluginInventorySnapshot:
         with _REVISION_LOCK:
             return self._scan()
@@ -259,11 +269,19 @@ class PluginInventory:
                 if not directory.is_dir():
                     continue
                 record = self._record(source, directory, desired)
-                update_failure = self._recovery_failures.get(record.plugin_id, {})
-                if source == "user" and update_failure.get("reasonCode") == "PLUGIN_UPDATE_RECOVERY_FAILED":
-                    record = replace(record, runtime_eligible=False,
-                        reason_code=update_failure["reasonCode"], diagnostics=dict(update_failure["diagnostics"]))
                 records.append(record)
+
+        for plugin_id, failure in self._recovery_failures.items():
+            directory = failure["directoryName"]
+            record = next((item for item in records if item.source == "user"
+                           and item.directory_name == directory), None)
+            if record is None:
+                record = _invalid_record(_install_id("user", directory), "user", directory, plugin_id=plugin_id)
+            else:
+                records.remove(record)
+            records.append(replace(record, plugin_id=plugin_id, runtime_eligible=False,
+                desired_enabled=desired.get(plugin_id, record.desired_enabled),
+                reason_code=failure["reasonCode"], diagnostics=dict(failure["diagnostics"])))
 
         records = self._resolve_duplicates(records)
         runtime_specs = tuple(

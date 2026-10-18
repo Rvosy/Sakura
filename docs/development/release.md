@@ -54,6 +54,8 @@ Tauri 更新签名使用 `SAKURA_UPDATER_PUBLIC_KEY`、`TAURI_SIGNING_PRIVATE_KE
 
 发布前使用隔离用户根核对升级的数据保留。具体测试入口见 [Harness](../../harness/README.md)，真实安装和平台设备行为在对应系统验证。
 
+可选插件独立发布。使用 `package_optional_plugin.py` 从对应源码目录生成 ZIP，包内版本以 `plugin.yaml` 为准。插件更新测试使用同一打包器生成安装包，覆盖安装、切换失败、恢复和重试。主程序发布不会更新用户已安装的可选插件；插件包发布后还需更新市场目录，并核对目录版本对应实际可下载的包。
+
 ## GitCode 镜像
 
 [镜像工作流](../../.github/workflows/mirror-gitcode-release.yml)复用 GitHub 已发布资产和签名，只替换下载地址。配置变量为 `GITCODE_REPOSITORY`、`GITCODE_USERNAME`，凭据使用 `GITCODE_ACCESS_TOKEN` secret。

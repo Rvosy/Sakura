@@ -1773,11 +1773,17 @@ def run_host(
                             ),
                         )
                     result = plugin_settings.handle(request)
-                    if (result.get("ok") or request.get("name") == "plugins.marketplace.install") and request.get("name") in {
+                    # 失败后的回滚也可能重启插件，聊天需绑定恢复后的实例。
+                    if request.get("name") in {
                         "plugins.settings.save", "plugins.enabled.set", "plugins.settings.action",
                         "plugins.install", "plugins.uninstall", "plugins.marketplace.install",
                     }:
-                        dispatcher.refresh_assistant_binding()
+                        try:
+                            dispatcher.refresh_assistant_binding()
+                        except Exception:
+                            # 绑定失败已由会话层记录，保留原操作的失败原因。
+                            if result.get("ok"):
+                                raise
                     return result
                 if request.get("name") in COMPOSER_TOOL_REQUEST_NAMES:
                     if PLUGINS_CAPABILITY not in dispatcher._negotiated_capabilities:
