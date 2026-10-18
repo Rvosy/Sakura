@@ -7,8 +7,6 @@ projected into ``RuntimePluginSpec`` objects for per-plugin processes.
 
 from __future__ import annotations
 
-import logging
-
 import re
 import secrets
 import stat
@@ -333,7 +331,6 @@ class PluginInventory:
         try:
             raw = yaml.safe_load(manifest.read_text(encoding="utf-8"))
         except (OSError, UnicodeDecodeError, yaml.YAMLError, ValueError) as error:
-            logging.getLogger(__name__).exception("插件清单读取失败: %s", manifest)
             return _invalid_record(install_id, source, directory.name, diagnostics=exception_diagnostics(
                 error, reason_code="PLUGIN_MANIFEST_INVALID", stage="plugin.manifest"))
         if not isinstance(raw, Mapping):

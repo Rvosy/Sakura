@@ -99,7 +99,6 @@ def test_resource_plugin_installs_without_file_size_or_inventory_quotas(tmp_path
     with (installed.code_dir / "resource.bin").open("rb") as stream:
         stream.seek(17 * 1024 * 1024)
         assert stream.read() == b"resource end"
-    assert (installed.code_dir / "imported.marker").read_text(encoding="utf-8") == "imported"
     assert len(PluginInventory(app_root).scan().records) == 65
 
 
@@ -150,7 +149,6 @@ def test_install_uses_bundled_uv_with_no_path(tmp_path: Path, monkeypatch: pytes
 
     assert uv.with_name("invoked").is_file()
     assert (dependency_root / "fixture_dependency.py").read_text() == "VALUE = 42\n"
-    assert (installed.code_dir / "imported.marker").is_file()
 
 
 @pytest.mark.parametrize("broken", ["missing_marker", "python", "kind", "import"])
@@ -166,14 +164,6 @@ def test_install_rebuilds_orphan_dependency_root_before_switching(
         marker[broken] = "obsolete"
     if broken != "missing_marker":
         (dependency_root / ".sakura-dependencies.json").write_text(json.dumps(marker), encoding="utf-8")
-    original_validate = installer._dependencies._validate_entry
-
-    def validate(plugin_id: str, plugin_root: Path, root: Path | None, entry: str) -> None:
-        assert (dependency_root / "original.txt").read_text() == "preserve until ready"
-        original_validate(plugin_id, plugin_root, root, entry)
-
-    monkeypatch.setattr(installer._dependencies, "_validate_entry", validate)
-
     installed = installer.install(source, "folder")
 
     assert uv.with_name("invoked").is_file()
@@ -243,9 +233,6 @@ class _BoundaryWorker:
     def plugin_update(self, _plugin_id):
         return nullcontext([])
 
-    def restore_update_dependents(self, _plugin_ids):
-        pass
-
     def settings_snapshot(self) -> dict[str, object]:
         plugins = []
         for spec in PluginDiscovery(self.app_root).discover():
@@ -309,11 +296,11 @@ def test_folder_install_is_disabled_until_enabled_and_uninstall_keeps_data(
     installed = installer.install(source, "folder")
     assert installed.plugin_id == "com.example.local"
     assert installed.code_dir.parent == StoragePaths(app_root).user_plugins_dir
-    assert (installed.code_dir / "imported.marker").is_file()
     assert not (installed.code_dir / "setup.marker").exists()
     spec = next(item for item in PluginDiscovery(app_root).discover() if item.plugin_id == installed.plugin_id)
     assert spec.source == "user"
     assert spec.enabled is False
+    assert not (installed.code_dir / "imported.marker").exists()
 
     runtime = PluginRuntimeManager(
         app_root,
@@ -334,6 +321,7 @@ def test_folder_install_is_disabled_until_enabled_and_uninstall_keeps_data(
         )
         enabled = runtime.start()
         assert enabled["plugins"][0]["state"] == "active"
+        assert (installed.code_dir / "imported.marker").read_text(encoding="utf-8") == "imported"
         assert (installed.code_dir / "setup.marker").is_file()
         assert runtime.call_service("com.example.local", "ping") == "pong"
     finally:

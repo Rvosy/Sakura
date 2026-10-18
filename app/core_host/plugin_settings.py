@@ -198,7 +198,7 @@ class PluginSettingsBoundary:
                 )
             except Exception as error:
                 diagnostics = exception_diagnostics(error, reason_code="PLUGIN_SETTINGS_UNAVAILABLE", stage="settings.snapshot")
-                log_event("Plugin", "插件设置读取失败", diagnostics, event="plugin.settings.failed", severity="error")
+                log_event("Plugin", "插件设置读取失败", diagnostics, event="plugin.settings.failed", severity="debug")
                 public = getattr(application, "public_snapshot")()
                 plugins = _project_plugins(
                     [
@@ -323,7 +323,6 @@ class PluginSettingsBoundary:
                         application = self._application()
                         if application is None:
                             raise PluginSettingsError("PLUGIN_SETTINGS_NOT_READY", "插件设置仍在初始化。", retryable=True)
-                        application.recover_plugin_update(spec.plugin_id, replace_invalid=True)
                         before = self._installed_record(application, spec.plugin_id)
                         if before is not None:
                             application.check_plugin_update_idle()
@@ -333,6 +332,8 @@ class PluginSettingsBoundary:
                             record = self._installed_record(application, spec.plugin_id)
                             if before is not None and (record is None or record.install_id != before.install_id):
                                 raise PluginSettingsError("PLUGIN_NOT_FOUND", "原插件已卸载，未应用本次更新。")
+                            application.recover_plugin_update(spec.plugin_id, replace_invalid=True)
+                            record = self._installed_record(application, spec.plugin_id)
                             if record is not None:
                                 current = next(p for p in self.snapshot()["plugins"] if p["installId"] == record.install_id)
                                 current["enabled"] = PluginDesiredStateStore(self._user_root).read().get(spec.plugin_id, current["enabled"])
@@ -362,10 +363,7 @@ class PluginSettingsBoundary:
     def _install_plugin(self, application, installer, spec, prepared, initial_enabled):
         installed = installer.install_prepared(spec, prepared, initial_enabled=initial_enabled)
         try:
-            snapshot = getattr(application, "install_plugin")(installed.install_id)
-            current = next((p for p in snapshot.get("plugins", []) if p["pluginId"] == installed.plugin_id), None)
-            if initial_enabled and (current is None or current.get("state") != "active"):
-                raise PluginSettingsError("PLUGIN_INSTALL_START_FAILED", "安装后的插件未能启动。")
+            getattr(application, "install_plugin")(installed.install_id)
         except Exception as apply_error:
             rollback_error: BaseException | None = None
             try:
@@ -386,7 +384,17 @@ class PluginSettingsBoundary:
             ) from apply_error
         result = self.snapshot()
         result.update(managementAction="installed", installId=installed.install_id, pluginId=installed.plugin_id)
+        self._add_startup_warning(result, {installed.plugin_id})
         return result
+
+    @staticmethod
+    def _add_startup_warning(result, plugin_ids):
+        failed = [p for p in result["plugins"] if p["pluginId"] in plugin_ids and p["enabled"] and p["state"] != "active"]
+        if failed:
+            details = [f'{p["pluginId"]}: {p.get("diagnostics", {}).get("diagnostic") or p["reasonCode"]}' for p in failed]
+            if result.get("warning"):
+                details.append(result["warning"]["detail"])
+            result["warning"] = {"message": "插件已安装，部分插件尚未启动，请查看插件状态。", "detail": "\n".join(details)}
 
     def frontend_module(self, service_key: object, module_name: object) -> dict[str, object]:
         services = _identifier_list([service_key])
@@ -443,17 +451,10 @@ class PluginSettingsBoundary:
                 if plugin_id not in desired.read():
                     desired.set(plugin_id, existing["enabled"])
                 log_event("Plugin", "正在切换插件版本", {"pluginId": plugin_id, "version": version}, event="plugin.update.switching")
-                def activate(*, require_active):
-                    snapshot = application.install_plugin(existing["installId"])
-                    current = next((p for p in snapshot.get("plugins", []) if p["pluginId"] == plugin_id), None)
-                    if require_active and (current is None or current.get("state") != "active"):
-                        raise PluginSettingsError("PLUGIN_UPDATE_START_FAILED", "更新后的插件未能启动。")
-                    application.restore_update_dependents(dependents)
-
                 try:
                     application.uninstall_plugin(plugin_id)
                     state = update_transaction.begin(transaction, code, dependencies, plugin_id)
-                    activate(require_active=existing["enabled"])
+                    application.install_plugin(existing["installId"])
                     warning = update_transaction.commit(transaction, code, dependencies, state)
                 except Exception as error:
                     recovery_error = None
@@ -463,7 +464,7 @@ class PluginSettingsBoundary:
                             update_transaction.rollback(transaction, code, dependencies)
                         application.refresh_inventory()
                         if existing["supported"]:
-                            activate(require_active=existing["state"] == "active")
+                            application.install_plugin(existing["installId"])
                     except Exception as recovery:
                         recovery_error = recovery
                         if (transaction / "transaction.json").exists():
@@ -483,6 +484,7 @@ class PluginSettingsBoundary:
         log_event("Plugin", "插件更新完成", {"pluginId": plugin_id, "version": version, "elapsedMs": round((perf_counter() - started) * 1000)}, event="plugin.update.completed")
         if warning:
             result["warning"] = {"message": "插件已更新，旧文件将在下次启动时清理。", "detail": warning}
+        self._add_startup_warning(result, {plugin_id, *dependents})
         return result
 
     def uninstall(self, raw_revision: object, raw_install_id: object) -> dict[str, object]:

@@ -1931,7 +1931,7 @@ def test_dependency_install_failure_keeps_code_environment_and_config_unpublishe
     assert not paths.plugins_config().exists()
 
 
-def test_entry_import_failure_rolls_back_successful_dependency_install(tmp_path: Path) -> None:
+def test_entry_import_failure_keeps_installation_and_is_reported_by_runtime(tmp_path: Path) -> None:
     roots = _roots(tmp_path)
     wheel = _wheel(tmp_path, "3.0.0")
     source = _plugin_source(
@@ -1942,14 +1942,20 @@ def test_entry_import_failure_rolls_back_successful_dependency_install(tmp_path:
     )
     (source / "plugin.py").write_text("class Plugin(:\n", encoding="utf-8")
 
-    with pytest.raises(PluginInstallError) as failed:
-        LocalPluginInstaller(roots).install(source.resolve(), "folder")
-
-    assert failed.value.code == "PLUGIN_ENTRY_IMPORT_FAILED"
+    LocalPluginInstaller(roots).install(source.resolve(), "folder", initial_enabled=True)
     paths = StoragePaths(roots.user_root)
-    assert not (paths.user_plugins_dir / "fixture.syntax").exists()
-    assert not paths.plugin_dependency_root_for("fixture.syntax").exists()
-    assert not paths.plugins_config().exists()
+    assert (paths.user_plugins_dir / "fixture.syntax").is_dir()
+    assert paths.plugin_dependency_root_for("fixture.syntax").is_dir()
+    application = PluginApplicationHost(roots, "syntax-error", ToolRegistry())
+    try:
+        application.start()
+        current = next(p for p in application.public_snapshot()["plugins"] if p["pluginId"] == "fixture.syntax")
+        assert current["state"] == "failed"
+        assert "invalid syntax" in current["diagnostics"]["diagnostic"]
+        assert "plugin.py" in current["diagnostics"]["diagnostic"]
+        assert PluginDesiredStateStore(roots.user_root).read()["fixture.syntax"] is True
+    finally:
+        application.close()
 
 
 def test_production_application_host_runs_v4_and_reports_api3_as_unsupported(

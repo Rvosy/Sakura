@@ -932,34 +932,24 @@ class PluginRuntimeManager:
                 dependents = list(reversed(self._hard_dependents_locked(plugin_id))) if plugin_id in self._records else []
             yield dependents
 
-    def restore_update_dependents(self, plugin_ids: list[str]) -> None:
-        with self._operation_lock:
-            for plugin_id in plugin_ids:
-                with self._lock:
-                    record = self._records[plugin_id]
-                    if record.state == "active":
-                        continue
-                    if not record.spec.enabled or any(key not in self._services for key in record.spec.requires):
-                        raise PluginRuntimeError("DEPENDENCY_FAILED", plugin_id=plugin_id)
-                if not self._start_one(record):
-                    raise PluginRuntimeError(record.reason_code, plugin_id=plugin_id)
-
     def restore_waiting_dependents(self, provider_id: str) -> list[str]:
         """恢复因这个提供者缺失而未能启动的消费者。"""
         restored = []
+        attempted = set()
         with self._operation_lock:
             provided = set(self._records[provider_id].spec.provides)
             while True:
                 with self._lock:
                     record = next((item for item in self._records.values()
-                        if item.spec.enabled and item.state == "failed"
+                        if item.spec.enabled and item.state == "failed" and item.spec.plugin_id not in attempted
                         and item.reason_code in {"MISSING_SERVICE", "DEPENDENCY_FAILED"}
                         and provided.intersection(item.spec.requires)
                         and all(key in self._services for key in item.spec.requires)), None)
                 if record is None:
                     return restored
+                attempted.add(record.spec.plugin_id)
                 if not self._start_one(record):
-                    raise PluginRuntimeError(record.reason_code, plugin_id=record.spec.plugin_id)
+                    continue
                 restored.append(record.spec.plugin_id)
                 provided.update(record.spec.provides)
 

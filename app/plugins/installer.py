@@ -244,7 +244,7 @@ class LocalPluginInstaller:
         transaction = parent / f".update-{plugin_id}--{uuid.uuid4().hex}"
         transaction.mkdir()
         try:
-            with self._dependencies.prepare(plugin_id, root, entry=spec.entry) as dependencies:
+            with self._dependencies.prepare(plugin_id, root) as dependencies:
                 os.replace(root, transaction / "new-code")
                 if dependencies is not None:
                     os.replace(dependencies, transaction / "new-dependencies")

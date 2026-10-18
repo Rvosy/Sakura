@@ -92,6 +92,24 @@ test("search and explicit plugin navigation reveal a collapsed component", async
   ui.feature.dispose();
 });
 
+test("installed plugin with a startup problem shows one warning and keeps its settings accessible", async () => {
+  const data = catalog();
+  const installed = { ...data.plugins[0], installId: installId(4, "user"), pluginId: "needs_config",
+    enabled: true, state: "failed", reasonCode: "SETUP_FAILED", source: "user", canUninstall: true };
+  const notifications = [];
+  const detail = "需要配置模型服务";
+  const ui = featureFixture(async () => ({ ...data, plugins: [...data.plugins, installed],
+    managementAction: "installed", installId: installed.installId, pluginId: installed.pluginId,
+    warning: { message: "已安装，需要完成配置", detail } }),
+  { notify: (...args) => notifications.push(args) });
+  ui.feature.initialize(data);
+  await ui.document.getElementById("pluginInstallZipButton").fire("click");
+  assert.deepEqual(ui.errors, [detail]);
+  assert.deepEqual(notifications, []);
+  assert.equal(ui.document.getElementById("pluginDetail").dataset.pluginId, installed.installId);
+  ui.feature.dispose();
+});
+
 test("screen settings surface edits and saves the ordinary plugin section", async () => {
   const data = snapshot();
   data.plugins[0].sections = [{ sectionId: "screen_awareness", title: "主动屏幕感知", surface: "screen_awareness",

@@ -264,7 +264,7 @@ export function createPluginMarketplace({ document, host, notify, showError = ({
       if (disposed) return;
       tasks.delete(id);
       if (result?.warning) showError({ title: result.warning.message, error: result.warning.detail });
-      notify(task.reinstall ? "已重新安装" : task.replace ? "已替换" : task.update ? "已更新" : "已安装", "success");
+      else notify(task.reinstall ? "已重新安装" : task.replace ? "已替换" : task.update ? "已更新" : "已安装", "success");
     } catch (error) {
       if (disposed || tasks.get(id) !== task) return;
       if (abort.signal.aborted && task.phase !== "installing") { tasks.delete(id); notify("已取消安装"); }

@@ -2468,7 +2468,8 @@ export function createPluginSettingsFeature({
       const result = await runtimePluginController.install(sourceKind);
       if (!result) return;
       installedId = result.installId;
-      notify(result.managementAction === "updated" ? `已从 v${result.previousVersion} 更新至 v${result.version}` : "已安装", "success");
+      if (result.warning) setError(result.warning.detail, result.warning.message);
+      else notify(result.managementAction === "updated" ? `已从 v${result.previousVersion} 更新至 v${result.version}` : "已安装", "success");
     } catch (error) {
       setError(error, "安装插件失败");
     } finally {

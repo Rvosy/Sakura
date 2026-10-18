@@ -109,12 +109,15 @@ class PluginApplicationHost(PluginRuntimeApplication):
         spec = record.runtime_spec()
         if spec is None or spec.api_version != PLUGIN_API_V4_VERSION:
             raise PluginRuntimeError(record.reason_code, "插件不受支持。")
-        return super().install_plugin(spec)
+        super().install_plugin(spec)
+        for restored_id in self._manager.restore_waiting_dependents(record.plugin_id):
+            self._refresh_visual_provider(restored_id)
+        return self.public_snapshot()
 
     def recover_plugin_update(self, plugin_id: str, *, replace_invalid: bool = False) -> None:
         if not update_transaction.update_journals(self._roots, plugin_id) and not self._inventory.recovery_failed(plugin_id):
             return
-        with self.plugin_update(plugin_id) as dependents:
+        with self.plugin_update(plugin_id):
             self.uninstall_plugin(plugin_id)
             failures = update_transaction.recover_installed_plugins(self._roots, plugin_id, replace_invalid=replace_invalid)
             failure = failures.get(plugin_id)
@@ -123,12 +126,11 @@ class PluginApplicationHost(PluginRuntimeApplication):
             if failure is not None:
                 raise PluginRuntimeError(failure["reasonCode"], failure["diagnostics"]["diagnostic"],
                                          plugin_id=plugin_id, diagnostics=failure["diagnostics"])
+            if replace_invalid:
+                return
             record = next((item for item in inventory.records if item.plugin_id == plugin_id), None)
             if record is not None and record.runtime_spec() is not None:
                 self.install_plugin(record.install_id)
-                self.restore_update_dependents(dependents)
-                for restored_id in self._manager.restore_waiting_dependents(plugin_id):
-                    self._refresh_visual_provider(restored_id)
 
     def record_update_recovery_failure(self, plugin_id: str, directory: str, error: Exception) -> None:
         self._inventory.set_recovery_failure(plugin_id, {

@@ -20,7 +20,6 @@ from urllib.parse import urlsplit
 from app.core.diagnostics import TRACE_LIMIT, bounded_text
 from app.core.runtime_log import log_event
 from app.plugin_sdk.sakura_downloads import DEFAULT_PYPI_INDEX, uv_download_environment
-from app.plugins.process_paths import process_path
 from app.storage.atomic import atomic_write_text
 from app.storage.paths import StoragePaths
 from app.storage.runtime_roots import DistributionPaths
@@ -108,10 +107,8 @@ class PluginDependencyRoots:
         self,
         plugin_id: str,
         plugin_root: Path,
-        *,
-        entry: str | None = None,
     ) -> Path | None:
-        with self.prepare(plugin_id, plugin_root, entry=entry) as staging:
+        with self.prepare(plugin_id, plugin_root) as staging:
             if staging is None:
                 return None
             final = self._paths.plugin_dependency_root_for(plugin_id)
@@ -125,14 +122,10 @@ class PluginDependencyRoots:
         self,
         plugin_id: str,
         plugin_root: Path,
-        *,
-        entry: str | None = None,
     ) -> Iterator[Path | None]:
-        """Prepare and import-check dependencies before replacing an existing root."""
+        """在独立目录准备依赖，插件代码在正式启动时加载。"""
         declaration = self.declaration(plugin_root)
         if declaration is None:
-            if entry is not None:
-                self._validate_entry(plugin_id, plugin_root, None, entry)
             yield None
             return
         parent = self._paths.plugin_dependency_roots_dir
@@ -141,8 +134,6 @@ class PluginDependencyRoots:
         try:
             command, exported = self._install_command(declaration, staging)
             self._install_dependencies(command, Path(plugin_root), plugin_id)
-            if entry is not None:
-                self._validate_entry(plugin_id, plugin_root, staging, entry)
             marker = {
                 "schemaVersion": 1,
                 "python": f"{sys.version_info.major}.{sys.version_info.minor}",
@@ -318,7 +309,7 @@ class PluginDependencyRoots:
             errors.append(f"{label}\nexit_code={result.returncode}\n{output}")
             log_event("Plugin", "插件依赖安装尝试失败",
                       {**attributes, "exit_code": result.returncode, "diagnostic": output},
-                      event="plugin.dependencies.attempt.failed", severity="warning")
+                      event="plugin.dependencies.attempt.failed", severity="debug")
             missing = _PACKAGE_FILE_NOT_FOUND.search(output)
             if not missing or urlsplit(missing[1]).netloc != urlsplit(environment.get("UV_DEFAULT_INDEX", "")).netloc:
                 break
@@ -345,62 +336,6 @@ class PluginDependencyRoots:
         environment["UV_CACHE_DIR"] = str(self._paths.uv_cache_dir)
         environment["UV_PYTHON_DOWNLOADS"] = "never"
         return environment
-
-    def _validate_entry(
-        self,
-        plugin_id: str,
-        plugin_root: Path,
-        dependency_root: Path | None,
-        entry: str,
-        *,
-        runtime_imports: tuple[str, ...] | list[str] = (),
-    ) -> None:
-        runner = Path(__file__).with_name("plugin_runner_v4.py")
-        command = [
-            str(self._python),
-            "-I",
-            "-S",
-            "-B",
-            str(runner),
-            "--plugin-id",
-            plugin_id,
-            "--generation-id",
-            "install-validation",
-            "--plugin-root",
-            str(plugin_root),
-            "--data-dir",
-            str(plugin_root),
-            "--entry",
-            entry,
-            "--validate-entry",
-        ]
-        if dependency_root is not None:
-            command.extend(["--dependency-root", str(dependency_root)])
-        for module in runtime_imports:
-            command.extend(["--validate-import", module])
-        environment = os.environ.copy()
-        environment.pop("PYTHONPATH", None)
-        environment.pop("PYTHONHOME", None)
-        environment["PYTHONNOUSERSITE"] = "1"
-        environment["PYTHONDONTWRITEBYTECODE"] = "1"
-        try:
-            result = subprocess.run(
-                command,
-                cwd=process_path(plugin_root),
-                env=environment,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                check=False,
-            )
-        except OSError as error:
-            raise PluginDependencyError("PLUGIN_ENTRY_IMPORT_FAILED") from error
-        if result.returncode != 0:
-            raise PluginDependencyError(
-                "PLUGIN_ENTRY_IMPORT_FAILED",
-                f"exit_code={result.returncode}\n{(result.stderr or result.stdout).strip()}",
-            )
 
 
 __all__ = [

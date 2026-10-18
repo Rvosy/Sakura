@@ -68,7 +68,7 @@ def test_presentation_only_changes_display_and_never_runtime_eligibility(tmp_pat
         assert _preview_plugin(record)["presentation"] == expected
 
 
-def test_inventory_keeps_every_non_hidden_invalid_user_installation_visible(tmp_path: Path) -> None:
+def test_inventory_keeps_every_non_hidden_invalid_user_installation_visible(tmp_path: Path, caplog) -> None:
     root = tmp_path / "app"
     plugins = root / "plugins" / "user"
     plugins.mkdir(parents=True)
@@ -91,6 +91,11 @@ def test_inventory_keeps_every_non_hidden_invalid_user_installation_visible(tmp_
 
     snapshot = PluginInventory(root).scan()
     records = _by_directory(snapshot)
+    logged = list(caplog.records)
+    refreshed = _by_directory(PluginInventory(root).scan())
+    assert caplog.records == logged
+    assert refreshed["malformed_yaml"].diagnostics["diagnostic"]
+    assert refreshed["missing_manifest"].diagnostics["diagnostic"]
 
     assert set(records) == {"missing_manifest", "malformed_yaml", "missing_id", "too_long"}
     assert snapshot.runtime_specs == ()

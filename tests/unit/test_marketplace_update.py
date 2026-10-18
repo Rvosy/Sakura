@@ -116,7 +116,7 @@ def test_enabled_update_restores_processes_and_keeps_data(tmp_path, monkeypatch,
             if source == "market":
                 return boundary.marketplace_install(request)
             return boundary.install(request["revision"], source, request["sourcePath"])
-        if outcome == "success":
+        if outcome in {"success", "setup_failure", "dependent_failure"}:
             result = install()
             assert result["managementAction"] == "updated"
         else:
@@ -126,12 +126,21 @@ def test_enabled_update_restores_processes_and_keeps_data(tmp_path, monkeypatch,
             if outcome == "busy":
                 assert caught.value.retryable
                 assert application.call_service("fixture.provider", "pid") == old_pid
-        expected = "1.1.0" if outcome == "success" else "1.0.0"
-        assert application.call_service("fixture.provider", "ping") == expected
-        assert application.call_service("fixture.consumer", "ping") == expected
+        expected = "1.1.0" if outcome in {"success", "setup_failure", "dependent_failure"} else "1.0.0"
+        if outcome != "setup_failure":
+            assert application.call_service("fixture.provider", "ping") == expected
+        if outcome not in {"setup_failure", "dependent_failure"}:
+            assert application.call_service("fixture.consumer", "ping") == expected
+        else:
+            assert result["warning"]["detail"]
         assert application.call_service("fixture.unrelated", "pid") == unrelated_pid
         snapshot = {p["pluginId"]: p for p in boundary.snapshot()["plugins"]}
         assert snapshot["fixture.provider"]["enabled"] is True
+        assert snapshot["fixture.provider"]["version"] == expected
+        if outcome == "setup_failure":
+            assert snapshot["fixture.provider"]["state"] == "failed"
+        if outcome in {"setup_failure", "dependent_failure"}:
+            assert snapshot["fixture.consumer"]["state"] == "failed"
         assert snapshot["fixture.disabled"]["state"] == "disabled"
         assert snapshot["fixture.disabled"]["enabled"] is False
         assert config.read_bytes() == before_config
@@ -179,14 +188,13 @@ def test_market_reinstalls_same_version_and_keeps_existing_user_state(tmp_path, 
 
 
 @pytest.mark.parametrize("damage", ["setup_failure", "missing_manifest"])
-def test_failed_market_repair_preserves_broken_copy_and_can_be_retried(tmp_path, monkeypatch, damage):
+def test_market_repair_keeps_new_code_when_startup_fails_and_can_be_retried(tmp_path, monkeypatch, damage):
     plugin_id = "fixture.provider"
     roots = RuntimeRoots(tmp_path / "distribution", tmp_path / "user")
     paths = StoragePaths(roots.user_root)
     original = LocalPluginInstaller(roots).install(package(tmp_path / "old.zip", plugin_id, fail=True), "zip", initial_enabled=True)
     if damage == "missing_manifest":
         (original.code_dir / "plugin.yaml").unlink()
-    before = {p.name: p.read_bytes() for p in original.code_dir.iterdir() if p.is_file()}
     config = paths.plugins_config().read_bytes()
     application = PluginApplicationHost(roots, "repair-generation", ToolRegistry())
     boundary = PluginSettingsBoundary("repair-generation", "credential", roots, application_provider=lambda: application)
@@ -194,11 +202,10 @@ def test_failed_market_repair_preserves_broken_copy_and_can_be_retried(tmp_path,
         application.start()
         request = {"revision": boundary.snapshot()["revision"], "sourcePath": str(package(tmp_path / "bad.zip", plugin_id, fail=True)),
                    "pluginId": plugin_id, "version": "1.0.0"}
-        with pytest.raises(PluginSettingsError) as caught:
-            boundary.marketplace_install(request)
-        assert caught.value.code == "PLUGIN_UPDATE_START_FAILED"
-        assert caught.value.recovery_error is None
-        assert {p.name: p.read_bytes() for p in original.code_dir.iterdir() if p.is_file()} == before
+        result = boundary.marketplace_install(request)
+        assert result["managementAction"] == "updated"
+        assert result["warning"]["detail"]
+        assert (original.code_dir / "plugin.yaml").is_file()
         assert paths.plugins_config().read_bytes() == config
         request.update(revision=boundary.snapshot()["revision"], sourcePath=str(package(tmp_path / "good.zip", plugin_id)))
         boundary.marketplace_install(request)
@@ -244,7 +251,7 @@ def test_market_installs_missing_plugin_with_orphan_dependencies(tmp_path, monke
         application.close()
 
 
-def test_failed_install_releases_runtime_record_before_retry(tmp_path, monkeypatch):
+def test_installed_plugin_with_startup_failure_can_be_reinstalled(tmp_path, monkeypatch):
     plugin_id = "sakura_mobile"
     roots = RuntimeRoots(tmp_path / "distribution", tmp_path / "user")
     paths = StoragePaths(roots.user_root)
@@ -255,11 +262,10 @@ def test_failed_install_releases_runtime_record_before_retry(tmp_path, monkeypat
         application.start()
         request = {"revision": boundary.snapshot()["revision"], "sourcePath": str(package(tmp_path / "bad.zip", plugin_id, fail=True)),
                    "pluginId": plugin_id, "version": "1.0.0"}
-        with pytest.raises(PluginSettingsError) as caught:
-            boundary.marketplace_install(request)
-        assert caught.value.code == "PLUGIN_INSTALL_START_FAILED"
-        assert caught.value.recovery_error is None
-        assert not (paths.user_plugins_dir / plugin_id).exists()
+        result = boundary.marketplace_install(request)
+        assert result["managementAction"] == "installed"
+        assert result["warning"]["detail"]
+        assert (paths.user_plugins_dir / plugin_id).is_dir()
         assert PluginDesiredStateStore(roots.user_root).read()[plugin_id] is True
         request.update(revision=boundary.snapshot()["revision"], sourcePath=str(package(tmp_path / "good.zip", plugin_id)))
         boundary.marketplace_install(request)
@@ -499,7 +505,7 @@ def test_startup_recovery_failure_stays_visible_and_reinstall_recovers_without_r
     roots = RuntimeRoots(tmp_path / "distribution", tmp_path / "user")
     installer = LocalPluginInstaller(roots)
     plugin_id = "fixture.recovery"
-    original = installer.install(package(tmp_path / "old.zip", plugin_id), "zip", initial_enabled=True)
+    original = installer.install(package(tmp_path / "old.zip", plugin_id, requires=("sakura.host.model_slots",)), "zip", initial_enabled=True)
     installer.install(package(tmp_path / "consumer.zip", "fixture.consumer", requires=(plugin_id,)), "zip", initial_enabled=True)
     installer.install(package(tmp_path / "leaf.zip", "fixture.leaf", requires=("fixture.consumer",)), "zip", initial_enabled=True)
     new = package(tmp_path / "new.zip", plugin_id, "1.1.0")
