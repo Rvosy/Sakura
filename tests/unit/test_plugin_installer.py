@@ -278,6 +278,9 @@ class _BoundaryWorker:
             )
         return {"plugins": plugins}
 
+    def check_plugin_update_idle(self):
+        pass
+
     def public_snapshot(self) -> dict[str, object]:
         return self.settings_snapshot()
 
@@ -384,7 +387,7 @@ def test_core_boundary_applies_local_lifecycle_and_never_returns_source_path(tmp
     assert private_data.read_text(encoding="utf-8") == "keep"
 
 
-def test_core_boundary_rejects_revision_conflict_and_bundled_uninstall(tmp_path: Path) -> None:
+def test_core_boundary_installs_after_unrelated_change_and_rejects_bundled_uninstall(tmp_path: Path) -> None:
     from app.core_host.plugin_settings import PluginSettingsError
 
     app_root = tmp_path / "app"
@@ -395,11 +398,11 @@ def test_core_boundary_rejects_revision_conflict_and_bundled_uninstall(tmp_path:
     config = StoragePaths(app_root).plugins_config()
     config.parent.mkdir(parents=True, exist_ok=True)
     config.write_text("- id: example.changed\n  enabled: false\n", encoding="utf-8")
-    with pytest.raises(PluginSettingsError) as conflict:
-        boundary.install(stale_revision, "folder", str(source.resolve()))
-    assert conflict.value.code == "CONFIG_REVISION_CONFLICT"
-    assert worker.lifecycle_count == 0
-    assert not StoragePaths(app_root).user_plugins_dir.exists()
+    result = boundary.install(stale_revision, "folder", str(source.resolve()))
+    assert result["managementAction"] == "installed"
+    assert PluginDesiredStateStore(app_root).read()["example.changed"] is False
+    boundary.uninstall(result["revision"], result["installId"])
+    lifecycle_count = worker.lifecycle_count
 
     bundled = app_root / "plugins" / "builtin" / "bundled"
     bundled.mkdir(parents=True)
@@ -412,7 +415,7 @@ def test_core_boundary_rejects_revision_conflict_and_bundled_uninstall(tmp_path:
         )
         boundary.uninstall(boundary.snapshot()["revision"], bundled_record["installId"])
     assert locked.value.code == "BUNDLED_PLUGIN_LOCKED"
-    assert worker.lifecycle_count == 0
+    assert worker.lifecycle_count == lifecycle_count
 
 
 def test_core_boundary_rolls_back_code_when_plugin_lifecycle_fails(tmp_path: Path) -> None:
@@ -819,8 +822,9 @@ def test_marketplace_update_preserves_settings_and_rolls_back_invalid_package(tm
     spec = PluginDiscovery(root).discover()[0]
     assert spec.version == "1.1.0" and not spec.enabled
     assert config.read_text(encoding="utf-8") == original_config
-    with pytest.raises(PluginSettingsError, match="插件更新失败"):
+    with pytest.raises(PluginSettingsError) as invalid_package:
         boundary.marketplace_install({**request, "revision": boundary.snapshot()["revision"], "version": "2.0.0"})
+    assert invalid_package.value.code == "PLUGIN_PACKAGE_IDENTITY_MISMATCH"
     assert PluginDiscovery(root).discover()[0].version == "1.1.0"
     assert config.read_text(encoding="utf-8") == original_config
 

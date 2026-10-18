@@ -694,6 +694,10 @@ class PluginRuntimeApplication:
             with self._manager.pause_plugins(ids) as errors:
                 yield errors
 
+    def check_plugin_update_idle(self) -> None:
+        if self._chat_boundary is not None:
+            self._chat_boundary.apply_runtime_update(lambda: None)
+
     @contextmanager
     def plugin_update(self, plugin_id: str):
         guard = self._chat_boundary.idle_runtime_update() if self._chat_boundary is not None else nullcontext()

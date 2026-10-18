@@ -321,9 +321,6 @@ pub(crate) async fn settings_plugins_install(
     .await?;
     let mut payload = settings_response_payload(response)?;
     assert_settings_identity(&shell, &handle, window_generation, &core_generation_id)?;
-    if payload.get("managementAction").and_then(Value::as_str) != Some("installed") {
-        return Err("PLUGIN_MANAGEMENT_RESPONSE_INVALID".to_string());
-    }
     let object = payload
         .as_object_mut()
         .ok_or_else(|| "PLUGIN_MANAGEMENT_RESPONSE_INVALID".to_string())?;

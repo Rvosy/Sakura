@@ -152,13 +152,6 @@ fn selected_release(catalog: &Value, id: &str, version: &str) -> Result<Value, S
     Ok(release.clone())
 }
 
-fn validate_install_revision(current: &Value, revision: &str) -> Result<(), String> {
-    if current["revision"] != revision {
-        return Err("CONFIG_REVISION_CONFLICT: 插件列表已变化，请刷新后重试。".into());
-    }
-    Ok(())
-}
-
 fn readme_addresses(catalog: &Value, id: &str, version: &str) -> Result<(String, String), String> {
     let release = selected_release(catalog, id, version)?;
     let plugin = catalog["plugins"]
@@ -417,10 +410,6 @@ pub(crate) async fn settings_marketplace_install(
             &version,
         )?
     };
-    let current = settings_response_payload(
-        dispatch_settings_request(handle.clone(), None, "plugins.settings.get", json!({})).await?,
-    )?;
-    validate_install_revision(&current, &revision)?;
     let sources = sources.load()?;
     let url = download_sources::https_url(release["package"]["url"].as_str().unwrap())?;
     let package_size = release["package"]["size"].as_u64().unwrap() as usize;
@@ -511,14 +500,6 @@ pub(crate) fn settings_marketplace_cancel(
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn native_install_rejects_a_stale_settings_revision() {
-        let current = json!({"revision":"current","plugins":[]});
-        assert!(validate_install_revision(&current, "current").is_ok());
-        assert!(validate_install_revision(&current, "stale")
-            .unwrap_err()
-            .starts_with("CONFIG_REVISION_CONFLICT:"));
-    }
     #[test]
     fn cache_survives_new_state_and_keeps_readmes_bound_to_repository_and_commit() {
         let root =

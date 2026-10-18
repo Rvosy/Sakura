@@ -43,8 +43,11 @@ class Plugin:
     return path
 
 
-@pytest.mark.parametrize("outcome", ["success", "setup_failure", "dependent_failure", "wrong_version", "move_failure", "busy"])
-def test_enabled_update_restores_processes_and_keeps_data(tmp_path, monkeypatch, outcome):
+@pytest.mark.parametrize(("source", "outcome"), [
+    (source, outcome) for source in ("market", "zip", "folder")
+    for outcome in ("success", "setup_failure", "dependent_failure", "move_failure", "busy")
+] + [("market", "wrong_version")])
+def test_enabled_update_restores_processes_and_keeps_data(tmp_path, monkeypatch, source, outcome):
     user = tmp_path / "user"
     roots = RuntimeRoots(tmp_path / "distribution", user)
     (roots.distribution_root / "plugins/builtin").mkdir(parents=True)
@@ -78,7 +81,13 @@ def test_enabled_update_restores_processes_and_keeps_data(tmp_path, monkeypatch,
                 raise RealChatRejection("RUNTIME_UPDATE_BUSY", "busy")
                 yield
 
-            application._chat_boundary = SimpleNamespace(idle_runtime_update=busy)
+            def apply_busy(_update):
+                raise RealChatRejection("RUNTIME_UPDATE_BUSY", "busy")
+
+            application._chat_boundary = SimpleNamespace(idle_runtime_update=busy, apply_runtime_update=apply_busy)
+            def unexpected_preparation(*args, **kwargs):
+                pytest.fail("忙碌时不应开始准备依赖")
+            monkeypatch.setattr(PluginDependencyRoots, "prepare", unexpected_preparation)
         original_begin = update_transaction.begin
 
         def begin(*args, **kwargs):
@@ -92,12 +101,21 @@ def test_enabled_update_restores_processes_and_keeps_data(tmp_path, monkeypatch,
         monkeypatch.setattr(update_transaction, "begin", begin)
         new = package(tmp_path / "new.zip", "fixture.provider", "1.1.0", fail=outcome == "setup_failure")
         request = {"revision": boundary.snapshot()["revision"], "sourcePath": str(new), "pluginId": "fixture.provider", "version": "2.0.0" if outcome == "wrong_version" else "1.1.0"}
+        if source == "folder":
+            folder = tmp_path / "new-folder"
+            with zipfile.ZipFile(new) as archive:
+                archive.extractall(folder)
+            request["sourcePath"] = str(folder)
+        def install():
+            if source == "market":
+                return boundary.marketplace_install(request)
+            return boundary.install(request["revision"], source, request["sourcePath"])
         if outcome == "success":
-            result = boundary.marketplace_install(request)
+            result = install()
             assert result["managementAction"] == "updated"
         else:
             with pytest.raises(PluginSettingsError) as caught:
-                boundary.marketplace_install(request)
+                install()
             assert caught.value.recovery_error is None
             if outcome == "busy":
                 assert caught.value.retryable
@@ -332,3 +350,87 @@ def test_market_repairs_plugin_using_retired_model_service(tmp_path):
         assert application.call_service(plugin_id, "ping") == "1.1.0"
     finally:
         application.close()
+
+
+@pytest.mark.parametrize("change", ["unrelated_install", "disable_target"])
+def test_update_uses_current_installation_without_overwriting_new_choices(running_update, tmp_path, change):
+    roots, original, application, boundary, request = running_update
+    paths = StoragePaths(roots.user_root)
+    if change == "unrelated_install":
+        boundary.install(request["revision"], "zip", str(package(tmp_path / "other.zip", "fixture.other")))
+    else:
+        boundary.set_enabled(request["revision"], original.install_id, False)
+    config = paths.plugins_config().read_bytes()
+    result = boundary.marketplace_install(request)
+    current = next(p for p in result["plugins"] if p["pluginId"] == original.plugin_id)
+    assert current["version"] == "1.1.0"
+    assert current["enabled"] is (change != "disable_target")
+    assert paths.plugins_config().read_bytes() == config
+
+
+def test_duplicate_legacy_plugin_can_be_removed_and_updated_without_losing_shared_data(tmp_path):
+    plugin_id = "fixture.memory"
+    roots = RuntimeRoots(tmp_path / "distribution", tmp_path / "user")
+    paths = StoragePaths(roots.user_root)
+    original = LocalPluginInstaller(roots).install(
+        package(tmp_path / "old.zip", plugin_id, requires=("sakura.host.model_slots",)), "zip", initial_enabled=True)
+    duplicate = original.code_dir.with_name("memory-copy")
+    shutil.copytree(original.code_dir, duplicate)
+    dependency = paths.plugin_dependency_root_for(plugin_id) / "keep.py"
+    dependency.parent.mkdir(parents=True)
+    dependency.write_text("VALUE = 42")
+    data = paths.plugin_data_for(plugin_id) / "memories.txt"
+    data.parent.mkdir(parents=True)
+    data.write_text("remember this")
+    config = paths.plugins_config().read_bytes()
+    application = PluginApplicationHost(roots, "duplicate-repair", ToolRegistry())
+    boundary = PluginSettingsBoundary("duplicate-repair", "credential", roots, application_provider=lambda: application)
+    try:
+        application.start()
+        snapshot = boundary.snapshot()
+        copies = [p for p in snapshot["plugins"] if p["pluginId"] == plugin_id]
+        assert len(copies) == 2
+        assert all(p["reasonCode"] == "PLUGIN_ID_CONFLICT" for p in copies)
+        assert {p["directoryName"] for p in copies} == {original.code_dir.name, duplicate.name}
+        new = package(tmp_path / "new.zip", plugin_id, "1.1.0")
+        with pytest.raises(PluginSettingsError, match="重复安装"):
+            boundary.install(snapshot["revision"], "zip", str(new))
+        other = next(p for p in copies if p["directoryName"] == duplicate.name)
+        result = boundary.uninstall(snapshot["revision"], other["installId"])
+        assert dependency.read_text() == "VALUE = 42"
+        assert paths.plugins_config().read_bytes() == config
+        assert original.code_dir.exists()
+        assert not duplicate.exists()
+        current = next(p for p in result["plugins"] if p["pluginId"] == plugin_id)
+        assert current["reasonCode"] == "MODEL_API_UPDATE_REQUIRED"
+        boundary.install(result["revision"], "zip", str(new))
+        assert application.call_service(plugin_id, "ping") == "1.1.0"
+        assert paths.plugins_config().read_bytes() == config
+        assert data.read_text() == "remember this"
+    finally:
+        application.close()
+
+
+def test_interaction_started_during_preparation_keeps_the_old_plugin(running_update, monkeypatch):
+    from app.core_host.real_chat import RealChatRejection
+    _, original, application, boundary, request = running_update
+    pid = application.call_service(original.plugin_id, "pid")
+    prepare = PluginDependencyRoots.prepare
+    @contextmanager
+    def busy():
+        raise RealChatRejection("RUNTIME_UPDATE_BUSY", "interaction started")
+        yield
+    @contextmanager
+    def prepare_then_chat(*args, **kwargs):
+        with prepare(*args, **kwargs) as dependencies:
+            application._chat_boundary = SimpleNamespace(idle_runtime_update=busy)
+            yield dependencies
+    monkeypatch.setattr(PluginDependencyRoots, "prepare", prepare_then_chat)
+    try:
+        with pytest.raises(PluginSettingsError) as caught:
+            boundary.marketplace_install(request)
+        assert caught.value.code == "RUNTIME_UPDATE_BUSY"
+        assert application.call_service(original.plugin_id, "pid") == pid
+        assert application.call_service(original.plugin_id, "ping") == "1.0.0"
+    finally:
+        application._chat_boundary = None
