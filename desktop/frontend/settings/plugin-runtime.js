@@ -77,6 +77,9 @@ function collectionRequest(current, input) {
       throw new Error("PLUGIN_COLLECTION_REQUEST_INVALID");
     }
     payload = { cursor, limit, search, filters: clone(filters) };
+  } else if (operation === "transfer") {
+    payload = { action: input.action, path: input.path, format: input.format,
+      expectedCharacterId: input.expectedCharacterId };
   } else if (["create", "update"].includes(operation)) {
     if (operation === "create" && !collection.canCreate) throw new Error("PLUGIN_COLLECTION_OPERATION_UNAVAILABLE");
     if (operation === "update" && !collection.canUpdate) throw new Error("PLUGIN_COLLECTION_OPERATION_UNAVAILABLE");

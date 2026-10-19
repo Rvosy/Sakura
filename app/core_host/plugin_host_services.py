@@ -874,6 +874,7 @@ class _SettingsCollection:
     create_handle: str | None
     update_handle: str | None
     delete_handle: str | None
+    transfer_handle: str | None
 
 
 @dataclass(frozen=True)
@@ -1558,6 +1559,10 @@ class _SettingsHostService:
             )
         if collection is None:
             raise HostServiceError("SETTINGS_COLLECTION_INVALID")
+        if operation == "transfer":
+            if collection.transfer_handle is None:
+                raise HostServiceError("SETTINGS_COLLECTION_OPERATION_UNAVAILABLE")
+            return self._invoke_callback(collection.transfer_handle, "settings.collection.transfer", dict(payload))
         if operation == "query":
             request = _collection_query_request(collection, payload)
             result = self._invoke_callback(
@@ -2559,7 +2564,7 @@ def _collection_with_handles(
     raw_handles: object,
 ) -> _SettingsCollection:
     handles = _mapping(raw_handles, "SETTINGS_CALLBACK_INVALID")
-    if set(handles) != {"query", "create", "update", "delete"}:
+    if set(handles) - {"query", "create", "update", "delete", "transfer"}:
         raise HostServiceError("SETTINGS_CALLBACK_INVALID")
     query_handle = _optional_callback_handle(handles.get("query"))
     if query_handle is None:
@@ -2584,6 +2589,7 @@ def _collection_with_handles(
         create_handle=create_handle,
         update_handle=update_handle,
         delete_handle=delete_handle,
+        transfer_handle=_optional_callback_handle(handles.get("transfer")),
     )
 
 
@@ -2601,6 +2607,7 @@ def _public_collection(collection: _SettingsCollection) -> dict[str, Any]:
         "canCreate": collection.create_handle is not None,
         "canUpdate": collection.update_handle is not None,
         "canDelete": collection.delete_handle is not None,
+        "canTransfer": collection.transfer_handle is not None,
         "deleteConfirmation": collection.delete_confirmation,
     }
 

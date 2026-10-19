@@ -12,6 +12,8 @@
 
 首次安装需要联网下载 `requirements.txt` 中的 Python 依赖。插件包不包含 Python 运行环境、模型权重或用户数据；下载源码后仍需在 Sakura 中安装，并准备所需资源。
 
+记忆页支持导入导出，包含常驻档案与其他记忆分类。导入保留正文、时间和属性，重建本地向量索引，不调用整理模型。文件格式和合并规则见 [Sakura 数据管理](https://github.com/Rvosy/Sakura/blob/main/docs/guide/data.md#导入导出聊天和记忆)。
+
 更新保留已有设置、资源和启停选择，操作方法见 [Sakura 插件升级指南](https://github.com/Rvosy/Sakura/blob/main/docs/guide/plugins.md#更新与修复)。
 
 ## 开源说明

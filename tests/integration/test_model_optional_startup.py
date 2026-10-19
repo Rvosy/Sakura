@@ -32,6 +32,8 @@ sys.path.insert(0, sys.argv[1])
 from app.core_host.server import HostConfig, ReadinessController
 from app.core_host.provider_settings import ProviderSettingsBoundary
 from app.core_host.plugin_settings import PluginSettingsBoundary
+from app.core_host.history import HistoryBoundary
+from app.plugin_sdk.sakura_data_transfer import write_archive
 from app.storage.runtime_roots import RuntimeRoots
 config = HostConfig(RuntimeRoots(Path(sys.argv[2]), Path(sys.argv[3])), 'no-model', 'a' * 32)
 controller = ReadinessController(config)
@@ -55,10 +57,32 @@ try:
     assert models['model_slots'][0]['reasonCode'] == 'MODEL_REFERENCE_UNAVAILABLE'
     assistant = next(p for p in plugins['plugins'] if p['pluginId'] == 'sakura.assistant.default')
     assert any(s.get('placement', {}).get('pageId') == 'host:model' for s in assistant['sections'])  # Assistant settings remain editable.
+    history = HistoryBoundary(config.generation_id, config.generation_credential, config.user_root,
+        character_provider=lambda: controller.published_character_presentation()['characterId'],
+        application_provider=lambda: application)
+    archive = config.user_root / 'history.json'
+    write_archive(archive, kind='history', provider='sakura.timeline', character_id='sakura', records=[{
+        'entry_id': 'imported-human', 'turn_id': 'imported-turn', 'kind': 'human', 'origin': 'chat',
+        'created_at': '2024-01-01T00:00:00Z', 'payload': {'text': '从其他安装迁移的对话'},
+    }])
+    request = {'kind': 'request', 'generationId': config.generation_id,
+        'generationCredential': config.generation_credential, 'id': 'history-transfer',
+        'name': 'ui.history.transfer', 'payload': {'expectedCharacterId': 'sakura',
+            'expectedGenerationId': config.generation_id, 'path': str(archive), 'format': 'json'}}
+    for action in ('preview', 'import'):
+        request['payload']['action'] = action
+        result = history.handle(request)
+        assert result['ok'], result
+        assert result['payload']['added'] == 1
+    request.update(name='ui.history.page', payload={'expectedCharacterId': 'sakura', 'beforeCursor': None, 'limit': 50})
+    result = history.handle(request)
+    assert result['ok'], result
+    assert any(record['entryId'] == 'imported-human' for record in result['payload']['entries'])
+    assert controller.snapshot()['readiness'] == 'setup_required'
 finally:
     controller.close()
 '''
-    result = subprocess.run([sys.executable, "-I", "-B", "-c", script, str(REPO), str(distribution), str(user)],
+    result = subprocess.run([sys.executable, "-I", "-B", "-X", "utf8", "-c", script, str(REPO), str(distribution), str(user)],
                             cwd=tmp_path, capture_output=True, text=True, encoding="utf-8", timeout=25,
                             creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
     assert result.returncode == 0, result.stdout + result.stderr

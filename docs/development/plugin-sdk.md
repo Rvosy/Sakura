@@ -230,8 +230,13 @@ collections.register("notes", {
 | create | values → `{itemId,values}` |
 | update | item_id, values → `{itemId,values}` |
 | delete | item_id → `{deleted:true}` |
+| transfer | `{action,path,format,expectedCharacterId,identityPath}` → 导出结果或导入计数 |
 
 不支持的操作省略。游标由插件定义，itemId 必须稳定；每页最多 100 项。列支持 datetime，数值列可用 `format: "percent"`。写入回调可附 applicationState；restart_required 只提示待应用，Collection 本身不自动重启插件。
+
+角色 Collection 可传入 `transfer=callback` 提供导入导出按钮。`action` 为 export、preview 或 import，`format` 为 json 或 txt；path 来自文件选择窗口。preview 只返回合并预览，import 保留本地冲突记录，均返回 `{added,identical,conflicts,sourceCharacterId}`；export 返回 `{exported,path}`。操作固定 expectedCharacterId，插件检查当前角色后处理自己的数据。
+
+公共模块 `sakura_data_transfer` 提供 `read_archive`、`write_archive` 和 `plan_merge`。JSON 使用 `format: "sakura-data"`、`version: 1`，包含 exportedAt、kind（history/memory）、provider、characterId 和 records。`read_archive` 返回文件对象；跨角色复制使用宿主提供的 identityPath 保存 ID 映射，记忆的来源条目和轮次引用与聊天共用映射。文件读写由数据所属插件执行，大批正文不经过 RPC 消息。
 
 scope 为 global/character，省略兼容为 character；它控制草稿行为，数据隔离仍由插件实现。打开编辑器不等于修改，恢复原值后解除未保存状态。角色草稿阻止换角色，全局草稿可保留；“应用”不会替 Collection 保存记录，“保存并关闭”要求先处理未保存记录。角色切换、同角色刷新或实例更换时隔离旧查询、写入回执和删除确认，不自动重放。
 
@@ -294,4 +299,4 @@ path 是宿主明确签发的临时写入位置。commit 返回 artifactId/media
 
 ## 开发参考
 
-优先复用[Playwright 工具插件](../../plugins/optional/playwright_browser/plugin.py)、[Mem0](../../plugins/optional/sakura_mem0/plugin.py)、[手机聊天](../../plugins/optional/sakura_mobile/plugin.py)和[对话规则](../../plugins/optional/context_rules/README.md)中的公开接口用法，不跨目录导入其实现。日志见[诊断接入](diagnostics.md)。验证安装、配置保存、实际业务结果及停用清理，使用隔离数据与项目 Python；运行入口见[Harness](../../harness/README.md)。
+优先复用[Playwright 工具插件](../../plugins/optional/playwright_browser/plugin.py)、[Mem0](../../plugins/optional/sakura_mem0/plugin.py)和[手机聊天](../../plugins/optional/sakura_mobile/plugin.py)中的公开接口用法，不跨目录导入其实现。日志见[诊断接入](diagnostics.md)。验证安装、配置保存、实际业务结果及停用清理，使用隔离数据与项目 Python；运行入口见[Harness](../../harness/README.md)。

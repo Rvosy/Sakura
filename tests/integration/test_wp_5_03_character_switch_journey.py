@@ -249,13 +249,13 @@ def test_a_b_a_switch_keeps_character_memory_history_and_generation_services_iso
         GENERATION_A,
         CREDENTIAL_A,
         root,
-        session_provider=lambda: SimpleNamespace(character=SimpleNamespace(id="alpha")),
+        character_provider=lambda: "alpha",
     )
     beta_history = HistoryBoundary(
         GENERATION_A,
         CREDENTIAL_A,
         root,
-        session_provider=lambda: SimpleNamespace(character=SimpleNamespace(id="beta")),
+        character_provider=lambda: "beta",
     )
     alpha_page = alpha_history.handle(
         _history_request(GENERATION_A, CREDENTIAL_A, "alpha")

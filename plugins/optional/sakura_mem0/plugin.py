@@ -100,6 +100,9 @@ class SakuraMem0Runtime:
     def search_tool(self, arguments: Mapping[str, object]) -> dict[str, object]:
         return self._boundary.search_memory(dict(arguments), wait=False)
 
+    def transfer_collection(self, request: Mapping[str, object]) -> dict:
+        return self._boundary.transfer(request)
+
     def remember_tool(self, arguments: Mapping[str, object]) -> dict[str, object]:
         return self._boundary.upsert({**dict(arguments), "source": "explicit"})
 
@@ -687,6 +690,7 @@ class SakuraMem0Plugin:
             create=runtime.create_collection_item,
             update=runtime.update_collection_item,
             delete=runtime.delete_collection_item,
+            transfer=runtime.transfer_collection,
         ))
         scope.callback(getattr(context, "get")("sakura.host.model_slots.v2").register(
             {

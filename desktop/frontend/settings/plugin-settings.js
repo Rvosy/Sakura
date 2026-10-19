@@ -1,4 +1,5 @@
 import { createSettingsUI, sectionDestination } from "./settings-ui.js";
+import { createDataTransferButtons } from "../core/data-transfer.js";
 import { createSettingsForm } from "./settings-form.js";
 import { createPluginModule } from "./plugin-module.js";
 import { createRecordTable } from "./record-table.js";
@@ -25,6 +26,7 @@ export function createPluginSettingsFeature({
   removeOverlayAfterExit,
   showPage,
   isCharacterTransitioning,
+  currentCharacterId = () => "",
   hasPendingCharacterSelection,
   onModelCatalogChanged = () => {},
   onNavigatePlugin = () => {},
@@ -1188,6 +1190,17 @@ export function createPluginSettingsFeature({
     }
   }
 
+  function collectionTransferButtons(plugin, section, collection) {
+    const state = pluginCollectionRuntimeState(plugin, section, collection);
+    const key = pluginCollectionKey(plugin, section, collection);
+    return createDataTransferButtons({ document, invoke, characterId: currentCharacterId,
+      isCurrent: () => pluginCollectionState.get(key) === state && !collectionInteractionBlocked(collection),
+      transfer: request => runtimePluginController.collection({ operation: "transfer",
+        pluginId: plugin.plugin_id, sectionId: section.section_id, collectionId: collection.collection_id, ...request }),
+      onImported: () => queryPluginCollection(plugin, section, collection),
+    });
+  }
+
   function renderPluginCollection(plugin, section, collection) {
     const state = pluginCollectionRuntimeState(plugin, section, collection);
     const block = document.createElement("div");
@@ -1217,6 +1230,7 @@ export function createPluginSettingsFeature({
       });
       header.append(add);
     }
+    if (collection.can_transfer) header.append(collectionTransferButtons(plugin, section, collection));
     block.append(header);
     if (collection.description) {
       const description = document.createElement("p");
@@ -2015,6 +2029,7 @@ export function createPluginSettingsFeature({
     add.append(createIcon(document, "plus"), "新增记忆");
     add.disabled = true;
     headActions.append(count, add);
+    if (collection.can_transfer) headActions.append(collectionTransferButtons(plugin, section, collection));
     head.append(titleGroup, headActions);
 
     const toolbar = document.createElement("div");
@@ -2654,6 +2669,7 @@ export function createPluginSettingsFeature({
             can_create: collection.canCreate,
             can_update: collection.canUpdate,
             can_delete: collection.canDelete,
+            can_transfer: collection.canTransfer,
             delete_confirmation: collection.deleteConfirmation,
           })),
         })),

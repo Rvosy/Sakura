@@ -19,7 +19,6 @@ if str(REPOSITORY_ROOT) not in sys.path:
 from app.agent.tools import ToolRegistry
 from app.core_host.assistant_adapter import AssistantAdapter
 from app.core_host.plugin_application import PluginApplicationHost
-from app.plugins.installer import LocalPluginInstaller
 from app.plugins.inventory import PluginDesiredStateStore, PluginInventory
 from app.storage.paths import StoragePaths
 from app.storage.runtime_roots import RuntimeRoots
@@ -114,9 +113,8 @@ def prepare(user_root: Path) -> dict[str, object]:
         raise FileExistsError(user_root)
     user_root = user_root.resolve(strict=False)
     icon = REPOSITORY_ROOT / "desktop/frontend/assets/sakura-icon.png"
-    sources = [REPOSITORY_ROOT / "plugins/optional/context_rules"]
-    if not icon.is_file() or any(not (source / "plugin.yaml").is_file() for source in sources):
-        raise RuntimeError("仓库缺少验收所需的插件或 Sakura 图标。")
+    if not icon.is_file():
+        raise RuntimeError("仓库缺少 Sakura 图标。")
     # Never reuse a directory, including an existing empty directory or symlink.
     user_root.mkdir(parents=True, exist_ok=False)
     roots = RuntimeRoots(REPOSITORY_ROOT, user_root)
@@ -141,9 +139,6 @@ def prepare(user_root: Path) -> dict[str, object]:
         "reply": {"tones": ["中性"]},
     })
 
-    installer = LocalPluginInstaller(roots)
-    for source in sources:
-        installer.install(source, "folder")
     desired = PluginDesiredStateStore(user_root)
     inventory = PluginInventory(roots, desired).scan()
     desired.write({

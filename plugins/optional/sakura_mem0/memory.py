@@ -1059,6 +1059,36 @@ class MemoryStore:
             memories.insert(0, core_profile)
         return memories if limit is None else memories[:limit]
 
+    def export_records(self) -> list[dict[str, Any]]:
+        fields = {"id", "content", "layer", "category", "importance", "confidence", "source", "scope",
+                  "created_at", "updated_at", "last_accessed_at", "metadata"}
+        return [{key: value for key, value in item.items() if key in fields}
+                for item in self.list_memories(limit=None)]
+
+    def restore_records(self, records: list[dict[str, Any]]) -> None:
+        mem = self._get_memory()
+        completed = 0
+        try:
+            for item in records:
+                metadata = {**item["metadata"], "scope": self.scope_id}
+                if item["layer"] == MEMORY_LAYER_CORE_PROFILE:
+                    profiles = self._load_core_profiles()
+                    profiles[self.scope_id] = {"id": _core_profile_id(self.scope_id),
+                        "content": item["content"], "metadata": metadata}
+                    self._save_core_profiles(profiles)
+                else:
+                    # 原有 ID 和时间参与去重与来源关联；索引由当前向量模型重建。
+                    vector = mem.embedding_model.embed(item["content"], "add")
+                    mem.vector_store.insert(vectors=[vector], ids=[item["id"]], payloads=[{
+                        **metadata, "data": item["content"], "user_id": self.scope_id,
+                    }])
+                completed += 1
+                if completed % 100 == 0:
+                    log_event("Memory", "正在导入记忆", {"character_id": self.scope_id,
+                              "completed": completed, "total": len(records)}, event="memory.import.progress")
+        except Exception as error:
+            raise RuntimeError(f"已导入 {completed} 条记忆，后续写入失败：{error}") from error
+
     def core_profile(self) -> dict[str, Any] | None:
         """读取当前角色的常驻档案块；缺失时返回 None。"""
 

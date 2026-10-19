@@ -1,4 +1,5 @@
 import { waitForRuntimeFonts } from "../core/font-loader.js";
+import { createDataTransferButtons } from "../core/data-transfer.js";
 import { installDevtoolsShortcutGuard } from "../core/devtools-guard.js";
 import { applyTheme } from "../core/theme.js";
 import { createPlaybackActionIndicator } from "../audio/playback-action-indicator.js";
@@ -34,6 +35,12 @@ window.addEventListener("pagehide", () => errors.dispose(), { once: true });
 let loading = false;
 let entries = [];
 let identity = null;
+refresh.after(createDataTransferButtons({ document, invoke, history: true,
+  characterId: () => identity?.characterId,
+  identityKey: () => `${identity?.coreGenerationId}/${identity?.characterId}`,
+  transfer: payload => invoke("history_transfer", { payload: { ...payload, expectedGenerationId: identity.coreGenerationId } }),
+  onImported: () => loadInitial(),
+}));
 let assistantName = "Sakura";
 let subtitleLanguage = "zh";
 const expandedEntries = new Set();

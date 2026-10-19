@@ -1349,12 +1349,14 @@ class _SettingsCollectionProxy:
         create: Callable[..., object] | None = None,
         update: Callable[..., object] | None = None,
         delete: Callable[..., object] | None = None,
+        transfer: Callable[..., object] | None = None,
     ) -> Callable[[], None]:
         callbacks = {
             "query": query,
             "create": create,
             "update": update,
             "delete": delete,
+            "transfer": transfer,
         }
         if (
             not isinstance(section_id, str)

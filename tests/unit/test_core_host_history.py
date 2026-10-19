@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from types import SimpleNamespace
 
 from app.core_host.history import HistoryBoundary
 from app.storage.paths import StoragePaths
@@ -30,7 +29,7 @@ def _boundary(tmp_path, current: list[str]) -> HistoryBoundary:  # type: ignore[
         GENERATION,
         CREDENTIAL,
         tmp_path,
-        session_provider=lambda: SimpleNamespace(character=SimpleNamespace(id=current[0])),
+        character_provider=lambda: current[0],
     )
 
 

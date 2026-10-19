@@ -7,6 +7,8 @@ stable DTO.  It never imports the legacy application bootstrap or a Qt worker.
 
 from __future__ import annotations
 
+from sakura_data_transfer import read_archive, write_archive, plan_merge
+
 import threading
 import uuid
 from collections.abc import Mapping
@@ -351,6 +353,30 @@ class MemoryBoundary:
         ]
         return {"status": "ready", "message": "", "memories": projected[:limit]}
 
+    def transfer(self, request: Mapping[str, object]) -> dict:
+        if request["expectedCharacterId"] != self._character_id:
+            raise ValueError("角色已变化，请重新打开导入导出。")
+        action = request["action"]
+        with self._write_lock:
+            existing = self._store.export_records()
+            if action == "export":
+                return write_archive(request["path"], kind="memory", provider="sakura.memory.mem0",
+                                     character_id=self._character_id, records=existing, format=request["format"])
+            archive = read_archive(request["path"], kind="memory", provider="sakura.memory.mem0",
+                                   character_id=self._character_id, identity_path=request.get("identityPath"))
+            records = archive["records"]
+            for item in records:
+                _required_text(item["content"], "content", MAX_MEMORY_CONTENT)
+                if item["layer"] not in MEMORY_LAYERS:
+                    raise ValueError("记忆分类无效。")
+            additions, counts = plan_merge(records, existing)
+            if action == "import":
+                self._assert_writable()
+                self._store.restore_records(additions)
+            elif action != "preview":
+                raise ValueError("不支持的数据操作。")
+            return {**counts, "sourceCharacterId": archive["characterId"]}
+
     def upsert(self, payload: Mapping[str, object]) -> dict[str, object]:
         _only(
             payload,
@@ -633,9 +659,8 @@ class MemoryBoundary:
                 resolved = _resolved_model(self._model_resolver(configured_slot))
                 if not resolved["serviceKey"] or self._model_client_factory is None:
                     return
-                selected_ids = {entry.entry_id for entry in entries}
                 intervals = [
-                    ([entry for entry in page if entry.entry_id in selected_ids], cursor)
+                    (_curation_evidence_turns(page)[0], cursor)
                     for page, cursor in intervals
                 ]
                 self._curation_active = True
@@ -908,6 +933,8 @@ def _project_timeline_entries(value: object, character_id: str) -> list[ChatHist
         origin = item.get("origin")
         kind = item.get("kind")
         payload = item.get("payload")
+        if isinstance(payload, Mapping) and payload.get("imported"):
+            continue
         if (
             not isinstance(entry_id, str)
             or not entry_id
