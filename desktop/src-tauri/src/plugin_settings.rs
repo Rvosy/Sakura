@@ -23,10 +23,8 @@ fn validate_settings_save_request(
     Ok(())
 }
 
-fn validate_enabled_request(revision: &str, install_id: &str) -> Result<(), String> {
-    if !valid_revision(Some(&Value::String(revision.to_string())))
-        || !valid_install_id(Some(&Value::String(install_id.to_string())))
-    {
+fn validate_enabled_request(install_id: &str) -> Result<(), String> {
+    if !valid_install_id(Some(&Value::String(install_id.to_string()))) {
         return Err("PLUGIN_ENABLED_REQUEST_INVALID".to_string());
     }
     Ok(())
@@ -67,15 +65,6 @@ fn valid_install_id(value: Option<&Value>) -> bool {
         (2..=2048).contains(&directory.len())
             && directory.len() % 2 == 0
             && directory
-                .bytes()
-                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
-    })
-}
-
-fn valid_revision(value: Option<&Value>) -> bool {
-    value.and_then(Value::as_str).is_some_and(|text| {
-        text.len() == 16
-            && text
                 .bytes()
                 .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
     })
@@ -179,21 +168,20 @@ pub(crate) async fn settings_plugins_enabled_set(
     window: WebviewWindow,
     window_generation: u64,
     core_generation_id: String,
-    revision: String,
     install_id: String,
     enabled: bool,
     shell: State<'_, product_shell::ProductShellState>,
     lifecycle: State<'_, ShellLifecycleState>,
 ) -> Result<Value, String> {
     product_shell::validate_settings_window(&window)?;
-    validate_enabled_request(&revision, &install_id)?;
+    validate_enabled_request(&install_id)?;
     let handle = settings_core_handle(&lifecycle)?;
     assert_settings_identity(&shell, &handle, window_generation, &core_generation_id)?;
     let response = dispatch_settings_request(
         handle.clone(),
         None,
         "plugins.enabled.set",
-        json!({"revision": revision, "installId": install_id, "enabled": enabled}),
+        json!({"installId": install_id, "enabled": enabled}),
     )
     .await?;
     let mut payload = settings_response_payload(response)?;
@@ -272,7 +260,6 @@ pub(crate) async fn settings_plugins_install(
     window: WebviewWindow,
     window_generation: u64,
     core_generation_id: String,
-    revision: String,
     source_kind: String,
     shell: State<'_, product_shell::ProductShellState>,
     lifecycle: State<'_, ShellLifecycleState>,
@@ -313,7 +300,6 @@ pub(crate) async fn settings_plugins_install(
         None,
         "plugins.install",
         json!({
-            "revision": revision,
             "sourceKind": source_kind,
             "sourcePath": source_path,
         }),
@@ -334,7 +320,6 @@ pub(crate) async fn settings_plugins_uninstall(
     window: WebviewWindow,
     window_generation: u64,
     core_generation_id: String,
-    revision: String,
     install_id: String,
     shell: State<'_, product_shell::ProductShellState>,
     lifecycle: State<'_, ShellLifecycleState>,
@@ -346,7 +331,7 @@ pub(crate) async fn settings_plugins_uninstall(
         handle.clone(),
         None,
         "plugins.uninstall",
-        json!({"revision": revision, "installId": install_id}),
+        json!({"installId": install_id}),
     )
     .await?;
     let mut payload = settings_response_payload(response)?;

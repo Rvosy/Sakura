@@ -207,8 +207,7 @@ def test_real_core_routes_scoped_screen_visual_and_detach_protocol(tmp_path):
         assert desktop("host.interaction.state", ready)["payload"]["accepted"]
         next_receipt = action("apply")
         assert next_receipt["accepted"]
-        inventory = exchange("plugins.settings.get", {})["payload"]
-        disabled = exchange("plugins.enabled.set", {"revision": inventory["revision"], "installId": record["installId"], "enabled": False})
+        disabled = exchange("plugins.enabled.set", {"installId": record["installId"], "enabled": False})
         assert disabled["ok"], disabled
         assert any(event["name"] == "host.visual.cancel" and event["payload"]["requestId"] == next_receipt["requestId"] for event in events)
         assert not desktop("host.visual.claim", {"requestId": next_receipt["requestId"], "target": target})["payload"]["accepted"]

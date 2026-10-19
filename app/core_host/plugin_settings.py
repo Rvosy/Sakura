@@ -115,10 +115,9 @@ class PluginSettingsBoundary:
                     raise PluginSettingsError("INVALID_REQUEST", "插件设置保存请求格式无效。")
                 result = self.save(payload)
             elif name == "plugins.enabled.set":
-                if set(payload) != {"revision", "installId", "enabled"}:
+                if set(payload) != {"installId", "enabled"}:
                     raise PluginSettingsError("INVALID_REQUEST", "插件启停请求格式无效。")
                 result = self.set_enabled(
-                    payload["revision"],
                     payload["installId"],
                     payload["enabled"],
                 )
@@ -132,21 +131,20 @@ class PluginSettingsBoundary:
                     raise PluginSettingsError("PLUGIN_SETTINGS_NOT_READY", "插件服务尚未就绪。")
                 result = application.marketplace_context()
             elif name == "plugins.marketplace.install":
-                if set(payload) != {"revision", "sourcePath", "pluginId", "version"}:
+                if set(payload) != {"sourcePath", "pluginId", "version"}:
                     raise PluginSettingsError("INVALID_REQUEST", "市场安装请求格式无效。")
                 result = self.marketplace_install(payload)
             elif name == "plugins.install":
-                if set(payload) != {"revision", "sourceKind", "sourcePath"}:
+                if set(payload) != {"sourceKind", "sourcePath"}:
                     raise PluginSettingsError("INVALID_REQUEST", "插件安装请求格式无效。")
                 result = self.install(
-                    payload["revision"],
                     payload["sourceKind"],
                     payload["sourcePath"],
                 )
             elif name == "plugins.uninstall":
-                if set(payload) != {"revision", "installId"}:
+                if set(payload) != {"installId"}:
                     raise PluginSettingsError("INVALID_REQUEST", "插件卸载请求格式无效。")
-                result = self.uninstall(payload["revision"], payload["installId"])
+                result = self.uninstall(payload["installId"])
             elif isinstance(name, str) and name.startswith("plugins.collection."):
                 result = self.collection(name.rsplit(".", 1)[-1], payload)
             else:
@@ -218,7 +216,6 @@ class PluginSettingsBoundary:
                 reason = "PLUGIN_SETTINGS_UNAVAILABLE"
         return {
             "schemaVersion": 1,
-            "revision": inventory.revision,
             "state": state,
             "reasonCode": _reason_code(reason, "STATUS_INVALID"),
             **({"diagnostics": diagnostics} if diagnostics else {}),
@@ -254,17 +251,13 @@ class PluginSettingsBoundary:
 
     def set_enabled(
         self,
-        raw_revision: object,
         raw_install_id: object,
         raw_enabled: object,
     ) -> dict[str, object]:
-        revision = _revision_value(raw_revision)
         install_id = _install_identifier(raw_install_id)
         if not isinstance(raw_enabled, bool):
             raise PluginSettingsError("INVALID_REQUEST", "插件启停值无效。")
         with self._save_lock:
-            if revision != self._revision():
-                raise PluginSettingsError("CONFIG_REVISION_CONFLICT", "插件列表已变化。", retryable=True)
             application = self._application()
             if application is None:
                 raise PluginSettingsError("PLUGIN_SETTINGS_NOT_READY", "插件设置仍在初始化。", retryable=True)
@@ -303,13 +296,11 @@ class PluginSettingsBoundary:
 
     def install(
         self,
-        raw_revision: object,
         raw_source_kind: object,
         raw_source_path: object,
         *, expected: tuple[str, str] | None = None,
         initial_enabled: bool = False,
     ) -> dict[str, object]:
-        _revision_value(raw_revision)
         if raw_source_kind not in {"zip", "folder"}:
             raise PluginSettingsError("INVALID_REQUEST", "插件安装来源无效。")
         if (
@@ -446,7 +437,7 @@ class PluginSettingsBoundary:
         version = payload["version"]
         if not isinstance(version, str) or not version:
             raise PluginSettingsError("INVALID_REQUEST", "市场安装请求格式无效。")
-        return self.install(payload["revision"], "zip", payload["sourcePath"], expected=(plugin_id, version))
+        return self.install("zip", payload["sourcePath"], expected=(plugin_id, version))
 
     def _update_plugin(self, application, installer, spec, transaction, record, existing):
         plugin_id, version = spec.plugin_id, spec.version
@@ -503,16 +494,9 @@ class PluginSettingsBoundary:
         }, event="plugin.update.completed")
         return result
 
-    def uninstall(self, raw_revision: object, raw_install_id: object) -> dict[str, object]:
-        revision = _revision_value(raw_revision)
+    def uninstall(self, raw_install_id: object) -> dict[str, object]:
         install_id = _install_identifier(raw_install_id)
         with self._save_lock:
-            if revision != self._revision():
-                raise PluginSettingsError(
-                    "CONFIG_REVISION_CONFLICT",
-                    "插件设置已被其他窗口修改。",
-                    retryable=True,
-                )
             application = self._application()
             if application is None:
                 raise PluginSettingsError(
@@ -615,9 +599,6 @@ class PluginSettingsBoundary:
         if self._application_provider is not None:
             return self._application_provider()
         return None
-
-    def _revision(self) -> str:
-        return self._refresh_inventory(self._application()).revision
 
     def _refresh_inventory(self, application):
         return (
@@ -783,12 +764,6 @@ def _identifier_list(value: object) -> list[str]:
             return []
         result.append(item)
     return result
-
-
-def _revision_value(value: object) -> str:
-    if not isinstance(value, str) or len(value) != 16 or any(char not in "0123456789abcdef" for char in value):
-        raise PluginSettingsError("INVALID_REQUEST", "插件设置 revision 无效。")
-    return value
 
 
 def _reason_code(value: object, default: str) -> str:

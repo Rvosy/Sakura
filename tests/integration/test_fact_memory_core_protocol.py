@@ -195,7 +195,7 @@ def _enable(peer: _CorePeer, enabled: bool):
     snapshot = peer.request("plugins.settings.get")
     plugin = next(item for item in snapshot["plugins"] if item["pluginId"] == PLUGIN_ID)
     result = peer.request("plugins.enabled.set", {
-        "revision": snapshot["revision"], "installId": plugin["installId"], "enabled": enabled,
+        "installId": plugin["installId"], "enabled": enabled,
     })
     assert result["applicationState"] == "applied"
     assert _plugin(peer)["state"] == ("active" if enabled else "disabled")
@@ -245,9 +245,8 @@ def test_install_manage_recall_disable_and_restart_memory_through_real_core(tmp_
         ]}
 
         with _core(user, distribution) as peer:
-            snapshot = peer.request("plugins.settings.get")
             peer.request("plugins.install", {
-                "revision": snapshot["revision"], "sourceKind": "zip", "sourcePath": str(archive),
+                "sourceKind": "zip", "sourcePath": str(archive),
             })
             assert _plugin(peer)["state"] == "disabled"
             prior_pids = {child.pid for child in psutil.Process(peer.process.pid).children()}
@@ -285,16 +284,14 @@ def test_install_manage_recall_disable_and_restart_memory_through_real_core(tmp_
             _enable(peer, True)
             assert _query(peer)["items"][0]["values"]["content"] == UPDATED_FACT
 
-            # Updating a local plugin currently uses uninstall/reinstall. Code
-            # removal must preserve records; a fresh install starts disabled.
-            snapshot = peer.request("plugins.settings.get")
+            # 卸载后重装保留已有记录，新安装的插件默认停用。
             peer.request("plugins.uninstall", {
-                "revision": snapshot["revision"], "installId": _plugin(peer)["installId"],
+                "installId": _plugin(peer)["installId"],
             })
             snapshot = peer.request("plugins.settings.get")
             assert not any(item["pluginId"] == PLUGIN_ID for item in snapshot["plugins"])
             peer.request("plugins.install", {
-                "revision": snapshot["revision"], "sourceKind": "zip", "sourcePath": str(archive),
+                "sourceKind": "zip", "sourcePath": str(archive),
             })
             assert _plugin(peer)["state"] == "disabled"
             _enable(peer, True)

@@ -305,32 +305,6 @@ def test_inventory_rejects_linked_plugin_directories(tmp_path: Path) -> None:
     assert records["linked"].can_uninstall is True
 
 
-def test_revision_compares_structured_state_across_instances_without_reusing_old_tokens(tmp_path: Path) -> None:
-    plugin = _plugin(tmp_path, "fixture", "example.fixture")
-    desired = PluginDesiredStateStore(tmp_path)
-    desired.set("example.fixture", True)
-    inventory = PluginInventory(tmp_path)
-    first = inventory.scan()
-    assert PluginInventory(tmp_path).scan().revision == first.revision
-    manifest = plugin / "plugin.yaml"
-    content = manifest.read_text(encoding="utf-8")
-    manifest.write_bytes(("# comment\n" + content).replace("\n", "\r\n").encode())
-    desired.path.write_text("# comment\n- {enabled: true, id: example.fixture}\n", encoding="utf-8")
-    assert inventory.scan().revision == first.revision
-    manifest.write_text(content.replace("version: 1.0.0", "version: 2.0.0"), encoding="utf-8")
-    changed = PluginInventory(tmp_path).scan()
-    assert changed.revision != first.revision
-    assert inventory.scan().revision == changed.revision
-    manifest.write_text(content, encoding="utf-8")
-    restored = inventory.scan()
-    assert restored.records == first.records
-    assert restored.revision not in {first.revision, changed.revision}
-    desired.set("example.fixture", False)
-    disabled = PluginInventory(tmp_path).scan()
-    assert disabled.revision != restored.revision
-    assert not disabled.records[0].desired_enabled
-
-
 def test_install_id_encoding_separates_sources_and_roundtrips_long_unicode_dto(tmp_path: Path) -> None:
     from app.core_host.plugin_settings import _install_identifier
 

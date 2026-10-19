@@ -1,4 +1,4 @@
-const SNAPSHOT_KEYS = ["schemaVersion", "revision", "state", "reasonCode", "plugins", "windowGeneration", "coreGenerationId"];
+const SNAPSHOT_KEYS = ["schemaVersion", "state", "reasonCode", "plugins", "windowGeneration", "coreGenerationId"];
 
 function clone(value) { return structuredClone(value); }
 
@@ -15,7 +15,7 @@ function transitionError(error) {
 function uncertainManagementError(error) {
   const message = String(error?.message || error || "");
   return transitionError(error) || [
-    "CONFIG_REVISION_CONFLICT", "SETTINGS_REQUEST_ABORTED",
+    "SETTINGS_REQUEST_ABORTED",
     "TRANSPORT_", "PLUGIN_INSTALL_ROLLBACK_FAILED", "PLUGIN_INSTALL_RECOVERY_FAILED",
     "PLUGIN_UNINSTALL_ROLLBACK_FAILED", "PLUGIN_UNINSTALL_RECOVERY_FAILED",
     "PLUGIN_UNINSTALL_CLEANUP_FAILED",
@@ -171,7 +171,6 @@ export function createPluginController({ invoke, applySnapshot, readDraft, onDir
           const result = await invoke("settings_plugins_enabled_set", {
             windowGeneration: current.windowGeneration,
             coreGenerationId: previousGeneration,
-            revision: current.revision,
             installId: plugin.installId,
             enabled,
           });
@@ -251,7 +250,6 @@ export function createPluginController({ invoke, applySnapshot, readDraft, onDir
         const result = await invoke("settings_plugins_install", {
           windowGeneration: current.windowGeneration,
           coreGenerationId: current.coreGenerationId,
-          revision: current.revision,
           sourceKind,
         });
         if (result.cancelled === true) return null;
@@ -276,7 +274,6 @@ export function createPluginController({ invoke, applySnapshot, readDraft, onDir
         const result = await invoke("settings_plugins_uninstall", {
           windowGeneration: current.windowGeneration,
           coreGenerationId: current.coreGenerationId,
-          revision: current.revision,
           installId,
         });
         if (result.managementAction !== "uninstalled" || result.installId !== installId

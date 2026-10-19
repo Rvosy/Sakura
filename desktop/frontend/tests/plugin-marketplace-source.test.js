@@ -78,7 +78,7 @@ test("market installation uses current runtime identity and cancels in-flight do
   const source = createMarketplaceSource({ Channel, randomUUID: () => "request", host: { isDirty: () => false },
     invoke: async (name, args) => {
       calls.push(name);
-      if (name === "settings_plugins_get") return { plugins: [], revision: "revision", windowGeneration: 2, coreGenerationId: "core" };
+      if (name === "settings_plugins_get") return { plugins: [], windowGeneration: 2, coreGenerationId: "core" };
       if (name === "settings_marketplace_cancel") { abort(); return; }
       if (name === "settings_marketplace_install") {
         installed = args;
@@ -88,7 +88,7 @@ test("market installation uses current runtime identity and cancels in-flight do
   });
   const [plugin] = catalogPlugins(catalog, { api: 4, services: ["host.service"] });
   await assert.rejects(source.install(plugin, { signal: controller.signal, onProgress() {} }), /cancelled/);
-  assert.equal(installed.version, "1.10.0"); assert.equal(installed.revision, "revision");
+  assert.equal(installed.version, "1.10.0");
   assert.equal(installed.coreGenerationId, "core"); assert.ok(calls.includes("settings_marketplace_cancel"));
 });
 
@@ -109,7 +109,7 @@ test("a user plugin can reinstall the current version to repair code or dependen
   const source = createMarketplaceSource({ Channel, host: { isDirty: () => false }, invoke: async name => {
     commands.push(name);
     if (name === "settings_plugins_get") return { plugins: [{ pluginId: "demo", source: "user", version: "1.10.0",
-      enabled: true, state: "failed", reasonCode: "PLUGIN_DEPENDENCIES_MISSING" }], revision: "current" };
+      enabled: true, state: "failed", reasonCode: "PLUGIN_DEPENDENCIES_MISSING" }] };
   } });
   await source.install(plugin, { signal: new AbortController().signal, onProgress() {} });
   assert.deepEqual(commands, ["settings_plugins_get", "settings_marketplace_install"]);
@@ -121,8 +121,8 @@ test("enabled plugin updates are sent as one Core operation without toggling use
   const commands = [];
   const source = createMarketplaceSource({ Channel, host: { isDirty: () => false }, invoke: async (name, args) => {
     commands.push(name);
-    if (name === "settings_plugins_get") return { plugins: [{ pluginId: "demo", enabled: true, source: "user", version: "1.0.0" }], revision: "current" };
-    assert.equal(name, "settings_marketplace_install"); assert.equal(args.revision, "current");
+    if (name === "settings_plugins_get") return { plugins: [{ pluginId: "demo", enabled: true, source: "user", version: "1.0.0" }] };
+    assert.equal(name, "settings_marketplace_install");
   } });
   await source.install(plugin, { signal: new AbortController().signal, onProgress() {} });
   assert.deepEqual(commands, ["settings_plugins_get", "settings_marketplace_install"]);

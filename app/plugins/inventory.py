@@ -8,7 +8,6 @@ projected into ``RuntimePluginSpec`` objects for per-plugin processes.
 from __future__ import annotations
 
 import re
-import secrets
 import stat
 import threading
 from dataclasses import dataclass, field, replace
@@ -43,10 +42,7 @@ RETIRED_BUNDLED_PLUGINS = {
     "sakura.visual.spine": "sakura_spine",
 }
 
-# Settings, application and installer create separate Inventory objects. Share
-# the last structured state per runtime root so their revisions agree.
-_REVISION_LOCK = threading.RLock()
-_REVISIONS: dict[tuple[Path, Path, Path], tuple[object, str]] = {}
+_INVENTORY_LOCK = threading.RLock()
 
 
 @dataclass(frozen=True)
@@ -150,7 +146,6 @@ class InstalledPluginRecord:
 class PluginInventorySnapshot:
     records: tuple[InstalledPluginRecord, ...]
     runtime_specs: tuple[RuntimePluginSpec, ...]
-    revision: str
     retired_bundled: tuple[tuple[str, str], ...] = ()
 
     def record(self, install_id: str) -> InstalledPluginRecord | None:
@@ -254,7 +249,7 @@ class PluginInventory:
         self._recovery_failures = recovery_failures or {}
 
     def set_recovery_failure(self, plugin_id: str, failure: Mapping[str, Any] | None) -> None:
-        with _REVISION_LOCK:
+        with _INVENTORY_LOCK:
             if failure is None:
                 self._recovery_failures.pop(plugin_id, None)
             else:
@@ -264,7 +259,7 @@ class PluginInventory:
         return plugin_id in self._recovery_failures
 
     def scan(self) -> PluginInventorySnapshot:
-        with _REVISION_LOCK:
+        with _INVENTORY_LOCK:
             return self._scan()
 
     def _scan(self) -> PluginInventorySnapshot:
@@ -329,16 +324,7 @@ class PluginInventory:
             for record in records
             if (spec := record.runtime_spec()) is not None
         )
-        state = (tuple(records), desired)
-        key = (
-            self._roots.distribution_root.resolve(),
-            self._roots.user_root.resolve(),
-            self._desired.path.resolve(),
-        )
-        previous = _REVISIONS.get(key)
-        revision = previous[1] if previous is not None and previous[0] == state else secrets.token_hex(8)
-        _REVISIONS[key] = (state, revision)
-        return PluginInventorySnapshot(tuple(records), runtime_specs, revision, tuple(retired_bundled))
+        return PluginInventorySnapshot(tuple(records), runtime_specs, tuple(retired_bundled))
 
     def _record(
         self,

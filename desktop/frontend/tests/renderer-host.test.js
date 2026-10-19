@@ -265,7 +265,7 @@ test("late mounts are destroyed and cannot invoke host services after replacemen
 test("invalid controls survive presentation and are reported once at execution without losing text", async () => {
   const reducer = createChatPresentationReducer({ initialMessage: "你好" });
   const identity = { generationId: "g", generationNumber: 1, operationId: "op" };
-  reducer.reduce({ ...identity, type: "lifecycle", status: "ready", revision: 1 });
+  reducer.reduce({ ...identity, type: "lifecycle", status: "ready" });
   reducer.reduce({ ...identity, type: "chat.started" });
   reducer.reduce({ ...identity, type: "chat.completed", reply: { segments: [{ text: "one", control: control() }, { text: "two", control: { broken: true } }] } });
   reducer.finishTyping();
@@ -355,7 +355,7 @@ test("reply review restores captured state, including inherited fields, without 
   await host.bind(binding());
   const reducer = createChatPresentationReducer({ initialMessage: "hello" });
   const identity = { generationId: "g", generationNumber: 1, operationId: "op" };
-  reducer.reduce({ ...identity, type: "lifecycle", status: "ready", revision: 1 });
+  reducer.reduce({ ...identity, type: "lifecycle", status: "ready" });
   reducer.reduce({ ...identity, type: "chat.started" });
   reducer.reduce({ ...identity, type: "chat.completed", reply: { segments: [
     { text: "first", control: { ...control(), state: { angle: 10, mood: "smile" } } },

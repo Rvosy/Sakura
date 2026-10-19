@@ -385,7 +385,6 @@ pub(crate) async fn settings_marketplace_install(
     version: String,
     window_generation: u64,
     core_generation_id: String,
-    revision: String,
     progress: Channel<Value>,
     market: State<'_, MarketplaceState>,
     sources: State<'_, DownloadSources>,
@@ -463,7 +462,7 @@ pub(crate) async fn settings_marketplace_install(
         None,
         "plugins.marketplace.install",
         json!({
-            "revision":revision,"sourcePath":file.0,"pluginId":plugin_id,"version":version,
+            "sourcePath":file.0,"pluginId":plugin_id,"version":version,
         }),
     )
     .await?;

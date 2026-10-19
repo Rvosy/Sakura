@@ -50,7 +50,7 @@ class Plugin:
         assert reloaded["pages"][0]["pageId"] == "fixture.guest:schedule"
         assert reloaded["sections"][0]["instanceId"] != refreshed["sections"][0]["instanceId"]
         owner = plugins["fixture.page"]
-        boundary.set_enabled(boundary.snapshot()["revision"], owner["installId"], False)
+        boundary.set_enabled(owner["installId"], False)
         remaining = {p["pluginId"]: p for p in boundary.snapshot()["plugins"]}
         assert not remaining["fixture.page"].get("pages")
         shared = next(s for s in remaining["fixture.guest"]["sections"] if s["sectionId"] == "shared")

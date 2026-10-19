@@ -106,7 +106,7 @@ def test_enabled_update_restores_processes_and_keeps_data(tmp_path, monkeypatch,
 
         monkeypatch.setattr(update_transaction, "begin", begin)
         new = package(tmp_path / "new.zip", "fixture.provider", "1.1.0", fail=outcome == "setup_failure")
-        request = {"revision": boundary.snapshot()["revision"], "sourcePath": str(new), "pluginId": "fixture.provider", "version": "2.0.0" if outcome == "wrong_version" else "1.1.0"}
+        request = {"sourcePath": str(new), "pluginId": "fixture.provider", "version": "2.0.0" if outcome == "wrong_version" else "1.1.0"}
         if source == "folder":
             folder = tmp_path / "new-folder"
             with zipfile.ZipFile(new) as archive:
@@ -115,7 +115,7 @@ def test_enabled_update_restores_processes_and_keeps_data(tmp_path, monkeypatch,
         def install():
             if source == "market":
                 return boundary.marketplace_install(request)
-            return boundary.install(request["revision"], source, request["sourcePath"])
+            return boundary.install(source, request["sourcePath"])
         if outcome in {"success", "setup_failure", "dependent_failure"}:
             result = install()
             assert result["managementAction"] == "updated"
@@ -172,8 +172,7 @@ def test_market_reinstalls_same_version_and_keeps_existing_user_state(tmp_path, 
     boundary = PluginSettingsBoundary("repair-generation", "credential", roots, application_provider=lambda: application)
     try:
         application.start()
-        result = boundary.marketplace_install({"revision": boundary.snapshot()["revision"],
-            "sourcePath": str(package(tmp_path / "fixed.zip", plugin_id)), "pluginId": plugin_id, "version": "1.0.0"})
+        result = boundary.marketplace_install({"sourcePath": str(package(tmp_path / "fixed.zip", plugin_id)), "pluginId": plugin_id, "version": "1.0.0"})
         current = next(p for p in result["plugins"] if p["pluginId"] == plugin_id)
         assert current["state"] == ("active" if enabled else "disabled")
         assert current["enabled"] is enabled
@@ -200,14 +199,14 @@ def test_market_repair_keeps_new_code_when_startup_fails_and_can_be_retried(tmp_
     boundary = PluginSettingsBoundary("repair-generation", "credential", roots, application_provider=lambda: application)
     try:
         application.start()
-        request = {"revision": boundary.snapshot()["revision"], "sourcePath": str(package(tmp_path / "bad.zip", plugin_id, fail=True)),
+        request = {"sourcePath": str(package(tmp_path / "bad.zip", plugin_id, fail=True)),
                    "pluginId": plugin_id, "version": "1.0.0"}
         result = boundary.marketplace_install(request)
         assert result["managementAction"] == "updated"
         assert result["warning"]["detail"]
         assert (original.code_dir / "plugin.yaml").is_file()
         assert paths.plugins_config().read_bytes() == config
-        request.update(revision=boundary.snapshot()["revision"], sourcePath=str(package(tmp_path / "good.zip", plugin_id)))
+        request.update(sourcePath=str(package(tmp_path / "good.zip", plugin_id)))
         boundary.marketplace_install(request)
         assert application.call_service(plugin_id, "ping") == "1.0.0"
     finally:
@@ -236,7 +235,7 @@ def test_market_installs_missing_plugin_with_orphan_dependencies(tmp_path, monke
     boundary = PluginSettingsBoundary("repair-generation", "credential", roots, application_provider=lambda: application)
     try:
         application.start()
-        result = boundary.marketplace_install({"revision": boundary.snapshot()["revision"], "sourcePath": str(archive_path),
+        result = boundary.marketplace_install({"sourcePath": str(archive_path),
             "pluginId": plugin_id, "version": "1.0.0"})
         current = next(p for p in result["plugins"] if p["pluginId"] == plugin_id)
         assert current["state"] == ("active" if enabled else "disabled")
@@ -260,14 +259,14 @@ def test_installed_plugin_with_startup_failure_can_be_reinstalled(tmp_path, monk
     boundary = PluginSettingsBoundary("repair-generation", "credential", roots, application_provider=lambda: application)
     try:
         application.start()
-        request = {"revision": boundary.snapshot()["revision"], "sourcePath": str(package(tmp_path / "bad.zip", plugin_id, fail=True)),
+        request = {"sourcePath": str(package(tmp_path / "bad.zip", plugin_id, fail=True)),
                    "pluginId": plugin_id, "version": "1.0.0"}
         result = boundary.marketplace_install(request)
         assert result["managementAction"] == "installed"
         assert result["warning"]["detail"]
         assert (paths.user_plugins_dir / plugin_id).is_dir()
         assert PluginDesiredStateStore(roots.user_root).read()[plugin_id] is True
-        request.update(revision=boundary.snapshot()["revision"], sourcePath=str(package(tmp_path / "good.zip", plugin_id)))
+        request.update(sourcePath=str(package(tmp_path / "good.zip", plugin_id)))
         boundary.marketplace_install(request)
         assert application.call_service(plugin_id, "ping") == "1.0.0"
     finally:
@@ -282,7 +281,7 @@ def running_update(tmp_path):
     application = PluginApplicationHost(roots, "prepared-update", ToolRegistry())
     boundary = PluginSettingsBoundary("prepared-update", "credential", roots, application_provider=lambda: application)
     application.start()
-    request = {"revision": boundary.snapshot()["revision"], "sourcePath": str(package(tmp_path / "new.zip", plugin_id, "1.1.0")),
+    request = {"sourcePath": str(package(tmp_path / "new.zip", plugin_id, "1.1.0")),
                "pluginId": plugin_id, "version": "1.1.0"}
     try:
         yield roots, original, application, boundary, request
@@ -369,8 +368,7 @@ def test_market_repairs_plugin_using_retired_model_service(tmp_path, enabled):
         old = next(p for p in snapshot["plugins"] if p["pluginId"] == plugin_id)
         if enabled:
             assert old["reasonCode"] == "MODEL_API_UPDATE_REQUIRED"
-        result = boundary.marketplace_install({"revision": snapshot["revision"],
-            "sourcePath": str(package(tmp_path / "new.zip", plugin_id, "1.1.0")),
+        result = boundary.marketplace_install({"sourcePath": str(package(tmp_path / "new.zip", plugin_id, "1.1.0")),
             "pluginId": plugin_id, "version": "1.1.0"})
         assert result["managementAction"] == "updated"
         current = next(p for p in result["plugins"] if p["pluginId"] == plugin_id)
@@ -389,15 +387,39 @@ def test_update_uses_current_installation_without_overwriting_new_choices(runnin
     roots, original, application, boundary, request = running_update
     paths = StoragePaths(roots.user_root)
     if change == "unrelated_install":
-        boundary.install(request["revision"], "zip", str(package(tmp_path / "other.zip", "fixture.other")))
+        boundary.install("zip", str(package(tmp_path / "other.zip", "fixture.other")))
     else:
-        boundary.set_enabled(request["revision"], original.install_id, False)
+        boundary.set_enabled(original.install_id, False)
     config = paths.plugins_config().read_bytes()
     result = boundary.marketplace_install(request)
     current = next(p for p in result["plugins"] if p["pluginId"] == original.plugin_id)
     assert current["version"] == "1.1.0"
     assert current["enabled"] is (change != "disable_target")
     assert paths.plugins_config().read_bytes() == config
+
+
+@pytest.mark.parametrize("action", ["disable", "uninstall"])
+def test_targeted_management_preserves_unrelated_installation(running_update, tmp_path, action):
+    roots, original, _, boundary, _ = running_update
+    snapshot = boundary.snapshot()
+    target = next(p for p in snapshot["plugins"] if p["pluginId"] == original.plugin_id)
+    other = boundary.install(
+        "zip", str(package(tmp_path / "other.zip", "fixture.other")),
+    )
+
+    if action == "disable":
+        result = boundary.set_enabled(target["installId"], False)
+        current = next(p for p in result["plugins"] if p["pluginId"] == original.plugin_id)
+        assert current["enabled"] is False
+        assert current["state"] == "disabled"
+    else:
+        result = boundary.uninstall(target["installId"])
+        assert all(p["pluginId"] != original.plugin_id for p in result["plugins"])
+
+    unrelated = next(p for p in result["plugins"] if p["installId"] == other["installId"])
+    assert unrelated["enabled"] is False
+    assert unrelated["state"] == "disabled"
+    assert PluginDesiredStateStore(roots.user_root).read()[other["pluginId"]] is False
 
 
 def test_duplicate_legacy_plugin_can_be_removed_and_updated_without_losing_shared_data(tmp_path):
@@ -426,16 +448,16 @@ def test_duplicate_legacy_plugin_can_be_removed_and_updated_without_losing_share
         assert {p["directoryName"] for p in copies} == {original.code_dir.name, duplicate.name}
         new = package(tmp_path / "new.zip", plugin_id, "1.1.0")
         with pytest.raises(PluginSettingsError, match="重复安装"):
-            boundary.install(snapshot["revision"], "zip", str(new))
+            boundary.install("zip", str(new))
         other = next(p for p in copies if p["directoryName"] == duplicate.name)
-        result = boundary.uninstall(snapshot["revision"], other["installId"])
+        result = boundary.uninstall(other["installId"])
         assert dependency.read_text() == "VALUE = 42"
         assert paths.plugins_config().read_bytes() == config
         assert original.code_dir.exists()
         assert not duplicate.exists()
         current = next(p for p in result["plugins"] if p["pluginId"] == plugin_id)
         assert current["reasonCode"] == "MODEL_API_UPDATE_REQUIRED"
-        boundary.install(result["revision"], "zip", str(new))
+        boundary.install("zip", str(new))
         assert application.call_service(plugin_id, "ping") == "1.1.0"
         assert paths.plugins_config().read_bytes() == config
         assert data.read_text() == "remember this"
@@ -471,7 +493,7 @@ def test_retired_builtin_allows_install_update_and_reinstall_without_losing_data
         application.start()
         for version in ("1.0.0", "1.1.0"):
             new = package(tmp_path / f"{version}.zip", plugin_id, version)
-            result = boundary.install(boundary.snapshot()["revision"], "zip", str(new))
+            result = boundary.install("zip", str(new))
             copies = [p for p in result["plugins"] if p["pluginId"] == plugin_id]
             assert len(copies) == 1
             assert copies[0]["source"] == "user" and copies[0]["version"] == version
@@ -479,8 +501,8 @@ def test_retired_builtin_allows_install_update_and_reinstall_without_losing_data
             if enabled:
                 assert application.call_service(plugin_id, "ping") == version
             assert paths.plugins_config().read_bytes() == config
-        boundary.uninstall(result["revision"], copies[0]["installId"])
-        result = boundary.install(boundary.snapshot()["revision"], "zip", str(new))
+        boundary.uninstall(copies[0]["installId"])
+        result = boundary.install("zip", str(new))
         copies = [p for p in result["plugins"] if p["pluginId"] == plugin_id]
         assert len(copies) == 1 and copies[0]["source"] == "user"
         assert copies[0]["enabled"] is False
@@ -577,10 +599,10 @@ def test_startup_recovery_failure_stays_visible_and_reinstall_recovers_without_r
         assert current["reasonCode"] == "PLUGIN_UPDATE_RECOVERY_FAILED"
         assert current["enabled"] is True
         with pytest.raises(PluginSettingsError) as caught:
-            boundary.install(boundary.snapshot()["revision"], "zip", str(new))
+            boundary.install("zip", str(new))
         assert caught.value.code == "PLUGIN_UPDATE_RECOVERY_FAILED"
     try:
-        result = boundary.install(boundary.snapshot()["revision"], "zip", str(new))
+        result = boundary.install("zip", str(new))
         current = next(p for p in result["plugins"] if p["pluginId"] == plugin_id)
         assert current["state"] == "active"
         assert current["version"] == "1.1.0"
@@ -612,8 +634,7 @@ def test_reinstall_preserves_broken_journal_and_repairs_missing_code(tmp_path, j
         snapshot = boundary.snapshot()
         current = next(p for p in snapshot["plugins"] if p["pluginId"] == plugin_id)
         assert current["reasonCode"] == "PLUGIN_UPDATE_RECOVERY_FAILED"
-        result = boundary.marketplace_install({"revision": snapshot["revision"],
-            "sourcePath": str(package(tmp_path / "new.zip", plugin_id, "1.1.0")),
+        result = boundary.marketplace_install({"sourcePath": str(package(tmp_path / "new.zip", plugin_id, "1.1.0")),
             "pluginId": plugin_id, "version": "1.1.0"})
         assert next(p for p in result["plugins"] if p["pluginId"] == plugin_id)["state"] == "active"
         assert application.call_service(plugin_id, "ping") == "1.1.0"
@@ -634,7 +655,7 @@ def test_reinstall_preserves_broken_journal_and_repairs_missing_code(tmp_path, j
 @pytest.mark.parametrize("change", ["disable_target", "uninstall_target", "disable_other"])
 def test_settings_remain_available_during_dependency_preparation(running_update, tmp_path, monkeypatch, change):
     _, original, application, boundary, request = running_update
-    other = boundary.install(boundary.snapshot()["revision"], "zip", str(package(tmp_path / "other.zip", "fixture.other")))
+    other = boundary.install("zip", str(package(tmp_path / "other.zip", "fixture.other")))
     entered, release = threading.Event(), threading.Event()
     prepare = PluginDependencyRoots.prepare
     results, errors = [], []
@@ -660,11 +681,10 @@ def test_settings_remain_available_during_dependency_preparation(running_update,
 
     def change_settings():
         try:
-            revision = boundary.snapshot()["revision"]
             if change == "uninstall_target":
-                boundary.uninstall(revision, original.install_id)
+                boundary.uninstall(original.install_id)
             else:
-                boundary.set_enabled(revision, original.install_id if change == "disable_target" else other["installId"], False)
+                boundary.set_enabled(original.install_id if change == "disable_target" else other["installId"], False)
         except Exception as error:
             change_errors.append(error)
         finally:

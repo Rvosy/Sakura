@@ -157,7 +157,6 @@ class PluginApplicationHost(PluginRuntimeApplication):
         state = runtime_snapshot.get("state", "ready")
         return {
             "schemaVersion": 1,
-            "revision": inventory.revision,
             "state": state,
             "reasonCode": runtime_snapshot.get("reasonCode", "READY"),
             "plugins": plugins,
