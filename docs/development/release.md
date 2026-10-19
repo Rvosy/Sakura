@@ -41,7 +41,49 @@ macOS arm64、Linux x64 与正式 Windows 构建使用 [Release 工作流](../..
 | [diagnostic_build.py](../../tools/release/diagnostic_build.py) | 生成与构建身份对应的诊断映射 |
 | [package_optional_plugin.py](../../tools/release/package_optional_plugin.py) | 独立打包可选插件 |
 
-Tauri 更新签名使用 `SAKURA_UPDATER_PUBLIC_KEY`、`TAURI_SIGNING_PRIVATE_KEY` 及可选密码。平台代码签名按工作流配置 Apple 凭据或 Windows Authenticode 证书；它们与 Tauri 更新签名用途不同。
+Tauri 更新签名使用 `SAKURA_UPDATER_PUBLIC_KEY`、`TAURI_SIGNING_PRIVATE_KEY` 及可选密码。macOS 代码签名使用 Apple 凭据，Windows 发布使用 SignPath；它们与 Tauri 更新签名用途不同。Windows CI 不再使用 `WINDOWS_CERTIFICATE_BASE64`、`WINDOWS_CERTIFICATE_PASSWORD`。
+
+## SignPath 配置
+
+组织 ID 为 `4071764e-c1ca-4688-9f22-3bf5d059e005`，项目 slug 为 `Sakura`。项目仓库关联 `https://github.com/Rvosy/Sakura.git`，可信构建系统关联 GitHub.com。所有签名前置任务使用 GitHub 托管 runner。GitHub App 的安装与权限按[官方接入文档](https://docs.signpath.io/trusted-build-systems/github)配置。
+
+在 SignPath 项目中添加以下产物配置，slug 与表格一致，内容使用对应 XML。上传到 GitHub 的 artifact 默认是 ZIP，因此 XML 的根文件类型也是 ZIP。规则只匹配指定的自有文件，并要求产品名为 Sakura、产品版本等于本次 `VERSION`；不匹配第三方运行库。
+
+| Artifact configuration slug | 配置文件 | 签名对象 |
+|---|---|---|
+| `windows-app` | [windows-app.xml](../../packaging/signpath/windows-app.xml) | `sakura.exe` |
+| `windows-installer` | [windows-installer.xml](../../packaging/signpath/windows-installer.xml) | `Sakura-setup.exe` |
+
+在 GitHub 仓库的 Settings → Secrets and variables → Actions 中设置：
+
+| 类型 | 名称 | 内容 |
+|---|---|---|
+| Secret | `SIGNPATH_API_TOKEN` | SignPath 中具有提交权限的 CI 用户 API Token |
+| Variable | `SIGNPATH_TEST_CERTIFICATE_THUMBPRINT` | `test-signing` 所绑定测试证书的 Windows Thumbprint，连续十六进制字符，不带空格 |
+
+测试证书指纹可从 SignPath 下载该公开证书后，用 `Get-PfxCertificate -FilePath <证书.cer>` 查看；不要下载或上传私钥。Thumbprint 仅用于核对证书身份，不额外计算文件摘要。
+
+`test-signing` 和 `release-signing` 使用各自的证书。正式策略保留来源验证、可信构建系统验证和人工审批，允许的分支应覆盖实际运行工作流的分支。准备正式签名时将范围收窄到实际发布分支，不关闭验证来绕过失败。
+
+## 测试签名与正式发布
+
+[Release 工作流](../../.github/workflows/release.yml)手动运行时，`mode` 默认为 `test-signing`：
+
+```text
+gh workflow run release.yml --ref <branch> -f mode=test-signing
+```
+
+测试模式只构建 Windows，依次签名程序和安装包，再为最终安装包生成并验证 Tauri `.sig`。更新密钥在 runner 内临时生成，更新地址为不可用的测试地址，不使用正式更新服务。结果保存为 `TEST-ONLY-…` artifact，包含测试说明，不创建 Release、不打 Portable，也不导入发布控制台。测试签名核对配置的证书指纹，允许自签名证书的 `NotTrusted` 状态，但拒绝内容被修改、未签名等错误；它不代表公共证书链受信任。
+
+首次接入须在 GitHub 托管 runner 上完成真实测试签名。工作流摘要提供两次 SignPath 请求链接；将它们与成功的 Actions 构建链接一并回复给 SignPath，请其审核并完成正式证书配置。正式证书状态与适用范围见[签名政策](../guide/code-signing.md)。
+
+正式证书就绪后，选择 `mode=publish` 执行现有三平台发布：
+
+```text
+gh workflow run release.yml --ref <release-branch> -f mode=publish
+```
+
+Windows 正式构建固定使用 `release-signing`。程序与安装包分别提交请求，每次最多等待一小时供维护者审批。取回产物后检查 Windows 签名、时间戳和 SignPath Foundation 发布者；任一签名失败都会停止主发布，不回退到未签名安装包。Portable 复用已签名主程序。最终安装包的 Tauri 更新签名另行生成，不能复用代码签名前的 `.sig`。
 
 ## 发布流程
 

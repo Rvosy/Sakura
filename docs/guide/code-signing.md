@@ -6,7 +6,9 @@ Sakura Desktop Pet 的公开发行包由 [GitHub Actions](https://github.com/Rvo
 
 [Rvosy](https://github.com/Rvosy) 负责项目维护、外部贡献审核和发行批准。签名范围是项目自行构建的程序与安装包，第三方二进制文件保留上游签名或原始状态，不使用项目证书重新签名。
 
-Sakura 正在准备申请 [SignPath Foundation](https://signpath.org/) 的免费代码签名服务，尚未接入。当前发布包是否已签名，以文件的实际数字签名为准。Tauri 更新签名用于验证更新包，不能代替 Windows 代码签名。
+Windows 构建通过 SignPath 提交代码签名。Free code signing provided by [SignPath.io](https://signpath.io/), certificate by [SignPath Foundation](https://signpath.org/)。正式证书当前为 CSR Pending，正式签名尚未启用；测试签名仅用于接入验证，不能作为可信发行包分发。配置与验证方法见[构建与发布](../development/release.md#signpath-配置)。
+
+签名对象是 `sakura.exe` 和 NSIS 安装包。安装包内的主程序及 Portable 使用同一份已签名程序。NSIS 生成的卸载程序当前不单独签名。正式签名须经维护者在 SignPath 审批，构建流程不代替人工批准。Tauri 更新签名在安装包代码签名完成后生成，两者用途不同。
 
 ## 隐私与组件
 
