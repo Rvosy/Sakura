@@ -46,9 +46,6 @@ def initialize_v2():
                 if name not in columns:
                     c.execute(f"ALTER TABLE {table} ADD COLUMN {name} {kind}")
             c.execute(
-                f"UPDATE {table} SET schema_version=1 WHERE schema_version IS NULL"
-            )
-            c.execute(
                 f"CREATE INDEX IF NOT EXISTS ix_{table}_run_operation ON {table}(installation_id,run_id,generation,operation_id,id)"
             )
             c.execute(
@@ -60,6 +57,24 @@ def initialize_v2():
         c.execute(
             "CREATE INDEX IF NOT EXISTS ix_error_build_time ON error_events(build_id,received_at,id)"
         )
+        for table in TABLES:
+            c.execute(
+                f"CREATE INDEX IF NOT EXISTS ix_{table}_production_page ON {table}(id,app_version,environment,run_id) "
+                "WHERE environment='production' OR (environment IS NULL AND lower(coalesce(run_id,'')) NOT LIKE '%acceptance%')"
+            )
+        c.execute(
+            "CREATE INDEX IF NOT EXISTS ix_repeated_error ON telemetry_events(installation_id,run_id,generation,fingerprint,json_extract(details_json,'$.occurrenceCount')) WHERE event='error.repeated'"
+        )
+        c.execute(
+            "CREATE INDEX IF NOT EXISTS ix_error_overview ON error_events(received_at,run_id,installation_id,severity,error_code,component,app_version,platform,fingerprint)"
+        )
+        for table, columns in (
+            ("telemetry_events", "received_at,run_id,installation_id,app_version,platform"),
+            ("model_call_metrics", "received_at,run_id,installation_id,app_version"),
+        ):
+            c.execute(
+                f"CREATE INDEX IF NOT EXISTS ix_{table}_overview ON {table}({columns})"
+            )
         c.execute("PRAGMA user_version=3")
 
 
@@ -123,6 +138,9 @@ def insert_v2(kind, payload):
         )
         if r.schema_version == 3:
             row["report_json"] = encoded(r)
+            # 完整报告已经包含栈和面包屑，详情与导出从同一份原文读取。
+            row["stack_json"] = None
+            row["breadcrumbs_json"] = None
             failure_context = [r.evidence.get(field) for field in (
                 "plugin_id", "section_id", "validation_field", "detail_stage", "command", "service_key",
                 "error_type", "cause_type", "cause_code",

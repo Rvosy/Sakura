@@ -7,10 +7,7 @@ projected into ``RuntimePluginSpec`` objects for per-plugin processes.
 
 from __future__ import annotations
 
-import logging
-
 import re
-import secrets
 import stat
 import threading
 from dataclasses import dataclass, field, replace
@@ -35,10 +32,17 @@ SERVICE_KEY_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,199}$")
 _PYTHON_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 INSTALL_ID_PATTERN = re.compile(r"^pi_(?:user|bundled)_(?:[0-9a-f]{2}){1,1024}$")
 
-# Settings, application and installer create separate Inventory objects. Share
-# the last structured state per runtime root so their revisions agree.
-_REVISION_LOCK = threading.RLock()
-_REVISIONS: dict[tuple[Path, Path, Path], tuple[object, str]] = {}
+# 已外置的插件可能仍留在覆盖升级目录中，不再作为内置插件加载。
+RETIRED_BUNDLED_PLUGINS = {
+    "sakura.memory.mem0": "sakura_mem0",
+    "sakura_mobile": "sakura_mobile",
+    "sakura.asr.sensevoice": "sakura_asr_sensevoice",
+    "sakura.tts.gpt-sovits": "sakura_gpt_sovits",
+    "sakura.tts.genie": "sakura_genie",
+    "sakura.visual.spine": "sakura_spine",
+}
+
+_INVENTORY_LOCK = threading.RLock()
 
 
 @dataclass(frozen=True)
@@ -142,7 +146,7 @@ class InstalledPluginRecord:
 class PluginInventorySnapshot:
     records: tuple[InstalledPluginRecord, ...]
     runtime_specs: tuple[RuntimePluginSpec, ...]
-    revision: str
+    retired_bundled: tuple[tuple[str, str], ...] = ()
 
     def record(self, install_id: str) -> InstalledPluginRecord | None:
         return next((item for item in self.records if item.install_id == install_id), None)
@@ -158,29 +162,36 @@ class PluginDesiredStateStore:
     def path(self) -> Path:
         return self._path
 
-    def read(self) -> dict[str, bool]:
+    def _entries(self) -> list:
         try:
             raw = yaml.safe_load(self._path.read_text(encoding="utf-8"))
         except FileNotFoundError:
-            return {}
+            return []
         except (OSError, UnicodeDecodeError, yaml.YAMLError, ValueError) as exc:
             raise ValueError("PLUGIN_CONFIG_INVALID") from exc
+        if raw is None:
+            return []
         if not isinstance(raw, list):
             raise ValueError("PLUGIN_CONFIG_INVALID")
+        return raw
+
+    def read(self) -> dict[str, bool]:
         result: dict[str, bool] = {}
-        for item in raw:
-            if not isinstance(item, Mapping) or set(item) != {"id", "enabled"}:
-                raise ValueError("PLUGIN_CONFIG_INVALID")
+        for item in self._entries():
+            if not isinstance(item, Mapping):
+                continue
             plugin_id = item.get("id")
             enabled = item.get("enabled")
             if (
                 not isinstance(plugin_id, str)
                 or not PLUGIN_ID_PATTERN.fullmatch(plugin_id)
-                or not isinstance(enabled, bool)
-                or plugin_id in result
             ):
-                raise ValueError("PLUGIN_CONFIG_INVALID")
-            result[plugin_id] = enabled
+                continue
+            if isinstance(enabled, bool):
+                result[plugin_id] = enabled
+            else:
+                # 无法识别的启停值不启用插件，也不覆盖已有的明确选择。
+                result.setdefault(plugin_id, False)
         return result
 
     def write(self, enabled_by_id: Mapping[str, bool]) -> bool:
@@ -189,6 +200,9 @@ class PluginDesiredStateStore:
             for plugin_id in sorted(enabled_by_id, key=str.casefold)
             if PLUGIN_ID_PATTERN.fullmatch(plugin_id)
         ]
+        return self._write_entries(entries)
+
+    def _write_entries(self, entries: list) -> bool:
         next_text = yaml.safe_dump(entries, allow_unicode=True, sort_keys=False)
         try:
             previous = self._path.read_text(encoding="utf-8")
@@ -203,9 +217,21 @@ class PluginDesiredStateStore:
     def set(self, plugin_id: str, enabled: bool) -> bool:
         if not PLUGIN_ID_PATTERN.fullmatch(plugin_id):
             raise ValueError("PLUGIN_ID_INVALID")
-        desired = self.read()
-        desired[plugin_id] = bool(enabled)
-        return self.write(desired)
+        entries = self._entries()
+        matching = [item for item in entries if isinstance(item, Mapping) and item.get("id") == plugin_id]
+        for item in matching:
+            item["enabled"] = bool(enabled)
+        if not matching:
+            entries.append({"id": plugin_id, "enabled": bool(enabled)})
+        return self._write_entries(entries)
+
+    def remove(self, plugin_id: str) -> bool:
+        entries = self._entries()
+        remaining = [item for item in entries if not (
+            isinstance(item, Mapping) and isinstance(item.get("id"), str)
+            and item["id"].casefold() == plugin_id.casefold()
+        )]
+        return self._write_entries(remaining) if len(remaining) != len(entries) else False
 
 
 class PluginInventory:
@@ -222,13 +248,25 @@ class PluginInventory:
         self._desired = desired or PluginDesiredStateStore(self._roots.user_root)
         self._recovery_failures = recovery_failures or {}
 
+    def set_recovery_failure(self, plugin_id: str, failure: Mapping[str, Any] | None) -> None:
+        with _INVENTORY_LOCK:
+            if failure is None:
+                self._recovery_failures.pop(plugin_id, None)
+            else:
+                self._recovery_failures[plugin_id] = dict(failure)
+
+    def recovery_failed(self, plugin_id: str) -> bool:
+        return plugin_id in self._recovery_failures
+
     def scan(self) -> PluginInventorySnapshot:
-        with _REVISION_LOCK:
+        with _INVENTORY_LOCK:
             return self._scan()
 
     def _scan(self) -> PluginInventorySnapshot:
         desired = self._desired.read()
         records: list[InstalledPluginRecord] = []
+        retired_bundled = []
+        retired_directories = {directory: plugin_id for plugin_id, directory in RETIRED_BUNDLED_PLUGINS.items()}
         roots = (
             ("bundled", self._distribution.builtin_plugins_dir),
             ("user", self._paths.user_plugins_dir),
@@ -245,8 +283,12 @@ class PluginInventory:
                 # installation.  The user root is different: every directory
                 # is user-owned installation state, so malformed/missing
                 # manifests must remain visible and uninstallable.
-                if source == "bundled" and not (directory / "plugin.yaml").is_file():
-                    continue
+                if source == "bundled":
+                    if directory.name in retired_directories:
+                        retired_bundled.append((retired_directories[directory.name], directory.name))
+                        continue
+                    if not (directory / "plugin.yaml").is_file():
+                        continue
                 if _unsafe_directory(directory):
                     records.append(
                         _invalid_record(
@@ -259,11 +301,22 @@ class PluginInventory:
                 if not directory.is_dir():
                     continue
                 record = self._record(source, directory, desired)
-                update_failure = self._recovery_failures.get(record.plugin_id, {})
-                if source == "user" and update_failure.get("reasonCode") == "PLUGIN_UPDATE_RECOVERY_FAILED":
-                    record = replace(record, runtime_eligible=False,
-                        reason_code=update_failure["reasonCode"], diagnostics=dict(update_failure["diagnostics"]))
+                if source == "bundled" and record.plugin_id in RETIRED_BUNDLED_PLUGINS:
+                    retired_bundled.append((record.plugin_id, directory.name))
+                    continue
                 records.append(record)
+
+        for plugin_id, failure in self._recovery_failures.items():
+            directory = failure["directoryName"]
+            record = next((item for item in records if item.source == "user"
+                           and item.directory_name == directory), None)
+            if record is None:
+                record = _invalid_record(_install_id("user", directory), "user", directory, plugin_id=plugin_id)
+            else:
+                records.remove(record)
+            records.append(replace(record, plugin_id=plugin_id, runtime_eligible=False,
+                desired_enabled=desired.get(plugin_id, record.desired_enabled),
+                reason_code=failure["reasonCode"], diagnostics=dict(failure["diagnostics"])))
 
         records = self._resolve_duplicates(records)
         runtime_specs = tuple(
@@ -271,16 +324,7 @@ class PluginInventory:
             for record in records
             if (spec := record.runtime_spec()) is not None
         )
-        state = (tuple(records), desired)
-        key = (
-            self._roots.distribution_root.resolve(),
-            self._roots.user_root.resolve(),
-            self._desired.path.resolve(),
-        )
-        previous = _REVISIONS.get(key)
-        revision = previous[1] if previous is not None and previous[0] == state else secrets.token_hex(8)
-        _REVISIONS[key] = (state, revision)
-        return PluginInventorySnapshot(tuple(records), runtime_specs, revision)
+        return PluginInventorySnapshot(tuple(records), runtime_specs, tuple(retired_bundled))
 
     def _record(
         self,
@@ -293,7 +337,6 @@ class PluginInventory:
         try:
             raw = yaml.safe_load(manifest.read_text(encoding="utf-8"))
         except (OSError, UnicodeDecodeError, yaml.YAMLError, ValueError) as error:
-            logging.getLogger(__name__).exception("插件清单读取失败: %s", manifest)
             return _invalid_record(install_id, source, directory.name, diagnostics=exception_diagnostics(
                 error, reason_code="PLUGIN_MANIFEST_INVALID", stage="plugin.manifest"))
         if not isinstance(raw, Mapping):

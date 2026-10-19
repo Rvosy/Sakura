@@ -712,34 +712,38 @@ class MemoryStore:
             request=str(diagnostic.get("request") or ""),
         )
 
-    def _on_embedder_diagnostic(self, diagnostic: dict[str, object]) -> None:
-        event = str(diagnostic.get("event") or "embedding_progress")
-        self._record_load_diagnostic(
-            event=event,
-            stage=str(diagnostic.get("stage") or "unknown"),
-            outcome=str(diagnostic.get("outcome") or "started"),
-            category=str(diagnostic.get("category") or ""),
-            error_type=str(diagnostic.get("errorType") or ""),
-            elapsed_ms=(
-                int(diagnostic["elapsedMs"])
-                if isinstance(diagnostic.get("elapsedMs"), int)
-                else None
-            ),
-            child_pid=(
-                int(diagnostic["childPid"])
-                if isinstance(diagnostic.get("childPid"), int)
-                else None
-            ),
-            process_alive=(
-                bool(diagnostic["processAlive"])
-                if isinstance(diagnostic.get("processAlive"), bool)
-                else None
-            ),
-            request=str(diagnostic.get("request") or ""),
-            component=str(diagnostic.get("component") or "embedding_process"),
-        )
+    def _on_embedder_diagnostic(self, diagnostic: dict[str, object], generation: int) -> None:
+        with self._lock:
+            if self._closed or generation != self._reload_generation:
+                return
+            event = str(diagnostic.get("event") or "embedding_progress")
+            self._record_load_diagnostic(
+                event=event,
+                stage=str(diagnostic.get("stage") or "unknown"),
+                outcome=str(diagnostic.get("outcome") or "started"),
+                category=str(diagnostic.get("category") or ""),
+                error_type=str(diagnostic.get("errorType") or ""),
+                elapsed_ms=(
+                    int(diagnostic["elapsedMs"])
+                    if isinstance(diagnostic.get("elapsedMs"), int)
+                    else None
+                ),
+                child_pid=(
+                    int(diagnostic["childPid"])
+                    if isinstance(diagnostic.get("childPid"), int)
+                    else None
+                ),
+                process_alive=(
+                    bool(diagnostic["processAlive"])
+                    if isinstance(diagnostic.get("processAlive"), bool)
+                    else None
+                ),
+                request=str(diagnostic.get("request") or ""),
+                component=str(diagnostic.get("component") or "embedding_process"),
+            )
         if event == "mem0_request_failed":
             self._mark_runtime_failed(
+                generation=generation,
                 category=str(diagnostic.get("category") or "request_failed"),
                 error_type=str(diagnostic.get("errorType") or "RuntimeError"),
                 request=str(diagnostic.get("request") or "unknown"),
@@ -802,7 +806,6 @@ class MemoryStore:
             outcome="started",
             status="stopped",
         )
-        self._cancel_memory_load()
         old_memory: Any | None = None
         with self._lock:
             if self._closed:
@@ -816,9 +819,7 @@ class MemoryStore:
             self._load_error = ""
             self._status = "stopped"
             self._status_message = "长期记忆系统已关闭。"
-        # The active Memory child is closed or terminated by cancellation.
-        # Generation invalidation prevents a late loader result from being
-        # published, so the Core never waits out a cold import on shutdown.
+        # 先使加载批次失效，再取消后台工作，避免取消结果回写状态。
         self._thread_group.stop(0)
         _close_memory_client(old_memory)
         self._record_load_diagnostic(
@@ -828,12 +829,15 @@ class MemoryStore:
             status="stopped",
         )
 
-    def _register_active_embedder(self, embedder: Any) -> None:
+    def _register_active_embedder(self, embedder: Any, generation: int) -> bool:
         with self._lock:
+            if self._closed or generation != self._reload_generation:
+                return False
             self._active_embedder = embedder
         set_listener = getattr(embedder, "set_diagnostic_listener", None)
         if callable(set_listener):
-            set_listener(self._on_embedder_diagnostic)
+            set_listener(lambda diagnostic: self._on_embedder_diagnostic(diagnostic, generation))
+        return True
 
     def _cancel_memory_load(self) -> None:
         self._load_cancel.set()
@@ -1520,54 +1524,47 @@ class MemoryStore:
 
         def load() -> None:
             try:
-                mem = self._create_memory_client()
+                mem = self._create_memory_client(generation)
             except Exception as exc:
-                diagnostic = self.load_diagnostic()
-                stage = str(diagnostic.get("stage") or "store_load")
-                category = str(diagnostic.get("category") or "")
-                error_type = str(diagnostic.get("errorType") or "")
-                if diagnostic.get("outcome") != "failed":
-                    category = _classify_memory_load_exception(exc, stage=stage)
-                    error_type = exc.__class__.__name__
-                self._record_load_diagnostic(
-                    event="memory_store_load_failed",
-                    stage=stage,
-                    outcome="failed",
-                    status="failed",
-                    category=category or "load_failed",
-                    error_type=error_type or exc.__class__.__name__,
-                    elapsed_ms=int((time.monotonic() - load_started_at) * 1000),
-                )
-                error_message = _format_memory_load_error(
-                    exc,
-                    embedding_download=report_dependency_loading,
-                )
                 with self._lock:
-                    if generation == self._reload_generation:
-                        self._load_error = error_message
-                        self._loading = False
-                self._publish_status("failed", error_message)
-                return
-            stale_mem: Any | None = None
-            with self._lock:
-                if generation != self._reload_generation or self._closed:
+                    if generation != self._reload_generation or self._closed:
+                        return
+                    diagnostic = self.load_diagnostic()
+                    stage = str(diagnostic.get("stage") or "store_load")
+                    category = str(diagnostic.get("category") or "")
+                    if diagnostic.get("outcome") != "failed":
+                        category = _classify_memory_load_exception(exc, stage=stage)
+                    self._record_load_diagnostic(
+                        event="memory_store_load_failed",
+                        stage=stage,
+                        outcome="failed",
+                        status="failed",
+                        category=category or "load_failed",
+                        error_type=exc.__class__.__name__,
+                        elapsed_ms=int((time.monotonic() - load_started_at) * 1000),
+                    )
+                    self._load_error = _format_memory_load_error(exc, embedding_download=report_dependency_loading)
                     self._loading = False
-                    stale_mem = mem
-                else:
-                    self._memory = mem
-            if stale_mem is not None:
-                _close_memory_client(stale_mem)
+                    event = self._set_status_locked("failed", self._load_error)
+                self._notify_status_event(event, generation=generation)
                 return
             with self._lock:
-                self._loading = False
-            self._record_load_diagnostic(
-                event="memory_store_load_completed",
-                stage="ready",
-                outcome="completed",
-                status="ready",
-                elapsed_ms=int((time.monotonic() - load_started_at) * 1000),
-            )
-            self._publish_status("ready", "长期记忆系统已就绪。")
+                stale = generation != self._reload_generation or self._closed
+                if not stale:
+                    self._memory = mem
+                    self._loading = False
+                    self._record_load_diagnostic(
+                        event="memory_store_load_completed",
+                        stage="ready",
+                        outcome="completed",
+                        status="ready",
+                        elapsed_ms=int((time.monotonic() - load_started_at) * 1000),
+                    )
+                    event = self._set_status_locked("ready", "长期记忆系统已就绪。")
+            if stale:
+                _close_memory_client(mem)
+            else:
+                self._notify_status_event(event, generation=generation)
 
         thread = self._thread_group.spawn(
             load,
@@ -1587,33 +1584,24 @@ class MemoryStore:
             )
         return status_event
 
-    def _create_memory_client(self) -> Any:
+    def _create_memory_client(self, generation: int) -> Any:
         with _MEM0_CREATE_LOCK:
+            (
+                memory_type,
+                mem0_memory_main,
+                embedder_factory,
+                vector_store_factory,
+            ) = _import_mem0_dependencies()
+            memory = _create_raw_memory_backend(
+                memory_type,
+                mem0_memory_main,
+                embedder_factory,
+                vector_store_factory,
+                self.build_local_backend_config(),
+            )
             try:
-                (
-                    memory_type,
-                    mem0_memory_main,
-                    embedder_factory,
-                    vector_store_factory,
-                ) = _import_mem0_dependencies()
-                memory = _create_raw_memory_backend(
-                    memory_type,
-                    mem0_memory_main,
-                    embedder_factory,
-                    vector_store_factory,
-                    self.build_local_backend_config(),
-                )
-            except Exception as exc:
-                self._record_load_diagnostic(
-                    event="mem0_backend_start_failed",
-                    stage="backend_start",
-                    outcome="failed",
-                    category="backend_start_failed",
-                    error_type=exc.__class__.__name__,
-                )
-                raise
-            self._register_active_embedder(memory)
-            try:
+                if not self._register_active_embedder(memory, generation):
+                    raise RuntimeError("MEMORY_LOAD_CANCELLED")
                 _warm_memory_backend(memory)
                 if self._closed or self._load_cancel.is_set():
                     raise RuntimeError("MEMORY_LOAD_CANCELLED")
@@ -1631,19 +1619,19 @@ class MemoryStore:
         self._status_message = message
         return list(self._status_listeners), status, message
 
-    def _publish_status(self, status: str, message: str) -> None:
-        with self._lock:
-            status_event = self._set_status_locked(status, message)
-        self._notify_status_event(status_event)
-
     def _notify_status_event(
         self,
         status_event: tuple[list[Callable[[str, str], None]], str, str] | None,
+        *, generation: int | None = None,
     ) -> None:
         if status_event is None:
             return
         listeners, status, message = status_event
         for listener in listeners:
+            if generation is not None:
+                with self._lock:
+                    if self._closed or generation != self._reload_generation:
+                        return
             self._notify_status_listener(listener, status, message)
 
     def _notify_status_listener(
@@ -1684,9 +1672,12 @@ class MemoryStore:
         category: str = "request_failed",
         error_type: str = "RuntimeError",
         request: str = "unknown",
+        generation: int | None = None,
     ) -> None:
         old_memory: Any | None = None
         with self._lock:
+            if self._closed or (generation is not None and generation != self._reload_generation):
+                return
             old_memory = self._memory
             self._memory = None
             if self._active_embedder is old_memory:
@@ -1697,16 +1688,16 @@ class MemoryStore:
                 "failed",
                 "长期记忆系统暂时不可用；普通聊天仍可继续。",
             )
-        self._record_load_diagnostic(
-            event="memory_store_runtime_failed",
-            stage="request",
-            outcome="failed",
-            status="failed",
-            category=category,
-            error_type=error_type,
-            request=request,
-        )
-        self._notify_status_event(status_event)
+            self._record_load_diagnostic(
+                event="memory_store_runtime_failed",
+                stage="request",
+                outcome="failed",
+                status="failed",
+                category=category,
+                error_type=error_type,
+                request=request,
+            )
+        self._notify_status_event(status_event, generation=generation)
         _close_memory_client(old_memory)
 
 

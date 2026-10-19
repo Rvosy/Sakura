@@ -65,14 +65,20 @@ def test_async_model_worker_preserves_cause_before_releasing_credentials(monkeyp
     assert 'opaque-secret' not in json.dumps(job.failure)
 
 
-def test_parameter_fallback_is_bounded_and_does_not_mutate_request(monkeypatch):
+@pytest.mark.parametrize("temperature_error", [
+    "temperature is not supported",
+    "invalid temperature: only 1 is allowed for this model",
+    "temperature does not support 0.8 with this model. Only the default (1) value is supported.",
+])
+def test_parameter_fallback_is_bounded_and_does_not_mutate_request(monkeypatch, temperature_error):
     calls = []
     def handler(request):
         body = json.loads(request.content)
         calls.append(body)
         for parameter in ("response_format", "temperature"):
             if parameter in body:
-                return httpx.Response(400, json={"error": {"message": parameter + " is not supported"}})
+                message = temperature_error if parameter == "temperature" else parameter + " is not supported"
+                return httpx.Response(400, json={"error": {"message": message}})
         return httpx.Response(200, json={"choices": [{"message": {"content": "OK"}}]})
     mock_http(monkeypatch, handler)
     result = run()

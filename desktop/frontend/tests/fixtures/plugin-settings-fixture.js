@@ -175,7 +175,7 @@ export function field(key, overrides = {}) {
 
 export function snapshot(coreGenerationId = "generation-a", label = "fixture") {
   return {
-    schemaVersion: 1, revision: "0123456789abcdef", state: "ready", reasonCode: "READY",
+    schemaVersion: 1, state: "ready", reasonCode: "READY",
     windowGeneration: 7, coreGenerationId,
     plugins: [{
       installId: "pi_bundled_666978747572655f706c7567696e", pluginId: "fixture_plugin", name: "Fixture Plugin",

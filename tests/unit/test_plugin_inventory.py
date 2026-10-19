@@ -68,7 +68,7 @@ def test_presentation_only_changes_display_and_never_runtime_eligibility(tmp_pat
         assert _preview_plugin(record)["presentation"] == expected
 
 
-def test_inventory_keeps_every_non_hidden_invalid_user_installation_visible(tmp_path: Path) -> None:
+def test_inventory_keeps_every_non_hidden_invalid_user_installation_visible(tmp_path: Path, caplog) -> None:
     root = tmp_path / "app"
     plugins = root / "plugins" / "user"
     plugins.mkdir(parents=True)
@@ -91,6 +91,11 @@ def test_inventory_keeps_every_non_hidden_invalid_user_installation_visible(tmp_
 
     snapshot = PluginInventory(root).scan()
     records = _by_directory(snapshot)
+    logged = list(caplog.records)
+    refreshed = _by_directory(PluginInventory(root).scan())
+    assert caplog.records == logged
+    assert refreshed["malformed_yaml"].diagnostics["diagnostic"]
+    assert refreshed["missing_manifest"].diagnostics["diagnostic"]
 
     assert set(records) == {"missing_manifest", "malformed_yaml", "missing_id", "too_long"}
     assert snapshot.runtime_specs == ()
@@ -134,6 +139,47 @@ def test_inventory_duplicate_policy_keeps_only_single_bundled_winner(tmp_path: P
     assert records["user_a"].reason_code == "PLUGIN_ID_CONFLICT"
     assert records["user_b"].reason_code == "PLUGIN_ID_CONFLICT"
     assert records["user_a"].can_uninstall is True
+
+
+@pytest.mark.parametrize(("plugin_id", "directory"), [
+    ("sakura.memory.mem0", "sakura_mem0"),
+    ("sakura_mobile", "sakura_mobile"),
+    ("sakura.asr.sensevoice", "sakura_asr_sensevoice"),
+    ("sakura.tts.gpt-sovits", "sakura_gpt_sovits"),
+    ("sakura.tts.genie", "sakura_genie"),
+    ("sakura.visual.spine", "sakura_spine"),
+])
+def test_external_plugin_remains_usable_with_retired_bundled_files(tmp_path, plugin_id, directory):
+    from app.plugins.discovery import PluginDiscovery
+
+    retired = _plugin(tmp_path, directory, plugin_id)
+    _plugin(tmp_path, "installed", plugin_id, source="user")
+    desired = PluginDesiredStateStore(tmp_path)
+    desired.set(plugin_id, False)
+    config = desired.path.read_bytes()
+    # 重命名残留目录后仍按插件身份识别，不能让旧内置副本重新抢占用户版。
+    retired.rename(retired.with_name("old-copy"))
+    snapshot = PluginInventory(tmp_path).scan()
+    assert len(snapshot.records) == 1
+    record = snapshot.records[0]
+    assert record.source == "user" and record.runtime_eligible and record.can_uninstall
+    assert record.desired_enabled is False
+    assert [spec.plugin_id for spec in snapshot.runtime_specs] == [plugin_id]
+    discovered = PluginDiscovery(tmp_path).discover()
+    assert [(spec.plugin_id, spec.source, spec.enabled) for spec in discovered] == [(plugin_id, "user", False)]
+    assert desired.path.read_bytes() == config
+
+
+def test_broken_retired_manifest_does_not_block_user_plugin(tmp_path):
+    from app.plugins.discovery import PluginDiscovery
+
+    old = _plugin(tmp_path, "sakura_mem0", "sakura.memory.mem0")
+    (old / "plugin.yaml").write_text("[broken", encoding="utf-8")
+    _plugin(tmp_path, "memory", "sakura.memory.mem0", source="user")
+    snapshot = PluginInventory(tmp_path).scan()
+    assert len(snapshot.records) == 1
+    assert snapshot.records[0].runtime_eligible
+    assert [spec.source for spec in PluginDiscovery(tmp_path).discover()] == ["user"]
 
 
 @pytest.mark.parametrize("source", ["bundled", "user"])
@@ -190,7 +236,7 @@ def test_inventory_rejects_retired_manifest_fields(
     assert record.runtime_eligible is False
 
 
-def test_management_write_rejects_retired_fields_without_rewriting(
+def test_management_changes_only_selected_plugin_in_old_config(
     tmp_path: Path,
 ) -> None:
     root = tmp_path / "app"
@@ -198,15 +244,25 @@ def test_management_write_rejects_retired_fields_without_rewriting(
     store = PluginDesiredStateStore(root)
     store.path.parent.mkdir(parents=True)
     store.path.write_text(
-        "- id: com.example.fixture\n  enabled: false\n  priority: 99\n  required: true\n",
+        "- id: com.example.fixture\n  enabled: false\n  priority: 99\n  required: true\n"
+        "- id: com.example.other\n  enabled: false\n  custom: keep\n"
+        "- unfinished\n"
+        "- id: com.example.fixture\n  enabled: false\n",
         encoding="utf-8",
     )
     before = store.path.read_bytes()
 
-    with pytest.raises(ValueError, match="PLUGIN_CONFIG_INVALID"):
-        store.set("com.example.fixture", True)
-
+    assert store.read() == {"com.example.fixture": False, "com.example.other": False}
     assert store.path.read_bytes() == before
+    store.set("com.example.fixture", True)
+    assert store.read() == {"com.example.fixture": True, "com.example.other": False}
+    entries = yaml.safe_load(store.path.read_text(encoding="utf-8"))
+    assert entries[0] == {"id": "com.example.fixture", "enabled": True, "priority": 99, "required": True}
+    assert entries[1] == {"id": "com.example.other", "enabled": False, "custom": "keep"}
+    assert entries[2] == "unfinished"
+    assert entries[3]["enabled"] is True
+    store.remove("com.example.fixture")
+    assert yaml.safe_load(store.path.read_text(encoding="utf-8")) == entries[1:3]
 
 
 def test_inventory_install_id_is_stable_and_public_preview_has_no_absolute_path(
@@ -226,9 +282,9 @@ def test_inventory_install_id_is_stable_and_public_preview_has_no_absolute_path(
 
     assert first.install_id == second.install_id
     assert first.install_id != first.plugin_id
-    assert "readable-directory" not in repr(preview)
+    assert preview["directoryName"] == "readable-directory"
     assert str(root) not in repr(preview)
-    assert set(preview).isdisjoint({"directoryName", "path", "entry"})
+    assert set(preview).isdisjoint({"path", "entry"})
 
 
 def test_inventory_rejects_linked_plugin_directories(tmp_path: Path) -> None:
@@ -247,32 +303,6 @@ def test_inventory_rejects_linked_plugin_directories(tmp_path: Path) -> None:
     assert records["linked"].plugin_id is None
     assert records["linked"].reason_code == "PLUGIN_MANIFEST_INVALID"
     assert records["linked"].can_uninstall is True
-
-
-def test_revision_compares_structured_state_across_instances_without_reusing_old_tokens(tmp_path: Path) -> None:
-    plugin = _plugin(tmp_path, "fixture", "example.fixture")
-    desired = PluginDesiredStateStore(tmp_path)
-    desired.set("example.fixture", True)
-    inventory = PluginInventory(tmp_path)
-    first = inventory.scan()
-    assert PluginInventory(tmp_path).scan().revision == first.revision
-    manifest = plugin / "plugin.yaml"
-    content = manifest.read_text(encoding="utf-8")
-    manifest.write_bytes(("# comment\n" + content).replace("\n", "\r\n").encode())
-    desired.path.write_text("# comment\n- {enabled: true, id: example.fixture}\n", encoding="utf-8")
-    assert inventory.scan().revision == first.revision
-    manifest.write_text(content.replace("version: 1.0.0", "version: 2.0.0"), encoding="utf-8")
-    changed = PluginInventory(tmp_path).scan()
-    assert changed.revision != first.revision
-    assert inventory.scan().revision == changed.revision
-    manifest.write_text(content, encoding="utf-8")
-    restored = inventory.scan()
-    assert restored.records == first.records
-    assert restored.revision not in {first.revision, changed.revision}
-    desired.set("example.fixture", False)
-    disabled = PluginInventory(tmp_path).scan()
-    assert disabled.revision != restored.revision
-    assert not disabled.records[0].desired_enabled
 
 
 def test_install_id_encoding_separates_sources_and_roundtrips_long_unicode_dto(tmp_path: Path) -> None:

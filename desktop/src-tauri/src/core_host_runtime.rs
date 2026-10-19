@@ -140,7 +140,6 @@ impl CoreSnapshotCache {
             .get("generationNumber")
             .and_then(Value::as_u64)
             .is_none_or(|number| number == 0)
-            || object.get("revision").and_then(Value::as_u64).is_none()
             || object
                 .get("coreConfigRevision")
                 .and_then(Value::as_u64)
@@ -215,20 +214,6 @@ impl CoreSnapshotCache {
             .ok_or_else(|| "Core Snapshot must be an object".to_string())?;
         if object.get("generationId").and_then(Value::as_str) != Some(self.generation_id.as_str()) {
             return Err("Core Snapshot belongs to another generation".to_string());
-        }
-        let revision = object
-            .get("revision")
-            .and_then(Value::as_u64)
-            .ok_or_else(|| "Core Snapshot revision is invalid".to_string())?;
-        if let Some(current) = self.snapshot.as_ref() {
-            let current_revision = current
-                .get("revision")
-                .and_then(Value::as_u64)
-                .unwrap_or_default();
-            if revision < current_revision || (revision == current_revision && current != snapshot)
-            {
-                return Err("Core Snapshot revision is stale or reused".to_string());
-            }
         }
         let readiness = object
             .get("readiness")
@@ -3600,7 +3585,7 @@ mod tests {
     }
 
     #[test]
-    fn wp_2_02_snapshot_allows_extensions_and_keeps_generation_ordering() {
+    fn snapshot_tracks_chat_cancellation_and_keeps_generations_separate() {
         let mut cache = CoreSnapshotCache::new(GENERATION_ID).expect("generation cache");
         let first = json!({
             "generationId": GENERATION_ID,
@@ -3616,18 +3601,29 @@ mod tests {
         cache
             .store_minimal_python_snapshot(&first)
             .expect("minimal snapshot validates");
-        let mut stale = first.clone();
-        stale["revision"] = json!(0);
-        assert!(cache.store_minimal_python_snapshot(&stale).is_err());
-        let mut reused = first.clone();
-        reused["activeInteractionSummary"] = Value::Null;
-        assert!(cache.store_minimal_python_snapshot(&reused).is_err());
-        let mut extended = first.clone();
-        extended["revision"] = json!(2);
-        extended["futureProgress"] = json!({"completed": 0, "total": 6});
+        let mut cancelling = first.clone();
+        cancelling["activeInteractionSummary"]["state"] = json!("cancelling");
         cache
-            .store_minimal_python_snapshot(&extended)
-            .expect("additional progress fields are accepted");
+            .store_minimal_python_snapshot(&cancelling)
+            .expect("取消状态应能同步到桌面");
+        assert_eq!(
+            cache.current().unwrap()["activeInteractionSummary"]["state"],
+            "cancelling"
+        );
+        let mut idle = cancelling;
+        idle["activeInteractionSummary"] = Value::Null;
+        idle["futureProgress"] = json!({"completed": 0, "total": 6});
+        cache
+            .store_minimal_python_snapshot(&idle)
+            .expect("取消完成后应恢复空闲状态");
+        assert!(cache.current().unwrap()["activeInteractionSummary"].is_null());
+        cache
+            .store_minimal_python_snapshot(&first)
+            .expect("取消后应能继续同步下一轮对话");
+        assert_eq!(
+            cache.current().unwrap()["activeInteractionSummary"]["state"],
+            "started"
+        );
         cache
             .begin_generation("00000000-0000-4000-8000-000000002203")
             .expect("new generation clears cache");

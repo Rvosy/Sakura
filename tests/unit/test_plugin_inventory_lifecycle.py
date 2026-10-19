@@ -73,7 +73,9 @@ def test_visual_and_public_queries_share_inventory_until_an_explicit_refresh(tmp
         }
         assert len(scans) == 1
         application.visuals.catalog()
-        assert application.public_snapshot()["revision"] == refreshed["revision"]
+        assert {item["pluginId"] for item in application.public_snapshot()["plugins"]} == {
+            "fixture.first", "fixture.second",
+        }
         assert len(scans) == 1
     finally:
         application.close()
@@ -100,11 +102,11 @@ def test_failed_code_change_refreshes_inventory_after_rollback(tmp_path, monkeyp
             if operation == "install":
                 _write_plugin(tmp_path / "source", "fixture.second")
                 settings.install(
-                    snapshot["revision"], "folder",
+                    "folder",
                     str(tmp_path / "source/plugins/user/fixture.second"),
                 )
             else:
-                settings.uninstall(snapshot["revision"], snapshot["plugins"][0]["installId"])
+                settings.uninstall(snapshot["plugins"][0]["installId"])
         assert {item["pluginId"] for item in application.public_snapshot()["plugins"]} == {
             "fixture.first",
         }

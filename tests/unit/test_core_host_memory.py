@@ -1640,3 +1640,89 @@ def test_missing_model_provider_does_not_disable_memory_crud_or_recall(tmp_path)
         assert boundary.delete({"id": "created"})["alreadyMissing"] is False
     finally:
         boundary.close()
+
+
+@pytest.mark.parametrize("action", ["close", "reload"])
+@pytest.mark.parametrize("outcome", ["success", "failure"])
+def test_late_memory_load_leaves_closed_or_new_loading_state_untouched(tmp_path, monkeypatch, action, outcome):
+    store = memory_module.MemoryStore(base_dir=tmp_path)
+    tasks, events, closed = [], [], []
+    monkeypatch.setattr(store._thread_group, "spawn", lambda target, **kwargs: tasks.append(target) or object())
+    monkeypatch.setattr(memory_module, "_embedding_model_cached", lambda *args, **kwargs: True)
+    class Client:
+        def close(self):
+            closed.append(True)
+    def create(_generation):
+        if outcome == "failure":
+            raise RuntimeError("late backend failure")
+        return Client()
+    monkeypatch.setattr(store, "_create_memory_client", create)
+    store.add_status_listener(lambda status, message: events.append((status, message)))
+    try:
+        store.preload(wait=False)
+        old_load = tasks.pop()
+        if action == "close":
+            store.close()
+        else:
+            store.reset_runtime()
+            store.preload(wait=False)
+        diagnostic = store.load_diagnostic()
+        events.clear()
+        old_load()
+        assert store.load_diagnostic() == diagnostic
+        assert events == []
+        assert not store.is_ready()
+        if action == "close":
+            assert store._status == "stopped"
+        else:
+            assert store._loading
+            monkeypatch.setattr(store, "_create_memory_client", lambda _generation: Client())
+            tasks.pop()()
+            assert store.is_ready()
+        assert bool(closed) is (outcome == "success")
+    finally:
+        store.close()
+
+
+def test_current_memory_load_failure_keeps_original_reason(tmp_path, monkeypatch):
+    store = memory_module.MemoryStore(base_dir=tmp_path)
+    tasks, events = [], []
+    monkeypatch.setattr(store._thread_group, "spawn", lambda target, **kwargs: tasks.append(target) or object())
+    monkeypatch.setattr(memory_module, "_embedding_model_cached", lambda *args, **kwargs: True)
+    def fail(_generation):
+        raise RuntimeError("database permission denied")
+    monkeypatch.setattr(store, "_create_memory_client", fail)
+    store.add_status_listener(lambda status, message: events.append((status, message)))
+    try:
+        store.preload(wait=False)
+        tasks.pop()()
+        assert events[-1][0] == "failed"
+        assert "database permission denied" in events[-1][1]
+        assert store.load_diagnostic()["outcome"] == "failed"
+        assert not store._loading
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("action", ["close", "reload"])
+def test_retired_memory_backend_diagnostics_do_not_change_current_status(tmp_path, action):
+    store = memory_module.MemoryStore(base_dir=tmp_path)
+    class Client:
+        def set_diagnostic_listener(self, callback):
+            self.diagnostic = callback
+        def close(self):
+            self.diagnostic({"event": "mem0_request_failed", "outcome": "failed"})
+    client = Client()
+    store._register_active_embedder(client, store._reload_generation)
+    try:
+        if action == "close":
+            store.close()
+        else:
+            store.reset_runtime()
+        diagnostic = store.load_diagnostic()
+        status = store._status
+        client.diagnostic({"event": "mem0_request_failed", "outcome": "failed"})
+        assert store._status == status
+        assert store.load_diagnostic() == diagnostic
+    finally:
+        store.close()

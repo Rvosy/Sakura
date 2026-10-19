@@ -75,6 +75,9 @@ function result(label, message = "", reasonCode = "", unavailable = []) {
 
 function pluginStatus({ state = "", reasonCode = "", unavailable = [] } = {}) {
 
+  if (reasonCode === "PLUGIN_ID_CONFLICT") {
+    return result("重复安装", "请按版本和安装目录选择要保留的副本，卸载其余副本后再更新。", reasonCode);
+  }
   if (reasonCode === "MODEL_API_UPDATE_REQUIRED") {
     return result("需要更新", "模型接口已更新，请安装这个插件的兼容版本。", reasonCode);
   }

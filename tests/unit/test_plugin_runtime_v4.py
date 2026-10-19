@@ -516,36 +516,35 @@ class Plugin:
         reference = {"serviceKey": "example.model", "profileId": "remote", "modelId": "chat"}
         assert host.call_service("fixture.current.service", "resolve", reference) == reference
 
-        current = boundary.snapshot()
-        toggled = boundary.set_enabled(current["revision"], records["fixture.unaffected"]["installId"], False)
+        toggled = boundary.set_enabled(records["fixture.unaffected"]["installId"], False)
         after_toggle = {row["pluginId"]: row for row in toggled["plugins"]}
         for plugin_id in ("fixture.legacy-model", "fixture.optional-model"):
             assert after_toggle[plugin_id]["supported"] is False
             assert after_toggle[plugin_id]["reasonCode"] == "MODEL_API_UPDATE_REQUIRED"
         legacy_install = records["fixture.legacy-model"]["installId"]
-        stopped = boundary.set_enabled(toggled["revision"], legacy_install, False)
+        stopped = boundary.set_enabled(legacy_install, False)
         legacy = next(row for row in stopped["plugins"] if row["pluginId"] == "fixture.legacy-model")
         assert stopped["applicationState"] == "applied"
         assert legacy["state"] == "disabled"
         assert legacy["supported"] is False
         assert legacy["reasonCode"] == "MODEL_API_UPDATE_REQUIRED"
-        blocked = boundary.set_enabled(stopped["revision"], legacy_install, True)
+        blocked = boundary.set_enabled(legacy_install, True)
         assert blocked["applicationState"] == "error"
         assert blocked["applicationReasonCode"] == "MODEL_API_UPDATE_REQUIRED"
         assert not imported.exists()
 
-        removed = boundary.uninstall(blocked["revision"], legacy_install)
+        boundary.uninstall(legacy_install)
         updated_source = _plugin_source(tmp_path / "updated", "fixture.legacy-model", "fixture.legacy.service",
             requires=("sakura.host.model_slots.v2",), body='''
 class Plugin:
     def setup(self, context):
         context.provide("fixture.legacy.service", context.get("sakura.host.model_slots.v2"), exports=("resolve",))
 ''')
-        installed = boundary.install(removed["revision"], "folder", str(updated_source.resolve()))
+        installed = boundary.install("folder", str(updated_source.resolve()))
         updated = next(row for row in installed["plugins"] if row["pluginId"] == "fixture.legacy-model")
         assert updated["supported"] is True
         assert updated["reasonCode"] != "MODEL_API_UPDATE_REQUIRED"
-        activated = boundary.set_enabled(installed["revision"], installed["installId"], True)
+        activated = boundary.set_enabled(installed["installId"], True)
         assert activated["applicationState"] == "applied"
         assert host.call_service("fixture.legacy.service", "resolve", reference) == reference
     finally:
@@ -865,7 +864,7 @@ class Plugin:
         manager.close()
 
 
-def test_failed_enable_returns_saved_revision_for_subsequent_toggles(tmp_path: Path) -> None:
+def test_failed_enable_allows_disabling_and_retrying(tmp_path: Path) -> None:
     roots = _roots(tmp_path)
     plugin_id = "fixture.missing-service"
     _plugin_source(
@@ -885,21 +884,18 @@ def test_failed_enable_returns_saved_revision_for_subsequent_toggles(tmp_path: P
         application.start()
         initial = boundary.snapshot()
         install_id = initial["plugins"][0]["installId"]
-        failed = boundary.set_enabled(initial["revision"], install_id, True)
+        failed = boundary.set_enabled(install_id, True)
         assert failed["desiredSaved"] is True
         assert failed["applicationState"] == "error"
         assert failed["applicationReasonCode"] == "MISSING_SERVICE"
         assert failed["plugins"][0]["state"] == "failed"
-        assert failed["revision"] != initial["revision"]
-        assert failed["revision"] == boundary.snapshot()["revision"]
         assert PluginDesiredStateStore(roots.user_root).read()[plugin_id] is True
 
-        disabled = boundary.set_enabled(failed["revision"], install_id, False)
+        disabled = boundary.set_enabled(install_id, False)
         assert disabled["applicationState"] == "applied"
         assert disabled["plugins"][0]["state"] == "disabled"
-        retried = boundary.set_enabled(disabled["revision"], install_id, True)
+        retried = boundary.set_enabled(install_id, True)
         assert retried["applicationReasonCode"] == "MISSING_SERVICE"
-        assert retried["revision"] == boundary.snapshot()["revision"]
     finally:
         application.close()
 
@@ -985,7 +981,6 @@ def test_production_v4_hot_install_enable_and_uninstall_leave_unrelated_pid_stab
         )
 
         installed = boundary.install(
-            boundary.snapshot()["revision"],
             "folder",
             str(source.resolve()),
         )
@@ -1000,7 +995,6 @@ def test_production_v4_hot_install_enable_and_uninstall_leave_unrelated_pid_stab
         ) == stable_pid
 
         enabled = boundary.set_enabled(
-            installed["revision"],
             installed["installId"],
             True,
         )
@@ -1016,7 +1010,6 @@ def test_production_v4_hot_install_enable_and_uninstall_leave_unrelated_pid_stab
         assert application.call_service("com.example.installed", "ping") == "installed"
 
         uninstalled = boundary.uninstall(
-            enabled["revision"],
             installed["installId"],
         )
         remaining = {
@@ -1931,7 +1924,7 @@ def test_dependency_install_failure_keeps_code_environment_and_config_unpublishe
     assert not paths.plugins_config().exists()
 
 
-def test_entry_import_failure_rolls_back_successful_dependency_install(tmp_path: Path) -> None:
+def test_entry_import_failure_keeps_installation_and_is_reported_by_runtime(tmp_path: Path) -> None:
     roots = _roots(tmp_path)
     wheel = _wheel(tmp_path, "3.0.0")
     source = _plugin_source(
@@ -1942,14 +1935,20 @@ def test_entry_import_failure_rolls_back_successful_dependency_install(tmp_path:
     )
     (source / "plugin.py").write_text("class Plugin(:\n", encoding="utf-8")
 
-    with pytest.raises(PluginInstallError) as failed:
-        LocalPluginInstaller(roots).install(source.resolve(), "folder")
-
-    assert failed.value.code == "PLUGIN_ENTRY_IMPORT_FAILED"
+    LocalPluginInstaller(roots).install(source.resolve(), "folder", initial_enabled=True)
     paths = StoragePaths(roots.user_root)
-    assert not (paths.user_plugins_dir / "fixture.syntax").exists()
-    assert not paths.plugin_dependency_root_for("fixture.syntax").exists()
-    assert not paths.plugins_config().exists()
+    assert (paths.user_plugins_dir / "fixture.syntax").is_dir()
+    assert paths.plugin_dependency_root_for("fixture.syntax").is_dir()
+    application = PluginApplicationHost(roots, "syntax-error", ToolRegistry())
+    try:
+        application.start()
+        current = next(p for p in application.public_snapshot()["plugins"] if p["pluginId"] == "fixture.syntax")
+        assert current["state"] == "failed"
+        assert "invalid syntax" in current["diagnostics"]["diagnostic"]
+        assert "plugin.py" in current["diagnostics"]["diagnostic"]
+        assert PluginDesiredStateStore(roots.user_root).read()["fixture.syntax"] is True
+    finally:
+        application.close()
 
 
 def test_production_application_host_runs_v4_and_reports_api3_as_unsupported(

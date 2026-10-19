@@ -27,13 +27,15 @@ def normalize_base_url(value):
 
 
 def _unsupported(error, parameter):
-    if not isinstance(error, APIStatusError) or error.status_code not in {400, 422}:
+    if error.status_code not in {400, 422}:
         return False
     text = error.response.text.lower()
     if parameter not in text and not (parameter == "response_format" and "json_object" in text):
         return False
     if any(marker in text for marker in ("between", "range", "minimum", "maximum", "less than", "greater than", "<=", ">=")):
         return False
+    if parameter == "temperature" and "only 1 is allowed" in text:
+        return True
     return any(marker in text for marker in ("unsupported", "not support", "does not support", "only support", "only the default", "default value", "not allowed", "cannot be", "not configurable"))
 
 

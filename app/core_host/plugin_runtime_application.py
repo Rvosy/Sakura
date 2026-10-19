@@ -142,6 +142,20 @@ class PluginRuntimeApplication:
             log_event("Plugin", "模型配置迁移失败", diagnostics, event="model.configuration.failed", severity="error")
         self._inventory = PluginInventory(roots, recovery_failures=recovery_failures)
         self._inventory_snapshot = self._inventory.scan()
+        for plugin_id, directory in self._inventory_snapshot.retired_bundled:
+            users = [record for record in self._inventory_snapshot.records
+                     if record.source == "user" and (record.plugin_id == plugin_id or record.directory_name == plugin_id)]
+            log_event("Plugin", "已忽略升级残留的内置插件", {
+                "plugin_id": plugin_id, "path": str(roots.distribution_root / "plugins/builtin" / directory),
+                "diagnostic": "; ".join(f"{record.directory_name}: {record.reason_code}" for record in users) or "未发现用户版，可从市场或本地包安装。",
+                "action": "load_user_plugin" if any(record.runtime_eligible for record in users) else "install_or_repair_user_plugin",
+            }, event="plugin.upgrade.retired_bundled_ignored")
+        for record in self._inventory_snapshot.records:
+            if record.reason_code == "PLUGIN_MANIFEST_INVALID":
+                log_event("Plugin", "插件清单无法读取", {
+                    "installId": record.install_id, "directoryName": record.directory_name,
+                    **record.diagnostics,
+                }, event="plugin.manifest.failed", severity="error")
         self._manager = PluginRuntimeManager(
             roots,
             generation_id,
@@ -694,16 +708,15 @@ class PluginRuntimeApplication:
             with self._manager.pause_plugins(ids) as errors:
                 yield errors
 
+    def check_plugin_update_idle(self) -> None:
+        if self._chat_boundary is not None:
+            self._chat_boundary.apply_runtime_update(lambda: None)
+
     @contextmanager
     def plugin_update(self, plugin_id: str):
         guard = self._chat_boundary.idle_runtime_update() if self._chat_boundary is not None else nullcontext()
         with guard, self._manager.plugin_update(plugin_id) as dependents:
             yield dependents
-
-    def restore_update_dependents(self, plugin_ids: list[str]) -> None:
-        self._manager.restore_update_dependents(plugin_ids)
-        for plugin_id in plugin_ids:
-            self._refresh_visual_provider(plugin_id)
 
     def set_plugin_enabled(self, plugin_id: str, enabled: bool) -> dict[str, Any]:
         result = self._manager.set_enabled(plugin_id, enabled)

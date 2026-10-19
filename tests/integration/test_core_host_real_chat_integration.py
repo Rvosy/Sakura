@@ -2244,3 +2244,49 @@ def test_studio_publish_updates_live_character_without_restarting_core_or_plugin
     finally:
         _stop(process)
         _stop_provider(server, provider_thread)
+
+
+def test_failed_local_assistant_update_reports_error_and_reinstall_restores_chat(tmp_path):
+    import yaml
+    from app.plugins.installer import LocalPluginInstaller
+    from app.storage.runtime_roots import RuntimeRoots
+    from tools.release.package_optional_plugin import build
+
+    server, provider_thread = _start_provider("complete")
+    app_root = _configure_app_root(tmp_path, server.server_address[1])
+    shutil.copyfile(REPO_ROOT / "desktop/frontend/prototypes/asr/assets/navi.png",
+                    app_root / "characters/sakura/portraits/neutral.txt")
+    distribution = tmp_path / "host-distribution"
+    (distribution / "plugins/builtin/sakura_assistant").mkdir(parents=True)
+    LocalPluginInstaller(RuntimeRoots(distribution, app_root)).install(
+        REPO_ROOT / "plugins/builtin/sakura_assistant", "folder", initial_enabled=True)
+    candidate = tmp_path / "candidate"
+    candidate.mkdir()
+    manifest = yaml.safe_load((REPO_ROOT / "plugins/builtin/sakura_assistant/plugin.yaml").read_text(encoding="utf-8"))
+    manifest["version"] = "0.1.1"
+    (candidate / "plugin.yaml").write_text(yaml.safe_dump(manifest), encoding="utf-8")
+    (candidate / "plugin.py").write_text('class AssistantPlugin:\n    def setup(self, context):\n        raise RuntimeError("candidate setup failed")\n')
+    archive = tmp_path / "candidate.zip"
+    build(candidate, archive)
+    process = _start_host(app_root, distribution_root=distribution)
+    try:
+        _wait_ready(process, ["transport.concurrent-router", "assistant.plugins-v1"])
+        result = _exchange(process, _request("update", "plugins.install", {
+            "sourceKind": "zip", "sourcePath": str(archive),
+        }))
+        assert result["ok"] is True, result
+        assert "candidate setup failed" in result["payload"]["warning"]["detail"]
+        assistant = next(p for p in result["payload"]["plugins"] if p["pluginId"] == manifest["id"])
+        assert assistant["version"] == "0.1.1"
+        assert assistant["enabled"] is True
+        assert assistant["state"] == "failed"
+        repaired = _exchange(process, _request("repair", "plugins.install", {
+            "sourceKind": "folder", "sourcePath": str(REPO_ROOT / "plugins/builtin/sakura_assistant"),
+        }))
+        assert repaired["ok"] is True, repaired
+        _send(process, _request("after-update", "chat.send", {"message": "hello", "operationId": "after-update"}))
+        frames = [_read(process), _read(process), _read(process)]
+        assert any(frame.get("name") == "chat.completed" for frame in frames), frames
+    finally:
+        _stop(process)
+        _stop_provider(server, provider_thread)

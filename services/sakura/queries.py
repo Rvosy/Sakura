@@ -170,13 +170,17 @@ def where(f, table, alias=""):
 def normalize(row):
     row = dict(row)
     row["received_at_iso"] = row["received_at"].replace(" ", "T") + "+08:00"
+    raw = row.pop("report_json", None)
+    report = json.loads(raw) if raw else None
     for name in ("stack", "breadcrumbs", "details"):
         value = row.pop(name + "_json", None)
-        row[name] = json.loads(value) if value else ([] if name != "details" else None)
-    raw = row.pop("report_json", None)
-    if raw:
-        row["report"] = json.loads(raw)
-        row["evidence"] = row["report"]["evidence"]
+        row[name] = json.loads(value) if value is not None else (
+            report.get(name, []) if report and name != "details" else
+            ([] if name != "details" else None)
+        )
+    if report:
+        row["report"] = report
+        row["evidence"] = report["evidence"]
     return row
 
 
@@ -233,7 +237,7 @@ def quality(c=None, filters=None):
         sum(severity IS NULL) AS missing_severity,
         sum(reason_code IS NULL) AS missing_reason,
         sum(operation_id IS NULL) AS missing_operation,
-        sum(json_extract(details_json,'$.file') IS NULL AND (stack_json IS NULL OR stack_json='[]') AND json_extract(report_json,'$.evidence.exception_stack') IS NULL) AS missing_location
+        sum(json_extract(details_json,'$.file') IS NULL AND (stack_json IS NULL OR stack_json='[]') AND coalesce(json_array_length(report_json,'$.stack'),0)=0 AND json_extract(report_json,'$.evidence.exception_stack') IS NULL) AS missing_location
         FROM error_events WHERE {condition} GROUP BY schema_version,build_id ORDER BY max(id) DESC""",
             args,
         )
@@ -244,32 +248,42 @@ def groups(filters, limit=100, offset=0):
     condition, args = where(filters, "error_events", "e")
     with connection() as c:
         c.execute("BEGIN")
+        # GROUP BY 的一元加号避免按指纹索引随机回表，读取索引仍由筛选条件决定。
         sql = f"""WITH counts AS (
             SELECT installation_id,run_id,generation,fingerprint,
                 max(json_extract(details_json,'$.occurrenceCount')) AS occurrences
             FROM telemetry_events WHERE event='error.repeated'
             GROUP BY installation_id,run_id,generation,fingerprint
         ), runs AS (
-            SELECT json_extract(e.report_json,'$.evidence.diagnostic') AS diagnostic,e.group_key,e.fingerprint,e.fingerprint_version,e.component,e.error_code,e.reason_code,e.stage,
+            SELECT min(e.id) AS sample_id,e.group_key,e.fingerprint,e.fingerprint_version,e.component,e.error_code,e.reason_code,e.stage,
                 e.installation_id,e.run_id,e.generation,count(*) AS reports,
                 max(count(*),coalesce(max(counts.occurrences),1)) AS occurrences,
                 min(e.received_at) AS first_seen,max(e.received_at) AS last_seen
             FROM error_events e LEFT JOIN counts ON counts.installation_id=e.installation_id AND counts.run_id=e.run_id
                 AND counts.generation IS e.generation AND counts.fingerprint=e.fingerprint
             WHERE {condition}
-            GROUP BY e.fingerprint,e.fingerprint_version,e.component,e.error_code,e.reason_code,e.stage,e.installation_id,e.run_id,e.generation
-        ) SELECT min(diagnostic) AS diagnostic,min(fingerprint) AS fingerprint,fingerprint_version,component,error_code,reason_code,stage,
+            GROUP BY +e.fingerprint,e.fingerprint_version,e.component,e.error_code,e.reason_code,e.stage,e.installation_id,e.run_id,e.generation
+        ) SELECT min(sample_id) AS sample_id,min(fingerprint) AS fingerprint,fingerprint_version,component,error_code,reason_code,stage,
             sum(reports) AS reports,count(DISTINCT installation_id) AS installations,
             sum(occurrences) AS occurrences,min(first_seen) AS first_seen,max(last_seen) AS last_seen
         FROM runs GROUP BY coalesce(group_key,fingerprint),fingerprint_version,component,error_code,reason_code,stage"""
-        total = c.execute("SELECT count(*) FROM (" + sql + ")", args).fetchone()[0]
         rows = [
             dict(r)
             for r in c.execute(
-                sql + " ORDER BY reports DESC,fingerprint LIMIT ? OFFSET ?",
+                "SELECT selected.*,json_extract(e.report_json,'$.evidence.diagnostic') AS diagnostic FROM ("
+                "SELECT grouped.*,count(*) OVER () AS total_groups FROM (" + sql + ") grouped"
+                " ORDER BY reports DESC,fingerprint LIMIT ? OFFSET ?) selected"
+                " JOIN error_events e ON e.id=selected.sample_id ORDER BY selected.reports DESC,selected.fingerprint",
                 [*args, limit, offset],
             )
         ]
+        total = rows[0]["total_groups"] if rows else (
+            c.execute("SELECT count(*) FROM (" + sql + ")", args).fetchone()[0]
+            if offset else 0
+        )
+        for row in rows:
+            row.pop("sample_id")
+            row.pop("total_groups")
         return dict(
             items=rows,
             total=total,

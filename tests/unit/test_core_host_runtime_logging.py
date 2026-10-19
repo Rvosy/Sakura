@@ -86,6 +86,31 @@ def _records(stream: io.BytesIO) -> list[dict[str, object]]:
     return records
 
 
+def test_retired_plugin_recovery_is_logged_at_startup_without_refresh_spam(tmp_path):
+    from app.core_host.plugin_application import PluginApplicationHost
+    from app.plugin_sdk.sakura_tools import ToolRegistry
+
+    retired = tmp_path / "plugins/builtin/sakura_mem0"
+    retired.mkdir(parents=True)
+    (retired / "plugin.yaml").write_text("id: [")
+    stream = io.BytesIO()
+    bridge = install_runtime_logging(stream)
+    try:
+        application = PluginApplicationHost(tmp_path, "upgrade-logging", ToolRegistry())
+        try:
+            for _ in range(3):
+                application.refresh_inventory()
+        finally:
+            application.close()
+    finally:
+        bridge.close()
+    recovery = [r for r in _records(stream) if r["event"] == "plugin.upgrade.retired_bundled_ignored"]
+    assert len(recovery) == 1
+    assert recovery[0]["severity"] == "info"
+    assert recovery[0]["attributes"]["plugin_id"] == "sakura.memory.mem0"
+    assert recovery[0]["attributes"]["action"] == "install_or_repair_user_plugin"
+
+
 def test_startup_failure_keeps_its_event_and_original_migration_cause() -> None:
     from app.core_host.assistant_adapter import report_assistant_failure
 

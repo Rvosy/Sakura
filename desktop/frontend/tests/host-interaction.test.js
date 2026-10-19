@@ -70,8 +70,8 @@ test("same-generation session publication restores revoked UI facts without user
       return { accepted: true };
     },
   });
-  const publication = revision => ({ type: "lifecycle", generationId: generation, revision });
-  await controller.handleLifecycle(publication(1));
+  const publication = () => ({ type: "lifecycle", generationId: generation });
+  await controller.handleLifecycle(publication());
   assert.equal(remoteIdle, true);
   const first = calls.length;
   await controller.update();
@@ -80,19 +80,15 @@ test("same-generation session publication restores revoked UI facts without user
   // Applying model settings replaces the Core session and revokes ChatHost UI facts,
   // while the current character, generation, screen-session ID and idle state stay put.
   remoteIdle = false;
-  await controller.handleLifecycle(publication(2));
+  await controller.handleLifecycle(publication());
   assert.equal(remoteIdle, true);
   assert.equal(calls.length, first + 2);
   assert.equal(calls.at(-1)[1].payload.sessionId, "same-session");
-  await controller.handleLifecycle(publication(2));
-  await controller.handleLifecycle(publication(1));
-  await controller.update();
-  assert.equal(calls.length, first + 2, "replayed lifecycle events do not republish");
 
   generation = "g2";
-  await controller.handleLifecycle({ type: "lifecycle", generationId: "g1", revision: 3 });
+  await controller.handleLifecycle({ type: "lifecycle", generationId: "g1" });
   assert.equal(calls.length, first + 2, "old generations cannot trigger publication");
-  await controller.handleLifecycle(publication(1));
+  await controller.handleLifecycle(publication());
   assert.equal(calls.at(-1)[1].payload.generationId, "g2");
   controller.dispose();
 });
@@ -113,12 +109,12 @@ test("a lifecycle publication during an in-flight facts update survives its late
       return { accepted: true };
     },
   });
-  const publication = revision => ({ type: "lifecycle", generationId: "g", revision });
-  const oldUpdate = controller.handleLifecycle(publication(1));
+  const publication = () => ({ type: "lifecycle", generationId: "g" });
+  const oldUpdate = controller.handleLifecycle(publication());
   await entered.promise;
   // The new Core session clears UI facts while the first acknowledgement is in flight.
   remoteIdle = false;
-  await controller.handleLifecycle(publication(2));
+  await controller.handleLifecycle(publication());
   assert.equal(stateCalls, 1);
   acknowledgement.resolve({ accepted: true });
   await oldUpdate;

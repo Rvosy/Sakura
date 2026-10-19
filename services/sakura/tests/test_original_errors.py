@@ -20,20 +20,28 @@ def original_report(message, **overrides):
 
 def test_original_error_survives_ingestion_details_and_export(client, tmp_path):
     payload = original_report("no such table: memories; see https://example.test/help")
+    payload["stack"] = [{"file": "migration.py", "function": "import_rows", "line": 42}]
+    payload["breadcrumbs"] = [{"offsetMs": -10, "source": "core", "severity": "info", "channel": "runtime", "event": "migration.started"}]
     assert client.post("/v3/errors", json=payload).status_code == 202
     assert client.post("/v3/errors", json=payload).status_code == 202
     listing = client.get("/admin/api/v2/records/errors").json()
     assert listing["total"] == 1
     assert listing["items"][0]["evidence"] == payload["evidence"]
+    assert listing["items"][0]["stack"] == payload["stack"]
+    assert listing["items"][0]["breadcrumbs"] == payload["breadcrumbs"]
     details = client.get(f'/admin/api/reports/{payload["reportId"]}').json()
     assert details["evidence"] == payload["evidence"]
     assert details["rawReport"]["evidence"] == payload["evidence"]
+    assert details["stack"] == payload["stack"]
+    assert details["breadcrumbs"] == payload["breadcrumbs"]
     bundle = tmp_path / "report.zip"
     export_bundle(bundle, Filters())
     with zipfile.ZipFile(bundle) as archive:
         rows = [json.loads(line) for line in archive.read("error_events.jsonl").splitlines()]
         assert rows[0]["report"]["evidence"] == payload["evidence"]
         assert rows[0]["evidence"] == payload["evidence"]
+        assert rows[0]["stack"] == payload["stack"]
+        assert rows[0]["breadcrumbs"] == payload["breadcrumbs"]
     assert client.get("/admin/api/v2/records/errors", params={"q": "no such table"}).json()["total"] == 1
 
 
@@ -52,6 +60,44 @@ def test_grouping_compares_actual_cause_across_runs_and_keeps_legacy(client):
     old = report()
     assert client.post("/v2/errors", json=old).status_code == 202
     assert client.get(f'/admin/api/reports/{old["reportId"]}').json()["evidence"] is None
+
+
+def test_quality_recognizes_original_stack(client):
+    payload = original_report("stack-only location")
+    payload["evidence"].pop("exception_stack")
+    payload["details"].pop("file")
+    payload["details"].pop("line")
+    payload["stack"] = [{"file": "migration.py", "line": 42}]
+    assert client.post("/v3/errors", json=payload).status_code == 202
+    quality = client.get("/admin/api/v2/quality").json()
+    assert quality["items"][0]["missing_location"] == 0
+
+
+def test_compaction_preserves_existing_evidence_and_pagination(client, tmp_path):
+    import db
+    from compact_database import remove_duplicate_evidence
+
+    payloads = [original_report(message, runId=f"run-{i}") for i, message in enumerate(("first failure", "second failure", "third failure"))]
+    for index, payload in enumerate(payloads):
+        payload["error"]["fingerprint"] = f"compact-{index}"
+        assert client.post("/v3/errors", json=payload).status_code == 202
+    legacy = report()
+    assert client.post("/v2/errors", json=legacy).status_code == 202
+    with db.connect() as connection:
+        connection.execute("UPDATE error_events SET stack_json='[]',breadcrumbs_json='[]' WHERE report_json IS NOT NULL")
+        connection.execute("UPDATE error_events SET stack_json=? WHERE report_id=?", (json.dumps([{"file": "retained.py"}]), payloads[0]["reportId"]))
+    before = client.get("/admin/api/v2/records/errors").json()
+    with db.connect() as connection:
+        remove_duplicate_evidence(connection)
+    assert client.get("/admin/api/v2/records/errors").json() == before
+    assert client.get(f'/admin/api/reports/{payloads[0]["reportId"]}').json()["stack"] == [{"file": "retained.py"}]
+    first = client.get("/admin/api/v2/groups?limit=2").json()
+    second = client.get("/admin/api/v2/groups", params={"limit": 2, "cursor": first["nextCursor"]}).json()
+    assert first["total"] == second["total"] == 4
+    assert len(first["items"]) == len(second["items"]) == 2
+    assert {row["fingerprint"] for row in first["items"]}.isdisjoint(row["fingerprint"] for row in second["items"])
+    beyond = client.get("/admin/api/v2/groups?limit=2&cursor=10").json()
+    assert beyond["total"] == 4 and beyond["items"] == []
 
 
 def test_original_report_still_rejects_wrong_types_and_oversize_body(client):

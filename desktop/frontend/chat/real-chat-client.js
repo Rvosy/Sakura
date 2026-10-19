@@ -55,7 +55,6 @@ export function createRealChatClient({
   let lifecycleTimer = null;
   let lifecycleBusy = false;
   let lifecycleSignature = "";
-  let lifecycleRevision = 0;
   let lifecycleStatus = "startup";
   let currentIdentity = null;
   let interactionEpoch = 0;
@@ -99,7 +98,6 @@ export function createRealChatClient({
         generationId: supervisor.generationId,
         generationNumber: supervisor.generationNumber,
       });
-      lifecycleRevision = 0;
       lifecycleSignature = "";
       preparedGenerationId = supervisor.generationId === initialPreparedGenerationId
         ? supervisor.generationId
@@ -115,13 +113,11 @@ export function createRealChatClient({
     if (signature === lifecycleSignature) return;
     lifecycleSignature = signature;
     lifecycleStatus = status;
-    lifecycleRevision += 1;
     onEvent(Object.freeze({
       type: "lifecycle",
       status,
       generationId: supervisor.generationId,
       generationNumber: supervisor.generationNumber,
-      revision: lifecycleRevision,
       canRetry: Boolean(canRetry),
       failure,
     }));
@@ -173,7 +169,6 @@ export function createRealChatClient({
           prepared = await prepareGeneration(Object.freeze({
             generationId: supervisor.generationId,
             generationNumber: supervisor.generationNumber,
-            snapshotRevision: publication.snapshot.revision,
             characterId,
             refresh: preparedGenerationId === supervisor.generationId,
           })) !== false;

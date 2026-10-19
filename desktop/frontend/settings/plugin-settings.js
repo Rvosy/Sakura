@@ -626,7 +626,7 @@ export function createPluginSettingsFeature({
         const activity = pluginLiveStatus(plugin);
         const selected = plugin.id === pluginState.selectedId;
         const update = availableUpdates.find(item => item.id === plugin.plugin_id);
-        const signature = JSON.stringify([update, plugin.name, plugin.description, plugin.source, metadata, activity, selected]);
+        const signature = JSON.stringify([update, plugin.name, plugin.version, plugin.directory_name, plugin.description, plugin.source, metadata, activity, selected]);
         let card = oldCards.get(plugin.id);
         if (!card || card.dataset.signature !== signature) {
           card = pluginNode('button', `plugin-card${selected ? ' is-selected' : ''}`);
@@ -642,6 +642,7 @@ export function createPluginSettingsFeature({
           titleLine.append(title, live);
           if (update) titleLine.append(pluginNode("span", "plugin-system-problems", "可更新"));
           main.append(titleLine);
+          if (plugin.reason_code === 'PLUGIN_ID_CONFLICT') main.append(pluginNode('span', 'card-desc', `v${plugin.version} · ${plugin.directory_name}`));
           if (plugin.description) main.append(pluginNode('span', 'card-desc', plugin.description));
           card.append(pluginIcon(plugin), main);
           card.addEventListener('click', () => selectManagedPlugin(plugin.id));
@@ -2422,7 +2423,7 @@ export function createPluginSettingsFeature({
       fields.pluginDetail.append(section);
     }
     const meta = pluginNode('dl', 'detail-meta');
-    for (const [label, value] of [['版本', plugin.version], ['作者', plugin.author || '未知'], ['安装来源', plugin.source === 'user' ? '用户安装' : 'Sakura 内置'], ['插件类型', pluginPresentation.pluginKinds[metadata.kind]]]) {
+    for (const [label, value] of [['版本', plugin.version], ['安装目录', plugin.directory_name], ['作者', plugin.author || '未知'], ['安装来源', plugin.source === 'user' ? '用户安装' : 'Sakura 内置'], ['插件类型', pluginPresentation.pluginKinds[metadata.kind]]]) {
       meta.append(pluginNode('dt', '', label), pluginNode('dd', '', value));
     }
     fields.pluginDetail.append(meta);
@@ -2467,7 +2468,8 @@ export function createPluginSettingsFeature({
       const result = await runtimePluginController.install(sourceKind);
       if (!result) return;
       installedId = result.installId;
-      notify("已安装", "success");
+      if (result.warning) setError(result.warning.detail, result.warning.message);
+      else notify(result.managementAction === "updated" ? `已从 v${result.previousVersion} 更新至 v${result.version}` : "已安装", "success");
     } catch (error) {
       setError(error, "安装插件失败");
     } finally {
@@ -2484,7 +2486,7 @@ export function createPluginSettingsFeature({
       return;
     }
     const confirmed = await confirmAction(
-      `卸载“${plugin.name || plugin.id}”？`,
+      `卸载“${plugin.name || plugin.id}”（v${plugin.version}，${plugin.directory_name}）？`,
       { title: "卸载插件", confirmText: "卸载", cancelText: "取消", danger: true },
     );
     if (!confirmed) return;
@@ -2598,6 +2600,7 @@ export function createPluginSettingsFeature({
         plugin_id: plugin.pluginId,
         name: plugin.name,
         version: plugin.version,
+        directory_name: plugin.directoryName,
         author: plugin.author,
         description: plugin.description,
         presentation: plugin.presentation,

@@ -44,7 +44,7 @@ def test_legacy_version_declarations_do_not_block_install_or_runtime(tmp_path, c
         record = host.inventory().records[0]
         assert record.runtime_eligible
         assert record.reason_code == "READY"
-        assert (installed.code_dir / "imported").read_text() == "yes"
         assert host.set_enabled(record.install_id, True)["applicationState"] == "applied"
+        assert (installed.code_dir / "imported").read_text() == "yes"
     finally:
         host.close()

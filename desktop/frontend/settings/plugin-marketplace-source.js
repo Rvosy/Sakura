@@ -123,7 +123,7 @@ export function createMarketplaceSource({ invoke, Channel, host, randomUUID = ()
       signal.addEventListener("abort", cancel, { once: true });
       try {
         return await invoke("settings_marketplace_install", { requestId, pluginId: plugin.id, version: version.number,
-          windowGeneration: current.windowGeneration, coreGenerationId: current.coreGenerationId, revision: current.revision, progress });
+          windowGeneration: current.windowGeneration, coreGenerationId: current.coreGenerationId, progress });
       } finally { signal.removeEventListener("abort", cancel); }
     },
   };

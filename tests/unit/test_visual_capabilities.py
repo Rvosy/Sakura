@@ -44,12 +44,10 @@ def test_disabled_visual_declaration_survives_discovery_and_startup_serializatio
     spec = inventory.runtime_specs[0]
     assert spec.to_plugin_spec(tmp_path).visuals == record.visuals
     assert PluginDiscovery(tmp_path).discover()[0].visuals == record.visuals
-    before = inventory.revision
     manifest = tmp_path / "plugins/user/visual/plugin.yaml"
     raw = yaml.safe_load(manifest.read_text(encoding="utf-8"))
     raw["visuals"][0]["contract"] = 2
     manifest.write_text(yaml.safe_dump(raw), encoding="utf-8")
-    assert PluginInventory(tmp_path).scan().revision != before
     assert PluginInventory(tmp_path).scan().records[0].visuals[0].contract == 2
 
 

@@ -113,7 +113,7 @@ def test_production_application_uses_v4_host_contributions(tmp_path: Path) -> No
         assert by_id["broken_plugin"]["supported"] is False
         assert by_id["broken_plugin"]["reasonCode"] == "API_VERSION_UNSUPPORTED"
         assert set(snapshot) == {
-            "schemaVersion", "revision", "state", "reasonCode", "plugins"
+            "schemaVersion", "state", "reasonCode", "plugins"
         }
         assert "entry" not in repr(snapshot)
         assert str(tmp_path) not in repr(snapshot)

@@ -14,7 +14,7 @@ import yaml
 
 from app.plugins.models import PluginSpec
 from app.plugins.visuals import visual_capabilities_from_manifest
-from app.plugins.inventory import PluginDesiredStateStore
+from app.plugins.inventory import PluginDesiredStateStore, RETIRED_BUNDLED_PLUGINS
 from app.core.runtime_log import diagnostic_attributes, log_event
 from app.storage.paths import StoragePaths
 from app.storage.runtime_roots import DistributionPaths, RuntimeRoots, coerce_runtime_roots
@@ -78,6 +78,8 @@ class PluginDiscovery:
             for path in sorted(StoragePaths(self.base_dir).user_plugins_dir.glob("*/plugin.yaml"))
         )
         for manifest_path, source in manifest_paths:
+            if source == "bundled" and manifest_path.parent.name in RETIRED_BUNDLED_PLUGINS.values():
+                continue
             try:
                 raw = _load_yaml(manifest_path)
             except (OSError, UnicodeDecodeError, yaml.YAMLError, ValueError) as exc:
@@ -98,6 +100,8 @@ class PluginDiscovery:
                 continue
             spec = plugin_spec_from_manifest(raw, manifest_path.parent, source=source)
             if spec is not None:
+                if source == "bundled" and spec.plugin_id in RETIRED_BUNDLED_PLUGINS:
+                    continue
                 specs.append(spec)
         return specs
 
