@@ -6,7 +6,7 @@ on:
       mode:
         description: '测试签名仅上传测试产物；publish 发布正式版本'
         type: choice
-        options: [test-signing, publish]
+        options: [test-signing, diagnostic-signing, publish]
         default: test-signing
         required: true
 
@@ -19,7 +19,96 @@ env:
   SIGNPATH_PROJECT_SLUG: Sakura
 
 jobs:
+  # Temporary connector diagnosis only: reuses a known unsigned binary, not a
+  # fresh source build and not evidence for production signing approval.
+  diagnostic-signing:
+    if: inputs.mode == 'diagnostic-signing' && github.ref == 'refs/heads/feat/signpath-signing'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Verify and retrieve the previously built unsigned artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh api repos/Rvosy/Sakura/actions/artifacts/12259301149 > artifact.json
+          python3 - <<'PY'
+          import json
+          a = json.load(open("artifact.json"))
+          assert a["id"] == 12259301149 and not a["expired"]
+          assert a["name"] == "unsigned-windows-app"
+          assert a["workflow_run"]["id"] == 39407831834
+          assert a["workflow_run"]["head_sha"] == "b8ec03ea94d4212572f432c5e34a1c24f5ae0ba1"
+          assert a["workflow_run"]["head_branch"] == "feat/signpath-signing"
+          assert a["digest"] == "sha256:bd89e2ab147a26954e4d3de5684a788bae4554037a890c19cee83be18e70cdb8"
+          PY
+          gh api repos/Rvosy/Sakura/actions/artifacts/12259301149/zip > source.zip
+          python3 - <<'PY'
+          import hashlib, pathlib, zipfile
+          assert hashlib.sha256(pathlib.Path("source.zip").read_bytes()).hexdigest() == "bd89e2ab147a26954e4d3de5684a788bae4554037a890c19cee83be18e70cdb8"
+          with zipfile.ZipFile("source.zip") as z:
+              assert z.namelist() == ["sakura.exe"], "Unexpected artifact contents"
+              assert z.getinfo("sakura.exe").file_size < 150_000_000
+              pathlib.Path("diagnostic-input").mkdir()
+              pathlib.Path("diagnostic-input/sakura.exe").write_bytes(z.read("sakura.exe"))
+          PY
+          {
+            echo 'TEST ONLY: connector diagnostic, not a fresh source build.'
+            echo 'Reused unsigned sakura.exe from run 39407831834, artifact 12259301149.'
+            echo 'Original source: b8ec03ea94d4212572f432c5e34a1c24f5ae0ba1; version 1.3.6.'
+            echo 'The original ZIP digest was checked before extraction. The binary is not executed.'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the reused binary under this diagnostic run
+        id: diagnostic-artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: TEST-ONLY-reused-unsigned-windows-app
+          path: diagnostic-input/sakura.exe
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Retrieve the pinned official SignPath action
+        uses: actions/checkout@v6
+        with:
+          repository: SignPath/github-action-submit-signing-request
+          ref: f6d04783b4569d051e0c80105fe66e82819d0092
+          path: signpath-action
+          persist-credentials: false
+
+      - name: Expose only the official action HTTP response status messages
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path("signpath-action/index.js")
+          s = p.read_text()
+          needle = 'core.debug(`Received response:'
+          assert s.count(needle) == 2, "Official action logging changed; stop for review"
+          p.write_text(s.replace(needle, 'core.info(`Received response:'))
+          PY
+
+      - name: Diagnose the existing connector with the test policy only
+        uses: ./signpath-action
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ env.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: Sakura
+          signing-policy-slug: test-signing
+          artifact-configuration-slug: windows-app
+          github-artifact-id: ${{ steps.diagnostic-artifact.outputs.artifact-id }}
+          wait-for-completion: true
+          wait-for-completion-timeout-in-seconds: 600
+          parameters: |
+            version: "1.3.6"
+
+
   metadata:
+    if: inputs.mode != 'diagnostic-signing'
     runs-on: ubuntu-24.04
     outputs:
       matrix: ${{ steps.metadata.outputs.matrix }}
