@@ -37,3 +37,27 @@ def test_import_uses_installed_helper_without_changing_disabled_plugin(roots):
 def test_import_explains_which_plugin_must_be_installed(roots):
     with pytest.raises(ValueError, match="sakura.memory.mem0.*插件市场"):
         plugin_support.migration_module("sakura_mem0.memory")
+
+
+def test_migration_loads_private_windows_dependency(roots, monkeypatch):
+    from types import SimpleNamespace
+    from app.plugins.dependencies import PluginDependencyRoots
+
+    plugin = roots.user_root / "plugins/user/memory"
+    plugin.mkdir(parents=True)
+    (plugin / "plugin.yaml").write_text(
+        "api: 4\nid: sakura.memory.mem0\nname: Memory\nversion: 1.0.0\nentry: plugin:Plugin\n",
+        encoding="utf-8",
+    )
+    (plugin / "__init__.py").write_text("", encoding="utf-8")
+    (plugin / "memory.py").write_text("import migration_win32_fixture\nvalue = migration_win32_fixture.value\n", encoding="utf-8")
+    dependencies = roots.user_root / "dependencies"
+    (dependencies / "win32/lib").mkdir(parents=True)
+    (dependencies / "win32/lib/migration_win32_fixture.py").write_text("value = 'loaded'\n", encoding="utf-8")
+    monkeypatch.setattr(PluginDependencyRoots, "verified_root", lambda *args: dependencies)
+    monkeypatch.setattr(plugin_support, "os", SimpleNamespace(name="nt"))
+    monkeypatch.setattr(sys, "path", sys.path.copy())
+    try:
+        assert plugin_support.migration_module("sakura_mem0.memory").value == "loaded"
+    finally:
+        sys.modules.pop("migration_win32_fixture", None)

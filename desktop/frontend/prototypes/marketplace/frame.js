@@ -11,7 +11,7 @@ const bridge = createBridge(window, state, {
   pluginChanged: () => window.marketDemo?.sync(),
 });
 let downloadSources = [
-  { name: "gitproxy.mrhjx.cn", prefix: "https://gitproxy.mrhjx.cn/", enabled: true },
+  { name: "gh-proxy.com", prefix: "https://gh-proxy.com/", enabled: true },
   { name: "ghproxy.vip", prefix: "https://ghproxy.vip/", enabled: true },
   { name: "GitHub 官方", prefix: "", enabled: true },
 ];

@@ -164,14 +164,14 @@ def test_download_transport_fallback_keeps_pinned_versions_and_runs_installer(in
     assert result.returncode == 0, result.stderr
     downloads = [row["args"] for row in calls if row["name"] == "curl"]
     assert [args[-1] for args in downloads] == [
-        "https://gitproxy.mrhjx.cn/" + MINIFORGE_URL,
+        "https://gh-proxy.com/" + MINIFORGE_URL,
         "https://ghproxy.vip/" + MINIFORGE_URL,
         MINIFORGE_URL,
     ]
     assert all(args[args.index("-A") + 1] == "Sakura" for args in downloads)
     fetches = [row["args"] for row in calls if row["name"] == "git" and "fetch" in row["args"]]
     assert [args[-2:] for args in fetches] == [
-        ["https://gitproxy.mrhjx.cn/" + GPT_REPO, GPT_REF], [GPT_REPO, GPT_REF],
+        ["https://gh-proxy.com/" + GPT_REPO, GPT_REF], [GPT_REPO, GPT_REF],
     ]
     assert all(args[:2] == ["-c", "http.userAgent=Sakura"] for args in fetches)
     upstream = next(row for row in calls if row["name"] == "fake_upstream")
