@@ -127,8 +127,92 @@ jobs:
           github-artifact-id: ${{ steps.diagnostic-artifact.outputs.artifact-id }}
           wait-for-completion: true
           wait-for-completion-timeout-in-seconds: 600
+          output-artifact-directory: diagnostic-signed
           parameters: |
             version: "1.3.6"
+
+
+      - name: Retain the test-signed binary for verification only
+        if: inputs.mode == 'diagnostic-signing'
+        uses: actions/upload-artifact@v7
+        with:
+          name: TEST-ONLY-signed-verifier-fixture
+          path: diagnostic-signed/sakura.exe
+          if-no-files-found: error
+          retention-days: 7
+
+  diagnostic-verification:
+    if: inputs.mode == 'diagnostic-signing' && github.ref == 'refs/heads/feat/signpath-signing'
+    needs: diagnostic-signing
+    runs-on: windows-2025
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+          lfs: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: TEST-ONLY-signed-verifier-fixture
+          path: fixture
+      - name: Check valid signature, tampering rejection, wrong pin and trust cleanup
+        shell: pwsh
+        env:
+          TEST_CERTIFICATE_THUMBPRINT: ${{ vars.SIGNPATH_TEST_CERTIFICATE_THUMBPRINT }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $pin = $env:TEST_CERTIFICATE_THUMBPRINT
+          $root = "Cert:\CurrentUser\Root\$pin"
+          $before = Test-Path -LiteralPath $root
+          function Assert-Cleanup {
+            if ((Test-Path -LiteralPath $root) -ne $before) { throw 'Test root trust was not restored' }
+          }
+          & ./tools/release/verify_windows_signature.ps1 -Path fixture/sakura.exe -TestCertificateThumbprint $pin
+          Assert-Cleanup
+          $wrongPinRejected = $false
+          try { & ./tools/release/verify_windows_signature.ps1 -Path fixture/sakura.exe -TestCertificateThumbprint ('0' * 40) }
+          catch { $wrongPinRejected = $true }
+          if (-not $wrongPinRejected) { throw 'Wrong certificate pin was accepted' }
+          Assert-Cleanup
+          $runnerEnvironment = $env:RUNNER_ENVIRONMENT
+          $nonHostedRejected = $false
+          try {
+            $env:RUNNER_ENVIRONMENT = 'self-hosted'
+            try { & ./tools/release/verify_windows_signature.ps1 -Path fixture/sakura.exe -TestCertificateThumbprint $pin }
+            catch { $nonHostedRejected = $true }
+          } finally { $env:RUNNER_ENVIRONMENT = $runnerEnvironment }
+          if (-not $nonHostedRejected) { throw 'Non-hosted runner was accepted' }
+          Assert-Cleanup
+          # Change a hashed .text section byte, not an excluded PE checksum/certificate byte.
+          $bytes = [IO.File]::ReadAllBytes((Resolve-Path fixture/sakura.exe))
+          $pe = [BitConverter]::ToInt32($bytes, 0x3c)
+          if ([BitConverter]::ToUInt32($bytes, $pe) -ne 0x00004550) { throw 'Invalid PE fixture' }
+          $count = [BitConverter]::ToUInt16($bytes, $pe + 6)
+          $table = $pe + 24 + [BitConverter]::ToUInt16($bytes, $pe + 20)
+          $changed = $false
+          for ($i = 0; $i -lt $count; $i++) {
+            $s = $table + 40 * $i
+            $name = [Text.Encoding]::ASCII.GetString($bytes, $s, 8).Trim([char]0)
+            if ($name -eq '.text') {
+              $size = [BitConverter]::ToUInt32($bytes, $s + 16)
+              $offset = [BitConverter]::ToUInt32($bytes, $s + 20)
+              if ($size -eq 0 -or $offset -ge $bytes.Length) { throw 'Invalid .text section' }
+              $bytes[$offset] = $bytes[$offset] -bxor 1
+              $changed = $true
+              break
+            }
+          }
+          if (-not $changed) { throw 'No .text section to tamper' }
+          [IO.File]::WriteAllBytes((Join-Path $PWD 'fixture/tampered.exe'), $bytes)
+          $tamperRejected = $false
+          try { & ./tools/release/verify_windows_signature.ps1 -Path fixture/tampered.exe -TestCertificateThumbprint $pin }
+          catch { $tamperRejected = $true; Write-Host "Expected tamper rejection: $($_.Exception.Message)" }
+          if (-not $tamperRejected) { throw 'Tampered PE was accepted' }
+          Assert-Cleanup
+          Write-Host 'PASS: valid signed PE; wrong pin rejected; tampered .text rejected; trust restored. No binary executed.'
 
 
   metadata:
