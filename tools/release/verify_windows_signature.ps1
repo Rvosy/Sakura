@@ -21,11 +21,11 @@ if ($TestCertificateThumbprint) {
         throw "测试签名证书与配置不符：$Path"
     }
     # 仅临时信任已固定指纹的公开测试证书；仍要求 Windows 完整验签为 Valid。
-    $store = [System.Security.Cryptography.X509Certificates.X509Store]::new('Root', 'CurrentUser')
+    $store = [System.Security.Cryptography.X509Certificates.X509Store]::new('Root', 'LocalMachine')
     $inserted = $false
     $certificate = $signature.SignerCertificate
     try {
-        Write-Host 'Signature verification: opening CurrentUser Root'
+        Write-Host 'Signature verification: opening LocalMachine Root'
         $store.Open([System.Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite)
         $existing = $store.Certificates.Find(
             [System.Security.Cryptography.X509Certificates.X509FindType]::FindByThumbprint,
