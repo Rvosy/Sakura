@@ -1,13 +1,19 @@
 """旧数据导入在独立 worker 内按需使用外置插件的兼容工具。"""
 from importlib import import_module
 from importlib.util import module_from_spec, spec_from_file_location
-from pathlib import Path
 from types import ModuleType
+import atexit
+import os
 import sys
+from contextlib import ExitStack
+
+from app.plugins.dependency_imports import dependency_import_paths, dependency_dll_handles
 
 from app.storage.runtime_roots import RuntimeRoots
 
 _roots: RuntimeRoots | None = None
+_dependency_dlls = ExitStack()
+atexit.register(_dependency_dlls.close)
 
 
 def configure_plugin_support(roots: RuntimeRoots) -> None:
@@ -35,10 +41,14 @@ def migration_module(name: str) -> ModuleType:
         raise ValueError(f"导入这部分旧数据需要插件 {plugin_id}，请先从插件市场安装后重试。")
     plugin_root = StoragePaths(_roots.user_root).user_plugins_dir / record.directory_name
     dependencies = PluginDependencyRoots(_roots.user_root).verified_root(plugin_id, plugin_root)
-    if dependencies is not None and str(dependencies) not in sys.path:
-        sys.path.append(str(dependencies))
     package_name = f"sakura_legacy_{directory}"
     if package_name not in sys.modules:
+        if dependencies is not None:
+            for path in dependency_import_paths(dependencies, windows=os.name == "nt"):
+                if str(path) not in sys.path:
+                    sys.path.append(str(path))
+            for handle in dependency_dll_handles(dependencies):
+                _dependency_dlls.enter_context(handle)
         spec = spec_from_file_location(package_name, plugin_root / "__init__.py", submodule_search_locations=[str(plugin_root)])
         package = module_from_spec(spec)
         sys.modules[package_name] = package

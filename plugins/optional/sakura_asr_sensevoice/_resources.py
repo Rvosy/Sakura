@@ -22,7 +22,7 @@ FILES = (
     ("tokens.txt", _BASE + "tokens.txt", 315894),
     ("silero_vad.onnx", "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx", 643854),
 )
-GITHUB_MIRRORS = ("https://gitproxy.mrhjx.cn/", "https://ghproxy.vip/")
+GITHUB_MIRRORS = ("https://gh-proxy.com/", "https://ghproxy.vip/")
 
 
 class Cancelled(Exception):
