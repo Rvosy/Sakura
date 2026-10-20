@@ -158,6 +158,15 @@ jobs:
         with:
           name: TEST-ONLY-signed-verifier-fixture
           path: fixture
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Run focused signing unit tests
+        shell: pwsh
+        run: |
+          python -m pip install pytest pyyaml cryptography
+          python -m pytest tests/unit/test_windows_signing.py -q
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Check valid signature, tampering rejection, wrong pin and trust cleanup
         shell: pwsh
         env:
