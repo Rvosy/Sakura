@@ -10,12 +10,42 @@ if (-not $signature.SignerCertificate) {
 }
 
 if ($TestCertificateThumbprint) {
-    if ($signature.SignerCertificate.Thumbprint -ne $TestCertificateThumbprint) {
+    if ($env:GITHUB_ACTIONS -ne 'true' -or $env:RUNNER_OS -ne 'Windows' -or
+        $env:RUNNER_ENVIRONMENT -ne 'github-hosted') {
+        throw '测试证书临时信任仅允许在 GitHub Actions Windows runner 中使用。'
+    }
+    if ($TestCertificateThumbprint -notmatch '^[0-9a-fA-F]{40}$' -or
+        $signature.SignerCertificate.Thumbprint -ne $TestCertificateThumbprint) {
         throw "测试签名证书与配置不符：$Path"
     }
-    # 测试证书不受 Windows 公共根信任；仍拒绝内容被改动等验签错误。
-    if ($signature.Status -notin @('Valid', 'NotTrusted')) {
-        throw "测试签名验证失败：$Path；$($signature.Status)：$($signature.StatusMessage)"
+    # 仅临时信任已固定指纹的公开测试证书；仍要求 Windows 完整验签为 Valid。
+    $store = [System.Security.Cryptography.X509Certificates.X509Store]::new('Root', 'CurrentUser')
+    $inserted = $false
+    $certificate = $signature.SignerCertificate
+    try {
+        $store.Open([System.Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite)
+        $existing = $store.Certificates.Find(
+            [System.Security.Cryptography.X509Certificates.X509FindType]::FindByThumbprint,
+            $TestCertificateThumbprint, $false
+        )
+        if ($existing.Count -eq 0) {
+            $store.Add($certificate)
+            $inserted = $true
+        }
+        $signature = Get-AuthenticodeSignature -LiteralPath $Path
+        if ($signature.Status -ne 'Valid' -or
+            $signature.SignerCertificate.Thumbprint -ne $TestCertificateThumbprint) {
+            throw "测试签名验证失败：$Path；$($signature.Status)：$($signature.StatusMessage)"
+        }
+        if (-not $signature.TimeStamperCertificate) {
+            throw "代码签名缺少时间戳：$Path"
+        }
+    } finally {
+        try {
+            if ($inserted) { $store.Remove($certificate) }
+        } finally {
+            $store.Close()
+        }
     }
 } else {
     if ($signature.Status -ne 'Valid') {
