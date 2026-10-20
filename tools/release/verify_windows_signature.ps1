@@ -4,7 +4,9 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+Write-Host 'Signature verification: initial Authenticode check'
 $signature = Get-AuthenticodeSignature -LiteralPath $Path
+Write-Host "Signature verification: initial status=$($signature.Status)"
 if (-not $signature.SignerCertificate) {
     throw "未找到 Windows 代码签名：$Path；$($signature.StatusMessage)"
 }
@@ -23,15 +25,19 @@ if ($TestCertificateThumbprint) {
     $inserted = $false
     $certificate = $signature.SignerCertificate
     try {
+        Write-Host 'Signature verification: opening CurrentUser Root'
         $store.Open([System.Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite)
         $existing = $store.Certificates.Find(
             [System.Security.Cryptography.X509Certificates.X509FindType]::FindByThumbprint,
             $TestCertificateThumbprint, $false
         )
         if ($existing.Count -eq 0) {
+            Write-Host 'Signature verification: adding pinned test certificate'
             $store.Add($certificate)
+            Write-Host 'Signature verification: added pinned test certificate'
             $inserted = $true
         }
+        Write-Host 'Signature verification: rechecking Authenticode'
         $signature = Get-AuthenticodeSignature -LiteralPath $Path
         if ($signature.Status -ne 'Valid' -or
             $signature.SignerCertificate.Thumbprint -ne $TestCertificateThumbprint) {
@@ -42,7 +48,11 @@ if ($TestCertificateThumbprint) {
         }
     } finally {
         try {
-            if ($inserted) { $store.Remove($certificate) }
+            if ($inserted) {
+                Write-Host 'Signature verification: removing temporary test certificate'
+                $store.Remove($certificate)
+                Write-Host 'Signature verification: temporary trust removed'
+            }
         } finally {
             $store.Close()
         }
