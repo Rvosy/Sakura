@@ -174,7 +174,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $pin = $env:TEST_CERTIFICATE_THUMBPRINT
-          $root = "Cert:\CurrentUser\Root\$pin"
+          $root = "Cert:\LocalMachine\Root\$pin"
           $before = Test-Path -LiteralPath $root
           function Assert-Cleanup {
             if ((Test-Path -LiteralPath $root) -ne $before) { throw 'Test root trust was not restored' }
