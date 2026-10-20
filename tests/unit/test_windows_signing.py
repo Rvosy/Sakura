@@ -19,7 +19,7 @@ ROOT = Path(__file__).resolve().parents[2]
 PWSH = shutil.which("pwsh")
 pytestmark = pytest.mark.skipif(not PWSH, reason="需要 PowerShell 7")
 
-# 用 Windows 验签结果替代外部证书服务，验证发布是否按结果放行。
+# 模拟正式验签及拒绝路径；测试证书的真实密码学验签由 Windows 诊断任务覆盖。
 SIGNATURE_RESULT = r'''
 function Get-AuthenticodeSignature {
     param([string]$LiteralPath)
@@ -39,7 +39,8 @@ function Get-AuthenticodeSignature {
     ("status", "thumbprint", "publisher", "timestamp", "accepted"),
     [
         ("Valid", "", "SignPath Foundation", "yes", True),
-        ("NotTrusted", "TEST-CERT", "Test certificate", "yes", True),
+        ("NotTrusted", "TEST-CERT", "Test certificate", "yes", False),
+        ("UnknownError", "", "SignPath Foundation", "yes", False),
         ("NotTrusted", "", "SignPath Foundation", "yes", False),
         ("HashMismatch", "TEST-CERT", "Test certificate", "yes", False),
         ("Valid", "OTHER-CERT", "Test certificate", "yes", False),
