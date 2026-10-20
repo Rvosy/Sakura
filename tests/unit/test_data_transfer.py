@@ -27,6 +27,17 @@ def history(root):
     return store, boundary
 
 
+def test_history_date_range_covers_all_records_of_current_character(tmp_path):
+    store, boundary = history(tmp_path)
+    request = {"action": "range", "expectedCharacterId": "sakura", "expectedGenerationId": "gen"}
+    assert boundary._transfer(request) == {"startDate": None, "endDate": None}
+    store.append(entry("earliest", "2024-02-29T23:00:00-05:00"))
+    store.append_many([entry(f"recent-{i}", "2026-10-20T08:00:00+08:00") for i in range(55)])
+    store.append(NewTimelineEntry("other", "other", "other", TimelineKind.HUMAN, "chat",
+                                 "2020-01-01T00:00:00+00:00", {"text": "其他角色"}))
+    assert boundary._transfer(request) == {"startDate": "2024-02-29", "endDate": "2026-10-20"}
+
+
 def test_history_roundtrip_merge_and_text(tmp_path):
     source, exporter = history(tmp_path / "source")
     original = entry("old", "2024-01-02T10:00:00+08:00")

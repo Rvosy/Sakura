@@ -162,6 +162,9 @@ class HistoryBoundary:
         if payload["expectedCharacterId"] != character_id:
             raise HistoryBoundaryError("HISTORY_CHARACTER_MISMATCH", "角色已变化，请重新打开导入导出。")
         action = payload["action"]
+        if action == "range":
+            start, end = self._timeline.date_range(character_id)
+            return {"startDate": start, "endDate": end}
         log_event("History", "正在处理聊天记录文件", {"character_id": character_id, "action": action},
                   event="history.transfer.started")
         if action == "export":

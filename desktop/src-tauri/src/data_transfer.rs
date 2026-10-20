@@ -5,6 +5,7 @@ pub(crate) async fn data_transfer_choose(
     window: WebviewWindow,
     export: bool,
     format: String,
+    default_name: String,
 ) -> Result<Option<String>, String> {
     if !matches!(window.label(), "history" | "settings") {
         return Err("DATA_TRANSFER_WINDOW_REQUIRED".into());
@@ -20,11 +21,7 @@ pub(crate) async fn data_transfer_choose(
     );
     let selected = if export {
         dialog
-            .set_file_name(if extension == "txt" {
-                "sakura.txt"
-            } else {
-                "sakura-data.json"
-            })
+            .set_file_name(default_name)
             .save_file()
             .await
     } else {

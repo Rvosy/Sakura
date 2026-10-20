@@ -1,11 +1,281 @@
-.data-transfer-buttons { display: inline-flex; gap: 8px; }
-.data-transfer-dialog { width: min(460px, calc(100vw - 48px)); padding: 24px; border: 1px solid var(--border, #d8dde5); border-radius: 16px; color: var(--text, #293340); background: var(--input-background, #fff); box-shadow: 0 12px 48px #0002; font: inherit; }
-.data-transfer-dialog::backdrop { background: #15223566; }
-.data-transfer-dialog h2 { margin: 0 0 16px; font-size: 20px; }
+.data-transfer-menu,
+.data-transfer-dialog {
+  --transfer-primary: var(--sakura-primary, var(--primary, #4b9ac4));
+  --transfer-primary-hover: var(--sakura-primary-hover, var(--primary-hover, #3b83aa));
+  --transfer-text: var(--sakura-text, var(--text, #27445a));
+  --transfer-muted: var(--sakura-secondary-text, var(--secondary-text, #54768b));
+  --transfer-bg: var(--sakura-input-bg, var(--input-background, #fff));
+  --transfer-panel: var(--sakura-panel-bg, var(--panel-background, #eaf5fa));
+  --transfer-border: var(--sakura-border, var(--border, #accfde));
+  --transfer-ring: color-mix(in srgb, var(--transfer-primary) 32%, transparent);
+  --transfer-ease: var(--ease, cubic-bezier(.22, 1, .36, 1));
+  color: var(--transfer-text);
+}
+
+.data-transfer-menu { display: inline-flex; flex: none; }
+.data-transfer-menu button,
+.data-transfer-dialog button {
+  min-width: 0;
+  padding: 8px 12px;
+  border: 1px solid var(--transfer-border);
+  border-radius: 9px;
+  background: var(--transfer-bg);
+  color: var(--transfer-text);
+  font: inherit;
+  cursor: pointer;
+  box-shadow: none;
+  transition: background-color 160ms ease, border-color 160ms ease, color 160ms ease, transform 160ms var(--transfer-ease);
+}
+.data-transfer-menu .data-transfer-trigger {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border-color: transparent;
+  background: transparent;
+  color: var(--transfer-muted);
+}
+.data-transfer-trigger .sakura-icon { width: 20px; height: 20px; }
+.data-transfer-trigger[aria-expanded="true"] { background: var(--transfer-panel); color: var(--transfer-primary); }
+.data-transfer-menu button:active,
+.data-transfer-dialog button:active { transform: scale(.97); }
+.data-transfer-menu button:hover,
+.data-transfer-dialog button:hover { background: var(--transfer-panel); }
+.data-transfer-menu :focus-visible,
+.data-transfer-dialog :focus-visible {
+  outline: 3px solid var(--transfer-ring);
+  outline-offset: 2px;
+}
+.data-transfer-actions {
+  position: fixed;
+  inset: auto;
+  width: 180px;
+  margin: 0;
+  padding: 5px;
+  border: 1px solid var(--transfer-border);
+  border-radius: 11px;
+  background: var(--transfer-bg);
+  color: var(--transfer-text);
+  box-shadow: 0 8px 24px color-mix(in srgb, var(--transfer-text) 12%, transparent);
+  transform-origin: top right;
+}
+.data-transfer-actions button {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  border: 0;
+  text-align: left;
+}
+.data-transfer-dialog {
+  width: min(460px, calc(100vw - 32px));
+  max-height: calc(100dvh - 32px);
+  padding: 24px;
+  overflow-y: auto;
+  border: 1px solid var(--transfer-border);
+  border-radius: 16px;
+  background: var(--transfer-bg);
+  box-shadow: 0 16px 48px color-mix(in srgb, var(--transfer-text) 18%, transparent);
+  font: inherit;
+}
+.data-transfer-dialog h2 { margin: 0; color: inherit; font-size: 20px; }
+.data-transfer-dialog h2:focus { outline: none; }
 .data-transfer-dialog p { line-height: 1.6; overflow-wrap: anywhere; }
-.data-transfer-dialog [data-options] { display: grid; gap: 12px; }
-.data-transfer-dialog label { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-.data-transfer-dialog select, .data-transfer-dialog input, .data-transfer-dialog button { padding: 8px 12px; border: 1px solid var(--border, #cbd2dc); border-radius: 8px; background: var(--input-background, #fff); color: inherit; font: inherit; }
-.data-transfer-dialog footer { display: flex; justify-content: flex-end; gap: 10px; margin-top: 20px; }
-.data-transfer-dialog [data-run] { background: var(--panel-background, #edf4ff); }
-.data-transfer-dialog button:disabled { opacity: .6; }
+.data-transfer-description { margin: 8px 0 20px; color: var(--transfer-muted); font-size: 13px; }
+.data-transfer-dialog fieldset { min-width: 0; margin: 0; padding: 0; border: 0; }
+.data-transfer-formats { display: grid; gap: 8px; }
+.data-transfer-formats legend { margin-bottom: 10px; font-size: 13px; color: var(--transfer-muted); }
+.data-transfer-format {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 13px;
+  border: 1px solid var(--transfer-border);
+  border-radius: 10px;
+  cursor: pointer;
+  transition: background-color 160ms ease, border-color 160ms ease;
+}
+.data-transfer-format:has(input:checked) {
+  border-color: var(--transfer-primary);
+  background: color-mix(in srgb, var(--transfer-primary) 8%, var(--transfer-bg));
+}
+.data-transfer-format:hover { background: var(--transfer-panel); }
+.data-transfer-format input[type="radio"] {
+  appearance: none;
+  flex: none;
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--transfer-border);
+  border-radius: 50%;
+  background: var(--transfer-bg);
+  box-shadow: none;
+}
+.data-transfer-format input:checked {
+  border: 5px solid var(--transfer-primary);
+}
+.data-transfer-format strong { display: block; font-size: 14px; font-weight: 600; }
+.data-transfer-format small { display: block; margin-top: 3px; font-size: 12px; color: var(--transfer-muted); }
+.data-transfer-range { margin-top: 20px; }
+.data-transfer-dialog .date-range-trigger {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 10px 12px;
+  border-color: transparent;
+  background: transparent;
+  font-size: 13px;
+  text-align: left;
+}
+.date-range-trigger > span:not(.sakura-icon) { margin-left: auto; color: var(--transfer-muted); }
+.date-range-trigger .icon-chevron-down { transition: transform 180ms var(--transfer-ease); }
+.date-range-trigger[aria-expanded="true"] .icon-chevron-down { transform: rotate(180deg); }
+.date-range-panel {
+  position: fixed;
+  inset: 0;
+  width: min(510px, calc(100vw - 32px));
+  max-height: calc(100dvh - 32px);
+  margin: auto;
+  padding: 20px;
+  overflow-y: auto;
+  border: 1px solid var(--transfer-border);
+  border-radius: 12px;
+  background: var(--transfer-bg);
+  color: var(--transfer-text);
+  box-shadow: 0 12px 36px color-mix(in srgb, var(--transfer-text) 16%, transparent);
+  font: inherit;
+  transform-origin: center;
+  visibility: visible;
+}
+.data-transfer-dialog:has(.date-range-panel[open]) { visibility: hidden; }
+.date-range-panel h2 { margin-bottom: 18px; }
+.data-transfer-dialog .date-range-panel:focus { outline: none; }
+.date-range-presets { display: flex; flex-wrap: wrap; gap: 6px; padding-bottom: 12px; border-bottom: 1px solid var(--transfer-border); }
+.date-range-presets button { padding: 5px 10px; font-size: 12px; }
+.date-range-presets button[aria-pressed="true"] { color: var(--transfer-primary); border-color: var(--transfer-primary); background: var(--transfer-panel); }
+.date-range-layout { display: grid; grid-template-columns: 170px minmax(0, 1fr); gap: 14px; margin-top: 12px; }
+.date-range-fields { display: flex; flex-direction: column; gap: 9px; min-width: 0; }
+.date-range-fields p { margin: 0; font-size: 12px; }
+.date-range-hint { color: var(--transfer-muted); }
+.date-range-field {
+  display: block;
+  padding: 10px;
+  border: 1px solid var(--transfer-border);
+  border-radius: 9px;
+  color: var(--transfer-muted);
+  font-size: 12px;
+  transition: border-color 180ms ease, background-color 180ms ease, box-shadow 180ms ease;
+}
+.date-range-field.is-active {
+  border-color: var(--transfer-primary);
+  background: color-mix(in srgb, var(--transfer-primary) 5%, var(--transfer-bg));
+  box-shadow: 0 0 0 1px var(--transfer-primary);
+}
+.data-transfer-dialog .date-range-field input {
+  width: 2.4ch;
+  min-width: 0;
+  margin: 0;
+  padding: 3px 0;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--transfer-text);
+  font: inherit;
+  font-size: 13px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+.date-input-segments { display: flex; align-items: center; gap: 3px; margin-top: 5px; color: var(--transfer-muted); }
+.data-transfer-dialog .date-range-field input:first-child { width: 4.6ch; }
+.data-transfer-dialog .date-range-field input:focus {
+  outline: none;
+  box-shadow: none;
+}
+.date-range-field:focus-within { border-color: var(--transfer-primary); }
+.date-range-error { min-height: 1.6em; }
+.date-range-presets button[aria-busy="true"] { opacity: .6; }
+.date-range-actions { display: flex; gap: 8px; margin-top: auto; }
+.date-range-actions button { flex: 1; padding: 7px 10px; font-size: 13px; }
+.data-transfer-dialog [data-apply] { background: var(--transfer-primary); border-color: var(--transfer-primary); color: var(--transfer-bg); }
+.data-transfer-dialog [data-apply]:hover,
+.data-transfer-dialog [data-run]:hover { background: var(--transfer-primary-hover); border-color: var(--transfer-primary-hover); color: var(--transfer-bg); }
+.date-range-calendar { min-width: 0; padding: 9px; border-radius: 10px; background: var(--transfer-panel); overflow: hidden; }
+.date-range-month { display: flex; align-items: center; justify-content: space-between; gap: 6px; margin-bottom: 8px; }
+.date-range-month button { display: grid; place-items: center; padding: 5px; border: 0; background: transparent; font-size: 13px; }
+.date-range-month [data-prev] .sakura-icon { transform: rotate(180deg); }
+.date-range-weekdays, .date-range-days { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 2px; }
+.date-range-weekdays { margin-bottom: 5px; color: var(--transfer-muted); text-align: center; font-size: 11px; }
+.date-range-days button { height: 29px; padding: 0; border: 0; border-radius: 5px; background: transparent; font-size: 12px; }
+.date-range-days .is-outside-month { color: var(--transfer-muted); opacity: .65; }
+.date-range-days .is-in-range,
+.date-range-days .is-in-range:hover { background: color-mix(in srgb, var(--transfer-primary) 16%, transparent); }
+.date-range-days [aria-current="date"] { box-shadow: inset 0 0 0 1px var(--transfer-primary); }
+.date-range-days [aria-pressed="true"],
+.date-range-days [aria-pressed="true"]:hover { color: var(--transfer-bg); background: var(--transfer-primary); opacity: 1; }
+.data-transfer-preview {
+  padding: 16px;
+  border: 1px solid var(--transfer-border);
+  border-radius: 10px;
+  background: var(--transfer-panel);
+}
+.data-transfer-preview p { margin: 0; }
+.data-transfer-preview [data-file] { font-weight: 600; }
+.data-transfer-preview [data-source] { margin-top: 4px; font-size: 12px; color: var(--transfer-muted); }
+.data-transfer-preview dl { display: flex; gap: 16px; margin: 16px 0 0; }
+.data-transfer-preview dl > div { flex: 1; }
+.data-transfer-preview dt { color: var(--transfer-muted); font-size: 12px; }
+.data-transfer-preview dd { margin: 4px 0 0; font-size: 22px; font-weight: 600; }
+.data-transfer-dialog [data-result] { margin: 16px 0 0; font-size: 13px; white-space: pre-wrap; }
+.data-transfer-dialog [data-result]:empty { display: none; }
+.data-transfer-dialog footer { display: flex; align-items: center; gap: 8px; margin-top: 24px; }
+.data-transfer-dialog footer > span { flex: 1; }
+.data-transfer-dialog [data-run] {
+  background: var(--transfer-primary);
+  color: var(--transfer-bg);
+  border-color: var(--transfer-primary);
+}
+.data-transfer-dialog button:disabled { cursor: wait; opacity: .6; }
+.data-transfer-dialog [hidden] { display: none; }
+.data-transfer-dialog,
+.data-transfer-actions,
+.date-range-panel {
+  opacity: 0;
+  transform: translateY(6px) scale(.97);
+  transition: opacity 180ms var(--transfer-ease), transform 180ms var(--transfer-ease),
+    display 180ms allow-discrete, overlay 180ms allow-discrete;
+}
+.data-transfer-dialog[open],
+.data-transfer-actions:popover-open,
+.date-range-panel[open] { opacity: 1; transform: translateY(0) scale(1); }
+.data-transfer-dialog::backdrop {
+  background: transparent;
+  visibility: visible;
+  transition: background-color 180ms ease, display 180ms allow-discrete, overlay 180ms allow-discrete;
+}
+.data-transfer-dialog[open]::backdrop { background: color-mix(in srgb, var(--transfer-text) 36%, transparent); }
+.date-range-panel::backdrop { background: transparent; }
+@starting-style {
+  .data-transfer-dialog[open],
+  .data-transfer-actions:popover-open,
+  .date-range-panel[open] { opacity: 0; transform: translateY(6px) scale(.97); }
+  .data-transfer-dialog[open]::backdrop { background: transparent; }
+}
+@media (max-width: 520px) {
+  .date-range-layout { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .date-range-fields { display: contents; }
+  .date-range-hint, .date-range-calendar, .date-range-error, .date-range-actions { grid-column: 1 / -1; }
+  .date-range-calendar { grid-row: 3; }
+  .date-range-days button { height: 30px; }
+  .date-range-trigger > span:not(.sakura-icon) { font-size: 11px; }
+}
+@media (max-width: 400px) {
+  .data-transfer-dialog { padding: 18px; }
+  .data-transfer-dialog footer { flex-wrap: wrap; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .data-transfer-dialog, .data-transfer-dialog::backdrop, .date-range-panel::backdrop, .data-transfer-dialog *,
+  .data-transfer-menu, .data-transfer-menu * { transition: none !important; animation: none !important; }
+}

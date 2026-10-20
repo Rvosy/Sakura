@@ -205,6 +205,23 @@ class TimelineStore:
             raise TimelineDataError("TIMELINE_DATABASE_INVALID") from exc
         return _entry_from_row(row) if row is not None else None
 
+    def date_range(self, character_id: str) -> tuple[str | None, str | None]:
+        """按导出使用的记录日期，读取当前角色的起止范围。"""
+        _bounded_text("character_id", character_id, MAX_ID_CHARS)
+        if not self.path.is_file():
+            raise TimelineDataError("TIMELINE_NOT_ACTIVATED")
+        try:
+            with self._connect_existing() as connection:
+                _assert_activated_connection(connection)
+                row = connection.execute(
+                    """SELECT MIN(substr(created_at, 1, 10)), MAX(substr(created_at, 1, 10))
+                       FROM timeline_entries WHERE character_id = ?""",
+                    (character_id,),
+                ).fetchone()
+        except sqlite3.DatabaseError as exc:
+            raise TimelineDataError("TIMELINE_DATABASE_INVALID") from exc
+        return row[0], row[1]
+
     def read_all(self, character_id: str) -> list[TimelineEntry]:
         _bounded_text("character_id", character_id, MAX_ID_CHARS)
         if not self.path.is_file():

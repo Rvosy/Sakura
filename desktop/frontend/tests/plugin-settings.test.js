@@ -200,6 +200,26 @@ function collectionSnapshot(surface, generation = "generation-a") {
   return data;
 }
 
+test("Memory can open while its plugin is starting and shows records once ready", async () => {
+  const pending = snapshot();
+  pending.plugins[0].state = "starting";
+  pending.plugins[0].sections = [];
+  const ui = featureFixture(async () => queryResult("memory", "已有记忆"));
+  try {
+    ui.feature.initialize(pending);
+    assert.ok(ui.document.querySelector(".memory-archive.is-preparing"));
+    const ready = collectionSnapshot("memory");
+    ready.plugins[0].sections[1].collections[0].canTransfer = true;
+    ui.feature.initialize(ready);
+    await ui.runTimers(0);
+    assert.match(ui.document.querySelector(".memory-record-card").textContent, /已有记忆/);
+    assert.equal(ui.document.querySelector(".data-transfer-trigger").disabled, false);
+    assert.deepEqual(ui.errors, []);
+  } finally {
+    ui.feature.dispose();
+  }
+});
+
 function collectionControls(document, surface) {
   const memory = surface === "memory";
   return {
