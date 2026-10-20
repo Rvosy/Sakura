@@ -27,6 +27,9 @@ MEMORY_CONTEXT_PROVIDER_ID = "sakura.memory.mem0.recall"
 MEMORY_SETTINGS_SECTION_ID = "memory"
 MEMORY_COMPONENT_SECTION_ID = "memory_embedding_component"
 MEMORY_MANAGEMENT_SECTION_ID = "memory_management"
+MEMORY_OPTIMIZATION_SECTION_ID = "memory_optimization"
+MEMORY_INDEX_SECTION_ID = "memory_index"
+MEMORY_BACKFILL_SECTION_ID = "memory_backfill"
 MEMORY_COLLECTION_ID = "memories"
 HOST_CHAT_COMPLETED_EVENT = "sakura.host.chat.completed"
 _MAX_COLLECTION_ITEMS = 10_000
@@ -75,6 +78,8 @@ class SakuraMem0Runtime:
         self._model_task_progress: int | None = None
         self._model_task_error_code = ""
         self._model_task_thread: threading.Thread | None = None
+        self._merge_result = ""
+        self._rebuild_collection: str | None = None
         self._closed = False
 
     @property
@@ -93,6 +98,7 @@ class SakuraMem0Runtime:
                 "priority": fragment.priority,
                 "budgetHint": fragment.token_budget,
                 "sensitivity": fragment.sensitivity,
+                "metadata": dict(fragment.metadata),
             }
             for fragment in recalled.fragments
         ]
@@ -100,16 +106,31 @@ class SakuraMem0Runtime:
     def search_tool(self, arguments: Mapping[str, object]) -> dict[str, object]:
         return self._boundary.search_memory(dict(arguments), wait=False)
 
-    def remember_tool(self, arguments: Mapping[str, object]) -> dict[str, object]:
-        return self._boundary.upsert({**dict(arguments), "source": "explicit"})
+    def transfer_collection(self, request: Mapping[str, object]) -> dict:
+        return self._boundary.transfer(request)
 
-    def update_tool(self, arguments: Mapping[str, object]) -> dict[str, object]:
+    def _tool_evidence(self, invocation: Mapping[str, object] | None) -> dict:
+        if not invocation or invocation.get("characterId") != self._character_id:
+            raise ValueError("当前没有可引用的用户消息，请在用户明确要求时保存记忆。")
+        entry = invocation["humanEntry"]
+        return {"source": "user_tool", "source_turn_id": entry["turnId"],
+                "created_in_turn_id": entry["turnId"], "source_entry_ids": [entry["entryId"]],
+                "occurred_at": entry["createdAt"], "evidence_kind": "human",
+                "evidence": [{"entry_id": entry["entryId"], "turn_id": entry["turnId"],
+                              "role": "user", "quote": entry["payload"]["text"], "created_at": entry["createdAt"]}]}
+
+    def remember_tool(self, arguments: Mapping[str, object], invocation=None) -> dict[str, object]:
+        return self._boundary.upsert({**dict(arguments), **self._tool_evidence(invocation)})
+
+    def update_tool(self, arguments: Mapping[str, object], invocation=None) -> dict[str, object]:
         values = {key: value for key, value in arguments.items() if key != "memory_id"}
-        values.update({"id": arguments.get("memory_id"), "source": "explicit"})
+        values.update({"id": arguments.get("memory_id"), **self._tool_evidence(invocation)})
         return self._boundary.upsert(values)
 
-    def forget_tool(self, arguments: Mapping[str, object]) -> dict[str, object]:
-        return self._boundary.delete({"id": arguments.get("memory_id")})
+    def forget_tool(self, arguments: Mapping[str, object], invocation=None) -> dict[str, object]:
+        evidence = self._tool_evidence(invocation)
+        return self._boundary.delete({"id": arguments.get("memory_id"), "source": evidence["source"],
+                                      "evidence": evidence["evidence"]})
 
     def _combined_settings_descriptor(self) -> dict[str, object]:
         return {
@@ -176,8 +197,8 @@ class SakuraMem0Runtime:
                 {
                     "collectionId": MEMORY_COLLECTION_ID,
                     "scope": "character",
-                    "title": "记忆条目",
-                    "description": "当前角色的长期记忆。",
+                    "title": "全部记忆",
+                    "description": "",
                     "columns": [
                         {
                             "key": "content",
@@ -185,12 +206,9 @@ class SakuraMem0Runtime:
                             "type": "string",
                             "maxLength": 16_384,
                         },
-                        {"key": "layer", "label": "分层", "type": "string"},
-                        {"key": "category", "label": "类别", "type": "string"},
-                        {"key": "source", "label": "来源", "type": "string"},
-                        {"key": "importance", "label": "重要度", "type": "number", "format": "percent"},
-                        {"key": "confidence", "label": "置信度", "type": "number", "format": "percent"},
-                        {"key": "updatedAt", "label": "更新时间", "type": "datetime"},
+                        {"key": "kindLabel", "label": "分类", "type": "string"},
+                        {"key": "pinLabel", "label": "固定", "type": "string"},
+                        {"key": "updatedAt", "label": "更新于", "type": "datetime"},
                     ],
                     "fields": [
                         {
@@ -201,48 +219,22 @@ class SakuraMem0Runtime:
                             "required": True,
                             "maxLength": 16_384,
                         },
-                        {
-                            "key": "layer",
-                            "label": "分层",
-                            "type": "select",
-                            "default": "semantic",
-                            "required": True,
-                            "options": _layer_options(),
-                        },
-                        {
-                            "key": "category",
-                            "label": "类别",
-                            "type": "text",
-                            "default": "",
-                        },
-                        {
-                            "key": "source",
-                            "label": "来源",
-                            "type": "text",
-                            "default": "explicit",
-                        },
-                        {
-                            "key": "importance",
-                            "label": "重要度",
-                            "type": "number",
-                            "default": 0.5,
-                            "minimum": 0,
-                            "maximum": 1,
-                            "step": 0.05,
-                        },
-                        {
-                            "key": "confidence",
-                            "label": "置信度",
-                            "type": "number",
-                            "default": 0.8,
-                            "minimum": 0,
-                            "maximum": 1,
-                            "step": 0.05,
-                        },
+                        {"key": "layer", "label": "记住什么", "type": "select", "default": "semantic",
+                         "options": [
+                             {"label": "关于我的长期信息", "value": "core_profile"},
+                             {"label": "相处约定", "value": "procedural"},
+                             {"label": "一般事实", "value": "semantic"},
+                             {"label": "共同经历", "value": "episodic"},
+                             {"label": "当前事项", "value": "session"},
+                         ]},
+                        {"key": "pinned", "label": "固定内容", "type": "toggle", "default": True,
+                         "description": "后台整理不会改写或删除，仍按这条记忆的用途使用。"},
+                        {"key": "state", "label": "使用状态", "type": "select", "default": "active",
+                         "options": [{"label": label, "value": value} for value, label in
+                                     (("active", "继续使用"), ("completed", "事项已完成"), ("cancelled", "不再适用"))]},
+                        {"key": "evidenceText", "label": "原文依据", "type": "readonly", "default": ""},
                     ],
-                    "filters": [
-                        {"key": "layer", "label": "分层", "options": _layer_options()},
-                    ],
+                    "filters": [],
                     "searchable": True,
                     "pageSize": 25,
                     "deleteConfirmation": "确定删除这条长期记忆吗？此操作不能撤销。",
@@ -268,7 +260,7 @@ class SakuraMem0Runtime:
         )
         return {
             "sectionId": MEMORY_COMPONENT_SECTION_ID,
-            "title": "Mem0 长期记忆",
+            "title": "中文长期记忆",
             "order": 40,
             "fields": [resource],
             "actions": combined["actions"],
@@ -276,21 +268,153 @@ class SakuraMem0Runtime:
 
     def memory_management_descriptor(self) -> dict[str, object]:
         return {
-            "sectionId": MEMORY_MANAGEMENT_SECTION_ID,
-            "title": "记忆管理",
-            "order": 10,
-            "fields": [],
-            "actions": [],
+            "sectionId": MEMORY_MANAGEMENT_SECTION_ID, "title": "更新最近的记忆", "order": 10,
+            "presentation": {"component": "form", "inlineDescriptions": True},
+            "fields": [
+                {"key": "curationStatus", "label": "自动更新", "type": "status",
+                 "default": {"state": "neutral", "label": "读取中", "message": ""},
+                 "description": "自动更新会定期处理聊天，也可以在这里立即更新。"},
+                {"key": "curationResult", "label": "最近结果", "type": "readonly", "default": "", "maxLength": 16384},
+            ],
+            "actions": [{"actionId": "updateNow", "label": "立即更新"}],
         }
 
-    def memory_collection_descriptor(self) -> dict[str, object]:
-        return dict(self._combined_settings_descriptor()["collections"][0])
+    def memory_optimization_descriptor(self) -> dict:
+        return {
+            "sectionId": MEMORY_OPTIMIZATION_SECTION_ID, "title": "合并重复记忆", "order": 20,
+            "presentation": {"component": "form", "inlineDescriptions": True},
+            "fields": [
+                {"key": "duplicates", "label": "重复内容", "type": "readonly", "default": "",
+                 "description": "合并完全重复的自动记忆，保留手动编辑和固定的内容。"},
+            ],
+            "actions": [{"actionId": "mergeDuplicates", "label": "合并重复记忆"}],
+        }
+
+    def memory_index_descriptor(self) -> dict:
+        return {
+            "sectionId": MEMORY_INDEX_SECTION_ID, "title": "修复记忆检索", "order": 30,
+            "presentation": {"component": "form", "inlineDescriptions": True},
+            "fields": [
+                {"key": "indexStatus", "label": "检索索引", "type": "status",
+                 "default": {"state": "neutral", "label": "读取中", "message": ""},
+                 "description": "重新建立检索数据，帮助角色找到已保存的记忆。"},
+                {"key": "indexError", "label": "索引说明", "type": "readonly", "default": "", "maxLength": 16384},
+            ],
+            "actions": [{"actionId": "rebuildIndex", "label": "修复检索"}],
+        }
+
+    def load_management_settings(self) -> dict:
+        curation = self._boundary.settings_get()["curation"]
+        running = curation.get("running", False)
+        result = curation.get("result", {})
+        pending = curation.get("pendingTurns", 0)
+        label = ("正在更新记忆…" if running else "更新没有完成。" if result.get("error")
+                 else f"有 {pending} 轮新对话待更新。" if pending else "自动更新已开启")
+        return {
+            "curationStatus": {"state": "working" if running else "error" if result.get("error") else "ready" if pending else "neutral",
+                               "label": label, "message": ""},
+            "curationResult": result.get("error") or result.get("message") or (
+                f"{'本次已处理' if running else '最近一次处理了'} {result['processed']} 条消息，新增 {result['created']} 条，更新 {result['updated']} 条记忆。"
+                if "processed" in result else ""),
+        }
+
+    def load_optimization_settings(self) -> dict:
+        groups = self._boundary.memory_store.duplicate_groups()
+        return {
+            "duplicates": f"发现 {len(groups)} 组重复内容，合并后可减少 {sum(len(items) - 1 for items in groups)} 条记忆。"
+                          if groups else self._merge_result,
+        }
+
+    def load_index_settings(self) -> dict:
+        index = self._boundary.memory_store.index_status()
+        state = index.get("state", "missing")
+        repaired = state == "ready" and self._rebuild_collection is not None and index["collection"] != self._rebuild_collection
+        labels = {"loading": "正在准备检索…", "building": "正在修复检索…",
+                  "indexing": "正在更新检索数据…", "ready": "检索已修复。" if repaired else "检索已就绪", "failed": "检索数据更新失败。", "stopped": "检索已停止。"}
+        return {
+            "indexStatus": {"state": "working" if state in {"loading", "building", "indexing"} else "error" if state == "failed" else "ready" if repaired else "neutral",
+                            "label": labels.get(state, "待用"),
+                            "message": f"已处理 {index.get('completed', 0)} / {index.get('total', 0)} 条。" if state in {"building", "indexing"} else ""},
+            "indexError": index.get("error", ""),
+        }
+
+    def update_now(self, _values: Mapping[str, object]) -> dict:
+        self._boundary.update_now(self._timeline)
+        return {"values": self.load_management_settings()}
+
+    def merge_duplicates(self, _values: Mapping[str, object]) -> dict:
+        result = self._boundary.merge_duplicates()
+        self._merge_result = f"已合并 {result['merged']} 条重复记忆。" if result["merged"] else "没有需要合并的重复记忆。"
+        return {"values": self.load_optimization_settings()}
+
+    def rebuild_index(self, _values: Mapping[str, object]) -> dict:
+        previous = self._boundary.memory_store.index_status()["collection"]
+        self._boundary.rebuild_index()
+        self._rebuild_collection = previous
+        return {"values": self.load_index_settings()}
+
+    def backfill_descriptor(self) -> dict:
+        return {
+            "sectionId": MEMORY_BACKFILL_SECTION_ID,
+            "title": "从旧聊天补充记忆",
+            "order": 10,
+            "presentation": {"component": "form", "collapsible": True, "inlineDescriptions": True},
+            "fields": [
+                {"key": "backfillStatus", "label": "整理进度", "type": "status",
+                 "default": {"state": "neutral", "label": "尚未开始", "message": ""}},
+                {"key": "startDate", "label": "从哪一天", "type": "text", "default": "",
+                 "description": "日期格式为 YYYY-MM-DD。只整理当前角色的聊天，已处理的原文会跳过。"},
+                {"key": "endDate", "label": "到哪一天", "type": "text", "default": "",
+                 "description": "包含当天。取消后再次选择相同日期，可以继续整理。"},
+            ],
+            "actions": [
+                {"actionId": "backfill", "label": "开始整理"},
+                {"actionId": "cancelBackfill", "label": "停止整理"},
+            ],
+        }
+
+    def load_backfill_settings(self) -> dict:
+        snapshot = self._boundary.settings_get()
+        backfill = snapshot.get("backfill", {})
+        config = self._config_getter()
+        state = backfill.get("status", "")
+        labels = {"running": "正在整理", "completed": "整理完成", "cancelled": "已停止，可继续", "failed": "整理失败"}
+        progress = f"已处理 {backfill.get('completed', 0)} / {backfill.get('total', 0)} 条消息" if state else "从已有聊天中补充记忆，并核对已有内容。"
+        return {
+            "backfillStatus": {"state": {"running": "working", "failed": "error", "completed": "ready"}.get(state, "neutral"),
+                               "label": labels.get(state, "尚未开始"),
+                               "message": "\n".join(filter(None, [progress, backfill.get("error", "")]))},
+            "startDate": config.get("backfillStartDate", backfill.get("startDate", "")),
+            "endDate": config.get("backfillEndDate", backfill.get("endDate", "")),
+        }
+
+    def save_backfill_settings(self, values: Mapping[str, object]) -> dict:
+        self._config_updater({"backfillStartDate": values.get("startDate", ""),
+                              "backfillEndDate": values.get("endDate", "")})
+        return {"applicationState": "applied"}
+
+    def start_backfill(self, values: Mapping[str, object]) -> dict:
+        self._boundary.start_backfill(self._timeline, str(values.get("startDate", "")), str(values.get("endDate", "")))
+        return {"values": self.load_backfill_settings()}
+
+    def cancel_backfill(self, _values: Mapping[str, object]) -> dict:
+        self._boundary.cancel_backfill()
+        return {"values": self.load_backfill_settings()}
+
+    def memory_collection_descriptor(self, collection_id: str = MEMORY_COLLECTION_ID) -> dict[str, object]:
+        descriptor = dict(self._combined_settings_descriptor()["collections"][0])
+        descriptor["collectionId"] = collection_id
+        if collection_id == "profile":
+            descriptor.update(title="用户画像", description="当前角色记住的身份、习惯和稳定偏好。有效内容会随聊天带入，可核对原文、修改或固定。")
+            descriptor["fields"][1]["default"] = "core_profile"
+        elif collection_id == "agreements":
+            descriptor.update(title="相处约定", description="你明确提出的沟通方式与边界。有用户依据或手动固定的有效约定会随聊天带入。")
+            descriptor["fields"][1]["default"] = "procedural"
+        return descriptor
 
     def load_settings(self) -> dict[str, object]:
         snapshot = self._boundary.settings_get()
         curation = _mapping(snapshot.get("curation"))
-        slot = _mapping(snapshot.get("curationModelSlot"))
-        embedding = _mapping(snapshot.get("embedding"))
         status = str(snapshot.get("status", "degraded"))
         message = str(snapshot.get("message", "")).strip()
         return {
@@ -391,10 +515,13 @@ class SakuraMem0Runtime:
             "message": "已请求取消模型下载。" if result.get("accepted") else "当前没有可取消的下载任务。",
         }
 
-    def query_collection(self, request: Mapping[str, object]) -> dict[str, object]:
+    def query_collection(self, request: Mapping[str, object], collection_id: str = MEMORY_COLLECTION_ID) -> dict[str, object]:
         if self._boundary.status()["status"] != "ready":
             return {"items": [], "nextCursor": None, "total": 0}
         records = self._projected_records()
+        layer = {"profile": "core_profile", "agreements": "procedural"}.get(collection_id)
+        if layer:
+            records = [item for item in records if item.get("layer") == layer]
         search = str(request.get("search", "")).strip().casefold()
         filters = _mapping(request.get("filters"))
         layer = str(filters.get("layer", ""))
@@ -410,6 +537,8 @@ class SakuraMem0Runtime:
             ]
         if layer:
             records = [item for item in records if item.get("layer") == layer]
+        if "pinned" in filters:
+            records = [item for item in records if bool(item.get("pinned")) == filters["pinned"]]
         records.sort(
             key=lambda item: (str(item.get("updatedAt", "")), str(item.get("id", ""))),
             reverse=True,
@@ -440,7 +569,8 @@ class SakuraMem0Runtime:
         }
 
     def create_collection_item(self, values: Mapping[str, object]) -> dict[str, object]:
-        result = self._boundary.upsert({**dict(values), "source": values.get("source") or "explicit"})
+        writable = {key: value for key, value in values.items() if key not in {"evidenceText", "source"}}
+        result = self._boundary.upsert({**writable, "source": "manual", "pinned": values.get("pinned", True)})
         return _collection_item(_mapping(result.get("memory")))
 
     def update_collection_item(
@@ -456,9 +586,10 @@ class SakuraMem0Runtime:
             raise ValueError("MEMORY_NOT_FOUND")
         writable = {
             key: current.get(key)
-            for key in ("content", "layer", "category", "source", "importance", "confidence")
+            for key in ("content", "layer", "category", "source", "importance", "confidence", "state", "pinned", "revision")
         }
-        writable.update(values)
+        writable.update({key: value for key, value in values.items() if key not in {"evidenceText", "source"}})
+        writable["source"] = "manual"
         result = self._boundary.upsert({"id": item_id, **writable})
         return _collection_item(_mapping(result.get("memory")))
 
@@ -650,11 +781,14 @@ class SakuraMem0Plugin:
                 "providerId": MEMORY_CONTEXT_PROVIDER_ID,
                 "description": "从当前角色的本地长期记忆中选择与本轮相关的少量事实。",
                 "order": 60,
+                "scope": "turn",
             },
             runtime.context,
         ))
         tools = getattr(context, "get")("sakura.host.tools")
         for descriptor, callback in _tool_registrations(runtime):
+            if descriptor["name"] != "memory_search":
+                descriptor["invocationContext"] = True
             scope.callback(tools.register(descriptor, callback))
         settings = getattr(context, "get")("sakura.host.settings")
         scope.callback(settings.register(
@@ -675,19 +809,46 @@ class SakuraMem0Plugin:
             MEMORY_COMPONENT_SECTION_ID,
             "about",
         ))
-        scope.callback(settings.register(runtime.memory_management_descriptor()))
+        scope.callback(settings.register(
+            runtime.memory_management_descriptor(), load=runtime.load_management_settings,
+            actions={"updateNow": runtime.update_now},
+        ))
+        scope.callback(settings.register(
+            runtime.memory_optimization_descriptor(), load=runtime.load_optimization_settings,
+            actions={"mergeDuplicates": runtime.merge_duplicates},
+        ))
+        scope.callback(getattr(context, "get")("sakura.host.settings.surface-v0").register(
+            MEMORY_OPTIMIZATION_SECTION_ID, "memory",
+        ))
+        scope.callback(settings.register(
+            runtime.memory_index_descriptor(), load=runtime.load_index_settings,
+            actions={"rebuildIndex": runtime.rebuild_index},
+        ))
+        scope.callback(getattr(context, "get")("sakura.host.settings.surface-v0").register(
+            MEMORY_INDEX_SECTION_ID, "memory",
+        ))
+        scope.callback(settings.register(
+            runtime.backfill_descriptor(), load=runtime.load_backfill_settings,
+            save=runtime.save_backfill_settings,
+            actions={
+                "backfill": runtime.start_backfill,
+                "cancelBackfill": runtime.cancel_backfill,
+            },
+        ))
         scope.callback(getattr(context, "get")("sakura.host.settings.surface-v0").register(
             MEMORY_MANAGEMENT_SECTION_ID,
             "memory",
         ))
-        scope.callback(getattr(context, "get")("sakura.host.settings.collection-v0").register(
-            MEMORY_MANAGEMENT_SECTION_ID,
-            runtime.memory_collection_descriptor(),
-            query=runtime.query_collection,
-            create=runtime.create_collection_item,
-            update=runtime.update_collection_item,
-            delete=runtime.delete_collection_item,
-        ))
+        for collection_id in (MEMORY_COLLECTION_ID, "profile", "agreements"):
+            scope.callback(getattr(context, "get")("sakura.host.settings.collection-v0").register(
+                MEMORY_MANAGEMENT_SECTION_ID,
+                runtime.memory_collection_descriptor(collection_id),
+                query=lambda request, key=collection_id: runtime.query_collection(request, key),
+                create=runtime.create_collection_item,
+                update=runtime.update_collection_item,
+                delete=runtime.delete_collection_item,
+                **({"transfer": runtime.transfer_collection} if collection_id == MEMORY_COLLECTION_ID else {}),
+            ))
         scope.callback(getattr(context, "get")("sakura.host.model_slots.v2").register(
             {
                 "slotId": "curation",
@@ -829,17 +990,6 @@ def _tool_registrations(
     ]
 
 
-def _layer_options() -> list[dict[str, str]]:
-    labels = {
-        "core_profile": "核心档案",
-        "semantic": "语义记忆",
-        "episodic": "情景记忆",
-        "procedural": "程序记忆",
-        "session": "会话记忆",
-    }
-    return [{"label": labels.get(layer, layer), "value": layer} for layer in MEMORY_LAYERS]
-
-
 def _collection_item(memory: Mapping[str, object]) -> dict[str, object]:
     item_id = str(memory.get("id", ""))
     if not item_id:
@@ -851,13 +1001,17 @@ def _collection_item(memory: Mapping[str, object]) -> dict[str, object]:
             for key in (
                 "content",
                 "layer",
-                "category",
-                "source",
-                "importance",
-                "confidence",
                 "updatedAt",
+                "state",
+                "pinned",
             )
-        },
+        } | {"kindLabel": {"semantic": "一般事实", "episodic": "共同经历", "core_profile": "用户画像",
+                          "procedural": "相处约定", "session": "当前事项"}.get(memory.get("layer"), "一般事实"),
+             "pinLabel": "已固定" if memory.get("pinned") else "",
+             "evidenceText": "\n".join(
+            f"{source.get('created_at', '')} · {'用户' if source.get('role') == 'user' else '助手'}\n{source.get('quote', '')}"
+            for source in memory.get("evidence", [])
+        )},
     }
 
 

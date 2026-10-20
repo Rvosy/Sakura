@@ -68,7 +68,7 @@ class RemoteTools(ToolRegistry):
         if tool is None:
             return ToolExecutionResult(name, False, "", "未知工具。", "TOOL_NOT_FOUND")
         try:
-            return self._execute(tool, arguments)
+            return self._execute(tool, arguments, invocation=kwargs.get("invocation"))
         except OperationCancelled:
             raise
         except Exception as error:
@@ -86,9 +86,9 @@ class RemoteTools(ToolRegistry):
                                   severity="error", event="tool.request.failed")
             return ToolExecutionResult(name, False, "", "工具执行失败。", code)
 
-    def _execute(self, tool, arguments):
+    def _execute(self, tool, arguments, *, invocation=None):
         name = tool.name
-        result = self.remote.execute(tool.registration_id, name, arguments)
+        result = self.remote.execute(tool.registration_id, name, arguments, invocation or {})
         content = result.get("content")
         if isinstance(content, dict) and set(content) == {"content", "artifact"}:
             descriptor = content["artifact"]

@@ -47,6 +47,20 @@ def test_context_contract_preserves_content_scope_and_authenticated_owner() -> N
     assert service.providers() == []
 
 
+def test_retrieval_reason_survives_context_and_trace_projection():
+    from types import SimpleNamespace
+    from app.plugin_sdk.sakura_context import ContextSnapshot, ContextFragmentDecision
+    from sakura_assistant.agent.trace import prompt_metadata_with_context
+
+    metadata = {"memory_id": "m1", "revision": 3, "retrieval": {"reason": "keyword", "matched_terms": ["显存"]},
+                "evidence_entry_ids": ["u1"]}
+    _, _, provider = _register([{"id": "memory.m1", "content": "显存优化结论", "metadata": metadata}], scope="turn")
+    fragment = provider.build_context(ContextRequest())[0]
+    snapshot = ContextSnapshot(ContextRequest(), selected=(ContextFragmentDecision(fragment, 10, True),))
+    items = prompt_metadata_with_context(SimpleNamespace(snapshot=snapshot))
+    assert next(iter(items[0].values()))["metadata"] == metadata
+
+
 @pytest.mark.parametrize("required", [False, True])
 def test_context_host_transports_all_content_without_consumer_limits(required: bool) -> None:
     content = "  " + "x" * 9000 + "\n"

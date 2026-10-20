@@ -463,6 +463,8 @@ def _has_recognizable_legacy_data(source: Path) -> bool:
         return True
     if _has_legacy_history_files(data / "chat_history"):
         return True
+    if (data / "chat_history/timeline.sqlite3").is_file():
+        return True
     memory = data / "memory"
     if memory.is_dir():
         try:

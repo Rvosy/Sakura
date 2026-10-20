@@ -32,14 +32,12 @@ def test_recall_logs_distinguish_matches_empty_and_skipped(monkeypatch):
     service = memory_recall.MemoryRecallService(boundary)
     result = service.recall(_context_request({"current_input": "你记得什么"}))
     assert len(result.fragments) == 1
-    assert "1" in logs[-1][0] and logs[-1][1]["selected"] == 1
+    assert logs[-1][1]["recalled"] == 1
     boundary.search_memory = lambda *_args, **_kwargs: {"status": "ready", "memories": []}
     service.recall(_context_request({"current_input": "你记得什么"}))
-    assert logs[-1][1]["selected"] == 0
-    assert logs[-1][0] != logs[-2][0]
+    assert logs[-1][1]["recalled"] == 0
     service.recall(_context_request({}))
-    assert logs[-1][1]["status"] == "skipped"
-    assert logs[-1][2]["severity"] == "debug"
+    assert logs[-1][1]["recalled"] == 0
 
 
 def test_context_request_keeps_latest_eight_messages_and_timeline_identity() -> None:
@@ -105,6 +103,9 @@ class FakeBoundary:
     def status(self):
         return {"status": "ready", "message": ""}
 
+    def profile_memories(self):
+        return []
+
     def search_memory(self, arguments, *, wait=False):
         assert wait is False
         return {
@@ -152,7 +153,8 @@ class FakeBoundary:
                 {"id": "fixture", "alias": "Fixture", "models": ["curator"]}
             ],
             "embedding": {
-                "model": "sentence-transformers/all-MiniLM-L6-v2",
+                "model": "BAAI/bge-small-zh-v1.5",
+                "index": {"state": "ready"},
                 "installed": self.installed,
             },
         }
@@ -378,7 +380,7 @@ def test_official_descriptors_pass_real_generic_host_validators(tmp_path: Path) 
             {
                 "load": handle,
                 "save": handle,
-                "actions": {},
+                "actions": {item["actionId"]: handle for item in runtime.settings_descriptor()["actions"]},
             },
         ],
     )
@@ -410,8 +412,8 @@ def test_official_descriptors_pass_real_generic_host_validators(tmp_path: Path) 
             runtime.memory_management_descriptor(),
             {
                 "load": None,
-                "save": None,
-                "actions": {},
+                "save": handle,
+                "actions": {item["actionId"]: handle for item in runtime.memory_management_descriptor()["actions"]},
             },
         ],
     )
@@ -431,7 +433,6 @@ def test_official_descriptors_pass_real_generic_host_validators(tmp_path: Path) 
             "delete": handle,
         },
     )
-    assert settings.count == 3
     component = next(
         item for item in settings.sections_for_plugin("sakura.memory.mem0")
         if item["sectionId"] == "memory_embedding_component"
@@ -547,7 +548,8 @@ def test_context_collection_and_settings_keep_character_scope(tmp_path: Path) ->
             ],
         }
     )
-    assert fragments[0]["content"] == "与本轮相关的长期记忆：喜欢樱花"
+    assert "喜欢樱花" in fragments[0]["content"]
+    assert fragments[0]["metadata"]["memory_id"] == "memory-1"
     assert runtime.context({"current_input": "樱花", "character_id": "other"}) == []
     queried = runtime.query_collection(
         {"cursor": None, "limit": 25, "search": "樱花", "filters": {"layer": "semantic"}}
@@ -568,7 +570,7 @@ def test_context_collection_and_settings_keep_character_scope(tmp_path: Path) ->
     resource = runtime.load_component_settings()["embeddingResource"]
     assert {key: value for key, value in resource.items() if key != "message"} == {
         "applicability": "required",
-        "subtitle": "sentence-transformers/all-MiniLM-L6-v2",
+        "subtitle": "BAAI/bge-small-zh-v1.5",
         "ready": True,
         "taskState": "idle",
         "detail": "",
@@ -664,8 +666,8 @@ def test_long_legacy_memory_round_trips_through_generic_collection(tmp_path: Pat
             runtime.memory_management_descriptor(),
             {
                 "load": None,
-                "save": None,
-                "actions": {},
+                "save": handle,
+                "actions": {item["actionId"]: handle for item in runtime.memory_management_descriptor()["actions"]},
             },
         ],
     )

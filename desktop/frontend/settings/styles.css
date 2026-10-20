@@ -3467,11 +3467,159 @@ button:active:not(:disabled) {
   height: 100%;
 }
 
+#memorySurface {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.memory-maintenance {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+.memory-maintenance .plugin-settings {
+  display: grid;
+  gap: 12px;
+}
+
+.memory-maintenance .plugin-contribution {
+  margin: 0;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-md);
+  padding: 18px 20px;
+  background: var(--surface-raised);
+}
+
+.memory-maintenance .plugin-contribution-title {
+  margin: 0 0 8px;
+  color: var(--sakura-text);
+  font-size: 16px;
+}
+
+.memory-maintenance .plugin-contribution:has(> .memory-maintenance-copy) {
+  display: flex;
+  align-items: center;
+  gap: 24px;
+}
+
+.memory-maintenance-copy {
+  flex: 1;
+  min-width: 0;
+}
+
+.memory-maintenance .settings-form {
+  display: grid;
+  gap: 8px;
+}
+
+.memory-maintenance .setting-row {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 10px;
+  padding: 0;
+}
+
+.memory-maintenance .setting-row:has(> .memory-maintenance-state, > .plugin-readonly-control) .setting-title,
+.memory-maintenance .setting-row:has(> .memory-maintenance-state, > .plugin-readonly-control) .setting-row-text:not(:has(.setting-desc)),
+.memory-maintenance .setting-row:has(.plugin-readonly-output:empty):not(:has(.setting-desc)),
+.memory-maintenance .plugin-readonly-control:has(> .plugin-readonly-output:empty) {
+  display: none;
+}
+
+.memory-maintenance .setting-desc {
+  color: var(--sakura-secondary-text);
+  font-size: 13px;
+  line-height: 1.6;
+  white-space: normal;
+}
+
+.memory-maintenance .plugin-readonly-output {
+  padding: 0;
+  color: var(--sakura-text);
+  white-space: pre-wrap;
+  line-height: 1.7;
+}
+
+.memory-maintenance .plugin-setting-actions {
+  flex: none;
+  margin: 0;
+}
+
+.memory-maintenance .plugin-setting-actions > button {
+  width: var(--settings-secondary-width);
+  padding-inline: 10px;
+}
+
+.memory-maintenance-state {
+  text-align: left;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.memory-maintenance-state p {
+  margin: 4px 0 0;
+  color: var(--sakura-text);
+}
+
+.memory-maintenance-state progress {
+  width: min(240px, 100%);
+  height: 5px;
+  accent-color: var(--sakura-primary);
+}
+
+.memory-view-tabs {
+  display: flex;
+  gap: 20px;
+  flex: none;
+  border-bottom: 1px solid var(--hairline);
+}
+
+.memory-view-tabs button {
+  min-width: 0;
+  padding: 10px 2px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  color: var(--sakura-secondary-text);
+}
+
+.memory-view-tabs button[aria-selected="true"] {
+  border-bottom-color: var(--sakura-primary);
+  color: var(--sakura-text);
+  font-weight: var(--font-weight-semibold);
+}
+
+.memory-editor-details {
+  grid-column: 1 / -1;
+}
+
+.memory-editor-details > summary {
+  padding: 8px 0;
+  cursor: pointer;
+  color: var(--sakura-secondary-text);
+}
+
+.memory-editor-details[open] > summary {
+  margin-bottom: 8px;
+}
+
+.memory-archive-description {
+  margin: 6px 0 0;
+  color: var(--sakura-secondary-text);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
 .memory-archive {
   display: grid;
   grid-template-rows: auto auto minmax(0, 1fr);
   gap: 14px;
-  height: 100%;
+  flex: 1 1 0;
   min-height: 0;
   padding: clamp(14px, 2vw, 20px);
   overflow: hidden;
@@ -3622,7 +3770,7 @@ button:active:not(:disabled) {
 .memory-record-card {
   position: relative;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr);
   gap: 12px;
   align-items: center;
   min-height: 72px;
@@ -3690,12 +3838,12 @@ button:active:not(:disabled) {
   margin-top: 7px;
   color: var(--sakura-muted-text);
   font-size: 11.5px;
+  min-height: 22px;
+  padding-right: 32px;
 }
 
 .memory-record-meta > span:not(.memory-layer-chip)::before {
-  content: "·";
-  margin-right: 9px;
-  color: var(--hairline);
+  content: none;
 }
 
 .memory-layer-chip {
@@ -3707,12 +3855,9 @@ button:active:not(:disabled) {
 }
 
 .memory-record-aside {
-  display: grid;
-  grid-template-rows: auto 1fr;
-  align-self: stretch;
-  justify-items: end;
-  gap: 7px;
-  padding-left: 4px;
+  position: absolute;
+  right: 9px;
+  bottom: 7px;
 }
 
 .memory-score-row {
@@ -3723,9 +3868,14 @@ button:active:not(:disabled) {
 }
 
 .memory-card-edit {
-  align-self: end;
-  min-height: 29px;
-  padding: 3px 11px;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  min-width: 28px;
+  min-height: 28px;
+  padding: 5px;
+  font-size: 15px;
 }
 
 .memory-load-more {
@@ -3897,6 +4047,44 @@ button:active:not(:disabled) {
 
 .memory-dialog-field.is-content {
   grid-column: 1 / -1;
+}
+
+.memory-dialog-field.is-readonly {
+  grid-column: 1 / -1;
+}
+
+.memory-evidence {
+  display: block;
+  padding: 12px 14px;
+  border-left: 3px solid var(--sakura-border);
+  background: var(--surface-soft);
+  color: var(--sakura-secondary-text);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: 1.7;
+  max-height: 180px;
+  overflow: auto;
+}
+
+.memory-dialog-field.is-toggle {
+  grid-template-columns: 1fr auto;
+  align-content: center;
+  align-items: center;
+}
+
+.memory-dialog-field.is-toggle small {
+  grid-column: 1 / -1;
+}
+
+.memory-dialog-field.is-toggle input {
+  appearance: auto;
+  -webkit-appearance: auto;
+  width: 20px;
+  min-height: 20px;
+  height: 20px;
+  padding: 0;
+  border-radius: 4px;
+  accent-color: var(--sakura-primary);
 }
 
 .memory-dialog-field input,

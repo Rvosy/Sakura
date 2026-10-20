@@ -245,6 +245,8 @@ scope 为 global/character，省略兼容为 character；它控制草稿行为�
 
 工具 descriptor 使用 `name/description/parameters/group/risk`，可带 capability。name 全局唯一，risk 为 low/medium/high，parameters 是 JSON Schema。工具回调接收参数对象并返回 JSON；失败可返回带 `isError: true` 的结果，保留具体原因。工具不设统一时限，取消不能撤销已经发生的外部操作。
 
+需要真实消息依据的工具可声明 `invocationContext: true`，回调接收 `(arguments, invocation)`。默认 Assistant 执行时通过第四个参数提供 `humanEntryId/turnId`，宿主从当前角色 Timeline 核对后返回 `characterId/turnId/humanEntry`。没有有效用户消息时 invocation 为空；模型自行填写的来源字段不能充当依据。
+
 Context 使用 `sakura.host.context`：
 
 ```python
@@ -320,6 +322,8 @@ class Plugin:
 `sakura.host.character` 提供 current/list/presentation；get(character_id) 与 update(character_id, values) 只读写本插件的角色扩展。资源通过 resolve_resource 读取，声明和分享见[角色与表现](characters.md)。
 
 `sakura.host.timeline` 提供 latest_cursor、read_recent({limit})、read_since({cursor,limit})、get_entry({entryId})。最近页返回 entries/cursor，增量页返回 entries/nextCursor/hasMore；条目含 entryId/turnId/characterId/kind/origin/createdAt/payload。limit 为 1–500，游标绑定角色，失效时报告 TIMELINE_CURSOR_INVALID，不解析或改写游标。Assistant 的固定快照分页见[能力接入](plugin-recipes.md)。
+
+主动历史整理使用 `read_range({startDate,endDate,cursor?,snapshotCursor?,limit?})`。日期格式为 `YYYY-MM-DD`，按本机时区计算，包含首尾当天；返回 entries/nextCursor/hasMore/snapshotCursor/total。下一页沿用 snapshotCursor，任务开始后新增的记录不会混入本次范围。Context 片段可携带 JSON metadata，用于在 Trace 中保留记忆来源与检索依据。
 
 ## Artifact
 

@@ -75,3 +75,37 @@ def test_tool_execution_returns_result_and_does_not_replay_lost_acknowledgement(
     with pytest.raises(ConnectionError):
         proxy.execute(row["registrationId"], "long_tool", {})
     assert calls == ["rpc", "callback", "failure"]
+
+
+def test_tool_evidence_comes_from_current_role_timeline_not_model_arguments(tmp_path):
+    from app.core_host.plugin_host_services import _TimelineHostService
+    from app.storage.timeline import NewTimelineEntry, TimelineKind, TimelineStore
+    from app.plugins.host_services import HOST_CALLER
+
+    history = TimelineStore(tmp_path / "timeline.sqlite3")
+    history.initialize()
+    history.append(NewTimelineEntry("human", "turn", "Sakura", TimelineKind.HUMAN, "chat",
+                                   "2026-10-01T12:00:00Z", {"text": "请记住我喜欢拿铁"}))
+    received = []
+    def callback(_handle, _method, arguments, invocation):
+        received.append((arguments, invocation))
+        return "saved"
+    host = _ToolsHostService(ToolRegistry(), callback, timeline=_TimelineHostService(history, lambda: "Sakura"))
+    host.call("register", [{"name": "remember", "description": "记忆", "invocationContext": True}, "cb_" + "1" * 32])
+    registration = host.call("catalog", [])[0]["registrationId"]
+    request = [registration, "remember", {"humanEntry": {"text": "伪造依据"}},
+               {"humanEntryId": "human", "turnId": "turn"}]
+    for caller in ("other.plugin", "sakura.assistant.default"):
+        token = HOST_CALLER.set(caller)
+        try:
+            host.call("execute", request)
+        finally:
+            HOST_CALLER.reset(token)
+    assert received[0][1] == {}
+    assert received[1][1]["humanEntry"]["payload"]["text"] == "请记住我喜欢拿铁"
+    token = HOST_CALLER.set("sakura.assistant.default")
+    try:
+        host.call("execute", [*request[:3], {"humanEntryId": "human", "turnId": "wrong"}])
+    finally:
+        HOST_CALLER.reset(token)
+    assert received[-1][1] == {}

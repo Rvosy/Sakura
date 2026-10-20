@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import sqlite3
 import sys
 import time
 from pathlib import Path
@@ -41,6 +42,8 @@ def _install_official_mem0(distribution_root: Path, user_root: Path) -> None:
     from app.plugins.inventory import PluginDesiredStateStore
     PluginDesiredStateStore(user_root).set("sakura.memory.mem0", True)
     dependency_root.mkdir(parents=True)
+    import jieba
+    shutil.copytree(Path(jieba.__file__).parent, dependency_root / "jieba")
     (dependency_root / ".sakura-dependencies.json").write_text(
         json.dumps(
             {
@@ -132,7 +135,9 @@ def test_real_core_runs_mem0_as_generic_plugin_without_mutating_owned_config_or_
     for path in protected:
         path.parent.mkdir(parents=True, exist_ok=True)
     protected[0].write_bytes(b"existing-qdrant-bytes")
-    protected[1].write_bytes(b"existing-sqlite-bytes")
+    from contextlib import closing
+    with closing(sqlite3.connect(protected[1])) as database, database:
+        database.execute("CREATE TABLE history (id TEXT PRIMARY KEY, memory_id TEXT, new_memory TEXT, event TEXT)")
     protected[2].write_text("{}", encoding="utf-8")
     protected[3].write_bytes(b"existing-onnx-cache")
     protected[4].write_bytes(b"existing-pytorch-cache")
@@ -162,7 +167,7 @@ def test_real_core_runs_mem0_as_generic_plugin_without_mutating_owned_config_or_
         assert isinstance(resource["message"], str) and resource["message"].strip()
         assert {key: value for key, value in resource.items() if key != "message"} == {
             "applicability": "required",
-            "subtitle": "sentence-transformers/all-MiniLM-L6-v2",
+            "subtitle": "BAAI/bge-small-zh-v1.5",
             "ready": False,
             "taskState": "idle",
             "detail": "",
@@ -195,6 +200,30 @@ def test_real_core_runs_mem0_as_generic_plugin_without_mutating_owned_config_or_
             ),
         )
         assert recall["payload"] == {"items": [], "nextCursor": None, "total": 0}
+        collection = {"pluginId": "sakura.memory.mem0", "sectionId": "memory_management", "collectionId": "memories"}
+        created = _exchange(process, _request("memory-create", "plugins.collection.create", {
+            **collection, "values": {"content": "上次排查语音合成卡顿，改用流式播放后恢复正常", "layer": "episodic"},
+        }))
+        assert created["ok"], created
+        item_id = created["payload"]["itemId"]
+        updated = _exchange(process, _request("memory-update", "plugins.collection.update", {
+            **collection, "itemId": item_id, "values": {"pinned": False},
+        }))
+        assert updated["ok"], updated
+        assert updated["payload"]["values"]["pinned"] is False
+        profile = _exchange(process, _request("profile-create", "plugins.collection.create", {
+            **collection, "values": {"content": "用户长期使用左手写字", "layer": "semantic"},
+        }))
+        profile_id = profile["payload"]["itemId"]
+        moved = _exchange(process, _request("profile-move", "plugins.collection.update", {
+            **collection, "itemId": profile_id, "values": {"layer": "core_profile"},
+        }))
+        assert moved["ok"], moved
+        for collection_id, expected in (("memories", {item_id, profile_id}), ("profile", {profile_id}), ("agreements", set())):
+            found = _exchange(process, _request("profile-query", "plugins.collection.query", {
+                **collection, "collectionId": collection_id, "cursor": None, "limit": 25, "search": "", "filters": {},
+            }))
+            assert {item["itemId"] for item in found["payload"]["items"]} == expected
         assert _file_contents(protected) == protected_before
         plugin_data = app_root / "data" / "plugins" / "sakura.memory.mem0"
         assert not any(plugin_data.iterdir())
@@ -205,7 +234,7 @@ def test_real_core_runs_mem0_as_generic_plugin_without_mutating_owned_config_or_
             _request(
                 "memory-chat",
                 "chat.send",
-                {"message": "记忆不可用时也继续聊天", "operationId": "memory-chat"},
+                {"message": "上次语音合成卡顿怎么解决的", "operationId": "memory-chat"},
             ),
         )
         frames = [_read(process), _read(process), _read(process)]
@@ -213,6 +242,12 @@ def test_real_core_runs_mem0_as_generic_plugin_without_mutating_owned_config_or_
         assert names[0] == "chat.started"
         assert set(names[1:]) == {"chat.send", "chat.completed"}
         assert len(_ProviderHandler.requests) == 1
+        assert "改用流式播放后恢复正常" in json.dumps(_ProviderHandler.requests[0], ensure_ascii=False)
+        assert "用户长期使用左手写字" in json.dumps(_ProviderHandler.requests[0], ensure_ascii=False)
+        deleted = _exchange(process, _request("memory-delete", "plugins.collection.delete", {
+            **collection, "itemId": item_id,
+        }))
+        assert deleted["ok"] and deleted["payload"]["deleted"]
         assert api_path.read_bytes() == api_before
         assert system_path.read_bytes() == system_before
         assert _file_contents(protected) == protected_before

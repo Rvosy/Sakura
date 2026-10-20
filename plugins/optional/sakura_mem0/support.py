@@ -1,4 +1,4 @@
-"""Small stdlib support owned by the Mem0 plugin process."""
+"""记忆插件进程使用的路径、日志与取消支持。"""
 
 from __future__ import annotations
 

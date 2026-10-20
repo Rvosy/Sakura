@@ -1,2 +1,2 @@
-"""Bundled Mem0-backed Memory plugin for Sakura Runtime v2."""
+"""Sakura 按角色保存的长期记忆插件。"""
 

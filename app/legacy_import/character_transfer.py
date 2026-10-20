@@ -134,6 +134,14 @@ def remap_frozen_data(converted: Path, mapping: dict[str, str], current_scope: s
     quarantine = converted / "data/legacy-imports/incremental-scan/quarantine/memory"
     errors = 0
     reassociated = 0
+    if (memory / "memory.sqlite3").is_file():
+        from .plugin_support import migration_module
+        store = migration_module("sakura_mem0.memory").MemoryStore(converted)
+        try:
+            reassociated = store.remap_scopes(changes, keep_conflicts=existing)
+        finally:
+            store.close()
+        return changes.get(current_scope, current_scope), 0, reassociated + _remap_timeline(converted, changes)
 
     def preserve(path: Path) -> None:
         nonlocal errors
@@ -232,7 +240,13 @@ def remap_frozen_data(converted: Path, mapping: dict[str, str], current_scope: s
             profiles_path.write_text(json.dumps(result, ensure_ascii=False), encoding="utf-8")
         except (OSError, ValueError, RuntimeError):
             preserve(profiles_path)
+    reassociated += _remap_timeline(converted, changes)
+    return changes.get(current_scope, current_scope), errors, reassociated
+
+
+def _remap_timeline(converted: Path, changes: dict[str, str]) -> int:
     timeline = converted / "data/chat_history/timeline.sqlite3"
+    reassociated = 0
     if timeline.is_file():
         with closing(sqlite3.connect(timeline)) as connection:
             cases = ' '.join('WHEN ? THEN ?' for _ in changes)
@@ -241,4 +255,4 @@ def remap_frozen_data(converted: Path, mapping: dict[str, str], current_scope: s
             reassociated += connection.execute(f'SELECT COUNT(*) FROM timeline_entries WHERE character_id IN ({placeholders})', list(changes)).fetchone()[0]
             connection.execute(f'UPDATE timeline_entries SET character_id=CASE character_id {cases} ELSE character_id END', values)
             connection.commit()
-    return changes.get(current_scope, current_scope), errors, reassociated
+    return reassociated
