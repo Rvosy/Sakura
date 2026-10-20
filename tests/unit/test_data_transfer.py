@@ -123,42 +123,24 @@ def test_imported_history_does_not_hide_pending_local_curation():
     assert [item.entry_id for item in evidence] == ["human", "assistant"]
 
 
-def test_mem0_restore_preserves_identity_metadata_and_core_profile():
-    stored, profiles, embedded = {}, {}, []
-    def insert(*, vectors, ids, payloads):
-        stored.update(zip(ids, payloads))
-    def embed(content, action):
-        embedded.append(content)
-        return [0.5, 0.5]
-    def get_all(*, filters, top_k):
-        return {"results": [{"id": identity, "memory": data["data"], "created_at": data["created_at"],
-                             "updated_at": data["updated_at"], "hash": None,
-                             "metadata": {key: value for key, value in data.items()
-                                          if key not in {"data", "created_at", "updated_at", "user_id"}}}
-                            for identity, data in stored.items()][:top_k]}
-    backend = SimpleNamespace(embedding_model=SimpleNamespace(embed=embed),
-                              vector_store=SimpleNamespace(insert=insert), get_all=get_all)
-    store = object.__new__(MemoryStore)
-    store.scope_id = "sakura"
-    store._get_memory = lambda: backend
-    store._load_core_profiles = lambda: dict(profiles)
-    store._save_core_profiles = lambda data: profiles.update(data)
+def test_memory_restore_preserves_identity_metadata_and_core_profile(tmp_path):
+    store = MemoryStore(tmp_path)
     records = [MemoryRecord(id=identity, content=content, layer=layer, scope="sakura",
                            created_at="2024-01-01T00:00:00Z", updated_at="2024-02-01T00:00:00Z",
                            metadata={"source_entry_ids": ["human-1"]}).to_dict()
                for identity, content, layer in [("memory-1", "喜欢咖啡", "semantic"),
                                                  ("core_profile:sakura", "用户是程序员", "core_profile")]]
     store.restore_records(records)
-    assert embedded == ["喜欢咖啡"]
-    assert stored["memory-1"]["data"] == "喜欢咖啡"
-    assert stored["memory-1"]["created_at"] == "2024-01-01T00:00:00Z"
-    assert stored["memory-1"]["updated_at"] == "2024-02-01T00:00:00Z"
-    assert stored["memory-1"]["source_entry_ids"] == ["human-1"]
-    assert profiles["sakura"]["content"] == "用户是程序员"
-    assert profiles["sakura"]["metadata"]["updated_at"] == "2024-02-01T00:00:00Z"
+    store.restore_records(records)
     exported = {item["id"]: item for item in store.export_records()}
+    assert len(exported) == 2
     for record in records:
-        assert exported[record["id"]] == {key: value for key, value in record.items() if key not in {"memory", "score"}}
+        restored = exported[record["id"]]
+        for field in ("id", "content", "layer", "source", "created_at", "updated_at"):
+            assert restored[field] == record[field]
+        assert restored["metadata"]["source_entry_ids"] == ["human-1"]
+    assert store.search_memory({"query": "咖啡"})["memories"][0]["id"] == "memory-1"
+    store.close()
 
 
 def test_import_missing_turn_start_preserves_old_snapshot_and_restores_turn_order(tmp_path):

@@ -9,6 +9,7 @@ import re
 import secrets
 import shutil
 import threading
+from contextvars import ContextVar
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
@@ -36,6 +37,7 @@ HOST_COMPOSER_TOOLS_V0_SERVICE = "sakura.host.ui.composer-tools-v0"
 HOST_TIMELINE_SERVICE = "sakura.host.timeline"
 _TIMELINE_RESPONSE_ENTRY_BYTES = 700 * 1024
 _TOOL_NAME = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+_TOOL_INVOCATION: ContextVar[dict | None] = ContextVar("tool_invocation", default=None)
 _IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,199}$")
 _COMPOSER_TOOL_PUBLIC_ID = re.compile(
     r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}:[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$"
@@ -240,6 +242,15 @@ class _TimelineHostService:
                     "nextCursor": cursor,
                     "hasMore": has_more,
                 }
+            if method == "read_range" and len(args) == 1:
+                request = _mapping(args[0], "TIMELINE_ARGUMENTS_INVALID")
+                entries, cursor, more, snapshot, total = self._store.read_range(
+                    character_id, request["startDate"], request["endDate"],
+                    cursor=request.get("cursor", ""), snapshot_cursor=request.get("snapshotCursor", ""),
+                    limit=request.get("limit", 200), max_bytes=_TIMELINE_RESPONSE_ENTRY_BYTES,
+                )
+                return {"entries": [_timeline_entry_mapping(entry) for entry in entries],
+                        "nextCursor": cursor, "hasMore": more, "snapshotCursor": snapshot, "total": total}
         except HostServiceError:
             raise
         except Exception as exc:
@@ -612,10 +623,12 @@ class _ToolsHostService:
         tool_registry: object,
         invoke_callback: Callable[..., Any],
         consume_result: Callable[..., object] | None = None,
+        timeline: _TimelineHostService | None = None,
     ) -> None:
         self._tool_registry = tool_registry
         self._invoke_callback = invoke_callback
         self._consume_result = consume_result or (lambda value, **_kwargs: value)
+        self._timeline = timeline
         self._registrations: dict[str, _ToolRegistration] = {}
 
     def call(self, method: str, args: Sequence[Any]) -> object:
@@ -625,13 +638,25 @@ class _ToolsHostService:
                      "group": tool.group, "risk": tool.risk, "capability": tool.capability,
                      "source": tool.source, "timeoutSeconds": None}
                     for tool in self._tool_registry.all()]
-        if method == "execute" and len(args) == 3:
-            registration_id, name, arguments = args
+        if method == "execute" and len(args) in {3, 4}:
+            registration_id, name, arguments = args[:3]
             tool = self._tool_registry.get(name)
             if tool is None or tool.registration_id != registration_id:
                 raise HostServiceError("TOOL_REGISTRATION_EXPIRED")
             # Execute the captured object; a concurrent same-name replacement cannot be substituted.
-            return self._tool_registry.execute(name, dict(arguments), expected=tool).to_dict()
+            invocation = {}
+            if len(args) == 4 and args[3] and HOST_CALLER.get() == "sakura.assistant.default":
+                requested = args[3]
+                if self._timeline is not None and requested.get("humanEntryId"):
+                    entry = self._timeline.call("get_entry", [{"entryId": requested["humanEntryId"]}])["entry"]
+                    if entry and entry["kind"] == "human" and entry["turnId"] == requested.get("turnId"):
+                        invocation = {"characterId": entry["characterId"], "turnId": entry["turnId"],
+                                      "humanEntry": entry}
+            token = _TOOL_INVOCATION.set(invocation)
+            try:
+                return self._tool_registry.execute(name, dict(arguments), expected=tool).to_dict()
+            finally:
+                _TOOL_INVOCATION.reset(token)
         if method == "register" and len(args) == 2:
             return self._register(args[0], args[1])
         if method == "unregister" and len(args) == 1:
@@ -670,11 +695,12 @@ class _ToolsHostService:
         source_plugin_id = HOST_CALLER.get()
 
         def handler(arguments: dict[str, Any]) -> object:
+            callback_args = (arguments, dict(_TOOL_INVOCATION.get() or {})) if descriptor.get("invocationContext") else (arguments,)
             return self._consume_result(
                 self._invoke_callback(
                     handle,
                     "tools.handler",
-                    arguments,
+                    *callback_args,
                 ),
                 source_plugin_id=source_plugin_id,
             )
@@ -1962,6 +1988,7 @@ class PluginHostServices:
             tool_registry,
             invoke_callback,
             self._artifacts.consume_tool_result,
+            self._timeline,
         )
         self._context = _ContextHostService(
             invoke_callback,
@@ -2223,6 +2250,7 @@ def _context_fragment(value: object, index: int, *, scope: str = "step") -> Cont
         ),
         cache_scope=scope,
         required=required,
+        metadata=dict(raw.get("metadata", {})),
     )
 
 

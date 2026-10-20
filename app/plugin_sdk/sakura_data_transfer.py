@@ -53,7 +53,7 @@ def _map_character(records, source, target, provider, path):
                     item["payload"]["text"] += "\n" + activity.get("details", "")
                     del item["payload"]["activity"]
             else:
-                item["id"] = (f"core_profile:{target}" if item.get("layer") == "core_profile"
+                item["id"] = (f"core_profile:{target}" if item["id"] == f"core_profile:{source}"
                               else mapped(provider, item["id"]))
                 if "scope" in item:
                     item["scope"] = target
@@ -65,6 +65,10 @@ def _map_character(records, source, target, provider, path):
                     for key in ("source_turn_id", "created_in_turn_id"):
                         if metadata.get(key):
                             metadata[key] = mapped("turn", metadata[key])
+                    for evidence in metadata.get("evidence", []):
+                        evidence["entry_id"] = mapped("entry", evidence["entry_id"])
+                        if evidence.get("turn_id"):
+                            evidence["turn_id"] = mapped("turn", evidence["turn_id"])
 
 
 def write_archive(path, *, kind, provider, character_id, records, format="json"):
@@ -131,6 +135,8 @@ def render_text(kind, character_id, records):
                 if payload.get("activity", {}).get("details"):
                     lines.append(payload["activity"]["details"])
         else:
+            if item.get("metadata", {}).get("deleted"):
+                continue
             lines.append(item["content"])
             for key, label in (("keywords", "关键词"), ("layer", "分类"), ("category", "类别"),
                                ("created_at", "创建时间"), ("updated_at", "更新时间")):

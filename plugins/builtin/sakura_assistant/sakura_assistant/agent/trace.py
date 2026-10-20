@@ -1368,6 +1368,7 @@ def _context_items(snapshot: ContextSnapshot | None) -> tuple[dict[str, Any], ..
             "cache_scope": fragment.cache_scope,
             "content": _free_text_value(fragment.content, ()),
             "estimated_tokens": decision.estimated_tokens,
+            "metadata": dict(fragment.metadata),
         }
         items.append({kind: value})
     return tuple(items)

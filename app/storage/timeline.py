@@ -659,6 +659,34 @@ class TimelineStore:
         next_cursor = _encode_cursor(character_id, lineage, latest.seq, latest.entry_id)
         return entries, next_cursor, has_more
 
+    def read_range(self, character_id: str, start_date: str, end_date: str, *,
+                   cursor: str = "", snapshot_cursor: str = "", limit: int = 200,
+                   max_bytes: int | None = None) -> tuple[list[TimelineEntry], str, bool, str, int]:
+        """按日期选择历史，使用固定快照分页，供用户主动补整理。"""
+        from datetime import date
+
+        start, end = date.fromisoformat(start_date), date.fromisoformat(end_date)
+        if start > end:
+            raise ValueError("开始日期不能晚于结束日期。")
+        _validated_limit(limit)
+        snapshot_cursor = snapshot_cursor or self.latest_cursor(character_id)
+        with self._connect_existing() as connection:
+            lineage = _assert_activated_connection(connection)
+            upper, _ = _decode_cursor(snapshot_cursor, character_id, lineage)
+            after, _ = _decode_cursor(cursor, character_id, lineage) if cursor else (0, "")
+            where = "character_id=? AND date(created_at,'localtime') BETWEEN ? AND ? AND seq<=?"
+            params = (character_id, start_date, end_date, upper)
+            total = connection.execute("SELECT count(*) FROM timeline_entries WHERE " + where, params).fetchone()[0]
+            rows = connection.execute(
+                "SELECT seq,entry_id,turn_id,character_id,kind,origin,created_at,payload_json "
+                "FROM timeline_entries WHERE " + where + " AND seq>? ORDER BY seq LIMIT ?",
+                (*params, after, limit + 1),
+            )
+            entries, has_more = _bounded_entries(rows, limit, max_bytes=max_bytes)
+        next_cursor = _encode_cursor(character_id, lineage, entries[-1].seq, entries[-1].entry_id) if entries else (
+            cursor or _encode_cursor(character_id, lineage, 0, ""))
+        return entries, next_cursor, has_more, snapshot_cursor, total
+
     def assert_activated(self) -> None:
         if not self.path.is_file():
             raise TimelineDataError("TIMELINE_NOT_ACTIVATED")

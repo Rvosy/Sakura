@@ -72,6 +72,10 @@ export function createPluginSettingsFeature({
     managementBusy: false,
   };
   let pluginSettingsDialog = null;
+  let memorySettingsComponents = [];
+  let selectedMemoryCollection = "";
+  let memoryView = "list";
+  let memoryListScroll = 0;
   let availableUpdates = [], openUpdate = () => {};
   const pluginModules = new Map();
   const pendingApplication = new Set();
@@ -143,7 +147,21 @@ export function createPluginSettingsFeature({
       });
     }
     const component = createSettingsForm({ document, plugin, section, read, write, enhanceSelect, refreshSelect,
-      renderDisplay: field => pluginSettingControl(plugin, section, field),
+      renderDisplay: field => {
+        if (section.surface !== "memory" || field.type !== "status") return pluginSettingControl(plugin, section, field);
+        const value = read(field.key) || {};
+        const status = pluginNode("div", "memory-maintenance-state");
+        status.hidden = value.state === "neutral";
+        status.setAttribute("role", value.state === "error" ? "alert" : "status");
+        status.append(pluginNode("strong", "", value.label));
+        if (value.message) status.append(pluginNode("p", "", value.message));
+        if (value.state === "working") {
+          const progress = document.createElement("progress");
+          progress.setAttribute("aria-label", value.label);
+          status.append(progress);
+        }
+        return status;
+      },
       renderAction(action) {
         const button = pluginNode("button", action.danger ? "danger-button" : "secondary-button", action.label);
         button.type = "button"; button.disabled = pluginState.managementBusy || Boolean(pluginState.actionBusyKey); button.addEventListener("click", () => runPluginSettingsAction(plugin, section, action)); return button;
@@ -1151,6 +1169,11 @@ export function createPluginSettingsFeature({
       }
       if (!isCurrent()) return;
       const affectedItemId = operation === "delete" ? editorItemId : result.itemId;
+      for (const sibling of section.collections || []) {
+        if (sibling.collection_id === collection.collection_id) continue;
+        const siblingState = pluginCollectionState.get(pluginCollectionKey(plugin, section, sibling));
+        if (siblingState) siblingState.loaded = false;
+      }
       state.editor = null;
       state.selectedItemId = operation === "delete" ? "" : affectedItemId;
       state.loading = false;
@@ -1395,10 +1418,12 @@ export function createPluginSettingsFeature({
     return block;
   }
 
-  function renderPluginSettings(plugin, surface = null) {
+  function renderPluginSettings(plugin, surface = null, { includeCollections = true } = {}) {
     const allSections = pluginSettingsSections(plugin);
     const knownSurfaces = new Set(["memory", "model", "providers", "screen_awareness"]);
-    const sections = allSections.filter((section) => surface ? section.surface === surface : !sectionDestination(section) && !knownSurfaces.has(section.surface));
+    const sections = allSections.filter((section) => surface ? section.surface === surface : !sectionDestination(section) && !knownSurfaces.has(section.surface))
+      .filter(section => includeCollections || section.fields?.length || section.actions?.length)
+      .map(section => includeCollections ? section : { ...section, collections: [] });
     const container = document.createElement("div");
     container.className = "plugin-settings";
     container.components = [];
@@ -1409,8 +1434,19 @@ export function createPluginSettingsFeature({
       if (section.presentation) {
         const component = createContributedSection(plugin, section); container.components.push(component);
         const block = pluginNode(section.presentation.collapsible ? "details" : "section", "plugin-contribution");
-        if (section.presentation.component !== "connection-status") block.append(pluginNode(section.presentation.collapsible ? "summary" : "h3", "plugin-contribution-title", section.title));
-        block.append(component.element);
+        block.dataset.pluginSection = section.section_id;
+        const content = section.surface === "memory" && section.presentation.component === "form" && !section.presentation.collapsible
+          ? pluginNode("div", "memory-maintenance-copy") : block;
+        if (section.presentation.component !== "connection-status") {
+          const heading = pluginNode(section.presentation.collapsible ? "summary" : "h3", "plugin-contribution-title", section.title);
+          content.append(heading);
+        }
+        content.append(component.element);
+        if (content !== block) {
+          block.append(content);
+          const actions = component.element.querySelector(".plugin-setting-actions");
+          if (actions) block.append(actions);
+        }
         const update = component.update;
         component.update = () => {
           block.hidden = Boolean(section.presentation.visibleField) && !pluginSectionValues(plugin.id, section.section_id)[section.presentation.visibleField];
@@ -1621,7 +1657,10 @@ export function createPluginSettingsFeature({
   function visiblePluginActivityIsTransient() {
     const snapshot = runtimePluginController?.snapshot();
     if (["starting", "waiting"].includes(snapshot?.state)) return pluginActivityPageVisible();
-    if (fields.pages.memory.classList.contains("is-active")) return memorySurfaceIsTransitioning();
+    if (fields.pages.memory.classList.contains("is-active")) return memorySurfaceIsTransitioning()
+      || (pluginView.items || []).some(plugin => pluginSettingsSections(plugin).some(section =>
+        section.surface === "memory" && section.fields.some(field =>
+          field.type === "status" && pluginFieldValue(plugin, section, field)?.state === "working")));
     if (fields.pages.plugins.classList.contains("is-active")) return selectedPluginHasTransientActivity();
     if (fields.pages.about.classList.contains("is-active")) return aboutComponentsRunning();
     if (fields.pages.providers?.classList.contains("is-active") || fields.pages.model?.classList.contains("is-active")) {
@@ -1808,6 +1847,7 @@ export function createPluginSettingsFeature({
     state.editor = {
       itemId: item?.itemId || null,
       values: collectionEditorValues(collection, item),
+      displayValues: clonePlain(item?.values || {}),
     };
     state.editor.initialValues = clonePlain(state.editor.values);
     state.editorError = "";
@@ -1844,14 +1884,34 @@ export function createPluginSettingsFeature({
 
     const form = document.createElement("div");
     form.className = "memory-dialog-form";
-    (collection.fields || []).filter(pluginFieldEditable).forEach((field) => {
+    const details = pluginNode("details", "memory-editor-details");
+    details.append(pluginNode("summary", "", "用途与原文"));
+    details.open = Boolean(state.editor.detailsOpen);
+    details.addEventListener("toggle", () => { if (state.editor) state.editor.detailsOpen = details.open; });
+    const detailsFields = pluginNode("div", "memory-dialog-form");
+    details.append(detailsFields);
+    (collection.fields || []).forEach((field) => {
       const group = document.createElement("label");
       group.className = `memory-dialog-field${field.key === collection.columns[0]?.key ? " is-content" : ""}`;
       const label = document.createElement("span");
       label.className = "memory-dialog-label";
       label.textContent = field.required ? `${field.label} *` : field.label;
       let control;
-      if (field.type === "select") {
+      if (!pluginFieldEditable(field)) {
+        control = document.createElement("output");
+        control.className = "memory-evidence";
+        control.textContent = String(state.editor.displayValues?.[field.key] || "这条记忆没有保留原文依据。");
+        group.classList.add("is-readonly");
+      } else if (field.type === "boolean") {
+        control = document.createElement("input");
+        control.type = "checkbox";
+        control.checked = Boolean(state.editor.values[field.key]);
+        control.addEventListener("change", () => {
+          state.editor.values[field.key] = control.checked;
+          refreshDirty();
+        });
+        group.classList.add("is-toggle");
+      } else if (field.type === "select") {
         control = document.createElement("select");
         (field.options || []).forEach((option) => {
           const element = document.createElement("option");
@@ -1891,6 +1951,7 @@ export function createPluginSettingsFeature({
           refreshDirty();
         });
       }
+      control.id = `memory-field-${field.key}`;
       group.append(label, control);
       if (field.key === collection.columns[0]?.key && Number.isSafeInteger(field.maxLength)) {
         const counter = document.createElement("span");
@@ -1902,8 +1963,10 @@ export function createPluginSettingsFeature({
         description.textContent = field.description;
         group.append(description);
       }
-      form.append(group);
+      if (field.key === collection.columns[0]?.key) form.append(group);
+      else detailsFields.append(group);
     });
+    if (detailsFields.childElementCount) form.append(details);
 
     const footer = document.createElement("footer");
     footer.className = "memory-dialog-actions";
@@ -2053,7 +2116,7 @@ export function createPluginSettingsFeature({
     return archive;
   }
 
-  function renderMemoryCollection(plugin, section, collection) {
+  function renderMemoryCollection(plugin, section, collection, collections = []) {
     const state = pluginCollectionRuntimeState(plugin, section, collection);
     const activity = projectPluginActivity(plugin);
     const initializing = activity.state === "working";
@@ -2072,6 +2135,7 @@ export function createPluginSettingsFeature({
     const title = document.createElement("h3");
     title.textContent = collection.title || section.title;
     titleGroup.append(title);
+    if (collection.description) titleGroup.append(pluginNode("p", "memory-archive-description", collection.description));
     const headActions = document.createElement("div");
     headActions.className = "memory-archive-head-actions";
     const count = document.createElement("span");
@@ -2112,6 +2176,23 @@ export function createPluginSettingsFeature({
       state.searchTimer = setTimer(() => queryPluginCollection(plugin, section, collection), 220);
     });
     toolbar.append(search);
+    if (collections.length > 1) {
+      const select = document.createElement("select");
+      select.setAttribute("aria-label", "查看记忆");
+      for (const item of collections) {
+        const option = document.createElement("option");
+        option.value = item.key;
+        option.textContent = item.collection.title;
+        select.append(option);
+      }
+      select.value = selectedMemoryCollection;
+      select.addEventListener("change", () => {
+        selectedMemoryCollection = select.value;
+        renderMemorySurface();
+      });
+      toolbar.append(select);
+      setTimer(() => enhanceSelect(select), 0);
+    }
     (collection.filters || []).forEach((filter) => {
       const select = document.createElement("select");
       select.setAttribute("aria-label", filter.label);
@@ -2209,7 +2290,8 @@ export function createPluginSettingsFeature({
           const value = collectionDisplayValue(collection, column, values[column.key]);
           if (!value) continue;
           const detail = document.createElement("span");
-          detail.textContent = `${column.label} ${value}`;
+          detail.textContent = column.type === "string" ? value : `${column.label} ${value}`;
+          detail.title = column.label;
           meta.append(detail);
         }
         main.append(content, meta);
@@ -2218,7 +2300,9 @@ export function createPluginSettingsFeature({
         const edit = document.createElement("button");
         edit.type = "button";
         edit.className = "memory-card-edit";
-        edit.textContent = "编辑";
+        edit.append(createIcon(document, "pencil"));
+        edit.setAttribute("aria-label", "编辑记忆");
+        edit.title = "编辑记忆";
         edit.addEventListener("click", (event) => {
           event.stopPropagation();
           openMemoryCollectionEditor(plugin, section, collection, item);
@@ -2253,6 +2337,14 @@ export function createPluginSettingsFeature({
 
   function renderMemorySurface() {
     if (!fields.memorySurface) return;
+    const focused = document.activeElement;
+    const focusId = (fields.memorySurface.contains(focused) || focused?.closest(".memory-record-dialog")) ? focused?.id : "";
+    const selection = focusId && typeof focused.selectionStart === "number" ? [focused.selectionStart, focused.selectionEnd] : null;
+    const openSections = new Set(Array.from(fields.memorySurface.querySelectorAll("details"))
+      .filter(element => element.open).map(element => element.dataset.pluginSection));
+    const scrollPositions = Array.from(fields.memorySurface.querySelectorAll(".memory-archive-list")).map(element => element.scrollTop);
+    memorySettingsComponents.forEach(component => component.dispose?.());
+    memorySettingsComponents = [];
     clearMemoryEditorPortal();
     fields.memorySurface.textContent = "";
     if (isCharacterTransitioning()) {
@@ -2302,11 +2394,71 @@ export function createPluginSettingsFeature({
       schedulePluginActivityRefresh();
       return;
     }
-    contributions.forEach(({ plugin, section }) => {
-      (section.collections || []).forEach((collection) => {
-        fields.memorySurface.append(renderMemoryCollection(plugin, section, collection));
-      });
+    const hasMaintenance = contributions.some(({ section }) => section.fields.length || section.actions.length);
+    if (hasMaintenance) {
+      const tabs = pluginNode("nav", "memory-view-tabs");
+      tabs.setAttribute("aria-label", "记忆页面");
+      tabs.setAttribute("role", "tablist");
+      for (const [view, label] of [["list", "记忆列表"], ["maintenance", "记忆维护"]]) {
+        const tab = pluginNode("button", "", label);
+        tab.type = "button";
+        tab.id = `memory-view-${view}`;
+        tab.setAttribute("role", "tab");
+        tab.setAttribute("aria-selected", String(memoryView === view));
+        tab.setAttribute("aria-controls", "memory-view-panel");
+        tab.tabIndex = memoryView === view ? 0 : -1;
+        const changeView = () => {
+          const list = fields.memorySurface.querySelector(".memory-archive-list");
+          if (list) memoryListScroll = list.scrollTop;
+          memoryView = view;
+          renderMemorySurface();
+          document.getElementById(tab.id)?.focus();
+        };
+        tab.addEventListener("click", changeView);
+        tab.addEventListener("keydown", event => {
+          if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+          event.preventDefault();
+          const target = event.key === "Home" ? "list" : event.key === "End" ? "maintenance" : memoryView === "list" ? "maintenance" : "list";
+          document.getElementById(`memory-view-${target}`)?.click();
+        });
+        tabs.append(tab);
+      }
+      fields.memorySurface.append(tabs);
+    } else memoryView = "list";
+    const tools = pluginNode("div", "memory-maintenance");
+    if (memoryView === "maintenance") {
+      for (const plugin of new Set(contributions.map(item => item.plugin))) {
+        const settings = renderPluginSettings(plugin, "memory", { includeCollections: false });
+        if (!settings.childElementCount) continue;
+        memorySettingsComponents.push(...settings.components);
+        tools.append(settings);
+      }
+    }
+    const collections = contributions.flatMap(({ plugin, section }) => (section.collections || [])
+      .map(collection => ({ plugin, section, collection, key: pluginCollectionKey(plugin, section, collection) })));
+    if (!collections.some(item => item.key === selectedMemoryCollection)) selectedMemoryCollection = collections[0]?.key || "";
+    const selected = collections.find(item => item.key === selectedMemoryCollection);
+    const panel = memoryView === "maintenance" ? tools : selected ? renderMemoryCollection(selected.plugin, selected.section, selected.collection, collections) : null;
+    if (panel) {
+      panel.id = "memory-view-panel";
+      if (hasMaintenance) {
+        panel.setAttribute("role", "tabpanel");
+        panel.setAttribute("aria-labelledby", `memory-view-${memoryView}`);
+      }
+      fields.memorySurface.append(panel);
+    }
+    fields.memorySurface.querySelectorAll("details").forEach(element => {
+      element.open = openSections.has(element.dataset.pluginSection);
     });
+    fields.memorySurface.querySelectorAll(".memory-archive-list").forEach((element, index) => {
+      element.scrollTop = scrollPositions[index] ?? memoryListScroll;
+    });
+    memorySettingsComponents.forEach(component => component.mounted?.());
+    if (focusId) {
+      const input = document.getElementById(focusId);
+      input?.focus({ preventScroll: true });
+      if (input && selection) input.setSelectionRange(...selection);
+    }
     schedulePluginActivityRefresh();
   }
 
@@ -2318,8 +2470,11 @@ export function createPluginSettingsFeature({
       || "";
     pluginActivityRefreshFailed = false;
     const busyKey = `${plugin.id}:${section.section_id}:${action.action_id}`;
+    const generation = runtimePluginController.snapshot()?.coreGenerationId;
+    const characterId = currentCharacterId();
     pluginState.actionBusyKey = busyKey;
     renderPluginPage();
+    if (section.surface === "memory") renderMemorySurface();
     renderAboutComponents();
     setError("");
     try {
@@ -2333,6 +2488,7 @@ export function createPluginSettingsFeature({
           pluginSectionValues(plugin.id, section.section_id),
         )),
       });
+      if (generation !== runtimePluginController.snapshot()?.coreGenerationId || characterId !== currentCharacterId()) return;
       if (result && typeof result.values === "object" && result.values !== null) {
         pluginState.settingsValues[plugin.id][section.section_id] = {
           ...pluginState.settingsValues[plugin.id][section.section_id],
@@ -2351,6 +2507,7 @@ export function createPluginSettingsFeature({
     } finally {
       pluginState.actionBusyKey = "";
       renderPluginPage();
+      if (section.surface === "memory") renderMemorySurface();
       renderAboutComponents({ restoreResourceKey: restoreAboutResourceKey });
       if (restoreAboutResourceKey && pluginSettingsDialog?.installId === plugin.id) {
         pluginSettingsDialog.general.querySelector(`[data-about-resource-key="${CSS.escape(restoreAboutResourceKey)}"]:not(:disabled)`)?.focus({ preventScroll: true });
@@ -3070,6 +3227,7 @@ export function createPluginSettingsFeature({
       if (page === "providers" || page === "model") { renderModelSurfaces(); schedulePluginActivityRefresh(); }
     },
     clearCharacterState() {
+      memoryListScroll = 0;
       const snapshot = runtimePluginController.snapshot();
       if (snapshot) runtimePluginController.initialize(snapshot, { preserveDraft: true });
       pluginCollectionState.forEach((state, key) => {
@@ -3088,6 +3246,8 @@ export function createPluginSettingsFeature({
     },
     dispose() {
       settingsUI.dispose();
+      memorySettingsComponents.forEach(component => component.dispose?.());
+      memorySettingsComponents = [];
       const editor = pluginSettingsDialog;
       pluginSettingsDialog = null;
       if (editor) {

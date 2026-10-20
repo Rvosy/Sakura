@@ -1036,13 +1036,7 @@ def _prepare_memory_model(
     progress: Progress,
     import_id: str,
 ) -> tuple[int, int]:
-    """Stage a verified v2 ONNX model whenever legacy memory is imported.
-
-    A complete target cache is retained.  A compatible cache embedded in the
-    source is copied into the transaction; old Hugging Face/PyTorch caches do
-    not match the fixed FastEmbed revision and therefore fall through to the
-    current downloader.
-    """
+    """复用已有中文模型；缺少模型不阻断正文迁移。"""
 
     from app.legacy_import.plugin_support import migration_module
     memory = migration_module("sakura_mem0.memory")
@@ -1052,7 +1046,6 @@ def _prepare_memory_model(
     _embedding_model_cached = memory._embedding_model_cached
     _embedding_model_snapshot = memory._embedding_model_snapshot
     _validate_fastembed_snapshot_artifacts = memory._validate_fastembed_snapshot_artifacts
-    download_embedding_model = memory.download_embedding_model
 
 
     target_cache = target / "data" / "cache" / "memory"
@@ -1112,36 +1105,9 @@ def _prepare_memory_model(
             )
             return files, size
 
-        progress("staging", 46, "正在准备记忆模型")
-        last_percent = -1
-
-        def model_progress(_stage: str, percent: int) -> None:
-            nonlocal last_percent
-            _check_cancelled(cancelled)
-            bounded = min(100, max(0, int(percent)))
-            overall = min(54, 46 + int(bounded * 8 / 100))
-            if overall == last_percent:
-                return
-            last_percent = overall
-            progress("staging", overall, f"正在准备记忆模型（{bounded}%）")
-
-        result = download_embedding_model(
-            cache_dir=staged_cache,
-            progress=model_progress,
-            cancel=_CancellationEventAdapter(cancelled),
-        )
-        staged_snapshot = verified_snapshot(staged_cache)
-        if staged_snapshot is None:
-            raise RuntimeError("prepared memory model is incomplete")
-        files, size = tree_stats(result.model_dir)
-        progress("staging", 54, "记忆模型已就绪")
-        _log_legacy_import(
-            import_id,
-            "legacy_import.memory_model_prepared",
-            "当前记忆模型已写入迁移事务并通过校验",
-            {"files": files, "bytes": size},
-        )
-        return files, size
+        # 正文迁移不依赖向量模型。缺少中文模型时仍可使用关键词检索。
+        progress("staging", 54, "记忆正文已保留，可在插件设置下载中文模型")
+        return 0, 0
     except LegacyImportError:
         raise
     except MemoryModelTaskCancelled:

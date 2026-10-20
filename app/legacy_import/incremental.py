@@ -353,9 +353,18 @@ def _inspect_into_plan(
         identity_root=target,
         identities=identities,
     )
+    modern = converted / "modern-source"
+    if _sqlite_snapshot(source / "data/chat_history/timeline.sqlite3",
+                        modern / "data/chat_history/timeline.sqlite3", normalize_history=False):
+        _merge_timeline(modern, converted, overwrite_conflicts=True,
+                        quarantine=converted / "data/legacy-imports/incremental-scan/quarantine")
     plan = _Plan(source.name[:120])
     plan.recoverable_errors += stats.errors_quarantined
     plan.recoverable_errors += _snapshot_source_memory(source, converted)
+    if (target / "data/memory/memory.sqlite3").is_file():
+        from .plugin_support import migration_module
+        store = migration_module("sakura_mem0.memory").MemoryStore(converted)
+        store.close()
     plan.role_mapping = role_mapping
     plan.packages, targets, plan.package_issues = prepare_packages(source, target, converted, role_mapping)
     plan.current_scope, mapping_errors, _mapped = remap_frozen_data(converted, role_mapping, _legacy_current_scope(source))
@@ -391,6 +400,9 @@ def _snapshot_source_memory(source: Path, converted: Path) -> int:
     source_memory = source / "data/memory"
     frozen = converted / "data/memory"
     errors = 0
+    if (source_memory / "memory.sqlite3").is_file():
+        _sqlite_snapshot(source_memory / "memory.sqlite3", frozen / "memory.sqlite3", normalize_history=False)
+        return errors
     qdrant = source_memory / "qdrant"
     if qdrant.is_dir():
         try:
@@ -453,6 +465,14 @@ def _discover_scopes(source: Path) -> tuple[str, ...]:
     current = _legacy_current_scope(source)
     if current:
         scopes.add(current)
+    for relative, query in (
+        ("data/chat_history/timeline.sqlite3", "SELECT DISTINCT character_id FROM timeline_entries"),
+        ("data/memory/memory.sqlite3", "SELECT DISTINCT scope FROM memories WHERE scope != ''"),
+    ):
+        database = source / relative
+        if database.is_file():
+            with closing(sqlite3.connect(sqlite_readonly_uri(database), uri=True)) as connection:
+                scopes.update(row[0] for row in connection.execute(query))
     return tuple(sorted(scopes, key=str.casefold))
 
 
@@ -508,6 +528,10 @@ def _copy_current_domains(target: Path, payload: Path) -> None:
         source = target / relative
         if source.is_dir():
             copy_tree_checked(source, payload / relative, cancelled=lambda: False)
+    for relative in ("data/memory/memory.sqlite3", "data/chat_history/timeline.sqlite3"):
+        original, copied = target / relative, payload / relative
+        if original.is_file():
+            _sqlite_snapshot(original, copied, normalize_history=False)
 
 
 def _merge_timeline(converted: Path, payload: Path, *, overwrite_conflicts: bool, quarantine: Path) -> None:
@@ -554,6 +578,13 @@ def _merge_timeline(converted: Path, payload: Path, *, overwrite_conflicts: bool
 def _inspect_memory(source: Path, target: Path, plan: _Plan, *, current_scope: str) -> None:
     source_memory = source / "data/memory"
     target_memory = target / "data/memory"
+    if (source_memory / "memory.sqlite3").is_file() or (target_memory / "memory.sqlite3").is_file():
+        existing = {(item["scope"], item["id"]): item for item in _memory_records(target_memory)}
+        for item in _memory_records(source_memory):
+            old = existing.get((item["scope"], item["id"]))
+            plan.classify(domain="memory", character_id=item["scope"], item_id=item["id"],
+                          status="new" if old is None else "identical" if _same_memory(item, old) else "conflicts")
+        return
     try:
         point_scopes, target_point_scopes = _inspect_qdrant(
             source_memory, target_memory, plan, current_scope=current_scope
@@ -604,6 +635,19 @@ def _merge_memory(
     source_memory = source / "data/memory"
     target_memory = payload / "data/memory"
     target_memory.mkdir(parents=True, exist_ok=True)
+    if (source_memory / "memory.sqlite3").is_file() or (target_memory / "memory.sqlite3").is_file():
+        from .plugin_support import migration_module
+        store = migration_module("sakura_mem0.memory").MemoryStore(payload)
+        try:
+            records = _memory_records(source_memory)
+            existing = {(item["scope"], item["id"]): item for item in store.all_records()}
+            changed = [item for item in records if not _same_memory(item, existing.get((item["scope"], item["id"])))]
+            if not overwrite_conflicts and any((item["scope"], item["id"]) in existing for item in changed):
+                raise LegacyImportError("LEGACY_DATA_IMPORT_CONFIRMATION_REQUIRED", "staging")
+            store.import_records(changed, overwrite=overwrite_conflicts)
+        finally:
+            store.close()
+        return
     try:
         point_scopes, target_point_scopes = _merge_qdrant(
             source_memory,
@@ -677,10 +721,6 @@ def _append_memory_quarantine(path: Path, value: dict[str, Any]) -> None:
 
 
 def _qdrant_client(path: Path):
-    from app.legacy_import.plugin_support import migration_module
-    memory = migration_module("sakura_mem0.memory")
-    memory._install_disabled_qdrant_grpc_module()
-    memory._install_synchronous_qdrant_client_facade()
     # 先加载锁依赖，避免 Qdrant 打开 .lock 后才因缺少 pywin32 中断。
     import portalocker
     from qdrant_client import QdrantClient
@@ -998,7 +1038,27 @@ def _merge_qdrant(
     return scopes, target_scopes
 
 
-def _sqlite_snapshot(source: Path, destination: Path) -> bool:
+def _memory_records(memory: Path) -> list[dict]:
+    database = memory / "memory.sqlite3"
+    if not database.is_file():
+        from .plugin_support import migration_module
+        return migration_module("sakura_mem0.legacy").read_legacy(memory)
+    with closing(sqlite3.connect(sqlite_readonly_uri(database), uri=True)) as connection:
+        return [json.loads(row[0]) for row in connection.execute("SELECT document FROM memories")]
+
+
+def _same_memory(source: dict, target: dict | None) -> bool:
+    if target is None:
+        return False
+    defaults = {"content": "", "layer": "semantic", "category": "", "deleted": False,
+                "state": "active", "pinned": False, "evidence": []}
+    for key, default in defaults.items():
+        if source.get(key, default) != target.get(key, default):
+            return False
+    return all(not source.get(key) or source[key] == target.get(key) for key in ("created_at", "updated_at"))
+
+
+def _sqlite_snapshot(source: Path, destination: Path, *, normalize_history: bool = True) -> bool:
     if not source.is_file():
         return False
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -1007,7 +1067,8 @@ def _sqlite_snapshot(source: Path, destination: Path) -> bool:
             original.backup(copied)
     from app.legacy_import.plugin_support import migration_module
 
-    migration_module("sakura_mem0.memory").normalize_existing_history_database(destination)
+    if normalize_history:
+        migration_module("sakura_mem0.memory").normalize_existing_history_database(destination)
     return True
 
 

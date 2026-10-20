@@ -982,7 +982,9 @@ class AgentRuntime:
                           {"tool_name": call.name, "step_index": step_index},
                           event="tool.execution.started")
                 try:
-                    prepared = self.tools.execute(call.name, execution_arguments)
+                    prepared = self.tools.execute(call.name, execution_arguments, invocation={
+                        "turnId": request.current_turn_id, "humanEntryId": request.human_entry_id,
+                    })
                     check_cancelled(cancel_checker)
                 except OperationCancelled:
                     log_event("AgentRuntime", f"工具调用已取消：{call.name}",

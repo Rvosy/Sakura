@@ -266,7 +266,8 @@ class ToolRegistry:
 
     # ---- 执行 ----
 
-    def execute(self, name: str, arguments: dict[str, Any], *, expected: Tool | None = None) -> ToolExecutionResult:
+    def execute(self, name: str, arguments: dict[str, Any], *, expected: Tool | None = None,
+                invocation: dict | None = None) -> ToolExecutionResult:
         """执行一个已注册的工具。"""
         started_at = time.perf_counter()
         tool = expected if expected is not None else self.get(name)

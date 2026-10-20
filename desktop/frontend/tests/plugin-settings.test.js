@@ -3,6 +3,69 @@ import test from "node:test";
 import { executeSettingsClose } from "../settings/close-flow.js";
 import { field, snapshot, featureFixture, queryResult, settle } from "./fixtures/plugin-settings-fixture.js";
 
+test("memory maintenance refreshes progress and returns to the same list search", async () => {
+  const data = snapshot();
+  const section = data.plugins[0].sections[1];
+  section.presentation = { component: "form" };
+  section.fields = [field("progress", { type: "status", readonly: true })];
+  section.values = { progress: { state: "neutral", label: "自动更新已开启" } };
+  section.actions = [{ actionId: "updateNow", label: "立即更新" }];
+  const calls = [];
+  const ui = featureFixture(async (command, args) => {
+    if (command === "settings_plugins_collection") return queryResult("one", "已有记忆");
+    if (command === "settings_plugins_action") {
+      calls.push(args);
+      section.values.progress = { state: "working", label: "正在整理", message: "10 / 30" };
+      return { accepted: true };
+    }
+    return structuredClone(data);
+  });
+  ui.document.getElementById("page-memory").classList.add("is-active");
+  ui.feature.initialize(structuredClone(data)); await ui.runTimers(0);
+  const search = ui.document.querySelector('.memory-search-input');
+  search.value = "咖啡"; await search.fire("input"); await ui.runTimers(220);
+  await ui.document.getElementById("memory-view-maintenance").fire("click");
+  let panel = ui.document.querySelector(".memory-maintenance");
+  await panel.querySelector(".plugin-setting-actions button").fire("click");
+  assert.equal(calls[0].actionId, "updateNow");
+  section.values.progress = { state: "working", label: "正在整理", message: "20 / 30" };
+  await ui.runTimers(1200); await ui.runTimers(0);
+  panel = ui.document.querySelector(".memory-maintenance");
+  assert.match(panel.textContent, /20 \/ 30/);
+  await ui.document.getElementById("memory-view-list").fire("click");
+  await ui.runTimers(0);
+  assert.equal(ui.document.querySelector('.memory-search-input').value, "咖啡");
+  assert.match(ui.document.querySelector(".memory-record-content").textContent, /已有记忆/);
+  assert.deepEqual(ui.errors, []);
+  ui.feature.dispose();
+});
+
+test("memory editor reads evidence and saves pin changes as booleans", async () => {
+  const data = snapshot();
+  const collection = data.plugins[0].sections[1].collections[0];
+  collection.fields.push(field("pinned", { type: "boolean", default: false }),
+    field("evidence", { type: "readonly", readonly: true }));
+  const item = { itemId: "one", values: { content: "记得喝咖啡", pinned: false, evidence: "我习惯早上喝咖啡。" } };
+  let saved;
+  const ui = featureFixture(async (command, args) => {
+    if (command === "settings_plugins_collection") {
+      if (args.operation === "update") { saved = args.payload.values; return item; }
+      return { items: [item], total: 1, nextCursor: null };
+    }
+    return structuredClone(data);
+  });
+  ui.feature.initialize(data); await ui.runTimers(0);
+  await ui.document.querySelector(".memory-card-edit").fire("click");
+  assert.equal(ui.document.querySelector(".memory-evidence").textContent, item.values.evidence);
+  const toggle = ui.document.querySelector(".memory-record-dialog input");
+  assert.equal(toggle.type, "checkbox");
+  toggle.checked = true; await toggle.fire("change");
+  await ui.document.querySelector('[data-memory-action="save"]').fire("click");
+  assert.deepEqual(saved, { content: "记得喝咖啡", pinned: true });
+  assert.deepEqual(ui.errors, []);
+  ui.feature.dispose();
+});
+
 test("open status panel observes standby transitions without replacing configuration drafts", async () => {
   const data = snapshot();
   const section = data.plugins[0].sections[0];
@@ -298,7 +361,13 @@ test("a pending character choice locks only character-owned Memory collections i
   try {
     ui.feature.initialize(data);
     await ui.runTimers(0);
-    assert.deepEqual(ui.document.querySelectorAll(".memory-archive").map((archive) => archive.inert), [true, false]);
+    assert.equal(ui.document.querySelector(".memory-archive").inert, true);
+    const select = ui.document.querySelector('[aria-label="查看记忆"]');
+    select.value = select.children[1].value;
+    await select.fire("change");
+    await ui.runTimers(0);
+    assert.equal(ui.document.querySelector(".memory-archive").inert, false);
+    assert.match(ui.document.querySelector(".memory-record-content").textContent, /global-note/);
   } finally {
     ui.feature.dispose();
   }

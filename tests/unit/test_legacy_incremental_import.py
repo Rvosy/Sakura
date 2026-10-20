@@ -369,15 +369,85 @@ def test_incremental_history_keeps_character_scopes_isolated(tmp_path: Path) -> 
     assert [entry.payload["text"] for entry in store.read_all("Beta")] == ["beta"]
 
 
-def test_incremental_import_rejects_runtime_v2_only_source(tmp_path: Path) -> None:
+def test_incremental_import_merges_runtime_timeline_without_reimporting_rows(tmp_path: Path) -> None:
+    from app.storage.timeline import NewTimelineEntry, TimelineKind
     source = tmp_path / "runtime-v2"
     target = tmp_path / "target"
     (source / "data/chat_history").mkdir(parents=True)
-    TimelineStore(source / "data/chat_history/timeline.sqlite3").initialize()
+    history = TimelineStore(source / "data/chat_history/timeline.sqlite3")
+    history.initialize()
+    history.append(NewTimelineEntry("human-modern", "turn-modern", "Sakura", TimelineKind.HUMAN,
+                                   "chat", "2026-10-01T12:00:00+08:00", {"text": "保留这条现有聊天"}))
     target.mkdir()
 
-    with pytest.raises(LegacyImportError, match="LEGACY_DATA_SOURCE_UNRECOGNIZED"):
-        inspect_character_data_import(source, target)
+    plan = inspect_character_data_import(source, target)
+    assert plan["totals"]["historyNew"] == 1
+    _, pending = run_character_data_import(source, target, plan_token=plan["planToken"], overwrite_conflicts=False)
+    finalize_commit(pending)
+    assert TimelineStore(target / "data/chat_history/timeline.sqlite3").read_all("Sakura")[0].payload["text"] == "保留这条现有聊天"
+    assert inspect_character_data_import(source, target)["totals"]["historyIdentical"] == 1
+
+
+def test_old_memory_import_into_migrated_store_keeps_local_edits_and_deletions(tmp_path):
+    from plugins.optional.sakura_mem0.memory import MemoryStore
+    from contextlib import closing
+    source, target = _source(tmp_path), tmp_path / "target"
+    current = MemoryStore(target, "Sakura")
+    current.create_memory({"id": "local", "content": "现在喝茶"})
+    current.create_memory({"id": "deleted", "content": "旧偏好"})
+    current.forget_memory({"id": "deleted"})
+    current.close()
+    with closing(sqlite3.connect(source / "data/memory/mem0_history.db")) as db, db:
+        db.execute("CREATE TABLE history (id TEXT PRIMARY KEY,memory_id TEXT,new_memory TEXT,event TEXT,user_id TEXT)")
+        db.executemany("INSERT INTO history VALUES (?,?,?,?,?)", [
+            ("h1", "new", "想去青岛看海", "ADD", "Sakura"),
+            ("h2", "deleted", "旧偏好", "ADD", "Sakura"),
+        ])
+    plan = inspect_character_data_import(source, target)
+    assert plan["totals"]["memoryNew"] == 1
+    assert plan["totals"]["memoryConflicts"] == 1
+    with pytest.raises(LegacyImportError, match="LEGACY_DATA_IMPORT_CONFIRMATION_REQUIRED"):
+        run_character_data_import(source, target, plan_token=plan["planToken"], overwrite_conflicts=False)
+    with closing(sqlite3.connect(source / "data/memory/mem0_history.db")) as db, db:
+        db.execute("DELETE FROM history WHERE memory_id='deleted'")
+    plan = inspect_character_data_import(source, target)
+    _, pending = run_character_data_import(source, target, plan_token=plan["planToken"], overwrite_conflicts=False)
+    finalize_commit(pending)
+    current = MemoryStore(target, "Sakura")
+    try:
+        assert current.get("local")["content"] == "现在喝茶"
+        assert current.get("deleted") is None
+        assert current.search_memory({"query": "青岛"})["memories"][0]["id"] == "new"
+    finally:
+        current.close()
+
+
+def test_new_memory_directory_role_mapping_preserves_evidence_and_tombstones(tmp_path):
+    from plugins.optional.sakura_mem0.memory import MemoryStore
+    source, target = _source(tmp_path), tmp_path / "target"
+    _role_package(source, "OldRole")
+    _role_package(target, "CurrentRole")
+    store = MemoryStore(source, "OldRole")
+    store.create_memory({"id": "fact", "content": "喜欢樱花", "evidence": [
+        {"entry_id": "human1", "turn_id": "turn1", "role": "user", "quote": "喜欢樱花", "created_at": "2026-10-01"}]})
+    store.create_memory({"id": "deleted", "content": "旧事实"})
+    store.forget_memory({"id": "deleted"})
+    store.close()
+    mapping = {"OldRole": "CurrentRole"}
+    plan = inspect_character_data_import(source, target, role_mapping=mapping)
+    _, pending = run_character_data_import(source, target, plan_token=plan["planToken"], overwrite_conflicts=False)
+    finalize_commit(pending)
+    active = MemoryStore(target, "CurrentRole")
+    try:
+        assert active.get("fact")["evidence"][0]["entry_id"] == "human1"
+        assert active.get("fact")["scope"] == "CurrentRole"
+        assert active.get("deleted") is None
+        assert active.get("deleted", include_deleted=True)["deleted"]
+    finally:
+        active.close()
+    repeated = inspect_character_data_import(source, target, role_mapping=mapping)
+    assert repeated["totals"]["memoryIdentical"] == 2
+    assert repeated["totals"]["memoryNew"] == 0
 
 
 def test_incremental_import_accepts_partial_legacy_jsonl_without_config(
@@ -1105,10 +1175,10 @@ def test_explicit_role_mapping_imports_history_points_and_profiles_under_existin
     try:
         assert points[point_id][1]["user_id"] == active.id
         assert points[point_id][1]["scope"] == active.id
-        from plugins.optional.sakura_mem0.memory import _normalize_memory_record
-        assert _normalize_memory_record({**points[point_id][1], "id": point_id})["scope"] == active.id
+        from plugins.optional.sakura_mem0.legacy import read_legacy
     finally:
         client.close()
+    assert next(item for item in read_legacy(target / "data/memory") if item["id"] == point_id)["scope"] == active.id
     with closing(sqlite3.connect(target / "data/memory/mem0_history.db")) as connection:
         assert connection.execute("SELECT user_id FROM history").fetchone()[0] == active.id
     profiles = json.loads((target / "data/memory/core_profiles.json").read_text(encoding="utf-8"))

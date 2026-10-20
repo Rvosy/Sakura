@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from types import SimpleNamespace
-from typing import Any
 
 import yaml
 
@@ -84,100 +82,6 @@ def _history_request(
     }
 
 
-class _ScopedMemoryStore:
-    def __init__(
-        self,
-        character_id: str,
-        records: dict[str, dict[str, dict[str, Any]]],
-        *,
-        ready: bool = True,
-    ) -> None:
-        self.character_id = character_id
-        self.records = records
-        self.ready = ready
-        self.listener = None
-        self.closed = False
-
-    def add_status_listener(self, listener, *, replay: bool = True) -> None:  # type: ignore[no-untyped-def]
-        self.listener = listener
-        if replay and self.ready:
-            listener("ready", "")
-
-    def remove_status_listener(self, _listener) -> None:  # type: ignore[no-untyped-def]
-        self.listener = None
-
-    def is_ready(self) -> bool:
-        return self.ready
-
-    def needs_embedding_model_download(self) -> bool:
-        return not self.ready
-
-    def preload(self, *, wait: bool = False) -> None:
-        del wait
-
-    def search_memory(self, arguments, *, wait: bool = False):  # type: ignore[no-untyped-def]
-        del wait
-        query = str(arguments.get("query") or "")
-        memories = [
-            item
-            for item in self.records.get(self.character_id, {}).values()
-            if query in str(item["content"])
-        ]
-        return {"status": "ready", "memories": memories}
-
-    def list_memories(self, *, limit=None):  # type: ignore[no-untyped-def]
-        values = list(self.records.get(self.character_id, {}).values())
-        return values if limit is None else values[:limit]
-
-    def create_memory(self, arguments, *, wait: bool = True):  # type: ignore[no-untyped-def]
-        del wait
-        owned = self.records.setdefault(self.character_id, {})
-        memory_id = f"{self.character_id}-{len(owned) + 1}"
-        record = {
-            "id": memory_id,
-            "content": arguments["content"],
-            "metadata": {**arguments, "scope": self.character_id},
-        }
-        owned[memory_id] = record
-        return {"memory": record}
-
-    def update_memory(self, arguments, *, wait: bool = True):  # type: ignore[no-untyped-def]
-        del wait
-        memory_id = str(arguments["id"])
-        record = {
-            "id": memory_id,
-            "content": arguments["content"],
-            "metadata": {**arguments, "scope": self.character_id},
-        }
-        self.records.setdefault(self.character_id, {})[memory_id] = record
-        return {"memory": record}
-
-    def forget_memory(self, arguments, *, wait: bool = True):  # type: ignore[no-untyped-def]
-        del wait
-        missing = self.records.setdefault(self.character_id, {}).pop(str(arguments["id"]), None)
-        return {"already_missing": missing is None}
-
-    def scoped(self, character_id: str):  # type: ignore[no-untyped-def]
-        return _ScopedMemoryStore(character_id, self.records, ready=self.ready)
-
-    def close(self) -> None:
-        self.closed = True
-
-
-def _memory(
-    root: Path,
-    character_id: str,
-    records: dict[str, dict[str, dict[str, Any]]],
-    *,
-    ready: bool = True,
-) -> MemoryBoundary:
-    return MemoryBoundary(
-        root,
-        character_id,
-        memory_store=_ScopedMemoryStore(character_id, records, ready=ready),  # type: ignore[arg-type]
-    )
-
-
 def _append_history(store: TimelineStore, character_id: str, index: int) -> None:
     store.append_many(
         [
@@ -211,9 +115,8 @@ def test_a_b_a_switch_keeps_character_memory_history_and_generation_services_iso
     assert old_character_service.current("fixture.plugin")["id"] == "beta"
     assert PluginCharacterStore(root).current("fixture.plugin")["id"] == "beta"
 
-    records: dict[str, dict[str, dict[str, Any]]] = {}
-    alpha_memory = _memory(root, "alpha", records)
-    beta_memory = _memory(root, "beta", records)
+    alpha_memory = MemoryBoundary(root, "alpha")
+    beta_memory = MemoryBoundary(root, "beta")
     try:
         alpha_memory.upsert({"content": "alpha-only", "layer": "semantic"})
         beta_memory.upsert({"content": "beta-only", "layer": "core_profile"})
@@ -226,19 +129,17 @@ def test_a_b_a_switch_keeps_character_memory_history_and_generation_services_iso
         alpha_memory.close()
         beta_memory.close()
 
-    alpha_again = _memory(root, "alpha", records)
-    degraded_beta = _memory(root, "beta", records, ready=False)
+    alpha_again = MemoryBoundary(root, "alpha")
+    offline_beta = MemoryBoundary(root, "beta")
     try:
         assert alpha_again._curation_state.curation_cursor() == "alpha-cursor"  # noqa: SLF001
         assert [item["content"] for item in alpha_again.search({"query": "only", "limit": 10})["memories"]] == ["alpha-only"]
-        assert degraded_beta.search({"query": "alpha", "limit": 10}) == {
-            "status": "degraded",
-            "message": "本地记忆模型尚未安装；聊天将继续但不会召回记忆。",
-            "memories": [],
-        }
+        assert offline_beta.memory_store.needs_embedding_model_download()
+        assert offline_beta.search({"query": "alpha", "limit": 10})["memories"] == []
+        assert offline_beta.search({"query": "beta", "limit": 10})["memories"][0]["content"] == "beta-only"
     finally:
         alpha_again.close()
-        degraded_beta.close()
+        offline_beta.close()
 
     timeline = TimelineStore(StoragePaths(root).timeline_database())
     timeline.initialize()
@@ -283,4 +184,3 @@ def test_a_b_a_switch_keeps_character_memory_history_and_generation_services_iso
 
     _select_on_disk(root, "alpha")
     assert PluginCharacterStore(root).current("fixture.plugin")["id"] == "alpha"
-    assert set(records) == {"alpha", "beta"}

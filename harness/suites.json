@@ -1,6 +1,10 @@
 {
   "schema_version": 1,
   "profiles": {
+    "memory": {
+      "description": "验证记忆读写、双路检索、证据整理、历史导入和插件运行",
+      "cases": ["runtime-v2-memory-tests"]
+    },
     "smoke": {
       "description": "快速验证 Product Harness 与 Runtime v2 核心协议边界",
       "cases": [
@@ -251,6 +255,7 @@
         "pytest",
         "tests/unit/test_legacy_import.py",
         "tests/unit/test_legacy_incremental_import.py",
+        "tests/integration/test_wp_5_03_character_switch_journey.py",
         "-q"
       ],
       "timeout_seconds": 180,
@@ -596,12 +601,19 @@
     },
     {
       "id": "runtime-v2-memory-tests",
-      "description": "验证 Mem0 的 Context、整理游标及独立数据边界",
+      "description": "验证长期记忆的检索、来源证据、整理恢复、迁移和宿主接入",
       "argv": [
         "{python}",
         "-m",
         "pytest",
         "tests/unit/test_core_host_memory.py",
+        "tests/unit/test_sakura_mem0_fastembed.py",
+        "tests/unit/test_sakura_mem0_plugin.py",
+        "tests/unit/test_mem0_runtime_v4.py",
+        "tests/unit/test_data_transfer.py",
+        "tests/unit/test_assistant_host_contract.py",
+        "tests/unit/test_context_host_contract.py",
+        "tests/unit/test_legacy_incremental_import.py",
         "tests/integration/test_wp_4_01_memory_capability.py",
         "-q"
       ],

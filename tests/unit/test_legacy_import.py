@@ -876,14 +876,7 @@ def test_memory_validation_uses_runtime_schema_migration_for_legacy_variants(
             "role",
             "user_id",
         }.issubset(history_columns)
-        assert {
-            "id",
-            "session_scope",
-            "role",
-            "content",
-            "name",
-            "created_at",
-        }.issubset(message_columns)
+        assert message_columns == {"id", "role", "content"}
         assert connection.execute(
             "SELECT memory_id, event, user_id FROM history WHERE id = 'history-one'"
         ).fetchone() == ("memory-one", "ADD", "legacy-user")
@@ -891,37 +884,6 @@ def test_memory_validation_uses_runtime_schema_migration_for_legacy_variants(
             "SELECT role, content FROM messages WHERE id = 'message-one'"
         ).fetchone() == ("human", "cached prompt")
     assert _tree_state(source) == source_before
-
-
-def test_memory_validation_rebuilds_only_unidentifiable_message_cache(
-    tmp_path: Path,
-) -> None:
-    database = tmp_path / "staged-memory" / "mem0_history.db"
-    database.parent.mkdir()
-    with sqlite3.connect(database) as connection:
-        connection.execute(
-            "CREATE TABLE history (id TEXT PRIMARY KEY, memory_id TEXT, old_memory TEXT, "
-            "new_memory TEXT, event TEXT)"
-        )
-        connection.execute("CREATE TABLE messages (role TEXT, content TEXT)")
-        connection.execute("INSERT INTO messages VALUES ('human', 'disposable cache')")
-
-    from plugins.optional.sakura_mem0.memory import normalize_existing_history_database
-    normalize_existing_history_database(database)
-
-    with sqlite3.connect(database) as connection:
-        columns = {
-            str(row[1]) for row in connection.execute("PRAGMA table_info(messages)")
-        }
-        assert columns == {
-            "id",
-            "session_scope",
-            "role",
-            "content",
-            "name",
-            "created_at",
-        }
-        assert connection.execute("SELECT COUNT(*) FROM messages").fetchone() == (0,)
 
 
 @pytest.mark.skipif(__import__("platform").system() != "Windows", reason="v1 supports Windows imports")
