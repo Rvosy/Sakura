@@ -1225,3 +1225,28 @@ def test_corrupt_qdrant_preview_releases_sqlite_and_preserves_source(tmp_path):
     assert database.read_bytes() == before
     assert not any(str(tmp_path) in file.path and file.path.endswith("storage.sqlite")
                    for file in psutil.Process().open_files())
+
+
+def test_missing_lock_dependency_does_not_leave_open_import_files(tmp_path, monkeypatch):
+    import builtins
+
+    original_import = builtins.__import__
+    original_open = builtins.open
+    opened = []
+
+    def missing_lock_dependency(name, *args, **kwargs):
+        if name == "portalocker":
+            raise ModuleNotFoundError("No module named 'pywintypes'")
+        return original_import(name, *args, **kwargs)
+
+    def track_open(*args, **kwargs):
+        stream = original_open(*args, **kwargs)
+        opened.append(stream)
+        return stream
+
+    monkeypatch.setattr(builtins, "__import__", missing_lock_dependency)
+    monkeypatch.setattr(builtins, "open", track_open)
+    with pytest.raises(ModuleNotFoundError) as failure:
+        legacy_incremental._qdrant_client(tmp_path / "qdrant")
+    assert "pywintypes" in str(failure.value)
+    assert all(stream.closed for stream in opened)

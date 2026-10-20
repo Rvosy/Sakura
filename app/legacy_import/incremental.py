@@ -681,6 +681,8 @@ def _qdrant_client(path: Path):
     memory = migration_module("sakura_mem0.memory")
     memory._install_disabled_qdrant_grpc_module()
     memory._install_synchronous_qdrant_client_facade()
+    # 先加载锁依赖，避免 Qdrant 打开 .lock 后才因缺少 pywin32 中断。
+    import portalocker
     from qdrant_client import QdrantClient
     from qdrant_client.local import local_collection
 
