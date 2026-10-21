@@ -235,7 +235,7 @@ class TimelineStore:
                            created_at, payload_json
                     FROM timeline_entries
                     WHERE character_id = ?
-                    ORDER BY julianday(created_at), seq
+                    ORDER BY seq
                     """,
                     (character_id,),
                 ).fetchall()
@@ -501,7 +501,6 @@ class TimelineStore:
             raise TimelineDataError("TIMELINE_NOT_ACTIVATED")
         try:
             with self._connect_existing() as connection:
-                connection.execute("BEGIN")
                 lineage = _assert_activated_connection(connection)
                 rows = connection.execute(
                     """
@@ -509,22 +508,19 @@ class TimelineStore:
                            created_at, payload_json
                     FROM timeline_entries
                     WHERE character_id = ?
-                    ORDER BY julianday(created_at) DESC, seq DESC
+                    ORDER BY seq DESC
                     LIMIT ?
                     """,
                     (character_id, limit),
                 )
                 entries_desc, _truncated = _bounded_entries(rows, limit, max_bytes=max_bytes)
-                latest = connection.execute(
-                    "SELECT seq, entry_id FROM timeline_entries WHERE character_id = ? ORDER BY seq DESC LIMIT 1",
-                    (character_id,),
-                ).fetchone()
         except sqlite3.DatabaseError as exc:
             raise TimelineDataError("TIMELINE_DATABASE_INVALID") from exc
         entries = list(reversed(entries_desc))
         if not entries:
             return [], _encode_cursor(character_id, lineage, 0, "")
-        return entries, _encode_cursor(character_id, lineage, latest[0], latest[1])
+        latest = entries[-1]
+        return entries, _encode_cursor(character_id, lineage, latest.seq, latest.entry_id)
 
     def read_page_before(
         self,
