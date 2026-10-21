@@ -220,6 +220,23 @@ pub(crate) fn close_history_window(window: WebviewWindow) -> Result<(), String> 
 }
 
 #[tauri::command]
+pub(crate) async fn history_transfer(
+    window: WebviewWindow,
+    payload: Value,
+    lifecycle: State<'_, ShellLifecycleState>,
+) -> Result<Value, String> {
+    validate_history_window(&window)?;
+    let response = dispatch_settings_request(
+        settings_core_handle(&lifecycle)?,
+        None,
+        "ui.history.transfer",
+        payload,
+    )
+    .await?;
+    settings_response_payload(response)
+}
+
+#[tauri::command]
 pub(crate) fn reveal_history_window(window: WebviewWindow) -> Result<(), String> {
     validate_history_window(&window)?;
     window.show().map_err(|error| error.to_string())?;

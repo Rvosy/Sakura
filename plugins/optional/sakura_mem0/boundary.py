@@ -908,6 +908,8 @@ def _project_timeline_entries(value: object, character_id: str) -> list[ChatHist
         origin = item.get("origin")
         kind = item.get("kind")
         payload = item.get("payload")
+        if isinstance(payload, Mapping) and payload.get("imported"):
+            continue
         if (
             not isinstance(entry_id, str)
             or not entry_id

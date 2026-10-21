@@ -90,6 +90,12 @@ h1 {
   font-size: 12px;
 }
 
+.history-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .history-status {
   min-height: 20px;
   margin: 0;

@@ -24,7 +24,7 @@
 .sakura-icon.icon-settings {
   --icon-motion: lucide-turn 560ms cubic-bezier(.22, 1, .36, 1) both;
 }
-.sakura-icon:is(.icon-download, .icon-folder, .icon-images, .icon-settings-2) {
+.sakura-icon:is(.icon-download, .icon-folder, .icon-images, .icon-settings-2, .icon-ellipsis, .icon-calendar-days) {
   --icon-motion: lucide-bounce 400ms ease-in-out;
 }
 .sakura-icon:is(.icon-external-link, .icon-arrow-right) {

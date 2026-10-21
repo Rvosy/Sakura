@@ -1,4 +1,7 @@
 @import url("./icon-motion.css");
+
+.icon-calendar-days { --sakura-icon: url("../assets/lucide/calendar-days.svg"); }
+.icon-ellipsis { --sakura-icon: url("../assets/lucide/ellipsis.svg"); }
 /* Lucide 1.41.0; local SVG masks inherit the current theme color. See assets/lucide/LICENSE. */
 .icon-refresh-cw { --sakura-icon: url("../assets/lucide/refresh-cw.svg"); }
 .sakura-icon {
