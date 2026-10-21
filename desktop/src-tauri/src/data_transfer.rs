@@ -20,10 +20,7 @@ pub(crate) async fn data_transfer_choose(
         &[extension],
     );
     let selected = if export {
-        dialog
-            .set_file_name(default_name)
-            .save_file()
-            .await
+        dialog.set_file_name(default_name).save_file().await
     } else {
         dialog.pick_file().await
     };
