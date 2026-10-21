@@ -64,6 +64,14 @@ class NewTimelineEntry:
     payload: Mapping[str, Any]
 
 
+def timeline_record(entry: TimelineEntry) -> dict:
+    return {
+        "entry_id": entry.entry_id, "turn_id": entry.turn_id,
+        "kind": entry.kind.value, "origin": entry.origin, "created_at": entry.created_at,
+        "payload": {key: value for key, value in entry.payload.items() if key != "imported"},
+    }
+
+
 @dataclass(frozen=True)
 class TimelineTurnPage:
     """Newest turns first; entries inside each turn retain their original order."""
@@ -84,6 +92,9 @@ class TimelineStore:
 
         if self.path.exists():
             self.assert_activated()
+            with self._connect_existing() as connection:
+                connection.execute("CREATE INDEX IF NOT EXISTS timeline_character_time "
+                                   "ON timeline_entries(character_id, julianday(created_at), seq)")
             return
         self.path.parent.mkdir(parents=True, exist_ok=True)
         try:
@@ -99,6 +110,34 @@ class TimelineStore:
 
     def append(self, entry: NewTimelineEntry) -> TimelineEntry:
         return self.append_many([entry])[0]
+
+    def import_records(self, character_id: str, records: list[dict], *, preview: bool) -> dict:
+        from app.plugin_sdk.sakura_data_transfer import plan_merge
+
+        entries = [NewTimelineEntry(character_id=character_id, **{
+            **record, "kind": TimelineKind(record["kind"]),
+        }) for record in records]
+        for entry in entries:
+            _validated_row(entry)
+        with self._connect_existing() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            existing = [timeline_record(_entry_from_row(row)) for row in connection.execute(
+                "SELECT seq, entry_id, turn_id, character_id, kind, origin, created_at, payload_json "
+                "FROM timeline_entries WHERE character_id = ?", (character_id,),
+            )]
+            additions, counts = plan_merge(records, existing, key="entry_id")
+            added_ids = {item["entry_id"] for item in additions}
+            pending = [entry for entry in entries if entry.entry_id in added_ids]
+            _assert_turn_ownership(connection, pending)
+            if not preview:
+                for item in additions:
+                    connection.execute(
+                        "INSERT INTO timeline_entries (entry_id, turn_id, character_id, kind, origin, created_at, payload_json) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                        (item["entry_id"], item["turn_id"], character_id, item["kind"], item["origin"],
+                         item["created_at"], json.dumps({**item["payload"], "imported": True}, ensure_ascii=False)),
+                    )
+            return counts
 
     def append_many(self, entries: Sequence[NewTimelineEntry]) -> list[TimelineEntry]:
         if not entries:
@@ -165,6 +204,23 @@ class TimelineStore:
         except sqlite3.DatabaseError as exc:
             raise TimelineDataError("TIMELINE_DATABASE_INVALID") from exc
         return _entry_from_row(row) if row is not None else None
+
+    def date_range(self, character_id: str) -> tuple[str | None, str | None]:
+        """按导出使用的记录日期，读取当前角色的起止范围。"""
+        _bounded_text("character_id", character_id, MAX_ID_CHARS)
+        if not self.path.is_file():
+            raise TimelineDataError("TIMELINE_NOT_ACTIVATED")
+        try:
+            with self._connect_existing() as connection:
+                _assert_activated_connection(connection)
+                row = connection.execute(
+                    """SELECT MIN(substr(created_at, 1, 10)), MAX(substr(created_at, 1, 10))
+                       FROM timeline_entries WHERE character_id = ?""",
+                    (character_id,),
+                ).fetchone()
+        except sqlite3.DatabaseError as exc:
+            raise TimelineDataError("TIMELINE_DATABASE_INVALID") from exc
+        return row[0], row[1]
 
     def read_all(self, character_id: str) -> list[TimelineEntry]:
         _bounded_text("character_id", character_id, MAX_ID_CHARS)
@@ -292,17 +348,19 @@ class TimelineStore:
                     FROM timeline_entries AS head
                     WHERE head.character_id = :character
                       AND head.seq <= :snapshot
-                      AND head.seq < :before
+                      AND (:before IS NULL OR (julianday(head.created_at), head.seq) <
+                          (SELECT julianday(created_at), seq FROM timeline_entries WHERE seq = :before))
                       AND NOT EXISTS (
                           SELECT 1 FROM timeline_entries AS earlier
                           WHERE earlier.character_id = :character
-                            AND earlier.turn_id = head.turn_id AND earlier.seq < head.seq
+                            AND earlier.turn_id = head.turn_id AND earlier.seq <= :snapshot
+                            AND (julianday(earlier.created_at), earlier.seq) < (julianday(head.created_at), head.seq)
                       )
                       AND {eligibility}
-                    ORDER BY head.seq DESC LIMIT :limit
+                    ORDER BY julianday(head.created_at) DESC, head.seq DESC LIMIT :limit
                     """,
                     {"character": character_id, "snapshot": high_water,
-                     "before": before_seq if before_seq is not None else high_water + 1,
+                     "before": before_seq,
                      "limit": limit + 1, "kind": kind, "origin": origin, "cutoff": cutoff},
                 ).fetchall()
                 turns: list[tuple[TimelineEntry, ...]] = []
@@ -313,7 +371,7 @@ class TimelineStore:
                                   created_at, payload_json
                            FROM timeline_entries
                            WHERE character_id = ? AND turn_id = ? AND seq <= ?
-                           ORDER BY seq""",
+                           ORDER BY julianday(created_at), seq""",
                         (character_id, turn_id, high_water),
                     ))
                     turn_bytes = sum(_timeline_transfer_bytes(entry) for entry in turn)
@@ -392,7 +450,7 @@ class TimelineStore:
                     FROM timeline_entries AS entry
                     JOIN eligible_turns USING (turn_id)
                     WHERE entry.character_id = ?
-                    ORDER BY entry.seq
+                    ORDER BY julianday(entry.created_at), entry.seq
                     """,
                     (
                         character_id,
@@ -517,7 +575,7 @@ class TimelineStore:
                                created_at, payload_json
                         FROM timeline_entries
                         WHERE character_id = ?
-                        ORDER BY seq DESC
+                        ORDER BY julianday(created_at) DESC, seq DESC
                         LIMIT ?
                         """,
                         (character_id, limit + 1),
@@ -528,8 +586,9 @@ class TimelineStore:
                         SELECT seq, entry_id, turn_id, character_id, kind, origin,
                                created_at, payload_json
                         FROM timeline_entries
-                        WHERE character_id = ? AND seq < ?
-                        ORDER BY seq DESC
+                        WHERE character_id = ? AND (julianday(created_at), seq) <
+                            (SELECT julianday(created_at), seq FROM timeline_entries WHERE seq = ?)
+                        ORDER BY julianday(created_at) DESC, seq DESC
                         LIMIT ?
                         """,
                         (character_id, before_seq, limit + 1),
@@ -646,6 +705,8 @@ def _create_schema(connection: sqlite3.Connection) -> None:
             ON timeline_entries(character_id, seq);
         CREATE INDEX IF NOT EXISTS timeline_character_turn_seq
             ON timeline_entries(character_id, turn_id, seq);
+        CREATE INDEX IF NOT EXISTS timeline_character_time
+            ON timeline_entries(character_id, julianday(created_at), seq);
         """
     )
 
@@ -788,6 +849,7 @@ def _validated_row(entry: NewTimelineEntry) -> tuple[NewTimelineEntry, str]:
 
 
 def _validate_payload(kind: TimelineKind, payload: dict[str, Any]) -> None:
+    payload = {key: value for key, value in payload.items() if key != "imported"}
     if kind is TimelineKind.HUMAN:
         _exact_keys(payload, {"text"})
         _bounded_text("text", payload.get("text"), MAX_TEXT_CHARS, allow_empty=True)

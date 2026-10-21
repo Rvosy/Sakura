@@ -9,10 +9,12 @@ from typing import Any
 
 from app.core_host.protocol import response
 from app.storage.paths import StoragePaths
-from app.storage.timeline import TimelineDataError, TimelineEntry, TimelineStore
+from app.storage.timeline import TimelineDataError, TimelineEntry, TimelineStore, timeline_record
+from app.plugin_sdk.sakura_data_transfer import read_archive, write_archive
+from app.core.runtime_log import log_event
 
 
-HISTORY_REQUEST_NAMES = frozenset({"ui.history.page", "ui.history.open_record"})
+HISTORY_REQUEST_NAMES = frozenset({"ui.history.page", "ui.history.open_record", "ui.history.transfer"})
 HISTORY_PAGE_LIMIT = 50
 _HISTORY_RESPONSE_BYTES = 700 * 1024
 
@@ -40,14 +42,15 @@ class HistoryBoundary:
         generation_credential: str,
         user_root: Path,
         *,
-        session_provider: Callable[[], object | None],
+        character_provider: Callable[[], str | None],
         application_provider: Callable[[], object | None] = lambda: None,
     ) -> None:
         self._generation_id = generation_id
         self._generation_credential = generation_credential
-        self._session_provider = session_provider
+        self._character_provider = character_provider
         self._application_provider = application_provider
         self._timeline = TimelineStore(StoragePaths(user_root).timeline_database())
+        self._import_identities = user_root / "data" / "import-identities.sqlite3"
 
     def handle(self, request: dict[str, Any]) -> dict[str, Any]:
         supplied = request.get("generationCredential")
@@ -58,6 +61,10 @@ class HistoryBoundary:
         ):
             raise RuntimeError("GENERATION_IDENTITY_MISMATCH")
         try:
+            if request.get("name") == "ui.history.transfer":
+                result = self._transfer(request["payload"])
+                return response(request, generation_id=self._generation_id,
+                    generation_credential=self._generation_credential, payload=result)
             if request.get("name") == "ui.history.open_record":
                 self._open_record(request.get("payload"))
                 return response(request, generation_id=self._generation_id,
@@ -113,6 +120,8 @@ class HistoryBoundary:
         except HistoryBoundaryError as error:
             return self._error_response(request, error)
         except TimelineDataError as error:
+            if request.get("name") == "ui.history.transfer":
+                return self._error_response(request, HistoryBoundaryError("HISTORY_TRANSFER_FAILED", str(error)))
             code = str(error)
             if code == "TIMELINE_CURSOR_INVALID":
                 public = HistoryBoundaryError(
@@ -132,7 +141,11 @@ class HistoryBoundary:
                     retryable=True,
                 )
             return self._error_response(request, public)
-        except Exception:  # noqa: BLE001 - private storage failures stay behind the boundary
+        except Exception as error:
+            if request.get("name") == "ui.history.transfer":
+                log_event("History", "聊天记录导入导出失败", {"error": str(error)},
+                          event="history.transfer.failed", severity="error")
+                return self._error_response(request, HistoryBoundaryError("HISTORY_TRANSFER_FAILED", str(error)))
             return self._error_response(
                 request,
                 HistoryBoundaryError(
@@ -141,6 +154,38 @@ class HistoryBoundary:
                     retryable=True,
                 ),
             )
+
+    def _transfer(self, payload) -> dict:
+        if payload["expectedGenerationId"] != self._generation_id:
+            raise HistoryBoundaryError("HISTORY_IDENTITY_MISMATCH", "后台已重启，请重新打开导入导出。")
+        character_id = self._current_character_id()
+        if payload["expectedCharacterId"] != character_id:
+            raise HistoryBoundaryError("HISTORY_CHARACTER_MISMATCH", "角色已变化，请重新打开导入导出。")
+        action = payload["action"]
+        if action == "range":
+            start, end = self._timeline.date_range(character_id)
+            return {"startDate": start, "endDate": end}
+        log_event("History", "正在处理聊天记录文件", {"character_id": character_id, "action": action},
+                  event="history.transfer.started")
+        if action == "export":
+            records = [timeline_record(entry) for entry in self._timeline.read_all(character_id)]
+            start, end = payload.get("startDate", ""), payload.get("endDate", "")
+            if start or end:
+                records = [item for item in records if
+                           (not start or item["created_at"][:10] >= start) and
+                           (not end or item["created_at"][:10] <= end)]
+            result = write_archive(payload["path"], kind="history", provider="sakura.timeline",
+                                   character_id=character_id, records=records, format=payload["format"])
+        elif action in {"preview", "import"}:
+            archive = read_archive(payload["path"], kind="history", provider="sakura.timeline",
+                                   character_id=character_id, identity_path=self._import_identities)
+            result = self._timeline.import_records(character_id, archive["records"], preview=action == "preview")
+            result["sourceCharacterId"] = archive["characterId"]
+        else:
+            raise ValueError("不支持的数据操作。")
+        log_event("History", "聊天记录文件处理完成", {"character_id": character_id, "action": action, **result},
+                  event="history.transfer.completed")
+        return result
 
     def _open_record(self, payload) -> None:
         if (not isinstance(payload, Mapping) or set(payload) != {"expectedCharacterId", "entryId"}
@@ -163,9 +208,7 @@ class HistoryBoundary:
                 getattr(error, "public_message", str(error))) from error
 
     def _current_character_id(self) -> str:
-        session = self._session_provider()
-        character = getattr(session, "character", None) if session is not None else None
-        character_id = getattr(character, "id", None)
+        character_id = self._character_provider()
         if not isinstance(character_id, str) or not character_id:
             raise HistoryBoundaryError(
                 "HISTORY_NOT_READY",

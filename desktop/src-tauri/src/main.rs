@@ -14,6 +14,7 @@ mod core_host_protocol;
 mod core_host_router;
 mod core_host_runtime;
 mod core_supervisor;
+mod data_transfer;
 mod download_sources;
 mod dynamic_hit_test;
 mod error_dialog_window;
@@ -7877,6 +7878,8 @@ fn main() {
             chat_settings::current_subtitle_language,
             history_window::history_bootstrap,
             history_window::history_page,
+            history_window::history_transfer,
+            data_transfer::data_transfer_choose,
             history_window::history_open_record,
             history_window::close_history_window,
             history_window::reveal_history_window,

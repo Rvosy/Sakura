@@ -1661,7 +1661,7 @@ def run_host(
             config.generation_id,
             config.generation_credential,
             config.user_root,
-            session_provider=getattr(dispatcher, "published_session", lambda: None),
+            character_provider=lambda: (dispatcher.published_character_presentation() or {}).get("characterId"),
             application_provider=getattr(dispatcher, "published_plugin_application", lambda: None),
         )
         attach_provider_boundary = getattr(

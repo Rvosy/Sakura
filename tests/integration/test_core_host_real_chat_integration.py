@@ -10,6 +10,7 @@ import subprocess
 import sys
 import threading
 import time
+from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from types import SimpleNamespace
@@ -1671,7 +1672,7 @@ def test_real_core_local_provider_completed_projection_and_history(tmp_path: Pat
             ),
         )
         assert history_page["ok"] is True
-        assert history_page["payload"] == {
+        expected_page = {
             "schemaVersion": 1,
             "coreGenerationId": GENERATION_ID,
             "characterId": "sakura",
@@ -1709,6 +1710,8 @@ def test_real_core_local_provider_completed_projection_and_history(tmp_path: Pat
             "beforeCursor": None,
             "hasMore": False,
         }
+        expected_page["entries"].sort(key=lambda entry: datetime.fromisoformat(entry["createdAt"]))
+        assert history_page["payload"] == expected_page
         shutdown = _exchange(process, _request("shutdown", "system.shutdown", {"appExiting": True}))
         assert shutdown["payload"] == {"accepted": True}
         assert process.wait(timeout=5) == 0

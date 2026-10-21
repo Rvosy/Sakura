@@ -5,8 +5,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Sakura 聊天记录</title>
     <link rel="stylesheet" href="./styles.css" />
+    <link rel="stylesheet" href="../core/data-transfer.css" />
   </head>
-  <body>
+  <body data-icon-motion="click">
     <main class="history-shell">
       <header class="history-head">
         <div class="history-heading">
@@ -14,7 +15,9 @@
             <h1>聊天记录</h1>
           </div>
         </div>
-        <span id="history-count" class="history-count">读取中…</span>
+        <div class="history-head-actions">
+          <span id="history-count" class="history-count">读取中…</span>
+        </div>
       </header>
 
       <p id="history-status" class="history-status" role="status" aria-live="polite">

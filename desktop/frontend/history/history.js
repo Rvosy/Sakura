@@ -1,4 +1,6 @@
 import { waitForRuntimeFonts } from "../core/font-loader.js";
+import { createDataTransferMenu } from "../core/data-transfer.js";
+import { installClickIconMotion } from "../core/icons.js";
 import { installDevtoolsShortcutGuard } from "../core/devtools-guard.js";
 import { applyTheme } from "../core/theme.js";
 import { createPlaybackActionIndicator } from "../audio/playback-action-indicator.js";
@@ -16,6 +18,7 @@ import {
 } from "./history-load-guard.js";
 
 installDevtoolsShortcutGuard();
+installClickIconMotion(document);
 
 const invoke = window.__TAURI__?.core?.invoke;
 const listen = window.__TAURI__?.event?.listen;
@@ -34,6 +37,12 @@ window.addEventListener("pagehide", () => errors.dispose(), { once: true });
 let loading = false;
 let entries = [];
 let identity = null;
+document.querySelector(".history-head-actions").append(createDataTransferMenu({ document, invoke,
+  characterId: () => identity?.characterId,
+  identityKey: () => `${identity?.coreGenerationId}/${identity?.characterId}`,
+  transfer: payload => invoke("history_transfer", { payload: { ...payload, expectedGenerationId: identity.coreGenerationId } }),
+  onImported: () => loadInitial(),
+}));
 let assistantName = "Sakura";
 let subtitleLanguage = "zh";
 const expandedEntries = new Set();
