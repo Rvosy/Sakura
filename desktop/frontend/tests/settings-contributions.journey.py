@@ -36,14 +36,15 @@ function showPage(id) {
   document.querySelectorAll('.nav-item').forEach(b=>b.classList.toggle('is-active',b.dataset.page===id));
   document.getElementById('pageTitle').textContent = document.querySelector(`[data-page="${id}"] .nav-item-label`)?.textContent || id;
   feature?.onPageChanged(id);
+  models?.onPageChanged(id);
 }
 function dirty(){document.getElementById('applyButton').disabled=!(feature?.isDirty()||models?.isDirty());}
 feature=createPluginSettingsFeature({document,window,invoke:window.nativeInvoke,onDirty:dirty,onError:(error,message)=>{window.lastError=message;if(error)errorDialog.show({error,message});else errorDialog.close();},notify:()=>{},confirmAction:async()=>true,enhanceSelect,refreshSelect,closeSelects,focusSelect,replayMotion:()=>{},removeOverlayAfterExit:async e=>e.remove(),showPage,isCharacterTransitioning:()=>false,hasPendingCharacterSelection:()=>false,onModelCatalogChanged:()=>models?.refreshChoices()});
-models=createProviderSettingsFeature({document,invoke:window.nativeInvoke,onDirty:dirty,onError:e=>{throw e;},enhanceSelect,getProviderCatalog:()=>feature.providerCatalog()});
+models=createProviderSettingsFeature({document,invoke:window.nativeInvoke,onDirty:dirty,onError:e=>{throw e;},enhanceSelect,focusSelect,showPage,getProviderCatalog:()=>feature.providerCatalog()});
 feature.initialize(await window.nativeInvoke('settings_plugins_get')); await models.initialize();
 window.feature=feature; window.models=models; window.showPage=showPage;
 document.querySelectorAll('.nav-item').forEach(b=>b.onclick=()=>showPage(b.dataset.page));
-document.getElementById('applyButton').onclick=async()=>{try {await feature.save();await models.save();dirty();}catch(e){window.lastError=String(e);}};
+document.getElementById('applyButton').onclick=async()=>{const surfaces=document.querySelectorAll('[data-submission-lock]');surfaces.forEach(e=>e.inert=true);try {if(models.isDirty())models.validate();await feature.save();await models.refreshCurrent({preserveDraft:true});if(models.isDirty())await models.save();dirty();}catch(e){if(!models.handleValidationError(e))window.lastError=String(e);}finally{surfaces.forEach(e=>e.inert=false);}};
 showPage('providers');document.body.dataset.ready='true';
 """
 
@@ -217,6 +218,39 @@ def run():
                 assert [m['modelId'] for m in saved['models']]==['fixture-model','discovered-model','manual-model']
                 assert saved['models'][0]['contextWindowTokens']==96000
                 assert page.evaluate('numericValues.decimal') == 0.375
+                page.evaluate("showPage('model')")
+                page.locator('[data-slot-model="core:chat"]').select_option('manual-model', force=True)
+                page.evaluate("showPage('providers')")
+                page.get_by_role('button', name='移除 manual-model', exact=True).click()
+                warning = page.locator('#modelSelectionWarnings')
+                expect(warning).to_be_visible()
+                expect(warning).to_contain_text('manual-model')
+                expect(warning).to_contain_text('对话模型')
+                page.screenshot(animations="disabled", path=str(output/'removed-model.png'))
+                previous_writes = len(writes)
+                page.locator('#applyButton').click()
+                expect(page.locator('#page-model')).to_be_visible()
+                expect(page.get_by_role('combobox', name='对话模型', exact=True)).to_be_focused()
+                expect(page.locator('#page-model .model-slot-issue')).to_contain_text('manual-model')
+                assert len(writes) == previous_writes
+                assert not page.evaluate('window.lastError'), page.evaluate('window.lastError')
+                page.screenshot(animations="disabled", path=str(output/'model-selection-recovery.png'))
+                page.locator('[data-slot-model="core:chat"]').select_option('discovered-model', force=True)
+                page.locator('#applyButton').click()
+                expect(page.locator('#applyButton')).to_be_disabled()
+                assert model_boundary._snapshot()['model_slots'][0]['selection']['modelId'] == 'discovered-model'
+                saved = json.loads(config.read_text(encoding='utf-8'))['profiles'][0]
+                assert [m['modelId'] for m in saved['models']] == ['fixture-model', 'discovered-model']
+                assert saved['api_key'] == 'fixture-draft-key'
+                page.evaluate("showPage('providers')")
+                page.get_by_role('button', name='移除 discovered-model', exact=True).click()
+                expect(warning).to_be_visible()
+                warning.get_by_role('button').click()
+                expect(page.get_by_role('combobox', name='对话模型', exact=True)).to_be_focused()
+                page.locator('#applyButton').click()
+                expect(page.locator('#applyButton')).to_be_disabled()
+                assert model_boundary._snapshot()['model_slots'][0]['selection']['modelId'] == 'discovered-model'
+                assert not page.evaluate('window.lastError'), page.evaluate('window.lastError')
                 page.evaluate("""async () => {
                   const {importPluginModule} = await import('../core/plugin-module-loader.js');
                   const playback = await importPluginModule(await (await fetch('/plugins/builtin/sakura_tts_hub/frontend/playback.mjs')).text());

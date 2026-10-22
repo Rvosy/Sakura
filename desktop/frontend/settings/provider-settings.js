@@ -1,13 +1,16 @@
-import { createProviderModelController } from "./provider-model-runtime.js";
+import { createProviderModelController, findProviderModelSelectionIssue, ModelSelectionError } from "./provider-model-runtime.js";
 import { errorText } from "../core/error-display.js";
 
 const emptyReference = () => ({ serviceKey: "", profileId: "", modelId: "" });
 
-export function createProviderSettingsFeature({ document, onDirty, onError, invoke, enhanceSelect = () => {}, getProviderCatalog = () => [] }) {
+export function createProviderSettingsFeature({ document, onDirty, onError, invoke, enhanceSelect = () => {}, getProviderCatalog = () => [],
+  showPage = () => {}, focusSelect = select => select?.focus() }) {
   const container = document.getElementById("modelSlots");
+  const warnings = document.getElementById("modelSelectionWarnings");
   let snapshot = null;
   let selections = {};
   let disposed = false;
+  let revealingSlot = false;
   const manual = new Map();
   const controller = createProviderModelController({ invoke,
     readDraft: () => ({ model_slots: structuredClone(selections) }),
@@ -27,14 +30,24 @@ export function createProviderSettingsFeature({ document, onDirty, onError, invo
   function option(select, value, label) {
     const item = document.createElement("option"); item.value = value; item.textContent = label; select.append(item);
   }
+  function focusSlot(slotId) {
+    revealingSlot = true;
+    showPage("model");
+    revealingSlot = false;
+    const control = document.getElementById(`model-slot-${slotId}`);
+    control?.parentElement.scrollIntoView({ block: "center" });
+    focusSelect(control);
+  }
   function render() {
     if (!container || !snapshot || disposed) return;
     container.textContent = "";
+    if (warnings) { warnings.textContent = ""; warnings.hidden = true; }
     if (snapshot.configuration_issue) {
       const issue = document.createElement("p"); issue.className = "error"; issue.setAttribute("role", "alert");
       issue.textContent = snapshot.configuration_issue.message; container.append(issue);
     }
-    const profiles = mergedProviders().flatMap(provider => provider.profiles.map(profile => ({ ...profile, serviceKey: provider.serviceKey, providerLabel: provider.label })));
+    const providers = mergedProviders();
+    const profiles = providers.flatMap(provider => provider.profiles.map(profile => ({ ...profile, serviceKey: provider.serviceKey, providerLabel: provider.label })));
     for (const failed of [...snapshot.providers, ...snapshot.model_slots].filter(item => item.diagnostics?.diagnostic)) {
       const issue = document.createElement("p"); issue.className = "error"; issue.setAttribute("role", "alert");
       issue.textContent = `${failed.label}: ${errorText({ diagnostics: failed.diagnostics, code: failed.reasonCode })}`;
@@ -42,6 +55,8 @@ export function createProviderSettingsFeature({ document, onDirty, onError, invo
     }
     for (const slot of snapshot.model_slots) {
       const selection = selections[slot.identity];
+      const issue = findProviderModelSelectionIssue({ providers, modelSlots: selections,
+        slotFields: [{ id: slot.identity, label: slot.label, required: slot.required }] });
       const row = document.createElement("div"); row.className = "form-row model-slot-row";
       row.dataset.slot = slot.identity;
       const label = document.createElement("label"); label.className = "setting-title"; label.textContent = slot.label;
@@ -94,14 +109,37 @@ export function createProviderSettingsFeature({ document, onDirty, onError, invo
         });
       }
       controls.append(provider, model);
+      if (issue) {
+        const hint = document.createElement("p"); hint.className = "model-slot-issue";
+        hint.id = `model-slot-issue-${slot.identity}`; hint.textContent = issue.message;
+        model.setAttribute("aria-describedby", hint.id);
+        model.setAttribute("aria-invalid", "true");
+        controls.append(hint);
+        if (issue.type === "reference" && warnings) {
+          warnings.hidden = false;
+          const warning = document.createElement("div"); warning.className = "model-selection-warning";
+          const message = document.createElement("p"); message.textContent = issue.message;
+          const action = document.createElement("button"); action.type = "button";
+          action.className = "secondary-button compact-button"; action.textContent = `选择${slot.label}`;
+          action.addEventListener("click", () => focusSlot(slot.identity));
+          warning.append(message, action); warnings.append(warning);
+        }
+      }
       row.append(label, controls); container.append(row); enhanceSelect(provider); enhanceSelect(model);
     }
   }
   return Object.freeze({ initialize: () => controller.refreshCurrent(), save: controller.save, validate: controller.validate, isDirty: controller.isDirty,
     refreshChoices: render,
+    handleValidationError(error) {
+      if (!(error instanceof ModelSelectionError) || disposed) return false;
+      render();
+      // 保存流程解除页面锁定后，再聚焦需要修改的选择。
+      queueMicrotask(() => { if (!disposed) focusSlot(error.issue.slotId); });
+      return true;
+    },
     refreshCurrent: controller.refreshCurrent, rebindIdentity: controller.rebindIdentity,
     hasModelSettings: pluginId => Boolean(snapshot?.model_slots.some(slot => slot.ownerId === pluginId)),
-    onPageChanged(page) { if (page === "model" && !controller.isDirty()) controller.refreshCurrent({ preserveDraft: true }).catch(onError); },
-    dispose() { disposed = true; controller.dispose(); },
+    onPageChanged(page) { if (page === "model" && !revealingSlot && !controller.isDirty()) controller.refreshCurrent({ preserveDraft: true }).catch(onError); },
+    dispose() { disposed = true; controller.dispose(); if (warnings) { warnings.textContent = ""; warnings.hidden = true; } },
   });
 }

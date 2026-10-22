@@ -246,6 +246,10 @@ function setError(error, message = "操作失败") {
     fields.errorText.replaceChildren();
     return;
   }
+  if (runtimeProviderFeature?.handleValidationError(error)) {
+    fields.errorText.textContent = error.message;
+    return;
+  }
   showError({ title: message, error });
 }
 
@@ -1862,6 +1866,7 @@ async function startSettingsFrontend() {
         enhanceSelect,
         refreshSelect,
         markInvalid,
+        focusSelect,
         setControlDisabled,
         setNumericBounds,
       });
