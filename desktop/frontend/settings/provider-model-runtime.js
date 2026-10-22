@@ -10,10 +10,10 @@ export function findProviderModelSelectionIssue({ providers, modelSlots, slotFie
     const ref = modelSlots?.[slot.id] || {};
     const parts = [ref.serviceKey, ref.profileId, ref.modelId];
     const filled = parts.filter(value => typeof value === "string" && value).length;
-    if (filled && filled !== 3) return { type: "incomplete", slotId: slot.id, label: slot.label,
+    if (filled && filled !== 3) return { type: "incomplete", slotId: slot.id,
       message: `${slot.label}的选择尚未完成，请选择模型服务和模型。` };
     if (!filled) {
-      if (slot.required) return { type: "required", slotId: slot.id, label: slot.label, message: `请为${slot.label}选择模型。` };
+      if (slot.required) return { type: "required", slotId: slot.id, message: `请为${slot.label}选择模型。` };
       continue;
     }
     const provider = providers?.find(item => item.serviceKey === ref.serviceKey);
@@ -26,7 +26,7 @@ export function findProviderModelSelectionIssue({ providers, modelSlots, slotFie
         : !profile
           ? `${target}所属的连接“${ref.profileId}”已不在模型服务中。请恢复连接，或重新选择模型。`
           : `${target}已从“${profile.label || ref.profileId}”的模型列表移除。请重新添加该模型，或选择其他模型。`;
-      return { type: "reference", slotId: slot.id, label: slot.label, message };
+      return { type: "reference", slotId: slot.id, message };
     }
   }
   return null;

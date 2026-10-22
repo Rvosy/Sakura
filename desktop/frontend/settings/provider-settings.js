@@ -132,7 +132,6 @@ export function createProviderSettingsFeature({ document, onDirty, onError, invo
     refreshChoices: render,
     handleValidationError(error) {
       if (!(error instanceof ModelSelectionError) || disposed) return false;
-      render();
       // 保存流程解除页面锁定后，再聚焦需要修改的选择。
       queueMicrotask(() => { if (!disposed) focusSlot(error.issue.slotId); });
       return true;
