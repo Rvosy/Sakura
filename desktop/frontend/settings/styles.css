@@ -2065,6 +2065,32 @@ input[type="range"].layout-slider::-moz-range-thumb {
   white-space: nowrap;
 }
 
+.model-slot-issue {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: var(--sakura-secondary-text);
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.model-selection-warnings:not([hidden]) {
+  display: grid;
+  gap: 10px;
+  padding: 12px 16px;
+  border: 1px solid var(--sakura-border);
+  border-radius: 12px;
+  background: var(--sakura-input-bg);
+}
+
+.model-selection-warning {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.model-selection-warning p { flex: 1; margin: 0; line-height: 1.6; overflow-wrap: anywhere; }
+.model-selection-warning button { flex-shrink: 0; }
+
 .slot-controls .custom-select {
   width: 100%;
   min-width: 0;
@@ -4609,6 +4635,7 @@ body:has(#page-plugins.is-active) footer { border-top: 0; }
   line-height: 1.6;
 }
 #page-providers:has(.connection-editor) { grid-template-rows: minmax(0, 1fr); }
+#page-providers:has(.connection-editor):has(.model-selection-warnings:not([hidden])) { grid-template-rows: auto minmax(0, 1fr); }
 
 .settings-form { display: contents; }
 /* Upgrade progress stays visible while switching settings pages. */
