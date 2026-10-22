@@ -74,11 +74,10 @@ def run():
                 document.body.dataset.iconMotion = 'click';
                 window.currentRole = 'sakura';
                 document.body.innerHTML = `<main class="history-shell"><header class="history-head">
-                  <h1>聊天记录</h1><div class="history-head-actions"><span class="history-count">1 条记录</span></div>
-                  </header><p class="history-status">已显示最近 1 条记录</p><section class="history-scroll">
-                  <p class="entry-bubble entry-bubble-human">多行内容<br>用户：这仍是同一条消息</p></section>
-                  <footer class="history-actions"><button class="button button-secondary">刷新</button>
-                  <button class="button button-primary">关闭</button></footer></main>`;
+                  <div class="history-heading"><h1>聊天记录</h1><p class="history-character">Sakura</p></div>
+                  <div class="history-head-actions"></div></header><div class="history-toolbar"></div>
+                  <div class="history-content"><section class="history-scroll">
+                  <p class="entry-bubble entry-bubble-human">多行内容<br>用户：这仍是同一条消息</p></section></div></main>`;
                 document.querySelector('.history-head-actions').append(createDataTransferMenu({document, history: true,
                     invoke: window.nativeChoose, characterId: () => window.currentRole,
                     transfer: async request => {

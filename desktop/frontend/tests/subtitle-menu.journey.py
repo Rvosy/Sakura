@@ -215,7 +215,7 @@ try:
             core: {invoke: async (command) => {
               if (command === 'history_bootstrap') return {subtitleLanguage: 'bilingual', coreGenerationId: 'test', characterId: 'test'};
               if (command === 'history_page') return {schemaVersion: 1, coreGenerationId: 'test', characterId: 'test',
-                totalCount: 1, hasMore: false, beforeCursor: null, entries: [{entryId: 'test', turnId: 'test',
+                totalCount: 1, afterCursor: null, beforeCursor: null, entries: [{entryId: 'test', turnId: 'test',
                   kind: 'assistant', origin: 'chat', createdAt: '2026-09-22T12:00:00Z', payload: {segments: [{
                     translation: '欢迎回来。今天过得怎么样？如果有开心的事情，或者想聊聊的烦恼，都可以慢慢告诉我。',
                     text: 'おかえりなさい。今日はどんな一日でしたか？うれしかったことも、気になっていることも、ゆっくり聞かせてください。',

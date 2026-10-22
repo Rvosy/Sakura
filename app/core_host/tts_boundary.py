@@ -396,7 +396,7 @@ class TTSBoundary:
                 raise TTSBoundaryError("SPEECH_CHARACTER_NOT_CURRENT", "角色已切换")
             if not self._timeline.path.is_file():
                 return {"entries": [], "nextCursor": None, "hasMore": False}
-            entries, next_cursor, has_more, _total = self._timeline.read_page_before(
+            entries, next_cursor, _after_cursor, _total = self._timeline.read_history_page(
                 character_id, limit, before_cursor=before_cursor)
             recorded = self._recordings.recorded_segments(character_id)
             return {"entries": [{"entryId": entry.entry_id, "kind": entry.kind.value,
@@ -404,7 +404,7 @@ class TTSBoundary:
                     "suppressed": segment.get("suppressTts") is True,
                     "recorded": (entry.entry_id, index) in recorded}
                     for index, segment in enumerate(entry.payload.get("segments", []))]}
-                for entry in entries], "nextCursor": next_cursor, "hasMore": has_more}
+                for entry in entries], "nextCursor": next_cursor, "hasMore": next_cursor is not None}
 
     def _refresh_cache_settings(self) -> VoiceCacheSettings:
         settings = load_voice_cache_settings(self._user_root)

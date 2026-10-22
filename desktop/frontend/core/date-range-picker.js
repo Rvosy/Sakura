@@ -22,26 +22,44 @@ export function presetDateRange(days, today = new Date()) {
   return { startDate: formatDate(start), endDate: formatDate(today) };
 }
 
-export function createDateRangePicker({ document, id, onChange, loadRange, isCurrent }) {
+export function createDateRangePicker({ document, id, onChange, loadRange, loadDates, isCurrent,
+  singleDate = false, getInitialDate }) {
   const win = document.defaultView;
   const element = document.createElement("div");
-  element.className = "data-transfer-range";
+  element.className = singleDate ? "data-transfer-menu" : "data-transfer-range";
   const trigger = document.createElement("button");
   trigger.type = "button";
-  trigger.className = "date-range-trigger";
+  trigger.className = singleDate ? "data-transfer-trigger" : "date-range-trigger";
   trigger.setAttribute("aria-haspopup", "dialog");
   trigger.setAttribute("aria-expanded", "false");
   const label = document.createElement("span");
   label.textContent = "当天";
-  trigger.append(createIcon(document, "calendar-days"), "日期范围", label, createIcon(document, "chevron-down"));
-  const panel = document.createElement("dialog");
+  trigger.append(createIcon(document, "calendar-days"));
+  if (singleDate) {
+    trigger.title = "跳转到日期";
+    trigger.setAttribute("aria-label", trigger.title);
+  } else trigger.append("日期范围", label, createIcon(document, "chevron-down"));
+  const panel = document.createElement(singleDate ? "div" : "dialog");
   panel.id = `${id}-dates`;
-  panel.className = "date-range-panel";
-  panel.setAttribute("aria-labelledby", `${id}-dates-title`);
+  panel.className = singleDate ? "date-range-panel date-single-panel" : "date-range-panel";
+  if (singleDate) {
+    panel.setAttribute("popover", "auto");
+    panel.setAttribute("role", "dialog");
+    panel.setAttribute("aria-label", "跳转到日期");
+    trigger.popoverTargetElement = panel;
+  }
+  else panel.setAttribute("aria-labelledby", `${id}-dates-title`);
   panel.tabIndex = -1;
   trigger.setAttribute("aria-controls", panel.id);
-  panel.innerHTML = `<h2 id="${id}-dates-title" tabindex="-1" autofocus>选择日期范围</h2>
-    <div class="date-range-presets" role="group" aria-label="快捷日期范围"></div>
+  const calendar = `<div class="date-range-calendar">
+    <div class="date-range-month"><button type="button" data-prev aria-label="上个月"></button>
+      <span data-month aria-live="polite"></span><button type="button" data-next aria-label="下个月"></button></div>
+    <div class="date-range-weekdays" aria-hidden="true"><span>日</span><span>一</span><span>二</span><span>三</span><span>四</span><span>五</span><span>六</span></div>
+    <div class="date-range-days" role="group" aria-label="日期"></div>
+  </div>`;
+  panel.innerHTML = singleDate ? `${calendar}<p class="date-range-error" role="status"></p>`
+    : `<h2 id="${id}-dates-title" tabindex="-1" autofocus>选择日期范围</h2>
+    <div class="date-range-presets" role="group" aria-label="快捷日期"></div>
     <div class="date-range-layout">
       <div class="date-range-fields">
         <p class="date-range-hint">范围包含起止当天。</p>
@@ -50,12 +68,7 @@ export function createDateRangePicker({ document, id, onChange, loadRange, isCur
         <p class="date-range-error" role="status"></p>
         <div class="date-range-actions"><button type="button" data-cancel>取消</button><button type="button" data-apply>确定</button></div>
       </div>
-      <div class="date-range-calendar">
-        <div class="date-range-month"><button type="button" data-prev aria-label="上个月"></button>
-          <button type="button" data-month title="回到本月"></button><button type="button" data-next aria-label="下个月"></button></div>
-        <div class="date-range-weekdays" aria-hidden="true"><span>日</span><span>一</span><span>二</span><span>三</span><span>四</span><span>五</span><span>六</span></div>
-        <div class="date-range-days" role="group" aria-label="日期"></div>
-      </div>
+      ${calendar}
     </div>`;
   panel.querySelector("[data-prev]").append(createIcon(document, "chevron-right"));
   panel.querySelector("[data-next]").append(createIcon(document, "chevron-right"));
@@ -64,12 +77,21 @@ export function createDateRangePicker({ document, id, onChange, loadRange, isCur
   const error = panel.querySelector(".date-range-error");
   const grid = panel.querySelector(".date-range-days");
   let applied = presetDateRange(1);
+  let selectedDate;
   let activeField = "startDate";
   let month;
   let monthAnimation;
   let preset = 1;
   let draftPreset = 1;
   let revision = 0;
+  const isOpen = () => singleDate ? panel.matches(":popover-open") : panel.open;
+  const closePanel = () => singleDate ? panel.hidePopover() : panel.close();
+
+  function positionPanel() {
+    const bounds = trigger.getBoundingClientRect();
+    panel.style.left = `${Math.max(8, Math.min(bounds.right - panel.offsetWidth, win.innerWidth - panel.offsetWidth - 8))}px`;
+    panel.style.top = `${Math.max(8, Math.min(bounds.bottom + 8, win.innerHeight - panel.offsetHeight - 8))}px`;
+  }
 
   for (const field of panel.querySelectorAll("[data-field]")) {
     const name = field.dataset.field;
@@ -104,9 +126,10 @@ export function createDateRangePicker({ document, id, onChange, loadRange, isCur
     }
     for (const button of grid.children) {
       const date = button.dataset.date;
-      const endpoint = date === inputs.startDate.value || date === inputs.endDate.value;
+      const endpoint = singleDate ? date === selectedDate
+        : date === inputs.startDate.value || date === inputs.endDate.value;
       button.setAttribute("aria-pressed", String(endpoint));
-      button.classList.toggle("is-in-range", date >= inputs.startDate.value && date <= inputs.endDate.value);
+      button.classList.toggle("is-in-range", !singleDate && date >= inputs.startDate.value && date <= inputs.endDate.value);
     }
   }
 
@@ -114,10 +137,12 @@ export function createDateRangePicker({ document, id, onChange, loadRange, isCur
     monthAnimation?.cancel();
     panel.querySelector("[data-month]").textContent = `${month.getFullYear()}年${month.getMonth() + 1}月`;
     const first = localDate(month.getFullYear(), month.getMonth(), 1);
+    const daysInMonth = localDate(month.getFullYear(), month.getMonth() + 1, 0).getDate();
+    const cellCount = Math.ceil((first.getDay() + daysInMonth) / 7) * 7;
     const today = formatDate(new Date());
-    const tabDate = focusDate || inputs[activeField].value;
+    const tabDate = focusDate || (singleDate ? selectedDate : inputs[activeField].value);
     const buttons = [];
-    for (let i = 0; i < 42; i++) {
+    for (let i = 0; i < cellCount; i++) {
       const day = localDate(first.getFullYear(), first.getMonth(), 1 - first.getDay() + i);
       const date = formatDate(day);
       const button = document.createElement("button");
@@ -129,6 +154,10 @@ export function createDateRangePicker({ document, id, onChange, loadRange, isCur
       button.classList.toggle("is-outside-month", day.getMonth() !== month.getMonth());
       button.tabIndex = date === tabDate ? 0 : -1;
       button.addEventListener("click", () => {
+        if (singleDate) {
+          apply({ startDate: date, endDate: date }, null);
+          return;
+        }
         revision++;
         panel.querySelector("[data-apply]").disabled = false;
         draftPreset = null;
@@ -169,6 +198,7 @@ export function createDateRangePicker({ document, id, onChange, loadRange, isCur
     if (!buttons.some(button => button.tabIndex === 0)) buttons[first.getDay()].tabIndex = 0;
     grid.replaceChildren(...buttons);
     updateSelection();
+    if (loadDates) void updateRecordedDates(buttons);
     if (direction && !win.matchMedia("(prefers-reduced-motion: reduce)").matches) {
       monthAnimation = grid.animate([
         { opacity: .3, transform: `translateX(${direction * 12}px)` },
@@ -177,16 +207,39 @@ export function createDateRangePicker({ document, id, onChange, loadRange, isCur
     }
   }
 
+  async function updateRecordedDates(buttons) {
+    const current = () => isOpen() && isCurrent() && grid.firstElementChild === buttons[0];
+    grid.classList.remove("has-record-dates");
+    grid.setAttribute("aria-busy", "true");
+    error.textContent = "";
+    try {
+      const dates = new Set(await loadDates(buttons[0].dataset.date, buttons.at(-1).dataset.date));
+      if (!current()) return;
+      for (const button of buttons) {
+        if (!dates.has(button.dataset.date)) continue;
+        button.classList.add("has-records");
+        button.setAttribute("aria-description", "有聊天记录");
+      }
+      grid.classList.add("has-record-dates");
+    } catch (failure) {
+      if (current()) error.textContent = `记录日期读取失败：${failure?.message || failure}`;
+    } finally {
+      if (current()) grid.removeAttribute("aria-busy");
+    }
+  }
+
   function apply(value, days) {
     applied = value;
     preset = days;
-    label.textContent = days === 1 ? "当天" : days === 0 ? "全部记录"
+    if (!singleDate) label.textContent = days === 1 ? "当天" : days === 0 ? "全部记录"
       : `${value.startDate.replaceAll("-", "/")} 至 ${value.endDate.replaceAll("-", "/")}`;
     onChange();
-    panel.close();
+    closePanel();
   }
 
-  for (const [days, title] of [[1, "当天"], [7, "近 7 天"], [14, "近 14 天"], [30, "近 30 天"], [0, "全部"]]) {
+  const presets = singleDate ? []
+    : [[1, "当天"], [7, "近 7 天"], [14, "近 14 天"], [30, "近 30 天"], [0, "全部"]];
+  for (const [days, title] of presets) {
     const button = document.createElement("button");
     button.type = "button";
     button.textContent = title;
@@ -201,13 +254,13 @@ export function createDateRangePicker({ document, id, onChange, loadRange, isCur
         if (!panel.open || !isCurrent() || revision !== currentRevision) return;
         const empty = days === 0 && !range.startDate;
         const value = empty ? presetDateRange(1) : range;
-        error.textContent = empty ? "当前角色暂无记录。" : "";
         draftPreset = days;
         inputs.startDate.value = value.startDate;
         inputs.endDate.value = value.endDate;
         const start = parseDate(value.startDate);
         month = localDate(start.getFullYear(), start.getMonth(), 1);
         renderMonth();
+        error.textContent = empty ? "当前角色暂无记录。" : "";
       } catch (failure) {
         if (panel.open && isCurrent() && revision === currentRevision) error.textContent = String(failure?.message || failure);
       } finally {
@@ -223,49 +276,63 @@ export function createDateRangePicker({ document, id, onChange, loadRange, isCur
       renderMonth(undefined, offset);
     });
   }
-  panel.querySelector("[data-month]").addEventListener("click", () => {
-    const today = new Date();
-    const direction = Math.sign(today - month);
-    month = localDate(today.getFullYear(), today.getMonth(), 1);
-    renderMonth(undefined, direction);
-  });
-  panel.querySelector("[data-cancel]").addEventListener("click", () => {
-    panel.close();
-  });
-  panel.querySelector("[data-apply]").addEventListener("click", () => {
-    const startDate = inputs.startDate.value;
-    const endDate = inputs.endDate.value;
-    if (startDate > endDate) {
-      error.textContent = "结束日期不能早于开始日期。";
-      inputs.endDate.focus();
-      return;
-    }
-    apply({ startDate, endDate }, draftPreset);
-  });
-  panel.addEventListener("close", () => {
+  if (singleDate) {
+    panel.addEventListener("beforetoggle", event => {
+      if (event.newState === "closed") onClose();
+    });
+    win.addEventListener("resize", () => { if (isOpen()) positionPanel(); });
+  } else {
+    panel.querySelector("[data-cancel]").addEventListener("click", () => panel.close());
+    panel.querySelector("[data-apply]").addEventListener("click", () => {
+      const startDate = inputs.startDate.value;
+      const endDate = inputs.endDate.value;
+      if (startDate > endDate) {
+        error.textContent = "结束日期不能早于开始日期。";
+        inputs.endDate.focus();
+        return;
+      }
+      apply({ startDate, endDate }, draftPreset);
+    });
+  }
+  function onClose() {
     revision++;
     monthAnimation?.cancel();
     trigger.setAttribute("aria-expanded", "false");
-    if (isCurrent()) trigger.focus({ preventScroll: true });
-  });
-  trigger.addEventListener("click", () => {
+    if (isCurrent() && (!singleDate || panel.contains(document.activeElement))) trigger.focus({ preventScroll: true });
+  }
+  if (!singleDate) panel.addEventListener("close", onClose);
+  trigger.addEventListener("click", event => {
+    // 此处负责初始化并切换弹层，取消按钮默认的第二次切换。
+    if (singleDate) event.preventDefault();
+    if (isOpen()) {
+      closePanel();
+      return;
+    }
     revision++;
-    inputs.startDate.value = applied.startDate;
-    inputs.endDate.value = applied.endDate;
+    const initialDate = getInitialDate?.() || applied.startDate;
+    if (singleDate) selectedDate = initialDate;
+    else {
+      inputs.startDate.value = initialDate;
+      inputs.endDate.value = applied.endDate;
+      panel.querySelector("[data-apply]").disabled = false;
+    }
     activeField = "startDate";
     error.textContent = "";
-    panel.querySelector("[data-apply]").disabled = false;
     draftPreset = preset;
-    const start = parseDate(applied.startDate);
+    const start = parseDate(initialDate);
     month = localDate(start.getFullYear(), start.getMonth(), 1);
     renderMonth();
-    panel.showModal();
+    if (singleDate) {
+      panel.showPopover();
+      positionPanel();
+      grid.querySelector('[tabindex="0"]').focus({ preventScroll: true });
+    } else panel.showModal();
     trigger.setAttribute("aria-expanded", "true");
     panel.scrollTop = 0;
   });
-  return { element, getValue: () => ({ ...applied }), dispose() {
+  return { element, trigger, getValue: () => ({ ...applied }), dispose() {
     monthAnimation?.cancel();
     revision++;
-    if (panel.open) panel.close();
+    if (isOpen()) closePanel();
   } };
 }

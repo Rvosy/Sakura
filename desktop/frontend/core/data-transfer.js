@@ -4,7 +4,7 @@ import { createDateRangePicker } from "./date-range-picker.js";
 let nextId = 0;
 
 export function createDataTransferMenu({ document, invoke, characterId, identityKey = characterId, isCurrent = () => true,
-  transfer, onImported = () => {}, history = false }) {
+  transfer, onImported = () => {}, history = false, loadDates }) {
   const id = `data-transfer-${++nextId}`;
   const subject = history ? "聊天记录" : "记忆";
   const group = document.createElement("span");
@@ -126,7 +126,7 @@ export function createDataTransferMenu({ document, invoke, characterId, identity
       }
       options.append(formats);
       if (history) {
-        dates = createDateRangePicker({ document, id, isCurrent: current,
+        dates = createDateRangePicker({ document, id, isCurrent: current, loadDates,
           loadRange: () => transfer({ action: "range", expectedCharacterId }),
           onChange: () => { result.textContent = ""; } });
         options.append(dates.element);

@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import hmac
 from collections.abc import Callable, Mapping
+from datetime import date
 from pathlib import Path
+from time import perf_counter
 from typing import Any
 
 from app.core_host.protocol import response
@@ -14,7 +16,7 @@ from app.plugin_sdk.sakura_data_transfer import read_archive, write_archive
 from app.core.runtime_log import log_event
 
 
-HISTORY_REQUEST_NAMES = frozenset({"ui.history.page", "ui.history.open_record", "ui.history.transfer"})
+HISTORY_REQUEST_NAMES = frozenset({"ui.history.page", "ui.history.dates", "ui.history.open_record", "ui.history.transfer"})
 HISTORY_PAGE_LIMIT = 50
 _HISTORY_RESPONSE_BYTES = 700 * 1024
 
@@ -61,6 +63,10 @@ class HistoryBoundary:
         ):
             raise RuntimeError("GENERATION_IDENTITY_MISMATCH")
         try:
+            if request.get("name") == "ui.history.dates":
+                result = self._dates(request["payload"])
+                return response(request, generation_id=self._generation_id,
+                    generation_credential=self._generation_credential, payload=result)
             if request.get("name") == "ui.history.transfer":
                 result = self._transfer(request["payload"])
                 return response(request, generation_id=self._generation_id,
@@ -72,22 +78,31 @@ class HistoryBoundary:
             if request.get("name") != "ui.history.page":
                 raise HistoryBoundaryError("UNKNOWN_COMMAND", "不支持的聊天记录请求。")
             payload = request.get("payload")
-            if not isinstance(payload, Mapping) or set(payload) != {
-                "expectedCharacterId",
-                "beforeCursor",
-                "limit",
-            }:
+            if not isinstance(payload, Mapping):
                 raise HistoryBoundaryError("INVALID_REQUEST", "聊天记录请求格式无效。")
 
             expected_character_id = payload.get("expectedCharacterId")
             before_cursor = payload.get("beforeCursor")
+            after_cursor = payload.get("afterCursor")
+            from_date = payload.get("fromDate")
+            from_entry_id = payload.get("fromEntryId")
+            query = payload.get("query")
             limit = payload.get("limit")
             if not isinstance(expected_character_id, str) or not expected_character_id.strip():
                 raise HistoryBoundaryError("INVALID_REQUEST", "聊天记录角色标识无效。")
-            if before_cursor is not None and not isinstance(before_cursor, str):
-                raise HistoryBoundaryError("INVALID_REQUEST", "聊天记录游标无效。")
+            if sum(value is not None for value in (before_cursor, after_cursor, from_date, from_entry_id)) > 1:
+                raise HistoryBoundaryError("INVALID_REQUEST", "一次只能指定一个聊天记录起点。")
+            if query is not None:
+                if not isinstance(query, str):
+                    raise HistoryBoundaryError("INVALID_REQUEST", "搜索内容必须是文字。")
+                query = query.strip()
             if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= HISTORY_PAGE_LIMIT:
                 raise HistoryBoundaryError("INVALID_REQUEST", "聊天记录分页大小无效。")
+            if from_date is not None:
+                try:
+                    from_date = date.fromisoformat(from_date).isoformat()
+                except (ValueError, TypeError) as error:
+                    raise HistoryBoundaryError("INVALID_REQUEST", "聊天记录日期无效。") from error
 
             character_id = self._current_character_id()
             if character_id != expected_character_id:
@@ -95,20 +110,32 @@ class HistoryBoundary:
                     "HISTORY_CHARACTER_MISMATCH",
                     "当前角色已经变化，请刷新聊天记录。",
                 )
-            entries, next_cursor, has_more, total = self._timeline.read_page_before(
+            started = perf_counter()
+            if query:
+                log_event("History", "正在搜索聊天记录", {"character_id": character_id, "query_length": len(query)},
+                          event="history.search.started")
+            entries, before, after, total = self._timeline.read_history_page(
                 character_id,
                 limit,
                 before_cursor=before_cursor,
+                after_cursor=after_cursor,
+                from_date=from_date,
+                from_entry_id=from_entry_id,
+                query=query,
                 max_bytes=_HISTORY_RESPONSE_BYTES,
             )
+            if query:
+                log_event("History", "聊天记录搜索完成", {"character_id": character_id, "matches": total,
+                          "returned": len(entries), "elapsed_ms": round((perf_counter() - started) * 1000)},
+                          event="history.search.completed")
             result = {
                 "schemaVersion": 1,
                 "coreGenerationId": self._generation_id,
                 "characterId": character_id,
                 "totalCount": total,
                 "entries": [_entry_mapping(entry) for entry in entries],
-                "beforeCursor": next_cursor,
-                "hasMore": has_more,
+                "beforeCursor": before,
+                "afterCursor": after,
             }
             return response(
                 request,
@@ -128,6 +155,8 @@ class HistoryBoundary:
                     code,
                     "聊天记录已发生变化，请刷新后重试。",
                 )
+            elif code == "TIMELINE_ENTRY_NOT_FOUND":
+                public = HistoryBoundaryError(code, "这条记录已不存在，请重新搜索。")
             elif code == "TIMELINE_NOT_ACTIVATED":
                 public = HistoryBoundaryError(
                     "HISTORY_NOT_READY",
@@ -135,6 +164,8 @@ class HistoryBoundary:
                     retryable=True,
                 )
             else:
+                log_event("History", "聊天记录读取失败", {"error": str(error.__cause__ or error)},
+                          event="history.read.failed", severity="error")
                 public = HistoryBoundaryError(
                     "TIMELINE_READ_FAILED",
                     "聊天记录读取失败，请稍后刷新。",
@@ -146,6 +177,8 @@ class HistoryBoundary:
                 log_event("History", "聊天记录导入导出失败", {"error": str(error)},
                           event="history.transfer.failed", severity="error")
                 return self._error_response(request, HistoryBoundaryError("HISTORY_TRANSFER_FAILED", str(error)))
+            log_event("History", "聊天记录读取失败", {"error": str(error)},
+                      event="history.read.failed", severity="error")
             return self._error_response(
                 request,
                 HistoryBoundaryError(
@@ -154,6 +187,19 @@ class HistoryBoundary:
                     retryable=True,
                 ),
             )
+
+    def _dates(self, payload) -> dict:
+        if payload["expectedGenerationId"] != self._generation_id:
+            raise HistoryBoundaryError("HISTORY_IDENTITY_MISMATCH", "后台已重启，请重新打开日历。")
+        character_id = self._current_character_id()
+        if payload["expectedCharacterId"] != character_id:
+            raise HistoryBoundaryError("HISTORY_CHARACTER_MISMATCH", "角色已变化，请重新打开日历。")
+        try:
+            start = date.fromisoformat(payload["startDate"]).isoformat()
+            end = date.fromisoformat(payload["endDate"]).isoformat()
+        except (ValueError, TypeError) as error:
+            raise HistoryBoundaryError("INVALID_REQUEST", "日历日期无效。") from error
+        return {"dates": self._timeline.record_dates(character_id, start, end)}
 
     def _transfer(self, payload) -> dict:
         if payload["expectedGenerationId"] != self._generation_id:

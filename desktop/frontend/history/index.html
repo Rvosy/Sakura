@@ -11,34 +11,56 @@
     <main class="history-shell">
       <header class="history-head">
         <div class="history-heading">
-          <div>
-            <h1>聊天记录</h1>
-          </div>
+          <h1>聊天记录</h1>
+          <p id="history-character" class="history-character"></p>
         </div>
         <div class="history-head-actions">
-          <span id="history-count" class="history-count">读取中…</span>
+          <span class="data-transfer-menu"><button id="search-toggle" class="data-transfer-trigger" type="button"
+            aria-label="搜索聊天记录" title="搜索聊天记录 (Ctrl+F)" aria-expanded="false" aria-controls="history-search" disabled></button></span>
         </div>
       </header>
 
-      <p id="history-status" class="history-status" role="status" aria-live="polite">
-        正在读取聊天记录…
-      </p>
-
-      <section id="history-scroll" class="history-scroll" aria-label="聊天历史">
-        <div class="history-load-row">
-          <button id="load-more" class="load-more" type="button" hidden>加载更早记录</button>
+      <div class="history-toolbar">
+        <div id="history-search" class="history-search" inert aria-hidden="true">
+          <form class="history-search-form" role="search">
+            <div class="history-search-controls">
+              <div class="history-search-field">
+                <button id="history-search-submit" class="history-search-icon" type="submit" aria-label="搜索" title="搜索"></button>
+                <input id="history-search-query" type="search" aria-label="搜索聊天内容"
+                  placeholder="搜索当前角色的聊天内容" autocomplete="off" />
+              </div>
+            </div>
+          </form>
         </div>
-        <div id="history-list" class="history-list"></div>
-        <div id="history-empty" class="history-empty" hidden>
-          <span aria-hidden="true">✿</span>
-          <p>还没有聊天记录</p>
+        <div id="history-search-info" class="history-search-info" hidden>
+          <button id="history-search-back" class="history-search-back" type="button" hidden>返回结果</button>
+          <p id="history-search-summary" role="status" aria-live="polite"></p>
         </div>
-      </section>
+      </div>
 
-      <footer class="history-actions">
-        <button id="refresh" class="button button-secondary" type="button">刷新</button>
-        <button id="close" class="button button-primary" type="button">关闭</button>
-      </footer>
+      <div class="history-content">
+        <section id="history-scroll" class="history-scroll" aria-label="聊天历史">
+          <div class="history-load-row">
+            <button id="load-more" class="load-more" type="button" hidden>加载更早记录</button>
+          </div>
+          <div id="history-list" class="history-list"></div>
+          <div class="history-load-row">
+            <button id="load-newer" class="load-more" type="button" hidden>加载后续记录</button>
+          </div>
+          <div id="history-empty" class="history-empty" hidden>
+            <span aria-hidden="true">✿</span>
+            <p>还没有聊天记录</p>
+          </div>
+        </section>
+
+        <section id="history-search-results" class="history-scroll history-search-results" aria-label="聊天记录搜索结果" hidden>
+          <div id="history-search-list" class="history-search-list"></div>
+          <div class="history-load-row"><button id="history-search-more" class="load-more" type="button" hidden>加载更多结果</button></div>
+        </section>
+
+        <p id="history-status" class="history-status" role="status" aria-live="polite">正在读取聊天记录…</p>
+        <button id="history-latest" class="history-latest" type="button" hidden>回到最新</button>
+      </div>
     </main>
     <script type="module" src="./history.js"></script>
   </body>

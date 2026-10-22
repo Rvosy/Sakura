@@ -222,6 +222,24 @@ class TimelineStore:
             raise TimelineDataError("TIMELINE_DATABASE_INVALID") from exc
         return row[0], row[1]
 
+    def record_dates(self, character_id: str, start_date: str, end_date: str) -> list[str]:
+        """读取日历范围内有记录的本地日期，不加载记录正文。"""
+        if not self.path.is_file():
+            raise TimelineDataError("TIMELINE_NOT_ACTIVATED")
+        try:
+            with self._connect_existing() as connection:
+                _assert_activated_connection(connection)
+                rows = connection.execute(
+                    """SELECT DISTINCT date(created_at, 'localtime') AS day
+                       FROM timeline_entries
+                       WHERE character_id = ? AND day BETWEEN ? AND ?
+                       ORDER BY day""",
+                    (character_id, start_date, end_date),
+                ).fetchall()
+        except sqlite3.DatabaseError as exc:
+            raise TimelineDataError("TIMELINE_DATABASE_INVALID") from exc
+        return [row[0] for row in rows]
+
     def read_all(self, character_id: str) -> list[TimelineEntry]:
         _bounded_text("character_id", character_id, MAX_ID_CHARS)
         if not self.path.is_file():
@@ -526,95 +544,119 @@ class TimelineStore:
             return [], _encode_cursor(character_id, lineage, 0, "")
         return entries, _encode_cursor(character_id, lineage, latest[0], latest[1])
 
-    def read_page_before(
+    def read_history_page(
         self,
         character_id: str,
         limit: int,
         *,
         before_cursor: str | None = None,
+        after_cursor: str | None = None,
+        from_date: str | None = None,
+        from_entry_id: str | None = None,
+        query: str | None = None,
         max_bytes: int | None = None,
-    ) -> tuple[list[TimelineEntry], str | None, bool, int]:
-        """Read one newest-first window and return it in chronological order.
-
-        ``before_cursor`` is an opaque anchor for the oldest entry already visible to
-        the caller.  The returned cursor points at the oldest entry in this page and
-        is present only when an earlier page exists.
-        """
+    ) -> tuple[list[TimelineEntry], str | None, str | None, int]:
+        """按原始时间读取一页；前后游标只在对应方向还有记录时返回。"""
 
         _bounded_text("character_id", character_id, MAX_ID_CHARS)
         _validated_limit(limit)
-        if before_cursor is not None and not isinstance(before_cursor, str):
-            raise TimelineDataError("TIMELINE_CURSOR_INVALID")
         if not self.path.is_file():
             raise TimelineDataError("TIMELINE_NOT_ACTIVATED")
+        forward = after_cursor is not None or from_date is not None or from_entry_id is not None
+        cursor = after_cursor if forward else before_cursor
         try:
             with self._connect_existing() as connection:
+                connection.execute("BEGIN")
                 lineage = _assert_activated_connection(connection)
-                before_seq: int | None = None
-                if before_cursor is not None:
-                    before_seq, entry_id = _decode_cursor(
-                        before_cursor,
+                anchor_seq: int | None = None
+                if cursor is not None:
+                    anchor_seq, entry_id = _decode_cursor(
+                        cursor,
                         character_id,
                         lineage,
                     )
-                    if before_seq <= 0:
-                        raise TimelineDataError("TIMELINE_CURSOR_INVALID")
                     row = connection.execute(
                         "SELECT entry_id, character_id FROM timeline_entries WHERE seq = ?",
-                        (before_seq,),
+                        (anchor_seq,),
                     ).fetchone()
                     if row is None or row[0] != entry_id or row[1] != character_id:
                         raise TimelineDataError("TIMELINE_CURSOR_INVALID")
+                if from_entry_id is not None:
+                    row = connection.execute(
+                        "SELECT seq FROM timeline_entries WHERE character_id = ? AND entry_id = ?",
+                        (character_id, from_entry_id),
+                    ).fetchone()
+                    if row is None:
+                        raise TimelineDataError("TIMELINE_ENTRY_NOT_FOUND")
+                    anchor_seq = row[0]
 
+                scope = "character_id = ?"
+                scope_params: list[Any] = [character_id]
+                if query:
+                    # 只搜索可阅读的正文与译文，标识、表情参数和插件元数据不参与匹配。
+                    scope += """ AND (kind != 'system' OR json_extract(payload_json, '$.eventType') IS NOT 'app.reconnected')
+                        AND (
+                            instr(lower(json_extract(payload_json, '$.text')), lower(?)) > 0
+                            OR instr(lower(json_extract(payload_json, '$.activity.details')), lower(?)) > 0
+                            OR EXISTS(SELECT 1 FROM json_each(payload_json, '$.segments')
+                                WHERE instr(lower(json_extract(value, '$.text')), lower(?)) > 0
+                                   OR instr(lower(json_extract(value, '$.translation')), lower(?)) > 0)
+                        )"""
+                    scope_params.extend([query] * 4)
                 total = int(
                     connection.execute(
-                        "SELECT COUNT(*) FROM timeline_entries WHERE character_id = ?",
-                        (character_id,),
+                        "SELECT COUNT(*) FROM timeline_entries WHERE " + scope,
+                        scope_params,
                     ).fetchone()[0]
                 )
-                if before_seq is None:
-                    rows = connection.execute(
-                        """
-                        SELECT seq, entry_id, turn_id, character_id, kind, origin,
-                               created_at, payload_json
-                        FROM timeline_entries
-                        WHERE character_id = ?
-                        ORDER BY julianday(created_at) DESC, seq DESC
-                        LIMIT ?
-                        """,
-                        (character_id, limit + 1),
-                    )
-                else:
-                    rows = connection.execute(
-                        """
-                        SELECT seq, entry_id, turn_id, character_id, kind, origin,
-                               created_at, payload_json
-                        FROM timeline_entries
-                        WHERE character_id = ? AND (julianday(created_at), seq) <
-                            (SELECT julianday(created_at), seq FROM timeline_entries WHERE seq = ?)
-                        ORDER BY julianday(created_at) DESC, seq DESC
-                        LIMIT ?
-                        """,
-                        (character_id, before_seq, limit + 1),
-                    )
-                entries_desc, has_more = _bounded_entries(
+                where = scope
+                params = scope_params.copy()
+                if anchor_seq is not None:
+                    operator = ">=" if from_entry_id is not None else ">" if forward else "<"
+                    where += f" AND (julianday(created_at), seq) {operator} (SELECT julianday(created_at), seq FROM timeline_entries WHERE seq = ?)"
+                    params.append(anchor_seq)
+                if from_date is not None:
+                    # 本地零点只确定起点，后续记录可以跨天读取。
+                    where += " AND julianday(created_at) >= julianday(?, 'utc')"
+                    params.append(from_date)
+                order = "ASC" if forward else "DESC"
+                rows = connection.execute(
+                    "SELECT seq, entry_id, turn_id, character_id, kind, origin, created_at, payload_json "
+                    "FROM timeline_entries WHERE " + where +
+                    f" ORDER BY julianday(created_at) {order}, seq {order} LIMIT ?",
+                    (*params, limit + 1),
+                )
+                entries, has_more = _bounded_entries(
                     rows,
                     limit,
                     max_bytes=max_bytes,
                 )
+                if not forward:
+                    entries.reverse()
+                if not entries:
+                    return [], None, None, total
+                opposite = entries[0] if forward else entries[-1]
+                operator = "<" if forward else ">"
+                has_opposite = connection.execute(
+                    "SELECT EXISTS(SELECT 1 FROM timeline_entries WHERE " + scope + " "
+                    f"AND (julianday(created_at), seq) {operator} (julianday(?), ?))",
+                    (*scope_params, opposite.created_at, opposite.seq),
+                ).fetchone()[0]
         except sqlite3.DatabaseError as exc:
             raise TimelineDataError("TIMELINE_DATABASE_INVALID") from exc
 
-        entries = list(reversed(entries_desc))
-        if not entries:
-            return [], None, False, total
-        oldest = entries[0]
-        next_before_cursor = (
-            _encode_cursor(character_id, lineage, oldest.seq, oldest.entry_id)
-            if has_more
+        has_before, has_after = (has_opposite, has_more) if forward else (has_more, has_opposite)
+        before = (
+            _encode_cursor(character_id, lineage, entries[0].seq, entries[0].entry_id)
+            if has_before
             else None
         )
-        return entries, next_before_cursor, has_more, total
+        after = (
+            _encode_cursor(character_id, lineage, entries[-1].seq, entries[-1].entry_id)
+            if has_after
+            else None
+        )
+        return entries, before, after, total
 
     def read_since(
         self,
