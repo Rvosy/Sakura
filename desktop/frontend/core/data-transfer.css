@@ -1,5 +1,6 @@
 .data-transfer-menu,
-.data-transfer-dialog {
+.data-transfer-dialog,
+.date-range-panel {
   --transfer-primary: var(--sakura-primary, var(--primary, #4b9ac4));
   --transfer-primary-hover: var(--sakura-primary-hover, var(--primary-hover, #3b83aa));
   --transfer-text: var(--sakura-text, var(--text, #27445a));
@@ -14,7 +15,8 @@
 
 .data-transfer-menu { display: inline-flex; flex: none; }
 .data-transfer-menu button,
-.data-transfer-dialog button {
+.data-transfer-dialog button,
+.date-range-panel button {
   min-width: 0;
   padding: 8px 12px;
   border: 1px solid var(--transfer-border);
@@ -39,11 +41,14 @@
 .data-transfer-trigger .sakura-icon { width: 20px; height: 20px; }
 .data-transfer-trigger[aria-expanded="true"] { background: var(--transfer-panel); color: var(--transfer-primary); }
 .data-transfer-menu button:active,
-.data-transfer-dialog button:active { transform: scale(.97); }
+.data-transfer-dialog button:active,
+.date-range-panel button:active { transform: scale(.97); }
 .data-transfer-menu button:hover,
-.data-transfer-dialog button:hover { background: var(--transfer-panel); }
+.data-transfer-dialog button:hover,
+.date-range-panel button:hover { background: var(--transfer-panel); }
 .data-transfer-menu :focus-visible,
-.data-transfer-dialog :focus-visible {
+.data-transfer-dialog :focus-visible,
+.date-range-panel :focus-visible {
   outline: 3px solid var(--transfer-ring);
   outline-offset: 2px;
 }
@@ -151,8 +156,8 @@
   visibility: visible;
 }
 .data-transfer-dialog:has(.date-range-panel[open]) { visibility: hidden; }
-.date-range-panel h2 { margin-bottom: 18px; }
-.data-transfer-dialog .date-range-panel:focus { outline: none; }
+.date-range-panel h2 { margin: 0 0 18px; font-size: 20px; }
+.date-range-panel:focus, .date-range-panel h2:focus { outline: none; }
 .date-range-presets { display: flex; flex-wrap: wrap; gap: 6px; padding-bottom: 12px; border-bottom: 1px solid var(--transfer-border); }
 .date-range-presets button { padding: 5px 10px; font-size: 12px; }
 .date-range-presets button[aria-pressed="true"] { color: var(--transfer-primary); border-color: var(--transfer-primary); background: var(--transfer-panel); }
@@ -174,7 +179,7 @@
   background: color-mix(in srgb, var(--transfer-primary) 5%, var(--transfer-bg));
   box-shadow: 0 0 0 1px var(--transfer-primary);
 }
-.data-transfer-dialog .date-range-field input {
+.date-range-panel .date-range-field input {
   width: 2.4ch;
   min-width: 0;
   margin: 0;
@@ -189,8 +194,8 @@
   font-variant-numeric: tabular-nums;
 }
 .date-input-segments { display: flex; align-items: center; gap: 3px; margin-top: 5px; color: var(--transfer-muted); }
-.data-transfer-dialog .date-range-field input:first-child { width: 4.6ch; }
-.data-transfer-dialog .date-range-field input:focus {
+.date-range-panel .date-range-field input:first-child { width: 4.6ch; }
+.date-range-panel .date-range-field input:focus {
   outline: none;
   box-shadow: none;
 }
@@ -199,17 +204,24 @@
 .date-range-presets button[aria-busy="true"] { opacity: .6; }
 .date-range-actions { display: flex; gap: 8px; margin-top: auto; }
 .date-range-actions button { flex: 1; padding: 7px 10px; font-size: 13px; }
-.data-transfer-dialog [data-apply] { background: var(--transfer-primary); border-color: var(--transfer-primary); color: var(--transfer-bg); }
-.data-transfer-dialog [data-apply]:hover,
+.date-range-panel [data-apply] { background: var(--transfer-primary); border-color: var(--transfer-primary); color: var(--transfer-bg); }
+.date-range-panel [data-apply]:hover,
 .data-transfer-dialog [data-run]:hover { background: var(--transfer-primary-hover); border-color: var(--transfer-primary-hover); color: var(--transfer-bg); }
 .date-range-calendar { min-width: 0; padding: 9px; border-radius: 10px; background: var(--transfer-panel); overflow: hidden; }
 .date-range-month { display: flex; align-items: center; justify-content: space-between; gap: 6px; margin-bottom: 8px; }
 .date-range-month button { display: grid; place-items: center; padding: 5px; border: 0; background: transparent; font-size: 13px; }
+.date-range-month [data-month] { font-size: 13px; font-weight: 600; }
 .date-range-month [data-prev] .sakura-icon { transform: rotate(180deg); }
 .date-range-weekdays, .date-range-days { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 2px; }
 .date-range-weekdays { margin-bottom: 5px; color: var(--transfer-muted); text-align: center; font-size: 11px; }
 .date-range-days button { height: 29px; padding: 0; border: 0; border-radius: 5px; background: transparent; font-size: 12px; }
 .date-range-days .is-outside-month { color: var(--transfer-muted); opacity: .65; }
+.date-range-days.has-record-dates :where(button) { color: var(--transfer-muted); }
+.date-range-days .has-records {
+  color: var(--transfer-primary-hover);
+  font-weight: 700;
+  background: color-mix(in srgb, var(--transfer-primary) 14%, transparent);
+}
 .date-range-days .is-in-range,
 .date-range-days .is-in-range:hover { background: color-mix(in srgb, var(--transfer-primary) 16%, transparent); }
 .date-range-days [aria-current="date"] { box-shadow: inset 0 0 0 1px var(--transfer-primary); }
@@ -237,7 +249,8 @@
   color: var(--transfer-bg);
   border-color: var(--transfer-primary);
 }
-.data-transfer-dialog button:disabled { cursor: wait; opacity: .6; }
+.data-transfer-dialog button:disabled,
+.data-transfer-menu button:disabled { cursor: wait; opacity: .6; }
 .data-transfer-dialog [hidden] { display: none; }
 .data-transfer-dialog,
 .data-transfer-actions,
@@ -249,6 +262,7 @@
 }
 .data-transfer-dialog[open],
 .data-transfer-actions:popover-open,
+.date-single-panel:popover-open,
 .date-range-panel[open] { opacity: 1; transform: translateY(0) scale(1); }
 .data-transfer-dialog::backdrop {
   background: transparent;
@@ -257,9 +271,25 @@
 }
 .data-transfer-dialog[open]::backdrop { background: color-mix(in srgb, var(--transfer-text) 36%, transparent); }
 .date-range-panel::backdrop { background: transparent; }
+.date-single-panel {
+  inset: auto;
+  width: min(292px, calc(100vw - 16px));
+  margin: 0;
+  padding: 12px;
+  transform-origin: top right;
+  box-shadow: 0 8px 24px color-mix(in srgb, var(--transfer-text) 12%, transparent);
+}
+.date-single-panel .date-range-calendar { padding: 0; background: transparent; }
+.date-single-panel .date-range-month { margin-bottom: 12px; }
+.date-single-panel .date-range-month button { width: 30px; height: 30px; }
+.date-single-panel .date-range-month [data-month] { font-size: 14px; }
+.date-single-panel .date-range-days button { height: 34px; font-size: 13px; }
+.date-single-panel .date-range-error { margin: 8px 0 0; font-size: 12px; }
+.date-single-panel .date-range-error:empty { display: none; }
 @starting-style {
   .data-transfer-dialog[open],
   .data-transfer-actions:popover-open,
+  .date-single-panel:popover-open,
   .date-range-panel[open] { opacity: 0; transform: translateY(6px) scale(.97); }
   .data-transfer-dialog[open]::backdrop { background: transparent; }
 }

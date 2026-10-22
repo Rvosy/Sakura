@@ -1,6 +1,8 @@
 import { waitForRuntimeFonts } from "../core/font-loader.js";
 import { createDataTransferMenu } from "../core/data-transfer.js";
-import { installClickIconMotion } from "../core/icons.js";
+import { createDateRangePicker, formatDate } from "../core/date-range-picker.js";
+import { createHistorySearch } from "./history-search.js";
+import { createIcon, installClickIconMotion } from "../core/icons.js";
 import { installDevtoolsShortcutGuard } from "../core/devtools-guard.js";
 import { applyTheme } from "../core/theme.js";
 import { createPlaybackActionIndicator } from "../audio/playback-action-indicator.js";
@@ -22,32 +24,82 @@ installClickIconMotion(document);
 
 const invoke = window.__TAURI__?.core?.invoke;
 const listen = window.__TAURI__?.event?.listen;
-const shell = document.querySelector(".history-shell");
-const count = document.querySelector("#history-count");
+const character = document.querySelector("#history-character");
 const status = document.querySelector("#history-status");
 const scroll = document.querySelector("#history-scroll");
 const list = document.querySelector("#history-list");
 const empty = document.querySelector("#history-empty");
 const loadMore = document.querySelector("#load-more");
-const refresh = document.querySelector("#refresh");
-const close = document.querySelector("#close");
+const loadNewer = document.querySelector("#load-newer");
+const latest = document.querySelector("#history-latest");
+latest.prepend(createIcon(document, "chevron-down"));
+const refresh = document.createElement("button");
+refresh.id = "refresh";
+const close = document.createElement("button");
 const errors = createErrorDialog({ document });
 window.addEventListener("pagehide", () => errors.dispose(), { once: true });
 
 let loading = false;
+let closed = false;
 let entries = [];
 let identity = null;
-document.querySelector(".history-head-actions").append(createDataTransferMenu({ document, invoke,
+let lastScrollTop = 0;
+const datePicker = createDateRangePicker({
+  document, id: "history-jump", singleDate: true,
+  isCurrent: () => !closed && identity !== null,
+  getInitialDate: () => {
+    const top = scroll.getBoundingClientRect().top;
+    const visible = [...list.children].find(row => row.getBoundingClientRect().bottom > top);
+    const entry = entries.find(item => item.entryId === visible?.dataset.entryId);
+    return formatDate(new Date(entry?.createdAt || Date.now()));
+  },
+  loadDates: loadHistoryDates,
+  onChange: () => void jumpToRecord({ fromDate: datePicker.getValue().startDate }),
+});
+datePicker.trigger.disabled = true;
+document.querySelector(".history-head-actions").append(datePicker.element);
+const operations = createDataTransferMenu({ document, invoke,
   characterId: () => identity?.characterId,
   identityKey: () => `${identity?.coreGenerationId}/${identity?.characterId}`,
   transfer: payload => invoke("history_transfer", { payload: { ...payload, expectedGenerationId: identity.coreGenerationId } }),
+  loadDates: loadHistoryDates,
   onImported: () => loadInitial(),
-}));
+});
+const operationsMenu = operations.querySelector('[role="menu"]');
+for (const [button, icon, label] of [[refresh, "refresh-cw", "刷新记录"], [close, "x", "关闭窗口"]]) {
+  button.type = "button";
+  button.setAttribute("role", "menuitem");
+  button.append(createIcon(document, icon), label);
+  button.addEventListener("click", () => operationsMenu.hidePopover());
+}
+operationsMenu.prepend(refresh);
+operationsMenu.append(close);
+document.querySelector(".history-head-actions").append(operations);
+
+async function loadHistoryDates(startDate, endDate) {
+  const result = await invoke("history_dates", { payload: {
+    expectedGenerationId: identity.coreGenerationId, expectedCharacterId: identity.characterId,
+    startDate, endDate,
+  } });
+  return result.dates;
+}
+
 let assistantName = "Sakura";
 let subtitleLanguage = "zh";
 const expandedEntries = new Set();
 const loadGuard = createHistoryLoadGuard();
 const languageGuard = createHistoryLoadGuard();
+const search = createHistorySearch({
+  document, invoke, getIdentity: () => identity, getAssistantName: () => assistantName,
+  onOpen: () => datePicker.dispose(),
+  onJump: (entryId, current) => jumpToRecord({ fromEntryId: entryId }, current),
+  onViewChange: visible => {
+    scroll.inert = visible;
+    scroll.style.visibility = visible ? "hidden" : "";
+    if (visible) status.textContent = "";
+    updateLatestButton();
+  },
+});
 let initialReloadPending = false;
 const runtimeFontsReady = waitForRuntimeFonts();
 let revealPromise = null;
@@ -97,16 +149,24 @@ async function revealCurrentInitialLoad(revision) {
 
 function setLoading(active, message) {
   loading = active;
-  shell.dataset.loading = String(active);
   scroll.setAttribute("aria-busy", String(active));
   refresh.classList.toggle("is-loading", active);
   refresh.setAttribute("aria-busy", String(active));
   refresh.disabled = active;
+  latest.disabled = active;
   loadMore.disabled = active;
-  if (message) status.textContent = message;
+  loadNewer.disabled = active;
+  datePicker.trigger.disabled = active || !identity;
+  search.trigger.disabled = active || !identity;
+  if (active) status.textContent = message || "";
 }
 
-function render({ animateRecent = false, animatedEntryIds = null } = {}) {
+function updateLatestButton() {
+  latest.hidden = scroll.inert || !entries.length || (!identity?.afterCursor
+    && scroll.scrollHeight - scroll.clientHeight - scroll.scrollTop < 120);
+}
+
+function render({ animateRecent = false } = {}) {
   clearPlaybackIndicators();
   const fragment = document.createDocumentFragment();
   const pendingText = [];
@@ -117,7 +177,7 @@ function render({ animateRecent = false, animatedEntryIds = null } = {}) {
     const row = document.createElement("article");
     row.className = `history-entry history-entry-${item.align}`;
     row.dataset.entryId = item.entryId;
-    if (index >= recentStart || animatedEntryIds?.has(item.entryId)) {
+    if (index >= recentStart) {
       row.classList.add("is-entering");
       row.style.setProperty("--entry-delay", `${Math.min(enteringIndex, 7) * 18}ms`);
       enteringIndex += 1;
@@ -212,6 +272,7 @@ const historyResize = new ResizeObserver(() => {
   if (list.clientWidth === historyWidth) return;
   historyWidth = list.clientWidth;
   render();
+  updateLatestButton();
 });
 historyResize.observe(list);
 window.addEventListener("pagehide", () => historyResize.disconnect(), { once: true });
@@ -225,6 +286,7 @@ function errorMessage(error) {
   if (["HISTORY_NOT_READY", "SETTINGS_CORE_UNAVAILABLE"].includes(code)) {
     return "聊天记录仍在准备，请稍后刷新。";
   }
+  if (code === "TIMELINE_ENTRY_NOT_FOUND") return "这条记录已不存在，请重新搜索。";
   return "聊天记录读取失败，请稍后刷新。";
 }
 
@@ -239,7 +301,7 @@ function playbackErrorMessage(error) {
   }[code] || "这条回复暂时无法播放。";
 }
 
-function applyPage(page) {
+function applyPage(page, direction) {
   if (
     identity
     && (page.coreGenerationId !== identity.coreGenerationId || page.characterId !== identity.characterId)
@@ -249,25 +311,33 @@ function applyPage(page) {
   identity = Object.freeze({
     coreGenerationId: page.coreGenerationId,
     characterId: page.characterId,
-    beforeCursor: page.beforeCursor,
+    beforeCursor: direction === "after" ? identity.beforeCursor : page.beforeCursor,
+    afterCursor: direction === "before" ? identity.afterCursor : page.afterCursor,
   });
-  count.textContent = `${page.totalCount} 条记录`;
-  loadMore.hidden = !page.hasMore;
+  loadMore.hidden = !identity.beforeCursor;
+  loadNewer.hidden = !identity.afterCursor;
+}
+
+function moveScroll(top) {
+  scroll.scrollTop = top;
+  lastScrollTop = scroll.scrollTop;
+  updateLatestButton();
 }
 
 async function loadInitial() {
+  if (closed) return;
   if (loading) {
     initialReloadPending = true;
     return;
   }
   if (!invoke) {
-    count.textContent = "读取失败";
     status.textContent = "读取失败";
     errors.show({ title: "无法读取聊天记录", message: "无法连接 Sakura，请重新打开聊天记录。", error: "HISTORY_HOST_UNAVAILABLE" });
     return;
   }
   const revision = loadGuard.begin();
   const languageRevision = languageGuard.begin();
+  search.reset();
   setLoading(true, "正在读取聊天记录…");
   try {
     const bootstrap = await invoke("history_bootstrap");
@@ -277,6 +347,8 @@ async function loadInitial() {
     assistantName = typeof bootstrap?.assistantName === "string" && bootstrap.assistantName
       ? bootstrap.assistantName
       : "Sakura";
+    character.textContent = assistantName;
+    character.title = assistantName;
     if (languageGuard.isCurrent(languageRevision)) {
       subtitleLanguage = ["zh", "ja", "bilingual", "bilingual_ja"].includes(bootstrap?.subtitleLanguage) ? bootstrap.subtitleLanguage : "zh";
     }
@@ -284,6 +356,7 @@ async function loadInitial() {
       coreGenerationId: bootstrap?.coreGenerationId,
       characterId: bootstrap?.characterId,
       beforeCursor: null,
+      afterCursor: null,
     });
     const page = await invoke("history_page", {
       request: {
@@ -299,8 +372,10 @@ async function loadInitial() {
     entries = page.entries.slice();
     applyPage(page);
     render({ animateRecent: firstPaint });
-    status.textContent = entries.length ? `已显示最近 ${entries.length} 条记录` : "暂无聊天记录";
-    requestAnimationFrame(() => { scroll.scrollTop = scroll.scrollHeight; });
+    status.textContent = "";
+    requestAnimationFrame(() => {
+      if (loadGuard.isCurrent(revision)) moveScroll(scroll.scrollHeight);
+    });
   } catch (error) {
     if (!loadGuard.isCurrent(revision)) return;
     status.textContent = "读取失败";
@@ -317,6 +392,7 @@ async function loadInitial() {
 }
 
 function finishLoading() {
+  if (closed) return;
   setLoading(false);
   if (initialReloadPending) {
     initialReloadPending = false;
@@ -329,51 +405,121 @@ function resetForCharacterSwitch() {
   loadGuard.invalidate();
   entries = [];
   identity = null;
+  search.reset();
+  search.trigger.disabled = true;
+  datePicker.dispose();
+  datePicker.trigger.disabled = true;
   expandedEntries.clear();
-  count.textContent = "正在切换角色…";
+  character.textContent = "";
+  character.title = "";
   status.textContent = "正在读取新角色的聊天记录…";
   loadMore.hidden = true;
+  loadNewer.hidden = true;
   render();
 }
 
-async function loadEarlier() {
-  if (!invoke || loading || !identity?.beforeCursor) return;
+async function jumpToRecord(anchor, isCurrent = () => true) {
+  if (!invoke || loading || !identity) return;
+  const date = anchor.fromDate;
   const revision = loadGuard.begin();
-  const previous = { scrollTop: scroll.scrollTop, scrollHeight: scroll.scrollHeight };
-  setLoading(true, "正在读取更早记录…");
+  const current = () => loadGuard.isCurrent(revision) && isCurrent();
+  setLoading(true, date ? `正在读取 ${date} 的聊天记录…` : "正在定位聊天记录…");
   try {
     const page = await invoke("history_page", {
       request: {
         coreGenerationId: identity.coreGenerationId,
         characterId: identity.characterId,
-        beforeCursor: identity.beforeCursor,
+        beforeCursor: null,
+        ...anchor,
       },
     });
-    if (!loadGuard.isCurrent(revision)) return;
+    if (!current()) return;
+    const first = page.entries[0];
+    if (date && (!first || formatDate(new Date(first.createdAt)) !== date)) {
+      status.textContent = `${date} 没有聊天记录，请选择其他日期。`;
+      return;
+    }
     applyPage(page);
-    const newEntryIds = new Set(page.entries.map((entry) => entry.entryId));
-    entries = [...page.entries, ...entries];
-    render({ animatedEntryIds: newEntryIds });
-    requestAnimationFrame(() => {
-      scroll.scrollTop = preservePrependScroll(previous, scroll.scrollHeight);
-    });
-    status.textContent = `已显示 ${entries.length} 条记录`;
+    entries = page.entries.slice();
+    if (anchor.fromEntryId) expandedEntries.add(anchor.fromEntryId);
+    render();
+    search.showContext();
+    status.textContent = "";
+    await new Promise(requestAnimationFrame);
+    if (!current()) return;
+    const target = list.firstElementChild;
+    moveScroll(scroll.scrollTop + target.getBoundingClientRect().top
+      - scroll.getBoundingClientRect().top - scroll.clientTop - parseFloat(getComputedStyle(scroll).paddingTop));
+    return target;
   } catch (error) {
-    if (!loadGuard.isCurrent(revision)) return;
-    status.textContent = "更早记录未加载";
-    errors.show({ title: "无法读取更早记录", message: errorMessage(error), error });
+    if (!current()) return;
+    status.textContent = "记录定位失败";
+    errors.show({ title: "无法定位聊天记录", message: errorMessage(error), error });
   } finally {
     finishLoading();
   }
 }
 
+async function loadAdjacent(direction) {
+  const cursorKey = `${direction}Cursor`;
+  if (!invoke || loading || !identity?.[cursorKey]) return;
+  const earlier = direction === "before";
+  const label = earlier ? "更早" : "后续";
+  const button = earlier ? loadMore : loadNewer;
+  const revision = loadGuard.begin();
+  setLoading(true);
+  button.textContent = "正在加载…";
+  try {
+    const page = await invoke("history_page", {
+      request: {
+        coreGenerationId: identity.coreGenerationId,
+        characterId: identity.characterId,
+        [cursorKey]: identity[cursorKey],
+      },
+    });
+    if (!loadGuard.isCurrent(revision)) return;
+    const previous = { scrollTop: scroll.scrollTop, scrollHeight: scroll.scrollHeight };
+    applyPage(page, direction);
+    entries = earlier ? [...page.entries, ...entries] : [...entries, ...page.entries];
+    render();
+    moveScroll(earlier ? preservePrependScroll(previous, scroll.scrollHeight) : previous.scrollTop);
+  } catch (error) {
+    if (!loadGuard.isCurrent(revision)) return;
+    status.textContent = `${label}记录未加载`;
+    errors.show({ title: `无法读取${label}记录`, message: errorMessage(error), error });
+  } finally {
+    button.textContent = `加载${label}记录`;
+    finishLoading();
+  }
+}
+
 refresh.addEventListener("click", () => void loadInitial());
-loadMore.addEventListener("click", () => void loadEarlier());
+latest.addEventListener("click", () => void loadInitial());
+loadMore.addEventListener("click", () => void loadAdjacent("before"));
+loadNewer.addEventListener("click", () => void loadAdjacent("after"));
+scroll.addEventListener("scroll", () => {
+  const top = scroll.scrollTop;
+  if (!loading) {
+    if (top < lastScrollTop && top < 120) void loadAdjacent("before");
+    else if (top > lastScrollTop && scroll.scrollHeight - scroll.clientHeight - top < 120) void loadAdjacent("after");
+  }
+  lastScrollTop = top;
+  updateLatestButton();
+});
 close.addEventListener("click", () => {
+  loadGuard.invalidate();
+  search.reset();
+  datePicker.dispose();
   ttsController?.cancel();
   void invoke?.("close_history_window");
 });
-window.addEventListener("pagehide", () => ttsController?.dispose(), { once: true });
+window.addEventListener("pagehide", () => {
+  closed = true;
+  loadGuard.invalidate();
+  search.reset();
+  datePicker.dispose();
+  ttsController?.dispose();
+}, { once: true });
 
 // Install the native listener before the first history request. Otherwise an
 // A -> B reset can race the asynchronous listen() registration and an already

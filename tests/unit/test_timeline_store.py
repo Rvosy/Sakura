@@ -487,11 +487,11 @@ def test_history_pages_walk_backwards_without_exposing_sequence_numbers(tmp_path
         ]
     )
 
-    recent, cursor, has_more, total = store.read_page_before("sakura", 3)
-    earlier, earlier_cursor, earlier_has_more, earlier_total = store.read_page_before(
+    recent, cursor, after, total = store.read_history_page("sakura", 3)
+    earlier, earlier_cursor, earlier_after, earlier_total = store.read_history_page(
         "sakura", 3, before_cursor=cursor
     )
-    oldest, final_cursor, final_has_more, final_total = store.read_page_before(
+    oldest, final_cursor, oldest_after, final_total = store.read_history_page(
         "sakura", 3, before_cursor=earlier_cursor
     )
 
@@ -500,12 +500,17 @@ def test_history_pages_walk_backwards_without_exposing_sequence_numbers(tmp_path
     assert [entry.payload["text"] for entry in oldest] == ["0"]
     assert cursor and not cursor.isdigit()
     assert earlier_cursor and not earlier_cursor.isdigit()
-    assert (has_more, earlier_has_more, final_has_more) == (True, True, False)
+    assert after is None
+    assert earlier_after is not None
+    assert oldest_after is not None
     assert final_cursor is None
     assert (total, earlier_total, final_total) == (7, 7, 7)
+    forward, _before, _after, _total = store.read_history_page("sakura", 3, after_cursor=oldest_after)
+    assert [entry.payload["text"] for entry in forward] == ["1", "2", "3"]
 
 
-def test_history_page_cursor_is_bound_to_character_and_database(tmp_path: Path) -> None:
+@pytest.mark.parametrize("direction", ["before_cursor", "after_cursor"])
+def test_history_page_cursor_is_bound_to_character_and_database(tmp_path: Path, direction: str) -> None:
     first = TimelineStore(tmp_path / "first.sqlite3")
     second = TimelineStore(tmp_path / "second.sqlite3")
     first.initialize()
@@ -523,13 +528,12 @@ def test_history_page_cursor_is_bound_to_character_and_database(tmp_path: Path) 
         )
     )
 
-    _entries, cursor, has_more, _total = first.read_page_before("sakura", 1)
-    assert has_more is True
+    _entries, cursor, _after, _total = first.read_history_page("sakura", 1)
     assert cursor is not None
     with pytest.raises(TimelineDataError, match="TIMELINE_CURSOR_INVALID"):
-        first.read_page_before("other", 1, before_cursor=cursor)
+        first.read_history_page("other", 1, **{direction: cursor})
     with pytest.raises(TimelineDataError, match="TIMELINE_CURSOR_INVALID"):
-        second.read_page_before("sakura", 1, before_cursor=cursor)
+        second.read_history_page("sakura", 1, **{direction: cursor})
 
 
 def test_cursor_is_invalid_for_another_character_or_database_lineage(tmp_path: Path) -> None:
