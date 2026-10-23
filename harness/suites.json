@@ -582,8 +582,10 @@
         "tests/unit/test_model_client.py",
         "tests/unit/test_model_provider_profiles.py",
         "tests/unit/test_model_provider_transport.py",
+        "tests/unit/test_codex_provider.py",
         "tests/unit/test_plugin_settings_apply.py",
         "tests/integration/test_model_service.py",
+        "tests/integration/test_codex_plugin.py",
         "tests/integration/test_model_optional_startup.py",
         "tests/integration/test_provider_apply.py",
         "-q"
@@ -633,6 +635,7 @@
         "tests/unit/test_plugin_settings_contract.py",
         "tests/unit/test_plugin_settings_collections.py",
         "tests/unit/test_plugin_service_binding.py",
+        "tests/unit/test_plugin_hooks.py",
         "tests/unit/test_bound_service_lifecycle.py",
         "tests/unit/test_context_contributions.py",
         "tests/integration/test_context_plugin_chat.py",
@@ -1197,7 +1200,7 @@
     {
       "id": "settings-contributions-frontend",
       "description": "验证动态页面、私有设置、草稿保留和部分保存",
-      "argv": ["node", "--test", "desktop/frontend/tests/settings-pages.test.js", "desktop/frontend/tests/plugin-settings.test.js", "desktop/frontend/tests/plugin-runtime.test.js", "desktop/frontend/tests/provider-settings.test.js"],
+      "argv": ["node", "--test", "desktop/frontend/tests/settings-pages.test.js", "desktop/frontend/tests/plugin-settings.test.js", "desktop/frontend/tests/plugin-runtime.test.js", "desktop/frontend/tests/provider-settings.test.js", "desktop/frontend/tests/codex-provider.test.js"],
       "timeout_seconds": 120
     },
     {

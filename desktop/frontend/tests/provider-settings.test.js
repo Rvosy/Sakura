@@ -59,6 +59,8 @@ function browserFixture() {
       this.listeners.get(type).add(listener);
     }
     removeEventListener(type, listener) { this.listeners.get(type)?.delete(listener); }
+    focus() { document.activeElement = this; }
+    scrollIntoView() {}
     async fire(type, detail = {}) {
       const event = { target: this, preventDefault() {}, stopPropagation() {}, ...detail };
       await Promise.all([...this.listeners.get(type) || []].map((listener) => listener(event)));
@@ -95,12 +97,12 @@ function browserFixture() {
   }
   const document = new Element("document");
   document.createElement = (tagName) => new Element(tagName);
-  document.getElementById = (id) => document.querySelector(`#${id}`);
+  document.getElementById = (id) => document.querySelectorAll("*").find(element => element.id === id) || null;
   document.body = new Element("body");
   document.append(document.body);
   for (const id of [
     "providerStatusStrip", "providerSearch", "addProviderButton", "providerList", "providerDetail",
-    "modelSlots", "contextWindowTokens", "apiTimeout", "apiTemperature", "apiTopPEnabled",
+    "modelSlots", "modelSelectionWarnings", "contextWindowTokens", "apiTimeout", "apiTemperature", "apiTopPEnabled",
     "apiTopP", "apiMaxTokensEnabled", "apiMaxTokens",
   ]) {
     const element = new Element(id === "addProviderButton" ? "button" : "input");
@@ -126,8 +128,10 @@ function snapshot() {
 function fixture(initial = snapshot(), intercept = () => undefined) {
   const browser = browserFixture();
   let current = initial;
-  const calls = [], dirty = [];
+  let catalog = [];
+  const calls = [], dirty = [], pages = [];
   const feature = createProviderSettingsFeature({ ...browser,
+    getProviderCatalog: () => catalog, showPage: page => { pages.push(page); feature.onPageChanged(page); },
     invoke: async (command, args) => {
       calls.push([command, args]);
       const value = intercept(command, args);
@@ -140,7 +144,8 @@ function fixture(initial = snapshot(), intercept = () => undefined) {
       throw new Error(command);
     }, onDirty() { dirty.push(feature.isDirty()); }, onError(error) { throw error; },
   });
-  return { ...browser, feature, calls, dirty, setCurrent(value) { current = value; },
+  return { ...browser, feature, calls, dirty, pages, setCurrent(value) { current = value; },
+    setCatalog(value) { catalog = value; feature.refreshChoices(); },
     control(kind, slot) { return browser.document.querySelector(`[data-slot-${kind}="${slot}"]`); } };
 }
 
@@ -196,6 +201,68 @@ test("unavailable selections stay visible and save without silently retargeting"
   assert.match(model.options.find(option => option.value === "lost").textContent, /不可用/);
   await ui.feature.save();
   assert.deepEqual(ui.calls.find(([command]) => command.endsWith("_save"))[1].draft.model_slots["core:chat"], initial.model_slots[0].selection);
+});
+
+test("removing a saved model explains the affected use without changing or blocking its reference", async () => {
+  const ui = fixture(); await ui.feature.initialize();
+  const providers = structuredClone(snapshot().providers);
+  providers[0].profiles[0].models = [{ modelId: "manual-model" }];
+  ui.setCatalog(providers);
+  const warning = ui.document.getElementById("modelSelectionWarnings");
+  assert.equal(warning.hidden, false);
+  assert.match(warning.textContent, /Chat.*fixture-model.*Fixture/);
+  assert.equal(ui.control("model", "core:chat").value, "fixture-model");
+  assert.equal(ui.control("model", "core:vision_chat").value, "fixture-model");
+  assert.equal(ui.feature.isDirty(), false);
+  await warning.querySelector("button").fire("click");
+  assert.equal(ui.pages.at(-1), "model");
+  assert.equal(ui.document.activeElement, ui.control("model", "core:chat"));
+  await ui.feature.save();
+  assert.deepEqual(ui.calls.find(([command]) => command.endsWith("_save"))[1].draft.model_slots["core:chat"], ref());
+  ui.setCatalog(snapshot().providers);
+  assert.equal(warning.hidden, true);
+});
+
+test("a deleted draft selection can be corrected from its field without losing another slot draft", async () => {
+  const ui = fixture(); await ui.feature.initialize();
+  ui.control("inherit", "core:vision_chat").checked = false;
+  await ui.control("inherit", "core:vision_chat").fire("change");
+  ui.control("model", "core:vision_chat").value = "third-model";
+  await ui.control("model", "core:vision_chat").fire("change");
+  ui.control("model", "core:chat").value = "manual-model";
+  await ui.control("model", "core:chat").fire("change");
+  const providers = structuredClone(snapshot().providers);
+  providers[0].profiles[0].models = providers[0].profiles[0].models.filter(model => model.modelId !== "manual-model");
+  ui.setCatalog(providers);
+  await assert.rejects(ui.feature.save(), error => {
+    assert.match(error.message, /Chat.*manual-model.*Fixture/);
+    assert.equal(ui.feature.handleValidationError(error), true);
+    return true;
+  });
+  assert.equal(ui.pages.at(-1), "model");
+  assert.equal(ui.document.activeElement, ui.control("model", "core:chat"));
+  assert.equal(ui.control("model", "core:chat").value, "manual-model");
+  assert.equal(ui.control("model", "core:vision_chat").value, "third-model");
+  assert.equal(ui.calls.some(([command]) => command.endsWith("_save")), false);
+  assert.equal(ui.feature.handleValidationError(new Error("write failed")), false);
+  ui.control("model", "core:chat").value = "fixture-model";
+  await ui.control("model", "core:chat").fire("change");
+  await ui.feature.save();
+  const saved = ui.calls.find(([command]) => command.endsWith("_save"))[1].draft.model_slots;
+  assert.deepEqual(saved["core:chat"], ref());
+  assert.deepEqual(saved["core:vision_chat"], ref("third-model"));
+  assert.equal(ui.document.getElementById("modelSelectionWarnings").hidden, true);
+});
+
+test("removing a connection identifies it and restoring it keeps the selected model", async () => {
+  const ui = fixture(); await ui.feature.initialize();
+  ui.setCatalog([{ serviceKey: "model.remote", profiles: [] }]);
+  const warning = ui.document.getElementById("modelSelectionWarnings");
+  assert.match(warning.textContent, /Chat.*fixture-model.*连接.*fixture/);
+  ui.setCatalog(snapshot().providers);
+  assert.equal(warning.hidden, true);
+  assert.equal(ui.control("model", "core:chat").value, "fixture-model");
+  assert.equal(ui.feature.isDirty(), false);
 });
 
 test("invalid configuration remains editable with its recovery explanation", async () => {

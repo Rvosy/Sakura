@@ -11,7 +11,7 @@ import httpx
 from openai import APIConnectionError, APIStatusError, APITimeoutError, AsyncOpenAI, Omit
 from openai.resources.chat import AsyncChat  # Resolve lazy imports before serving jobs.
 
-from sakura_cancellation import check_cancelled
+from sakura_cancellation import await_cancellable, check_cancelled
 from sakura_http import proxy_for_url
 from sakura_model import ModelError
 from sakura_provider_errors import public_provider_http_message, sanitize_provider_diagnostic
@@ -40,8 +40,6 @@ def _unsupported(error, parameter):
 
 
 def _message(value):
-    if not isinstance(value, dict) or value.get("role") not in {"system", "developer", "user", "assistant", "tool"}:
-        raise ModelError("MODEL_REQUEST_INVALID", "模型消息格式无效。")
     message = {**deepcopy(value.get("providerData") or {}), "role": value["role"], "content": value.get("content")}
     if isinstance(message["content"], list):
         message["content"] = [({"type": "image_url", "image_url": {"url": part["dataUrl"], "detail": part.get("detail", "auto")}}
@@ -108,12 +106,7 @@ def execute(settings, request, *, cancel_checker, progress, operation="generate"
     base_url = normalize_base_url(settings["base_url"])
     key = settings["api_key"]
     if operation == "generate":
-        if not isinstance(request, dict) or not isinstance(request.get("messages"), list) or not request["messages"]:
-            raise ModelError("MODEL_REQUEST_INVALID", "模型请求缺少消息。")
         parameters = request.get("parameters") or {}
-        allowed = {"temperature", "top_p", "max_tokens", "max_completion_tokens", "presence_penalty", "frequency_penalty", "seed", "stop"}
-        if not isinstance(parameters, dict) or set(parameters) - allowed:
-            raise ModelError("MODEL_REQUEST_INVALID", "模型生成参数无效。")
         payload = {**parameters, "model": settings["model"], "messages": [_message(item) for item in request["messages"]]}
         if request.get("responseFormat") is not None:
             payload["response_format"] = request["responseFormat"]
@@ -212,23 +205,12 @@ def execute(settings, request, *, cancel_checker, progress, operation="generate"
                     response = await sdk.chat.completions.with_raw_response.create(**payload, extra_headers=headers)
                     return decode_response(response.http_response)
 
-                async def guarded():
-                    task = asyncio.create_task(send())
-                    try:
-                        while not task.done():
-                            await asyncio.wait({task}, timeout=.05)
-                            check_cancelled(cancel_checker)
-                        return await task
-                    finally:
-                        if not task.done():
-                            task.cancel()
-                        await asyncio.gather(task, return_exceptions=True)
                 fallbacks = []
                 for attempt in range(1, 4):
                     check_cancelled(cancel_checker)
                     diagnostics["attemptCount"] = attempt
                     try:
-                        data = await guarded()
+                        data = await await_cancellable(send(), cancel_checker)
                         if operation == "list_models":
                             return {"models": _model_ids(data)}
                         result = _response(data)

@@ -1,7 +1,7 @@
 import { iconMarkup as icon } from "../core/icons.js";
 import { enhanceSelect, refreshSelect, closeSelects } from "./select-control.js";
 import { marketplaceMarkup } from "./plugin-marketplace-view.js";
-import { recommended, hasUpdate as updating, canInstall, createCatalogLoader, syncInstalledPlugins, updateCandidates } from "./plugin-marketplace-runtime.js";
+import { recommended, hasUpdate as updating, canInstall, createCatalogLoader, syncInstalledPlugins, availableUpdates, latestVersion } from "./plugin-marketplace-runtime.js";
 import { documentationUrl, renderPluginReadme } from "./plugin-readme.js";
 
 const escape = (value) => String(value ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
@@ -41,8 +41,8 @@ export function createPluginMarketplace({ document, host, notify, showError = ({
   }
   function syncInstalled() {
     syncInstalledPlugins(plugins, host.installedPlugins());
-    const updates = updateCandidates(plugins);
-    $("installed-tab").textContent = updates.length ? `已安装 · ${updates.length} 个可更新` : "已安装";
+    const updates = availableUpdates(plugins);
+    $("installed-tab").textContent = updates.length ? `已安装 · ${updates.length} 个有更新` : "已安装";
     host.setUpdates?.(updates, openDetail);
   }
   function actionButton(p) {
@@ -52,13 +52,14 @@ export function createPluginMarketplace({ document, host, notify, showError = ({
     const task = tasks.get(p.id);
     if (task?.state === "running") return " · 正在安装";
     if (task?.state === "failed") return task.installed ? " · 待刷新" : " · 安装失败";
-    if (updating(p)) return " · 可更新";
+    if (updating(p)) return " · 有更新";
     return p.installed ? " · 已安装" : "";
   }
   function versionHint(p) {
-    const next = recommended(p);
+    const next = latestVersion(p);
     if (!next) return p.compatibilityReason || "暂无兼容版本";
     if (updating(p)) return `${p.installed} → ${next.number}`;
+    if (next.compatible === false) return next.reason;
     if (p.versions[0] !== next) return `兼容版本 ${next.number}`;
     return `v${next.number}`;
   }
@@ -95,7 +96,7 @@ export function createPluginMarketplace({ document, host, notify, showError = ({
     $("notice").innerHTML = cached ? '<span>暂未获取最新目录，当前显示本地缓存</span><button class="plain" data-catalog-error>查看错误详情</button><button class="plain" data-reconnect>重试</button>' : "";
     $("catalog-state").textContent = ["ready", "cached"].includes(catalogState) ? `${refreshing ? "正在检查更新" : catalogState === "cached" ? "本地目录" : "目录已更新"}${updatedAt ? " · " + updatedAt : ""}` : "";
     const query = $("search").value.trim().toLocaleLowerCase();
-    let matches = plugins.filter(p => (!$("compatible").checked || recommended(p))
+    let matches = plugins.filter(p => (!$("compatible").checked || recommended(p) || updating(p))
       && (!$("hide-installed").checked || !p.installed || updating(p))
       && (category === "全部" || category === p.category)
       && (!query || [p.id, p.name, p.author, p.description].join(" ").toLocaleLowerCase().includes(query)));
@@ -134,7 +135,7 @@ export function createPluginMarketplace({ document, host, notify, showError = ({
   function renderDetail() {
     const p = plugins.find(p => p.id === selected);
     if (!p) { $("detail-dialog").close(); return; }
-    const next = recommended(p), task = tasks.get(p.id);
+    const next = latestVersion(p), task = tasks.get(p.id);
     const doc = documents.get(documentKey(p));
     const projectUrl = documentationUrl(p.repository);
     const links = source?.openUrl ? `${projectUrl ? `<a href="${escape(projectUrl)}" data-document-link>${icon("globe")}项目主页</a>` : ""}${doc?.url ? `<a href="${escape(doc.url)}" data-document-link>${icon("file-text")}查看原文</a>` : ""}` : "";

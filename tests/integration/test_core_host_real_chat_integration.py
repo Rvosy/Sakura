@@ -1708,7 +1708,7 @@ def test_real_core_local_provider_completed_projection_and_history(tmp_path: Pat
                 },
             ],
             "beforeCursor": None,
-            "hasMore": False,
+            "afterCursor": None,
         }
         expected_page["entries"].sort(key=lambda entry: datetime.fromisoformat(entry["createdAt"]))
         assert history_page["payload"] == expected_page

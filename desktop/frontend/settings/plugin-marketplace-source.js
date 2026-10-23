@@ -33,6 +33,16 @@ export function catalogPlugins(catalog, context) {
       if (!manifest) reason = "该版本已撤回";
       else if (manifest.api !== context.api) reason = "插件 API 版本不匹配";
       else if (missing.length) reason = `需要先启用：${missing.join("、")}`;
+      if (manifest && !reason && Object.hasOwn(manifest, "min_app_version")) {
+        if (!versionParts(manifest.min_app_version)) {
+          reason = "插件最低主程序版本格式无效"; reasonCode = "PLUGIN_MANIFEST_INVALID";
+        } else if (!versionParts(context.appVersion)) {
+          reason = "无法读取 Sakura 主程序版本"; reasonCode = "APP_VERSION_UNAVAILABLE";
+        } else if (compareVersions(context.appVersion, manifest.min_app_version) < 0) {
+          reason = `需要 Sakura ${manifest.min_app_version} 或更高版本（当前 ${context.appVersion}）`;
+          reasonCode = "APP_VERSION_UNSUPPORTED";
+        }
+      }
       const compatible = Boolean(manifest && !reason);
       const bytes = release.package?.size;
       const unit = bytes >= 1024 * 1024 ? [1024 * 1024, "MB"] : bytes >= 1024 ? [1024, "KB"] : [1, "B"];
@@ -46,15 +56,16 @@ export function catalogPlugins(catalog, context) {
       const left = versionParts(a.number), right = versionParts(b.number);
       return left && right ? compareVersions(b.number, a.number) : left ? -1 : right ? 1 : 0;
     });
-    const next = versions.find(v => !v.yanked && !v.prerelease && v.compatible && v.package);
-    const display = next || versions.find(v => v.manifest);
+    const latest = versions.find(v => !v.yanked && !v.prerelease && v.package);
+    const next = latest?.compatible ? latest : undefined;
+    const display = latest || versions.find(v => v.manifest);
     const manifest = display?.manifest || {};
     const presentation = manifest.presentation || {};
     return { id: plugin.id, name: manifest.name || plugin.id, author: manifest.author || "",
       description: manifest.description || "", repository: plugin.repository,
       category: ({ tool: "工具", tools: "工具", voice: "语音", memory: "记忆", connection: "连接", connectivity: "连接", model: "表现", visual: "表现" })[presentation.category] || "工具",
       kind: ({ provider: "服务", tool: "工具", extension: "扩展" })[presentation.kind] || "插件",
-      icon: presentation.icon || "puzzle", versions, recommendedVersion: next?.number,
+      icon: presentation.icon || "puzzle", versions, latestVersion: latest?.number, recommendedVersion: next?.number,
       compatibilityReason: next ? "" : display?.reason || "暂无可安装版本" };
   });
 }

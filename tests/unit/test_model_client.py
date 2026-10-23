@@ -8,6 +8,7 @@ from sakura_cancellation import OperationCancelled
 
 
 REF = {"serviceKey": "fixture.model", "profileId": "p", "modelId": "m"}
+NO_HOOKS = SimpleNamespace(run=lambda _name, data, _metadata: data)
 
 
 class Service:
@@ -25,7 +26,7 @@ class Service:
 
 
 def client(service, **kwargs):
-    context = SimpleNamespace(bind=lambda _key: service, get=lambda _key: None)
+    context = SimpleNamespace(bind=lambda _key: service, get=lambda key: NO_HOOKS if key == "sakura.host.hooks" else None)
     return ModelClient(context, REF, **kwargs)
 
 
@@ -136,7 +137,8 @@ def test_request_artifact_cleanup_matches_ownership_and_shares_the_rpc_budget(tm
         now[0] += .2
         return {}
     service = Service(action)
-    value = ModelClient(SimpleNamespace(bind=lambda _key: service, get=lambda _key: Artifacts()), REF)
+    value = ModelClient(SimpleNamespace(bind=lambda _key: service,
+                        get=lambda key: NO_HOOKS if key == "sakura.host.hooks" else Artifacts()), REF)
     with pytest.raises(TimeoutError):
         value.complete({"messages": [{"role": "user", "content": "x" * 40000}]})
     assert [method for method, _timeout in cleanup] == expected
@@ -193,7 +195,8 @@ def test_close_reclaims_artifact_cleanup_skipped_by_an_unknown_release(tmp_path,
             raise TimeoutError("release ack lost")
         return {"released": False}
     service = Service(action)
-    value = ModelClient(SimpleNamespace(bind=lambda _key: service, get=lambda _key: Artifacts()), REF)
+    value = ModelClient(SimpleNamespace(bind=lambda _key: service,
+                        get=lambda key: NO_HOOKS if key == "sakura.host.hooks" else Artifacts()), REF)
     with pytest.raises(TimeoutError, match="begin ack lost"):
         value.complete({"messages": [{"role": "user", "content": "x" * 40000}]})
     assert released == []
@@ -218,16 +221,41 @@ def test_result_decoder_rejects_other_deliveries_without_reading_or_releasing(tm
     assert released == []
 
 
-@pytest.mark.parametrize("payload,media_type,byte_length", [(b"{", "application/json", 1), (b"{}", "text/plain", 2), (b"{}", "application/json", 3)])
-def test_result_decoder_releases_its_delivery_when_result_is_invalid(tmp_path, payload, media_type, byte_length):
+@pytest.mark.parametrize("payload,error", [(b'{"message":{"content":"OK"}}', None), (b"{", ValueError), (b"\xff", ValueError)])
+def test_result_or_json_error_survives_cleanup_failure_and_close_reclaims_file(tmp_path, payload, error):
     path = tmp_path / "response.json"
     path.write_bytes(payload)
-    released = []
+    operation = []
+    releases = []
+    def release_received(*args, **kwargs):
+        raise TimeoutError("receiver cleanup unavailable")
     artifacts = SimpleNamespace(resolve=lambda _identity: {
-        "delivery": {"senderId": "provider", "senderScope": "scope", "operationId": "operation"},
-        "path": str(path), "mediaType": media_type, "byteLength": byte_length},
-        release_received=lambda identity, *, timeout_seconds: released.append(identity))
-    with pytest.raises(ModelError) as caught:
-        module.decode_model_result({"responseArtifact": {"artifactId": "response"}}, artifacts, Service.identity, "operation")
-    assert caught.value.code == "MODEL_RESULT_INVALID"
-    assert released == ["response"]
+        "delivery": {"senderId": "provider", "senderScope": "scope", "operationId": operation[0]},
+        "path": str(path)},
+        release_received=release_received)
+    def action(method, args):
+        if method == "begin":
+            operation.append(args[0]["operationId"])
+            return {"operationId": operation[0]}
+        if method == "poll":
+            return {"state": "completed", "sequence": 0}
+        if method == "result":
+            return {"responseArtifact": {"artifactId": "response"}}
+        if method == "release":
+            releases.append(args[0])
+            if len(releases) == 1:
+                raise TimeoutError("provider cleanup unavailable")
+            path.unlink()
+            return {"released": True}
+    value = ModelClient(SimpleNamespace(bind=lambda _: Service(action),
+        get=lambda key: NO_HOOKS if key == "sakura.host.hooks" else artifacts), REF)
+    try:
+        if error:
+            with pytest.raises(error):
+                value.complete({"messages": []})
+        else:
+            assert value.complete({"messages": []})["message"]["content"] == "OK"
+        assert path.exists()
+    finally:
+        value.close()
+    assert not path.exists()

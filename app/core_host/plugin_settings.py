@@ -14,6 +14,7 @@ from typing import Any
 from app.core_host.protocol import response
 from app.core.diagnostics import exception_diagnostics
 from app.core.runtime_log import log_event
+from app.plugins.app_compatibility import app_version_reason, compatibility_message
 from app.plugins import update_transaction
 from app.plugins.inventory import INSTALL_ID_PATTERN, PluginDesiredStateStore, PluginInventory
 from app.plugins.installer import LocalPluginInstaller, PluginInstallError
@@ -30,6 +31,7 @@ PLUGIN_SETTINGS_REQUEST_NAMES = frozenset(
         "plugins.settings.action",
         "plugins.install",
         "plugins.marketplace.context",
+        "plugins.marketplace.check",
         "plugins.marketplace.install",
         "plugins.uninstall",
         "plugins.collection.query",
@@ -130,6 +132,11 @@ class PluginSettingsBoundary:
                 if payload or application is None:
                     raise PluginSettingsError("PLUGIN_SETTINGS_NOT_READY", "插件服务尚未就绪。")
                 result = application.marketplace_context()
+            elif name == "plugins.marketplace.check":
+                reason = app_version_reason(payload, self._roots.distribution_root)
+                if reason != "READY":
+                    raise PluginSettingsError(reason, compatibility_message(reason))
+                result = {}
             elif name == "plugins.marketplace.install":
                 if set(payload) != {"sourcePath", "pluginId", "version"}:
                     raise PluginSettingsError("INVALID_REQUEST", "市场安装请求格式无效。")
@@ -341,7 +348,7 @@ class PluginSettingsBoundary:
             raise
         except Exception as error:
             code = getattr(error, "code", "PLUGIN_INSTALL_FAILED")
-            message = "当前互动尚未结束，请结束后重试更新。" if code == "RUNTIME_UPDATE_BUSY" else "插件安装失败。"
+            message = "当前互动尚未结束，请结束后重试更新。" if code == "RUNTIME_UPDATE_BUSY" else compatibility_message(code)
             raise PluginSettingsError(code, message, retryable=code == "RUNTIME_UPDATE_BUSY") from error
 
     def _installed_record(self, application, plugin_id):

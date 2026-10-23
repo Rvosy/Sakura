@@ -52,13 +52,13 @@ def test_history_roundtrip_merge_and_text(tmp_path):
     assert importer._transfer({**request, "action": "import"})["added"] == 2
     assert importer._transfer({**request, "action": "import"})["identical"] == 2
     assert timeline_record(target.get_entry("sakura", "reply")) == timeline_record(source.get_entry("sakura", "reply"))
-    page, cursor, more, total = target.read_page_before("sakura", 1)
+    page, cursor, _after, total = target.read_history_page("sakura", 1)
     assert [item.entry_id for item in page] == ["recent"]
-    page, cursor, more, total = target.read_page_before("sakura", 1, before_cursor=cursor)
+    page, cursor, _after, total = target.read_history_page("sakura", 1, before_cursor=cursor)
     assert [item.entry_id for item in page] == ["reply"]
-    page, _, more, total = target.read_page_before("sakura", 1, before_cursor=cursor)
+    page, cursor, _after, total = target.read_history_page("sakura", 1, before_cursor=cursor)
     assert [item.entry_id for item in page] == ["old"]
-    assert not more and total == 3
+    assert cursor is None and total == 3
     page = target.read_turn_page("sakura", category="conversation", limit=1,
         observation_since=datetime.now(timezone.utc), proactive_since=datetime.now(timezone.utc))
     assert page.turns[0][0].entry_id == "recent"

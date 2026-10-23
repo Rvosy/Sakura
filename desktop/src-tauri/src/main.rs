@@ -7878,6 +7878,7 @@ fn main() {
             chat_settings::current_subtitle_language,
             history_window::history_bootstrap,
             history_window::history_page,
+            history_window::history_dates,
             history_window::history_transfer,
             data_transfer::data_transfer_choose,
             history_window::history_open_record,

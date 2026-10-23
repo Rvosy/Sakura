@@ -44,6 +44,10 @@ export function enhanceSelect(select) {
     label.textContent = select.selectedOptions[0]?.textContent || "";
     trigger.dataset.tooltip = select.dataset.tooltip || "";
     trigger.disabled = select.disabled;
+    for (const attribute of ["aria-describedby", "aria-invalid"]) {
+      if (select.hasAttribute(attribute)) trigger.setAttribute(attribute, select.getAttribute(attribute));
+      else trigger.removeAttribute(attribute);
+    }
     if (select.disabled) close();
   }
   function close() {

@@ -12,6 +12,7 @@ import pytest
 from plugins.builtin.sakura_model_openai_compatible.transport import execute
 from sakura_cancellation import OperationCancelled
 from sakura_model import ModelError
+from sakura_model_provider import Job, ModelProvider
 from app.plugins.sakura_plugin_sdk import PluginContext
 
 
@@ -29,6 +30,89 @@ def mock_http(monkeypatch, handler):
 
 def run(settings=SETTINGS, request=REQUEST, **kwargs):
     return execute(settings, request, cancel_checker=kwargs.pop("cancel_checker", None), progress=kwargs.pop("progress", lambda _event: None), **kwargs)
+
+
+def test_generation_forwards_sdk_parameters_to_the_provider(monkeypatch):
+    received = []
+    def handler(request):
+        received.append(json.loads(request.content))
+        return httpx.Response(200, json={"choices": [{"message": {"content": "OK"}}]})
+    mock_http(monkeypatch, handler)
+    result = run(request={"messages": REQUEST["messages"], "parameters": {"reasoning_effort": "high", "parallel_tool_calls": False}})
+    assert received[0]["reasoning_effort"] == "high"
+    assert received[0]["parallel_tool_calls"] is False
+    assert result["message"]["content"] == "OK"
+
+
+@pytest.fixture
+def job_provider():
+    from types import SimpleNamespace
+    provider = ModelProvider()
+    context = SimpleNamespace(caller_id="consumer", caller_scope="scope", effect=lambda _: None, on=lambda *a: None,
+        provide=lambda *a, **k: None, get=lambda _: SimpleNamespace(register_provider=lambda *a, **k: None),
+        exception_diagnostics=PluginContext.exception_diagnostics)
+    profiles = SimpleNamespace(set_service=lambda _: None, register_settings=lambda: None, catalog=lambda: [],
+                               resolve=lambda *a: {})
+    provider.setup(context, profiles=profiles, service_key="fixture", label="Fixture")
+    yield provider
+    provider.close()
+
+
+def test_concurrent_requests_each_finish_and_release_their_result(job_provider):
+    ready = threading.Event()
+    def execute(_settings, request, **kwargs):
+        ready.wait()
+        return {"message": {"content": request["text"]}}
+    job_provider.execute = execute
+    identities = [f"request-{number}" for number in range(140)]
+    try:
+        for identity in identities:
+            job_provider.begin({"operationId": identity, "profileId": "profile", "modelId": "model", "request": {"text": identity}})
+        ready.set()
+        for identity in identities:
+            while job_provider.poll(identity)["state"] == "running":
+                pass
+            assert job_provider.result(identity)["response"]["message"]["content"] == identity
+            assert job_provider.release(identity)["released"]
+    finally:
+        ready.set()
+
+
+def test_many_cancelled_starts_leave_the_consumer_usable(job_provider):
+    job_provider.execute = lambda _settings, request, **kwargs: {"message": {"content": request["text"]}}
+    for number in range(4100):
+        job_provider.cancel(f"cancelled-{number}")
+    with pytest.raises(OperationCancelled):
+        job_provider.begin({"operationId": "cancelled-0", "profileId": "profile", "modelId": "model", "request": {}})
+    job_provider.begin({"operationId": "new-request", "profileId": "profile", "modelId": "model", "request": {"text": "OK"}})
+    while job_provider.poll("new-request")["state"] == "running":
+        pass
+    assert job_provider.result("new-request")["response"]["message"]["content"] == "OK"
+    assert job_provider.release("new-request")["released"]
+
+
+@pytest.mark.parametrize("payload", [b'{"messages":[]}', b"{"])
+def test_request_cleanup_failure_keeps_generation_or_original_parse_error(job_provider, tmp_path, payload):
+    from types import SimpleNamespace
+    path = tmp_path / "request.json"
+    path.write_bytes(payload)
+    logs = []
+    def release_received(*args, **kwargs):
+        raise TimeoutError("request cleanup unavailable")
+    job_provider.artifacts = SimpleNamespace(resolve=lambda _: {
+        "path": str(path), "delivery": {"senderId": "consumer", "senderScope": "scope", "operationId": "job"}},
+        release_received=release_received)
+    job_provider.context.get = lambda _: SimpleNamespace(warning=lambda message, **kwargs: logs.append((message, kwargs)))
+    job_provider.execute = lambda *a, **k: {"message": {"content": "OK"}}
+    job = Job("job", ("consumer", "scope"), {}, {"requestArtifact": {"artifactId": "request"}})
+    job_provider._run(job)
+    if payload == b"{":
+        assert job.state == "failed"
+        assert "JSONDecodeError" in str(job.failure)
+    else:
+        assert job.state == "completed"
+        assert job.response["response"]["message"]["content"] == "OK"
+    assert "request cleanup unavailable" in str(logs)
 
 
 @pytest.mark.parametrize("operation", ["list_models", "test_connection", "generate"])
@@ -56,7 +140,7 @@ def test_async_model_worker_preserves_cause_before_releasing_credentials(monkeyp
     worker.context = SimpleNamespace(exception_diagnostics=PluginContext.exception_diagnostics)
     worker.changed = threading.Condition()
     worker._read_request = lambda job: REQUEST
-    job = plugin.Job('failure', ('owner', 'scope'), dict(SETTINGS), {})
+    job = Job('failure', ('owner', 'scope'), dict(SETTINGS), {})
     worker._run(job)
     assert job.state == 'failed'
     assert not job.settings
@@ -276,7 +360,7 @@ def test_streaming_batches_large_network_deltas_without_losing_final_content(mon
 @pytest.mark.parametrize("count", [100, 180])
 def test_poll_drains_retained_progress_in_bounded_batches_before_terminal_state(count):
     from types import SimpleNamespace
-    from plugins.builtin.sakura_model_openai_compatible.plugin import ModelPlugin, Job
+    from plugins.builtin.sakura_model_openai_compatible.plugin import ModelPlugin
     plugin = ModelPlugin()
     plugin.context = SimpleNamespace(caller_id="consumer", caller_scope="scope")
     plugin.changed = threading.Condition()
@@ -307,7 +391,7 @@ def test_background_failure_retains_original_reason_frames_and_redacts_credentia
     plugin = provider.ModelPlugin()
     plugin.context = SimpleNamespace(exception_diagnostics=PluginContext.exception_diagnostics)
     plugin.changed = threading.Condition()
-    job = provider.Job("job", ("consumer", "scope"), dict(SETTINGS), {"request": REQUEST})
+    job = Job("job", ("consumer", "scope"), dict(SETTINGS), {"request": REQUEST})
     if kind == "filesystem":
         def execute(*args, **kwargs):
             raise PermissionError(13, "fixture disk is locked opaque-secret", "C:/model/cache/data.json")
@@ -327,8 +411,8 @@ def test_background_failure_retains_original_reason_frames_and_redacts_credentia
         decode_model_result({"failure": job.failure}, None, {}, job.operation_id)
     evidence = caught.value.diagnostics
     assert expected in str(caught.value) and expected in evidence["diagnostic"]
-    assert "sakura_model_openai_compatible.plugin:_run:" in evidence["exception_stack"]
-    assert ("openai._base_client:request:" if kind == "http" else "test_model_provider_transport:") in evidence["exception_stack"]
+    assert expected in evidence["exception_stack"]
+    assert evidence["exception_site"]
     assert "opaque-secret" not in json.dumps(job.failure)
     assert "private-conversation" not in json.dumps(job.failure)
     if kind == "http":

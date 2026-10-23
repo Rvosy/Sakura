@@ -26,6 +26,7 @@ from app.plugins.host_services import (
     HOST_CHARACTER_SERVICE,
     HOST_COMPOSER_TOOLS_V0_SERVICE,
     HOST_CONTEXT_SERVICE,
+    HOST_HOOKS_SERVICE,
     HOST_DIAGNOSTICS_SERVICE,
     HOST_LOGGING_SERVICE,
     HOST_MODEL_SLOTS_SERVICE,
@@ -58,6 +59,7 @@ _HOST_EXPORTS = {
     HOST_CHARACTER_SERVICE: ("current", "list", "presentation", "get", "update", "resolve_resource", "declare_resources"),
     HOST_TOOLS_SERVICE: ("register", "unregister", "catalog", "execute"),
     HOST_CONTEXT_SERVICE: ("register", "unregister", "describe", "catalog", "collect"),
+    HOST_HOOKS_SERVICE: ("register", "unregister", "describe", "catalog", "run"),
     HOST_MODEL_SLOTS_SERVICE: ("register", "unregister", "catalog", "resolve", "active", "register_provider", "unregister_provider"),
     HOST_STORAGE_SERVICE: ("resolve",),
     HOST_SETTINGS_SERVICE: ("register", "unregister"),
@@ -476,6 +478,9 @@ class PluginRuntimeApplication:
         with self._assistant_input_lock:
             self._assistant_inputs[descriptor["artifactId"]] = (dict(identity), grant["historyToken"])
         return descriptor
+
+    def run_hook(self, name, data, metadata=None, *, cancel_checker=None):
+        return self._host_services.hooks.run(name, data, metadata, cancel_checker=cancel_checker)
 
     def read_assistant_result(self, descriptor):
         import json

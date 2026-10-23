@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import threading
 import time
+import asyncio
 from collections.abc import Callable
 
 
@@ -39,6 +40,21 @@ class CancellationToken:
 def check_cancelled(cancel_checker: CancelChecker | None) -> None:
     if cancel_checker is not None:
         cancel_checker()
+
+
+async def await_cancellable(awaitable, cancel_checker: CancelChecker | None):
+    """等待网络操作时响应取消，并等待底层任务关闭连接。"""
+    task = asyncio.ensure_future(awaitable)
+    try:
+        while not task.done():
+            await asyncio.wait({task}, timeout=.05)
+            check_cancelled(cancel_checker)
+        check_cancelled(cancel_checker)
+        return await task
+    finally:
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
 
 
 def cancellable_sleep(seconds: float, cancel_checker: CancelChecker | None) -> None:

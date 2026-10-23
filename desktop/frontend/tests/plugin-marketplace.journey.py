@@ -209,7 +209,7 @@ def run():
             dialog.locator('[data-retry]').click()
             expect(reinstall).to_be_enabled()
 
-            # Legacy minimum-version declarations do not prevent installation.
+            # 最低版本不足时仍显示更新，但不能下载。
             page.evaluate("""async () => {
               fixture.savedPlugins = fixture.plugins; fixture.savedLocal = fixture.local;
               fixture.savedInstall = fixture.source.install;
@@ -219,18 +219,27 @@ def run():
               fixture.versionCatalog = {schema_version:1,plugins:[{id:'sakura.visual.spine',
                 versions:[release('0.2.7','9.0.0')]}]};
               fixture.plugins = catalogPlugins(fixture.versionCatalog,{api:4,services:[],appVersion:'1.0.0'});
-              fixture.local = [];
+              fixture.local = [{pluginId:'sakura.visual.spine',version:'0.2.6',source:'user'}];
               fixture.source.install = async plugin => {fixture.compatibleInstalledVersion=plugin.recommendedVersion;};
               await fixture.market.refresh();
             }""")
-            expect(dialog.locator('[data-install]')).to_be_enabled()
-            expect(dialog.locator('.detail-status')).to_have_text('v0.2.7')
+            expect(dialog.locator('[data-install]')).to_be_disabled()
+            expect(dialog.locator('[data-install]')).to_have_text('更新至 0.2.7')
+            expect(dialog.locator('.compat-note')).to_contain_text('需要 Sakura 9.0.0')
+            expect(page.locator('#installed-tab')).to_contain_text('1 个有更新')
+            expect(page.locator('.market-card')).to_contain_text('0.2.6 → 0.2.7')
             for width in [803, 360]:
                 page.set_viewport_size({"width": width, "height": 640})
                 assert dialog.evaluate('el => el.scrollWidth <= el.clientWidth')
+            assert page.evaluate("fixture.compatibleInstalledVersion === undefined")
+            page.evaluate("""async () => {
+              const {catalogPlugins} = await import('/desktop/frontend/settings/plugin-marketplace-source.js');
+              fixture.plugins = catalogPlugins(fixture.versionCatalog,{api:4,services:[],appVersion:'9.0.0'});
+              await fixture.market.refresh();
+            }""")
+            expect(dialog.locator('[data-install]')).to_be_enabled()
             dialog.locator('[data-install]').click()
             page.wait_for_function("fixture.compatibleInstalledVersion === '0.2.7'")
-            expect(dialog.locator('[data-manage]')).to_be_enabled()
             page.evaluate("""async () => {
               fixture.plugins=fixture.savedPlugins;fixture.local=fixture.savedLocal;
               fixture.source.install=fixture.savedInstall;await fixture.market.refresh();

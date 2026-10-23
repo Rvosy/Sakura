@@ -409,6 +409,15 @@ pub(crate) async fn settings_marketplace_install(
             &version,
         )?
     };
+    settings_response_payload(
+        dispatch_settings_request(
+            handle.clone(),
+            None,
+            "plugins.marketplace.check",
+            release["manifest"].clone(),
+        )
+        .await?,
+    )?;
     let sources = sources.load()?;
     let url = download_sources::https_url(release["package"]["url"].as_str().unwrap())?;
     let package_size = release["package"]["size"].as_u64().unwrap() as usize;

@@ -35,7 +35,7 @@ pub struct HistoryPage {
     pub total_count: u64,
     pub entries: Vec<HistoryEntry>,
     pub before_cursor: Option<String>,
-    pub has_more: bool,
+    pub after_cursor: Option<String>,
 }
 
 pub fn validate_history_window(window: &WebviewWindow) -> Result<(), String> {
@@ -103,20 +103,27 @@ pub(crate) struct HistoryPageRequest {
     core_generation_id: String,
     character_id: String,
     before_cursor: Option<String>,
+    after_cursor: Option<String>,
+    from_date: Option<String>,
+    from_entry_id: Option<String>,
+    query: Option<String>,
 }
 
 async fn request_history_page(
     handle: shell_lifecycle::ShellLifecycleHandle,
-    character_id: String,
-    before_cursor: Option<String>,
+    request: &HistoryPageRequest,
 ) -> Result<HistoryPage, String> {
     let response = dispatch_settings_request(
         handle,
         None,
         "ui.history.page",
         json!({
-            "expectedCharacterId": character_id,
-            "beforeCursor": before_cursor,
+            "expectedCharacterId": request.character_id,
+            "beforeCursor": request.before_cursor,
+            "afterCursor": request.after_cursor,
+            "fromDate": request.from_date,
+            "fromEntryId": request.from_entry_id,
+            "query": request.query,
             "limit": HISTORY_PAGE_LIMIT,
         }),
     )
@@ -165,12 +172,7 @@ pub(crate) async fn history_page(
     {
         return Err("HISTORY_IDENTITY_MISMATCH".to_string());
     }
-    let page = request_history_page(
-        settings_core_handle(&lifecycle)?,
-        request.character_id.clone(),
-        request.before_cursor,
-    )
-    .await?;
+    let page = request_history_page(settings_core_handle(&lifecycle)?, &request).await?;
     if page.core_generation_id != request.core_generation_id
         || page.character_id != request.character_id
     {
@@ -217,6 +219,23 @@ pub(crate) async fn history_open_record(
 pub(crate) fn close_history_window(window: WebviewWindow) -> Result<(), String> {
     validate_history_window(&window)?;
     window.destroy().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub(crate) async fn history_dates(
+    window: WebviewWindow,
+    payload: Value,
+    lifecycle: State<'_, ShellLifecycleState>,
+) -> Result<Value, String> {
+    validate_history_window(&window)?;
+    let response = dispatch_settings_request(
+        settings_core_handle(&lifecycle)?,
+        None,
+        "ui.history.dates",
+        payload,
+    )
+    .await?;
+    settings_response_payload(response)
 }
 
 #[tauri::command]
