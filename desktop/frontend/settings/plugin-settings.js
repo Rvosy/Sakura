@@ -650,7 +650,7 @@ export function createPluginSettingsFeature({
           live.dataset.tooltip = activity.label;
           live.setAttribute('aria-label', `运行状态：${activity.label}`);
           titleLine.append(title, live);
-          if (update) titleLine.append(pluginNode("span", "plugin-system-problems", "可更新"));
+          if (update) titleLine.append(pluginNode("span", "plugin-system-problems", "有更新"));
           main.append(titleLine);
           if (plugin.reason_code === 'PLUGIN_ID_CONFLICT') main.append(pluginNode('span', 'card-desc', `v${plugin.version} · ${plugin.directory_name}`));
           if (plugin.description) main.append(pluginNode('span', 'card-desc', plugin.description));

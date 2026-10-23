@@ -88,7 +88,9 @@ class Plugin:
 | `presentation` | 展示分类和图标，不影响运行与权限 |
 | `visuals`、`ttsResources`、`frontendModules` | 对应能力的静态声明 |
 
-`presentation.kind` 为 `extension/provider/infrastructure`，`category` 为 `model/voice/memory/visual/tools/connectivity/other`。`icon` 使用宿主已收录的 Lucide 名称，见 [`icons.js`](../../desktop/frontend/core/icons.js)。缺失或未知展示信息使用默认值，不影响加载。不要以主程序版本号限制安装；兼容性依据实际 API 和服务。
+`presentation.kind` 为 `extension/provider/infrastructure`，`category` 为 `model/voice/memory/visual/tools/connectivity/other`。`icon` 使用宿主已收录的 Lucide 名称，见 [`icons.js`](../../desktop/frontend/core/icons.js)。缺失或未知展示信息使用默认值，不影响加载。
+
+可选字段 `min_app_version` 声明最低 Sakura 版本，采用 SemVer（如 `1.3.6`）。未声明时不限制主程序版本。下载、安装和加载前都会检查；版本不足时仍显示更新，但禁用下载，不发送插件更新提醒。主程序更新提醒不受影响。API 和服务要求仍单独检查。
 
 依赖按 `requirements.lock`、`requirements.txt`、`pyproject.toml` 的顺序选择；后者可配 `uv.lock`。安装器用 uv 在插件独立暂存环境准备依赖，成功后发布。普通启动不联网安装，不把插件依赖装进主 Python。
 

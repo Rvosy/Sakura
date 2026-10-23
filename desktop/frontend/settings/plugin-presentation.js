@@ -93,6 +93,12 @@ function pluginStatus({ state = "", reasonCode = "", unavailable = [] } = {}) {
   if (reasonCode === "PLUGIN_APPLICATION_FAILED") {
     return result("启动失败", "请查看运行日志中的启动错误，处理后重新启动 Sakura。", reasonCode);
   }
+  if (reasonCode === "APP_VERSION_UNSUPPORTED") {
+    return result("需要升级 Sakura", "请升级 Sakura 主程序后启用插件。", reasonCode);
+  }
+  if (reasonCode === "APP_VERSION_UNAVAILABLE") {
+    return result("无法检查版本", "无法读取 Sakura 主程序版本，请检查安装。", reasonCode);
+  }
   if (reasonCode === "API_VERSION_UNSUPPORTED") {
     return result(
       "版本不兼容",

@@ -63,3 +63,19 @@ for (const failure of ["catalog", "publication"]) {
     assert.equal(errors.length, 1);
   });
 }
+
+test("incompatible plugin updates do not suppress the application check", async () => {
+  let checked = false;
+  await checkUpdates(async (name, args) => {
+    if (name === "startup_update_check") { checked = true; return { status: "pending", version: "1.4.0" }; }
+    if (name === "startup_plugin_catalog") {
+      const value = catalogResult();
+      value.context.appVersion = "1.3.6";
+      for (const plugin of value.catalog.plugins) plugin.versions[0].manifest.min_app_version = "1.4.0";
+      return value;
+    }
+    assert.deepEqual(args.plugins, []);
+    return { status: "pending", version: "1.4.0" };
+  }, error => assert.fail(error));
+  assert.equal(checked, true);
+});

@@ -6,8 +6,12 @@ export function recommended(plugin) {
     && !version.yanked && !version.prerelease && version.compatible !== false);
 }
 
+export function latestVersion(plugin) {
+  return plugin?.versions.find(version => version.number === (plugin.latestVersion || plugin.recommendedVersion));
+}
+
 export function hasUpdate(plugin) {
-  const version = recommended(plugin);
+  const version = latestVersion(plugin);
   if (!plugin?.installed || plugin.updateBlocked || !version) return false;
   try { return compareVersions(version.number, plugin.installed) > 0; }
   catch { return false; }
@@ -62,9 +66,13 @@ export function syncInstalledPlugins(plugins, installed) {
   return plugins;
 }
 
-export function updateCandidates(plugins) {
+export function availableUpdates(plugins) {
   return plugins.filter(hasUpdate).map(plugin => ({
     id: plugin.id, name: plugin.name, currentVersion: plugin.installed,
-    version: recommended(plugin).number,
+    version: latestVersion(plugin).number,
   }));
+}
+
+export function updateCandidates(plugins) {
+  return availableUpdates(plugins.filter(plugin => recommended(plugin)));
 }

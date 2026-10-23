@@ -18,6 +18,7 @@ from typing import BinaryIO, Iterator
 
 import yaml
 
+from app.plugins.app_compatibility import app_version_reason
 from app.plugins.discovery import (
     PluginDiscovery,
     plugin_spec_from_manifest,
@@ -463,6 +464,9 @@ class LocalPluginInstaller:
         if not isinstance(raw, dict):
             raise PluginInstallError("PLUGIN_MANIFEST_INVALID")
         self._validate_manifest_shape(raw)
+        reason = app_version_reason(raw, self._roots.distribution_root)
+        if reason != "READY":
+            raise PluginInstallError(reason)
         spec = plugin_spec_from_manifest(raw, plugin_root, source="user")
         if spec is None:
             raise PluginInstallError("PLUGIN_MANIFEST_INVALID")

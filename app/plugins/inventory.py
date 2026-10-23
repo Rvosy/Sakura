@@ -16,6 +16,7 @@ from typing import Any, Mapping, Sequence
 
 import yaml
 
+from app.plugins.app_compatibility import app_version_reason
 from app.plugins.models import PLUGIN_API_V4_VERSION, PluginSpec
 from app.core.diagnostics import exception_diagnostics, safe_diagnostic_text
 from app.config.plugin_requirements import tts_resource_types
@@ -401,6 +402,8 @@ class PluginInventory:
                 )
             services[key] = tuple(dict.fromkeys(value))
         reason = "READY" if api_version == PLUGIN_API_V4_VERSION else "API_VERSION_UNSUPPORTED"
+        if reason == "READY":
+            reason = app_version_reason(raw, self._roots.distribution_root)
         supported = reason == "READY"
         capability_issues: list[dict[str, str]] = []
         visuals = visual_capabilities_from_manifest(
