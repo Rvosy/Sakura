@@ -179,6 +179,7 @@ def run():
             expect(results.first.locator("mark")).to_have_css("background-color", new_selection_color)
             panel.locator('[data-entry-id="reply"]').click()
             expect(rows.first).to_have_attribute("data-entry-id", "reply")
+            expect(page.locator("#history-scroll")).to_have_attribute("aria-busy", "false")
             page.keyboard.press("Escape")
             expect(input).not_to_be_visible()
             assert rows.first.locator(".entry-bubble").evaluate("el => getComputedStyle(el, '::before').content") == "none"
