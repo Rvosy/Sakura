@@ -7,7 +7,7 @@ import re
 import threading
 from collections.abc import Iterator
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from types import SimpleNamespace
@@ -20,6 +20,7 @@ from app.config.character_loader import CharacterProfile
 from app.core_host.assistant_adapter import AssistantSession, BoundAssistant
 from app.plugin_sdk.sakura_assistant_contract import RuntimeLoopSettings
 from app.plugins.dependencies import PluginDependencyRoots
+from app.plugins.runtime_v4 import PluginRuntimeError
 import shutil
 from app.core_host.plugin_application import PluginApplicationHost
 from app.core_host.real_chat import RealChatBoundary
@@ -109,6 +110,83 @@ class Plugin:
     )
 
 
+def _write_hook_plugin(distribution: Path) -> None:
+    root = distribution / "plugins" / "builtin" / "fixture.hooks"
+    root.mkdir(parents=True)
+    (root / "plugin.yaml").write_text(
+        "api: 4\nid: fixture.hooks\nname: Hooks fixture\nentry: plugin:Plugin\n"
+        "provides: [fixture.hooks]\nrequires: [sakura.host.hooks, sakura.host.tools, sakura.host.artifacts]\n",
+        encoding="utf-8",
+    )
+    (root / "plugin.py").write_text('''
+import json
+
+class Plugin:
+    def setup(self, context):
+        self.context = context
+        self.hooks = context.get("sakura.host.hooks")
+        self.tools = context.get("sakura.host.tools")
+        self.executed = []
+        context.provide("fixture.hooks", self, exports=("enable", "large", "tool"))
+        self.tools.register({"name": "fixture_hook_echo", "description": "Echo text.",
+                             "parameters": {"type": "object", "properties": {"text": {"type": "string"}}}}, self.echo)
+
+    def enable(self):
+        for name in self.hooks.describe()["points"]:
+            self.hooks.register({"hook": name, "failurePolicy": "abort"}, self.handle)
+        self.hooks.register({"hook": "fixture.large", "failurePolicy": "abort"}, self.transform_large)
+
+    def transform_large(self, event):
+        if event["data"]["fail"]:
+            raise ValueError("large hook failure")
+        return {"patch": {"text": event["data"]["source"] + "完整", "language": "zh"},
+                "details": "filled optional text"}
+
+    def handle(self, event):
+        data = event["data"]
+        name = event["hook"]
+        if name == "chat.before_assistant":
+            if data["message"] == "hook stop":
+                return {"abort": True, "reason": "本轮已拦截。"}
+            return {"patch": {"message": data["message"] + " HOOK-INPUT"}}
+        if name == "model.before_request":
+            request = data["request"]
+            if any("model hook stop" in str(message.get("content")) for message in request["messages"]):
+                return {"abort": True, "reason": "模型请求已拦截。"}
+            request["messages"][0]["content"] += "\\nHOOK-PROMPT"
+            request.setdefault("parameters", {})["temperature"] = 0.17
+            return {"patch": {"request": request}}
+        if name == "model.after_response":
+            response = data["response"]
+            response["message"]["content"] = json.dumps({"segments": [{"ja": "模型后处理", "zh": "模型后处理译文"}]})
+            return {"patch": {"response": response}}
+        if name == "chat.before_commit":
+            for segment in data["segments"]:
+                segment["text"] += "（回复后处理）"
+            return {"patch": data}
+        if event["context"].get("toolName") == "fixture_hook_echo":
+            if name == "tool.before_execute":
+                if data["arguments"]["text"] == "block":
+                    return {"abort": True, "reason": "工具已拦截。"}
+                return {"patch": {"arguments": {"text": "patched:" + data["arguments"]["text"]}}}
+            if name == "tool.after_execute":
+                return {"patch": {"content": data["content"] + ":filtered"}}
+
+    def echo(self, arguments):
+        self.executed.append(arguments["text"])
+        return arguments["text"]
+
+    def tool(self, text):
+        tool = next(row for row in self.tools.catalog() if row["name"] == "fixture_hook_echo")
+        result = self.tools.execute(tool["registrationId"], tool["name"], {"text": text})
+        return {"result": result, "executed": self.executed}
+
+    def large(self, fail=False):
+        data = self.hooks.run("fixture.large", {"source": "大" * 400000, "text": None, "fail": fail})
+        return {"length": len(data["text"]), "suffix": data["text"][-2:], "language": data["language"]}
+''', encoding="utf-8")
+
+
 @dataclass
 class _ChatFixture:
     application: PluginApplicationHost
@@ -142,6 +220,8 @@ def chat(tmp_path: Path, request: pytest.FixtureRequest, monkeypatch, assistant_
     # Match desktop new-user initialization; this fixture has no legacy plugins.
     (user / "config").mkdir()
     _write_plugin(distribution)
+    if "hook_chat" in request.fixturenames:
+        _write_hook_plugin(distribution)
     shutil.copytree(Path(__file__).resolve().parents[2] / "plugins" / "builtin" / "sakura_assistant", distribution / "plugins" / "builtin" / "sakura_assistant", ignore=shutil.ignore_patterns("__pycache__"))
     shutil.copytree(Path(__file__).resolve().parents[2] / "plugins/builtin/sakura_model_openai_compatible", distribution / "plugins/builtin/sakura_model_openai_compatible", ignore=shutil.ignore_patterns("__pycache__"))
     shutil.copy2(Path(__file__).resolve().parents[2] / "VERSION", distribution / "VERSION")
@@ -218,7 +298,10 @@ def chat(tmp_path: Path, request: pytest.FixtureRequest, monkeypatch, assistant_
         application.bind_session(session)
         assert application.wait_until_bound(timeout=5)
         snapshot = application.public_snapshot()
-        assert {item["pluginId"]: item["state"] for item in snapshot["plugins"]} == {PLUGIN_ID: "active", "sakura.assistant.default": "active", "sakura.model.openai_compatible": "active"}, snapshot
+        expected_plugins = {PLUGIN_ID: "active", "sakura.assistant.default": "active", "sakura.model.openai_compatible": "active"}
+        if "hook_chat" in request.fixturenames:
+            expected_plugins["fixture.hooks"] = "active"
+        assert {item["pluginId"]: item["state"] for item in snapshot["plugins"]} == expected_plugins, snapshot
         inspection = application.call_service(SERVICE_KEY, "inspect")
         assert inspection["pid"] != os.getpid()
         assert inspection["capabilities"] == {
@@ -385,7 +468,7 @@ def test_plugin_context_and_proactive_history_survive_system_role_fallback(chat:
     chat.timeline.append_many([NewTimelineEntry(
         entry_id="proactive-entry", turn_id="proactive-turn", character_id="fixture",
         kind=TimelineKind.ASSISTANT, origin="proactive",
-        created_at=datetime.now().astimezone().isoformat(),
+        created_at=(datetime.now().astimezone() - timedelta(minutes=1)).isoformat(),
         payload={"segments": [{"text": previous, "translation": "", "tone": "", "portrait": "", "suppressTts": True}]},
     )])
 
@@ -470,3 +553,66 @@ def test_default_assistant_keeps_committed_model_settings_until_session_replacem
     assert [item["model"] for item in chat.requests] == ["fixture-model", "fixture-model"]
     log = (chat.session.character.package_dir / "data/logs/sakura-agent-trace.log").read_text(encoding="utf-8")
     assert re.findall(r"追踪编号\s*:\s*(\d+)", log) == ["1", "1", "2", "2"]
+
+
+@pytest.fixture
+def hook_chat(chat):
+    chat.application.call_service("fixture.hooks", "enable")
+    return chat
+
+
+def test_hooks_change_real_model_request_and_committed_reply_and_disable_cleanly(hook_chat):
+    chat = hook_chat
+    terminal = chat.send("hooks", "原始输入")
+    assert terminal["name"] == "chat.completed", terminal
+    request = chat.requests[-1]
+    assert request["temperature"] == 0.17
+    assert "HOOK-PROMPT" in request["messages"][0]["content"]
+    assert any("原始输入 HOOK-INPUT" in str(message["content"]) for message in request["messages"])
+    segments = terminal["payload"]["reply"]["segments"]
+    assert segments[0]["text"] == "模型后处理（回复后处理）"
+    entries = chat.timeline.read_all("fixture")
+    assert entries[0].payload["text"] == "原始输入"
+    assert entries[-1].payload["segments"] == segments
+
+    record = next(item for item in chat.application.public_snapshot()["plugins"] if item["pluginId"] == "fixture.hooks")
+    assert chat.application.set_enabled(record["installId"], False)["applicationState"] == "applied"
+    terminal = chat.send("without-hooks", "后续输入")
+    assert terminal["name"] == "chat.completed", terminal
+    assert all("HOOK-INPUT" not in str(message["content"]) and "HOOK-PROMPT" not in str(message["content"])
+               for message in chat.requests[-1]["messages"])
+    assert terminal["payload"]["reply"]["segments"][0]["text"] == "一緒に練習しましょう。"
+
+
+@pytest.mark.parametrize("message,reason", [("hook stop", "本轮已拦截。"), ("model hook stop", "模型请求已拦截。")])
+def test_hooks_abort_before_network_request_and_explain_why(hook_chat, message, reason):
+    terminal = hook_chat.send("blocked", message)
+    assert terminal["name"] == "chat.failed", terminal
+    assert terminal["payload"]["error"]["code"] == "HOOK_ABORTED"
+    assert terminal["payload"]["error"]["message"] == reason
+    assert hook_chat.requests == []
+    assert [entry.kind for entry in hook_chat.timeline.read_all("fixture")] == [TimelineKind.HUMAN]
+
+
+def test_hooks_transform_tool_arguments_and_results_and_prevent_blocked_effect(hook_chat):
+    call = lambda text: hook_chat.application.call_service("fixture.hooks", "tool", text)
+    completed = call("hello")
+    assert completed["result"]["success"]
+    assert completed["result"]["content"] == "patched:hello:filtered"
+    assert completed["executed"] == ["patched:hello"]
+    blocked = call("block")
+    assert not blocked["result"]["success"]
+    assert blocked["result"]["error"] == "工具已拦截。"
+    assert blocked["executed"] == ["patched:hello"]
+
+
+@pytest.mark.parametrize("fail", [False, True])
+def test_hooks_transfer_large_values_across_processes_and_release_artifacts(hook_chat, fail):
+    if fail:
+        with pytest.raises(PluginRuntimeError, match="large hook failure"):
+            hook_chat.application.call_service("fixture.hooks", "large", True)
+    else:
+        assert hook_chat.application.call_service("fixture.hooks", "large") == {
+            "length": 400002, "suffix": "完整", "language": "zh",
+        }
+    assert hook_chat.application._host_services.artifact_count == 0

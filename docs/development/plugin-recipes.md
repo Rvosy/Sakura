@@ -38,7 +38,7 @@ finally:
 
 ### 实现模型提供方
 
-提供方暴露独立服务，并用 `register_provider({serviceKey, label}, catalog=...)` 登记。目录返回 `{profileId, label, models: [{modelId, label}]}` 列表，只读取本地已保存配置；刷新远端模型由用户明确发起。
+提供方暴露独立服务，并用 `register_provider({serviceKey, label}, catalog=...)` 登记。目录返回 `{profileId, label, models: [{modelId, label}]}` 列表，只读取本地已保存配置。远端模型可由明确的获取操作刷新，也可作为账号登录流程的一部分自动同步。
 
 | 导出方法 | 输入与结果 |
 |---|---|
@@ -52,6 +52,10 @@ finally:
 | `release(operationId)` | 回收任务和交付资源 |
 
 failure 保留 `code/message/diagnostics`。同一操作的配置在开始时固定，修改连接只影响后续操作；多个消费者的任务互不干扰。HTTP 成功但响应体包含服务错误仍是失败。只有明确拒绝某个可选请求参数时才做对应兼容处理，不因普通故障自动重复请求。参考[远程模型插件](../../plugins/builtin/sakura_model_openai_compatible/plugin.py)。
+
+HTTP 提供方可继承 [`sakura_model_provider.ModelProvider`](../../app/plugin_sdk/sakura_model_provider.py)，在 `setup` 中传入 `profiles`、`service_key` 和 `label`，实现 `execute(settings, request, cancel_checker, progress, operation)`。`profiles` 提供目录、描述、请求配置快照和设置注册；任务、取消与 Artifact 交付由基类维护。使用不同凭据结构时实现 `diagnostic_secrets(settings)`，返回本次请求需要清洗的凭据。
+
+Responses 适配可复用 [`sakura_openai_responses`](../../app/plugin_sdk/sakura_openai_responses.py) 的 `build_request` 和异步 `complete`，后者使用插件传入的 HTTP 客户端与连接设置。认证、模型目录与订阅限制由供应商决定，见 [Codex 插件](../../plugins/optional/sakura_codex/README.md)。
 
 ## 实现 Assistant
 

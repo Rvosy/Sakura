@@ -24,8 +24,6 @@ class ModelError(RuntimeError):
 
 def decode_model_result(result, artifacts, provider_identity, operation_id):
     """Decode generation and probe results using the same delivery ownership rules."""
-    if not isinstance(result, Mapping) or len(result) != 1:
-        raise ModelError("MODEL_RESULT_INVALID")
     if "failure" in result:
         failure = result["failure"]
         if failure.get("code") == "OPERATION_CANCELLED":
@@ -43,19 +41,9 @@ def decode_model_result(result, artifacts, provider_identity, operation_id):
         }
         if artifact.get("delivery") != expected_delivery:
             raise ModelError("MODEL_ARTIFACT_OWNER_INVALID")
-        try:
-            data = Path(artifact["path"]).read_bytes()
-            if artifact["mediaType"] != "application/json" or len(data) != artifact["byteLength"]:
-                raise ModelError("MODEL_RESULT_INVALID")
-            try:
-                response = json.loads(data)
-            except (ValueError, UnicodeDecodeError) as error:
-                raise ModelError("MODEL_RESULT_INVALID") from error
-        finally:
-            artifacts.release_received(identity, timeout_seconds=2)
+        # 结果文件随任务 release 回收，解码只负责读取。
+        response = json.loads(Path(artifact["path"]).read_bytes())
     else:
-        raise ModelError("MODEL_RESULT_INVALID")
-    if not isinstance(response, Mapping):
         raise ModelError("MODEL_RESULT_INVALID")
     return response
 
@@ -64,13 +52,14 @@ class ModelClient:
     """Pins one provider instance; an uncertain begin acknowledgement is never replayed."""
 
     def __init__(self, context, reference, *, expected_identity=None):
-        if not isinstance(reference, Mapping) or set(reference) != {"serviceKey", "profileId", "modelId"} or not all(isinstance(v, str) and v for v in reference.values()):
+        if not reference or not all(reference.get(key) for key in ("serviceKey", "profileId", "modelId")):
             raise ModelError("MODEL_REFERENCE_INVALID", "请先配置模型服务。")
         self.reference = dict(reference)
         self._service = context.bind(reference["serviceKey"])
         if expected_identity is not None and self._service.identity != dict(expected_identity):
             raise ModelError("SERVICE_BINDING_EXPIRED", "模型服务已重新加载，请重新建立对话会话。")
         self._artifacts = context.get("sakura.host.artifacts")
+        self._hooks = context.get("sakura.host.hooks")
         self._lock = threading.Lock()
         self._closed = False
         self._operations = set()
@@ -95,6 +84,9 @@ class ModelClient:
                 if self._closed:
                     raise OperationCancelled()
         try:
+            check()
+            hook_context = {"operationId": operation_id, "model": dict(self.reference)}
+            request = self._hooks.run("model.before_request", {"request": request}, hook_context)["request"]
             check()
             descriptor = {"operationId": operation_id, "profileId": self.reference["profileId"], "modelId": self.reference["modelId"]}
             encoded = json.dumps(request, ensure_ascii=False).encode("utf-8")
@@ -129,6 +121,8 @@ class ModelClient:
                 raise OperationCancelled()
             result = self._service.invoke("result", operation_id)
             response = decode_model_result(result, self._artifacts, self.identity, operation_id)
+            check()
+            response = self._hooks.run("model.after_response", {"response": response}, hook_context)["response"]
             check()
             return response
         finally:

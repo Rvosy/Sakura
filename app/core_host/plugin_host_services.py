@@ -17,12 +17,14 @@ from app.plugin_sdk.sakura_tools import Tool
 from app.core.runtime_log import log_event, log_message
 from app.core.diagnostics import exception_diagnostics
 from . import settings_ui
+from .plugin_hooks import HookHostService
 from app.plugins.host_services import HOST_CALLER, HOST_CALLER_LOG_METADATA, HOST_CALLER_SCOPE, HOST_LOGGING_SERVICE
 from app.plugin_sdk.sakura_context import ContextFragment, ContextRequest
 from app.plugins.models import ContextProviderContribution
 
 
 HOST_CONTEXT_SERVICE = "sakura.host.context"
+HOST_HOOKS_SERVICE = "sakura.host.hooks"
 HOST_DIAGNOSTICS_SERVICE = "sakura.host.diagnostics"
 HOST_ARTIFACTS_SERVICE = "sakura.host.artifacts"
 HOST_CHARACTER_SERVICE = "sakura.host.character"
@@ -612,10 +614,12 @@ class _ToolsHostService:
         tool_registry: object,
         invoke_callback: Callable[..., Any],
         consume_result: Callable[..., object] | None = None,
+        hooks: HookHostService | None = None,
     ) -> None:
         self._tool_registry = tool_registry
         self._invoke_callback = invoke_callback
         self._consume_result = consume_result or (lambda value, **_kwargs: value)
+        self._hooks = hooks
         self._registrations: dict[str, _ToolRegistration] = {}
 
     def call(self, method: str, args: Sequence[Any]) -> object:
@@ -631,7 +635,23 @@ class _ToolsHostService:
             if tool is None or tool.registration_id != registration_id:
                 raise HostServiceError("TOOL_REGISTRATION_EXPIRED")
             # Execute the captured object; a concurrent same-name replacement cannot be substituted.
-            return self._tool_registry.execute(name, dict(arguments), expected=tool).to_dict()
+            metadata = {"toolName": name, "callerId": HOST_CALLER.get()}
+            if self._hooks is not None:
+                from app.plugin_sdk.sakura_hooks import HookError
+                try:
+                    arguments = self._hooks.run("tool.before_execute", {"arguments": dict(arguments)}, metadata)["arguments"]
+                except HookError as error:
+                    if error.code != "HOOK_ABORTED":
+                        raise
+                    return {"tool_name": name, "success": False, "content": "",
+                            "error": str(error), "reason_code": error.code}
+                if self._tool_registry.get(name) is not tool:
+                    raise HostServiceError("TOOL_REGISTRATION_EXPIRED")
+            result = self._tool_registry.execute(name, dict(arguments), expected=tool).to_dict()
+            if self._hooks is not None:
+                result["content"] = self._hooks.run("tool.after_execute", {"content": result["content"]},
+                    {**metadata, "success": result["success"], "error": result.get("error", "")})["content"]
+            return result
         if method == "register" and len(args) == 2:
             return self._register(args[0], args[1])
         if method == "unregister" and len(args) == 1:
@@ -1950,6 +1970,7 @@ class PluginHostServices:
         commit_plugin_scope: Callable[..., Any] | None = None,
     ) -> None:
         self._artifacts = _ArtifactsHostService(artifact_store, commit_plugin_scope)
+        self.hooks = HookHostService(invoke_callback, self._artifacts, commit_plugin_scope)
         self._diagnostics = _DiagnosticsHostService()
         self._character = _CharacterHostService(character_store)
         self._timeline = _TimelineHostService(timeline_store, current_character_id, artifact_store)
@@ -1957,6 +1978,7 @@ class PluginHostServices:
             tool_registry,
             invoke_callback,
             self._artifacts.consume_tool_result,
+            self.hooks,
         )
         self._context = _ContextHostService(
             invoke_callback,
@@ -1982,6 +2004,7 @@ class PluginHostServices:
             HOST_CHARACTER_SERVICE: self._character,
             HOST_TOOLS_SERVICE: self._tools,
             HOST_CONTEXT_SERVICE: self._context,
+            HOST_HOOKS_SERVICE: self.hooks,
             HOST_MODEL_SLOTS_SERVICE: self._model_slots,
             HOST_SETTINGS_SERVICE: self._settings,
             HOST_SETTINGS_SURFACE_V0_SERVICE: self._settings_surface_v0,
@@ -2130,6 +2153,7 @@ class PluginHostServices:
         return self._artifacts.count
 
     def clear(self) -> None:
+        self.hooks.clear()
         self._artifacts.clear()
         self._character.clear()
         self._tools.clear()

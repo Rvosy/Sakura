@@ -1,6 +1,6 @@
 # 编写插件
 
-Sakura 使用 Plugin API 4。插件通过公开 SDK 提供服务、工具、上下文和设置，不导入 `app.*` 或其他插件源码。插件是以当前用户权限运行的可信本地代码，可以访问文件和网络。
+Sakura 使用 Plugin API 4。插件通过公开 SDK 提供服务、工具、上下文、处理钩子和设置，不导入 `app.*` 或其他插件源码。插件是以当前用户权限运行的可信本地代码，可以访问文件和网络。
 
 本文说明通用接口；模型、Assistant、MCP、语音等见[能力接入](plugin-recipes.md)，渲染与编辑器见[角色与表现](characters.md)。公开模块位于 [`app/plugin_sdk/`](../../app/plugin_sdk/)。
 
@@ -206,7 +206,11 @@ settings.place("general", page_id=context.plugin_id + ":notes")
 
 record-table 的独立读取使用 inspectAction/requestField/resultField，提交 `{id,requestId}`，返回 `{id,requestId,state,title,rows:[{group?,label,value,secondary?}],message?}`。耗时读取返回 running 并声明 statusAction；关闭或对象更换后不回填旧结果。
 
-module 的 source 是包内 ES Module 源码，导出 `mount(context)`，不支持相对导入。返回 `{element,dispose,update?,validate?,cancel?,contributions?}`，可异步挂载。context 提供 `read/write/readSection/action`、`signal/isCurrent`、`document/window/section`、`invoke/listen`、`notify/onError`、`enhanceSelect/refreshSelect/closeSelects/createIcon`、`importModule` 和 `onCatalogChanged`。模型目录草稿通过 `contributions().modelCatalog` 返回。`standalone: true` 可独占页面区域。具体用法参考[模型连接编辑器](../../plugins/builtin/sakura_model_openai_compatible/frontend/connections.js)。
+module 的 source 是包内 ES Module 源码，导出 `mount(context)`，不支持相对导入。返回 `{element,dispose,update?,validate?,cancel?,contributions?,updateContributions?}`，可异步挂载。context 提供 `read/write/readSection/action`、`signal/isCurrent`、`document/window/section`、`invoke/listen`、`notify/onError`、`enhanceSelect/refreshSelect/closeSelects/createIcon`、`importModule`、`modelServices/modelServicePresets` 和 `onCatalogChanged`。模型目录通过 `contributions().modelCatalog` 返回。`standalone: true` 可独占页面区域。具体用法参考[模型连接编辑器](../../plugins/builtin/sakura_model_openai_compatible/frontend/connections.js)。
+
+账号类模型服务通过 `contributions().modelServicePresets` 提供添加入口 `{id,label,iconName?,add}`；`add({createdAt})` 每次保存一条新连接及其创建时间，返回新连接的服务项 ID。已添加的连接通过 `contributions().modelServices` 提供 `{id,label,iconName?,createdAt,description,configured,models,element,select?,cancel}`。`iconName` 使用宿主图标名，颜色跟随主题；`models` 为模型 ID 列表；`element` 为右侧管理面板，`select` 刷新选中连接，`cancel` 结束离开连接时的等待。工作台将这些连接与 API 连接按 `createdAt` 混合排列。
+
+只登记服务的模块使用隐藏的根 element，设置区块放在 `host:providers` 并声明 standalone。宿主汇总贡献，OpenAI 兼容模型插件的工作台通过 `context.modelServices()` 和 `context.modelServicePresets()` 读取；状态改变时调用 `onCatalogChanged()`，宿主通知其他模块的 `updateContributions()`。账号、模型同步和持久化仍由提供方负责。基础插件依赖见[模型服务规格](../specs/model-services.md#配置归属)，示例见 [OpenAI Official 账号面板](../../plugins/optional/sakura_codex/frontend/account.js)。
 
 前端模块沿用已安装插件的信任边界，关闭、重载或实例更换时中止 signal 并调用 dispose；迟到挂载也需回收。异步操作检查当前身份，不建立第二套草稿与保存机制。通用插件设置尚未开放任意原生窗口；输入栏工具贡献的公共 callable 注册封装仍未开放。
 
@@ -254,9 +258,51 @@ contexts.register(
 
 消费工具和上下文时，使用 `tools.catalog()/execute(registrationId,name,args)`、`contexts.catalog()/collect(registrationId,request)`。保留登记身份，失效后不按同名查找并重放。Context 不自动写历史。
 
+## 处理钩子（Hooks）
+
+插件可以在处理步骤中修改数据或中止当前操作。在 Manifest 的 `requires` 中声明 `sakura.host.hooks`，再登记普通函数：
+
+```python
+class Plugin:
+    def setup(self, context):
+        hooks = context.get("sakura.host.hooks")
+        hooks.register(
+            {"hook": "model.before_request", "order": 100, "failurePolicy": "skip"},
+            self.adjust_request,
+        )
+
+    def adjust_request(self, event):
+        request = event["data"]["request"]
+        request.setdefault("parameters", {})["temperature"] = 0.3
+        return {"patch": {"request": request}}
+```
+
+`register` 返回撤销函数，也会随插件退出自动撤销。`order` 越小越先执行，默认 100；相同顺序按登记先后执行。一次调用固定当时的处理器列表，后一个处理器读取前一个处理器修改后的数据。
+
+回调收到 `{hook, data, context}`。`data` 是当前步骤的数据副本；返回 `None` 表示保持原值，返回 `{"patch": {...}}` 更新或补充顶层字段，嵌套对象和列表整体替换。字段类型由使用数据的业务接口决定，钩子不按旧值类型限制修改；回调结果中未使用的字段会被忽略。直接改回调参数而不返回 patch 不会生效。`context` 用于读取操作来源和身份，修改它不会改变实际会话、模型绑定或工具目标。
+
+返回 `{"abort": true, "reason": "中止原因"}` 可停止当前步骤及后续处理器。聊天会展示原因，保留已经保存的用户输入；工具执行前中止会返回失败结果，实际工具不会执行。执行后的钩子只能处理结果，已经发生的模型请求、外部动作和费用不会撤销。
+
+`failurePolicy` 默认为 `skip`：回调抛错时记录原始原因，保留此前成功的修改并继续。需要拦截作为执行前提时设为 `abort`，回调故障会向调用方报告。显式返回 abort 始终生效，不受 failurePolicy 影响；运行时不自动重试钩子。
+
+| Hook | 业务读取的 data 字段 | 触发位置与 context |
+|---|---|---|
+| `chat.before_assistant` | `message` | 输入已写入历史、交给 Assistant 前；context 含 operationId、turnId、characterId、sourcePluginId |
+| `chat.before_commit` | `segments` | 回复保存及表现处理前；context 同上，段落字段使用 text、translation、tone、portrait、suppress_tts、control |
+| `model.before_request` | `request` | 公共 ModelClient 发请求前；context 含本次模型调用的 operationId、model 引用、callerId |
+| `model.after_response` | `response` | ModelClient 解码完整响应后；context 同上 |
+| `tool.before_execute` | `arguments` | 宿主执行工具前；context 含 toolName、callerId |
+| `tool.after_execute` | `content` | 工具执行结束后；context 另含实际 success、error，修改内容不会改写执行成败 |
+
+输入钩子只影响本轮交给 Assistant 的消息，历史保留用户原文。回复钩子的结果用于历史、字幕和语音；角色和表现目标仍由 Core 校验。直接绕过 ModelClient 调用模型提供方时，不触发模型钩子。模型请求和响应的字段见[能力接入](plugin-recipes.md#使用模型)。
+
+`describe()` 返回内置扩展点和失败策略，`catalog(hook=None)` 返回当前登记的处理器及插件来源。插件也能定义自己的扩展点：`hooks.run("example.plugin.before_save", {"text": text}, {"recordId": record_id})` 返回处理后的 data；名称使用本插件命名空间，调用方负责接续业务操作。
+
+钩子同步执行，应尽快返回；下载和长期任务使用服务任务接口。回调可以调用其他服务，但不要再次触发自身所在的钩子；确需使用模型时，根据 context.callerId 跳过自身请求。大段数据自动通过 Artifact 传递，插件不必自行拆分。停用、重载或撤销后，旧回调结果不会并入当前处理链；聊天取消后的修改不会提交。
+
 ## 事件、角色与历史
 
-事件是事实通知，可能丢失，重启不会补发。先订阅再读取当前状态，需要完整数据时保存 Timeline cursor 并补读。
+事件是事实通知，可能丢失，重启不会补发。先订阅再读取当前状态，需要完整数据时保存 Timeline cursor 并补读。需要在步骤完成前修改数据时，使用[处理钩子](#处理钩子hooks)。
 
 | 事件 | 内容或查询入口 |
 |---|---|
@@ -290,7 +336,7 @@ except Exception:
 
 path 是宿主明确签发的临时写入位置。commit 返回 artifactId/mediaType/byteLength；每插件最多持有 16 项，单项最多 64 MiB。工具图片以 `{content,artifact:descriptor}` 交付，成功后由接收者持有并释放。
 
-接收者用 resolve(artifact_id) 取得授权路径，读完调用 release_received。跨插件任务先 bind 接收服务，再 `deliver(artifact_id, provider.identity, operation_id)`；读取时核对宿主签发的 delivery.senderId/senderScope/operationId。发送方可 release_delivered 撤销未消费交付，双方 scope 退出都会回收任务文件。普通工具图片的所有权转交与任务交付不同，不能在交付后由生产者继续删除。
+接收者用 resolve(artifact_id) 取得授权路径，读完调用 release_received；模型任务的结果文件由提供方在 release 时统一回收。跨插件任务先 bind 接收服务，再 `deliver(artifact_id, provider.identity, operation_id)`；读取时核对宿主签发的 delivery.senderId/senderScope/operationId。发送方可 release_delivered 撤销未消费交付，双方 scope 退出都会回收任务文件。普通工具图片的所有权转交与任务交付不同，不能在交付后由生产者继续删除。
 
 ## 开发参考
 

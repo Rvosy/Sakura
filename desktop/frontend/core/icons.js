@@ -1,4 +1,4 @@
-// Keep this local catalogue aligned with assets/lucide and core/icons.css.
+// 图标名称与本地 SVG 资源、core/icons.css 保持一致。
 export const iconNames = Object.freeze([
   "refresh-cw",
   "arrow-right",
@@ -31,6 +31,7 @@ export const iconNames = Object.freeze([
   "mic",
   "monitor",
   "music",
+  "openai",
   "palette",
   "plus",
   "puzzle",

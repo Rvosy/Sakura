@@ -21,3 +21,5 @@ macOS / Linux 改用 `runtime/bin/python`。打开对应地址：
 | `/prototypes/studio-demo/` | 多形态编辑、保存与设置预览 |
 
 示例中的 Live2D、3D、插件条目和字段只用于展示。演示不定义公开接口，角色工坊和表现资源约定见[角色开发文档](../../../docs/development/characters.md)。浏览器预览不能验证原生窗口、点击穿透或系统材质。
+
+设置动效预览直接加载正式设置页和内置插件前端，需要从仓库根目录提供文件。在仓库根目录运行 `runtime\python.exe -m http.server 8771 --bind 127.0.0.1`，打开 `/desktop/frontend/prototypes/settings-motion/`。顶部可逐项定位动效，并切换原有动效和补充动效。模型连接使用模拟请求和等待、成功、失败图标。语音测试在用户点击后请求麦克风权限，将实际音量交给主窗口的波形绘制器；音频不保存、不上传，预览不运行语音识别。

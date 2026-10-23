@@ -14,7 +14,6 @@ from sakura_provider_errors import provider_failure
 
 
 SERVICE_KEY = "sakura.model.openai_compatible"
-_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 
 
 class ProfileError(ValueError):
@@ -23,9 +22,7 @@ class ProfileError(ValueError):
         self.code = code
 
 
-def _text(value, *, required=False, maximum=None):
-    if not isinstance(value, str) or "\x00" in value or (maximum is not None and len(value) > maximum):
-        raise ProfileError("FIELD_INVALID")
+def _text(value, *, required=False):
     value = value.strip()
     if required and not value:
         raise ProfileError("FIELD_REQUIRED")
@@ -61,22 +58,14 @@ def _models(raw):
     seen = set()
     for value in raw:
         item = dict(value) if isinstance(value, Mapping) else {"modelId": value}
-        model_id = _text(item.get("modelId", item.get("name", "")), maximum=256)
+        model_id = _text(item.get("modelId", item.get("name", "")))
         if not model_id:
             continue
         if model_id in seen:
             continue
         seen.add(model_id)
         item.pop("name", None)
-        item.update(modelId=model_id, label=_text(item.get("label", model_id), maximum=256))
-        window = item.get("contextWindowTokens")
-        if window is not None and (isinstance(window, bool) or not isinstance(window, int) or not 4096 <= window <= 2_000_000):
-            raise ProfileError("MODEL_CONTEXT_INVALID")
-        modalities = item.get("inputModalities")
-        if modalities is not None and (not isinstance(modalities, list) or any(value not in {"text", "image"} for value in modalities)):
-            raise ProfileError("MODEL_CAPABILITIES_INVALID")
-        if item.get("supportsTools") is not None and not isinstance(item["supportsTools"], bool):
-            raise ProfileError("MODEL_CAPABILITIES_INVALID")
+        item.update(modelId=model_id, label=_text(item.get("label", model_id)))
         result.append(item)
     return result
 
@@ -91,12 +80,11 @@ def _profiles(config):
         if not isinstance(value, Mapping):
             raise ProfileError("PROFILE_INVALID")
         item = dict(value)
-        identity = _text(item.get("profileId", ""), required=True, maximum=64)
-        if not _ID.fullmatch(identity) or identity in seen:
+        identity = _text(item.get("profileId", ""), required=True)
+        if identity in seen:
             raise ProfileError("PROFILE_ID_INVALID")
         seen.add(identity)
-        # Earlier handoffs copied empty aliases and duplicate model names. Keep
-        # these files readable; only an explicit save writes normalized values.
+        # 读取时兼容空名称和重复模型，保存时再写回整理后的值。
         label = item.get("label", identity)
         if label is None:
             label = ""
@@ -177,38 +165,29 @@ class ProviderProfiles:
                 result = decode_model_result(completed, self._context.get("sakura.host.artifacts"), bound.identity, operation_id)
                 if operation == "list_models":
                     result = {"models": _models(result["models"])}
-                    message = ""
-                else:
-                    message = str(values.get("modelId", ""))
-                state = {"state": "ready", "label": "已获取模型" if operation == "list_models" else "连接成功", "message": message}
             except Exception as error:
                 result = {}
                 code = getattr(error, "code", "MODEL_PROBE_FAILED")
                 failure_code = code if isinstance(code, str) and re.fullmatch(r"[A-Z_]{1,80}", code) else "MODEL_PROBE_FAILED"
                 diagnostics = provider_failure(failure_code, error, secrets=secrets)["diagnostics"]
                 failure_message = diagnostics["diagnostic"]
-                state = {"state": "error", "label": "模型测试失败", "message": failure_message}
             finally:
                 try:
                     bound.invoke("release", operation_id)
                 except Exception as error:
                     cleanup = provider_failure("MODEL_PROBE_CLEANUP_FAILED", error, secrets=secrets)["diagnostics"]
-                    if failure_code:
-                        diagnostics["recovery_diagnostic"] = cleanup.get("exception_stack", cleanup["diagnostic"])
-                    if not failure_code:
-                        failure_code = "MODEL_PROBE_CLEANUP_FAILED"
-                        diagnostics = cleanup
-                        failure_message = cleanup["diagnostic"]
-                        state = {"state": "error", "label": "模型测试失败", "message": failure_message}
+                    diagnostics["recovery_diagnostic"] = cleanup.get("exception_stack", cleanup["diagnostic"])
+                    self._context.get("sakura.host.logging").warning("模型测试任务回收失败", fields={
+                        "operation_id": operation_id, "profile_id": values.get("profileId", ""), **cleanup})
                 finally:
                     with self._lock:
                         self._probe = None
                         self._probe_result = {"requestId": values.get("requestId", ""),
-                                              "state": "completed" if state["state"] == "ready" else "failed",
+                                              "state": "failed" if failure_code else "completed",
                                               "code": failure_code,
                                               "message": failure_message,
                                               "diagnostics": diagnostics,
-                                              "models": result.get("models", []) if state["state"] == "ready" else []}
+                                              "models": result.get("models", [])}
 
         worker = threading.Thread(target=run, name="model-settings-probe", daemon=True)
         with self._lock:
@@ -253,7 +232,7 @@ class ProviderProfiles:
         credential = values.get("credential", {"action": "keep"})
         key = self._credential(saved.get("api_key", ""), credential)
         return {"base_url": _url(values.get("base_url", saved.get("base_url", ""))), "api_key": key,
-                "model": _text(values.get("modelId", values.get("model", "")), required=require_model, maximum=256),
+                "model": _text(values.get("modelId", values.get("model", "")), required=require_model),
                 "timeout_seconds": _timeout(values.get("timeout_seconds", saved.get("timeout_seconds", 60)))}
 
     @staticmethod
@@ -282,7 +261,7 @@ class ProviderProfiles:
         with self._lock:
             return {"connections": [{"id": p["profileId"], "alias": p["label"], "base_url": p["base_url"],
                      "api_key": "", "configured": bool(p["api_key"]), "credential_action": "keep",
-                     "models": [m["modelId"] for m in p["models"]], "timeout_seconds": p["timeout_seconds"]}
+                     "models": [m["modelId"] for m in p["models"]], "timeout_seconds": p["timeout_seconds"], "createdAt": p.get("createdAt", 0)}
                     for p in self._saved()], "probeRequest": {}, "probeResult": dict(self._probe_result)}
 
     def save_editor(self, values):
@@ -296,14 +275,15 @@ class ProviderProfiles:
             for value in raw:
                 if not isinstance(value, Mapping):
                     raise ProfileError("PROFILE_INVALID")
-                identity = _text(value.get("id", ""), required=True, maximum=64)
-                if not _ID.fullmatch(identity) or identity in identities:
+                identity = _text(value.get("id", ""), required=True)
+                if identity in identities:
                     raise ProfileError("PROFILE_ID_INVALID")
                 identities.add(identity)
                 old = previous.get(identity, {})
                 old_models = {m["modelId"]: m for m in old.get("models", [])}
                 models = [deepcopy(old_models.get(m["modelId"], m)) for m in _models(value.get("models", []))]
                 profiles.append(dict(old, profileId=identity,
+                    createdAt=old.get("createdAt", value.get("createdAt", 0)),
                     label=_text(value.get("alias", "")) or identity,
                     base_url=_url(value.get("base_url", "")), models=models,
                     timeout_seconds=_timeout(value.get("timeout_seconds", old.get("timeout_seconds", self.load_timeout()["timeout_seconds"]))),
