@@ -324,6 +324,7 @@ h1 {
   padding: 10px 13px;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+  -webkit-user-select: text;
   user-select: text;
 }
 
@@ -431,6 +432,7 @@ h1 {
   padding-top: 8px;
   white-space: pre-wrap;
   text-align: left;
+  -webkit-user-select: text;
   user-select: text;
 }
 
