@@ -44,10 +44,10 @@
   --ease: cubic-bezier(0.22, 0.61, 0.36, 1);
   --motion-fast: 0.12s;
   --motion-base: 0.18s;
+  --motion-page: 0.2s;
   --motion-medium: 0.26s;
   --motion-slow: 0.45s;
   --motion-theme: 0.82s;
-  --motion-stagger: 42ms;
 
   /*
    * 设置窗口允许缩小到 900px，默认宽度为 1200px。结构尺寸在 900–1040px
@@ -163,7 +163,6 @@ html.is-theme-view-transition::view-transition-new(root) {
   display: flex;
   align-items: center;
   padding: 4px 8px 10px;
-  border-bottom: 1px solid var(--hairline);
 }
 
 .about-mark img {
@@ -217,7 +216,7 @@ html.is-theme-view-transition::view-transition-new(root) {
   background-color: var(--sakura-primary);
 }
 
-/* 分区：用小标题 + 细分隔线把 11 个页面归成 角色 / 智能 / 行为 / 系统 四组 */
+/* 导航分组用小标题和留白区分。 */
 .nav-group {
   display: flex;
   flex-direction: column;
@@ -227,7 +226,6 @@ html.is-theme-view-transition::view-transition-new(root) {
 .nav-group + .nav-group {
   margin-top: 8px;
   padding-top: 8px;
-  border-top: 1px solid var(--hairline);
 }
 
 .nav-group-label {
@@ -294,7 +292,6 @@ html.is-theme-view-transition::view-transition-new(root) {
   background: var(--tint-soft);
   color: var(--sakura-primary);
   font-weight: var(--font-weight-semibold);
-  transform: translateX(1px);
 }
 
 .nav-item:disabled {
@@ -316,7 +313,7 @@ html.is-theme-view-transition::view-transition-new(root) {
   padding:
     clamp(16px, calc(3.143px + 1.429vw), 18px)
     var(--settings-content-gutter)
-    clamp(12px, calc(-0.857px + 1.429vw), 14px);
+    4px;
   border-bottom: 1px solid var(--hairline);
 }
 
@@ -586,9 +583,10 @@ body.is-first-run-guide-active .settings-page.is-active > * {
   }
 }
 
-.page-title {
+.page-title,
+.plugin-page-heading h2 {
   margin: 0;
-  font-size: 19px;
+  font-size: 22px;
   font-weight: var(--font-weight-bold);
   letter-spacing: 0.02em;
   color: var(--sakura-text);
@@ -600,13 +598,9 @@ body.is-first-run-guide-active .settings-page.is-active > * {
   color: var(--sakura-muted-text);
 }
 
-.page-head.is-switching .page-title {
-  animation: page-head-in var(--motion-medium) var(--ease) both;
-}
-
+.page-head.is-switching .page-title,
 .page-head.is-switching .page-subtitle {
-  animation: page-head-in var(--motion-medium) var(--ease) both;
-  animation-delay: var(--motion-stagger);
+  animation: page-in var(--motion-page) ease-out both;
 }
 
 .page-scroll {
@@ -782,23 +776,7 @@ body.is-first-run-guide-active .settings-page.is-active > * {
 
 .settings-page.is-active {
   display: grid;
-  animation: page-in var(--motion-medium) var(--ease) both;
-}
-
-.settings-page.is-active > * {
-  animation: section-in var(--motion-medium) var(--ease) both;
-}
-
-.settings-page.is-active > :nth-child(2) {
-  animation-delay: var(--motion-stagger);
-}
-
-.settings-page.is-active > :nth-child(3) {
-  animation-delay: calc(var(--motion-stagger) * 2);
-}
-
-.settings-page.is-active > :nth-child(4) {
-  animation-delay: calc(var(--motion-stagger) * 3);
+  animation: page-in var(--motion-page) ease-out both;
 }
 
 .settings-group {
@@ -3151,6 +3129,8 @@ body[data-settings-host="runtime-v2"] .nav-item:disabled {
 /* ---------- 底栏与按钮 ---------- */
 
 footer {
+  position: relative;
+  z-index: 1;
   display: flex;
   flex: 0 0 auto;
   align-items: center;
@@ -3159,8 +3139,11 @@ footer {
   padding:
     clamp(12px, calc(-0.857px + 1.429vw), 14px)
     var(--settings-content-gutter);
-  border-top: 1px solid var(--hairline);
-  background: color-mix(in srgb, var(--sakura-panel-bg) 45%, var(--surface-raised));
+  background: inherit;
+}
+
+footer.has-content-below {
+  box-shadow: 0 -5px 12px -7px rgb(0 0 0 / 14%);
 }
 
 .footer-status {
@@ -4521,7 +4504,7 @@ input.is-invalid:hover,
 @keyframes shell-in {
   from {
     opacity: 0;
-    transform: translateY(10px) scale(0.992);
+    transform: scale(0.995);
   }
   to {
     opacity: 1;
@@ -4531,35 +4514,15 @@ input.is-invalid:hover,
 
 @keyframes page-in {
   from {
-    opacity: 0;
-    transform: translateY(10px);
+    opacity: 0.5;
   }
   to {
     opacity: 1;
-    transform: none;
   }
 }
 
-@keyframes page-head-in {
-  from {
-    opacity: 0;
-    transform: translateY(5px);
-  }
-  to {
-    opacity: 1;
-    transform: none;
-  }
-}
-
-@keyframes section-in {
-  from {
-    opacity: 0;
-    transform: translateY(7px);
-  }
-  to {
-    opacity: 1;
-    transform: none;
-  }
+@media (prefers-reduced-motion: reduce) {
+  :root { --motion-page: 0s; }
 }
 
 @keyframes overlay-in {
@@ -4578,7 +4541,7 @@ input.is-invalid:hover,
 @keyframes popover-in {
   from {
     opacity: 0;
-    transform: translateY(6px) scale(0.985);
+    transform: scale(0.985);
   }
   to {
     opacity: 1;
@@ -4589,7 +4552,7 @@ input.is-invalid:hover,
 @keyframes popover-out {
   to {
     opacity: 0;
-    transform: translateY(4px) scale(0.99);
+    transform: scale(0.99);
   }
 }
 
@@ -4708,11 +4671,10 @@ input.is-invalid:hover,
 
 /* 插件管理：沿用主题与动效 token，列表、详情和弹窗均展示真实贡献。 */
 body:has(#page-plugins.is-active) .page-head { display: none; }
-body:has(#page-plugins.is-active) footer { border-top: 0; }
 #page-plugins { grid-template-rows: auto auto minmax(0, 1fr); gap: 14px; }
 #page-plugins > .plugin-page-heading { position: relative; z-index: 3; display: flex; align-items: center; justify-content: space-between; gap: 20px; }
 #page-plugins > .plugin-toolbar { z-index: 2; flex-wrap: wrap; }
-.plugin-page-heading h2 { display: flex; align-items: center; gap: 10px; margin: 0; font-size: 23px; }
+.plugin-page-heading h2 { display: flex; align-items: center; gap: 10px; }
 .plugin-page-heading p { margin: 6px 0 0; color: var(--sakura-muted-text); font-size: 12px; }
 .plugin-count { padding: 2px 8px; border-radius: 12px; background: var(--tint-faint); color: var(--sakura-primary); font-size: 12px; }
 .plugin-toolbar .admin-search { flex: 1 1 160px; min-width: 120px; width: auto; padding: 10px 13px; border: 1px solid var(--hairline); border-radius: var(--radius-sm); background: var(--surface-raised); color: var(--sakura-text); font: inherit; font-size: 12px; }
@@ -4764,7 +4726,7 @@ body:has(#page-plugins.is-active) footer { border-top: 0; }
 .plugin-dependency .semantic-status { font-size: 10px; }
 .plugin-technical { color: var(--sakura-muted-text); font-size: 11px; overflow-wrap: anywhere; }
 .plugin-technical summary { cursor: pointer; }
-.plugin-detail-enter { animation: plugin-detail-in var(--motion-medium) var(--ease) both; }
+.plugin-detail-enter { animation: page-in var(--motion-page) ease-out both; }
 .plugin-settings-dialog { width: min(640px, calc(100vw - 36px)); max-height: calc(100dvh - 48px); padding: 0; border: 1px solid var(--hairline); border-radius: var(--radius-lg); background: var(--surface-raised); color: var(--sakura-text); overflow: hidden; animation: plugin-dialog-in var(--motion-medium) var(--ease) both; }
 .plugin-settings-dialog::backdrop { background: color-mix(in srgb, var(--sakura-text) 30%, transparent); backdrop-filter: blur(4px); animation: plugin-backdrop-in var(--motion-medium) var(--ease) both; }
 .plugin-settings-dialog > form { display: flex; flex-direction: column; max-height: calc(100dvh - 50px); margin: 0; }
@@ -4799,9 +4761,8 @@ body:has(#page-plugins.is-active) footer { border-top: 0; }
 .plugin-settings-dialog.is-closing::backdrop { animation: plugin-backdrop-out var(--motion-base) var(--ease) both; }
 .custom-select__menu[popover] { margin: 0; inset: auto; }
 .custom-select__option.is-active { background: var(--tint-faint); color: var(--sakura-primary); }
-@keyframes plugin-detail-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
-@keyframes plugin-dialog-in { from { opacity: 0; transform: translateY(10px) scale(.98); } to { opacity: 1; transform: translateY(0) scale(1); } }
-@keyframes plugin-dialog-out { from { opacity: 1; transform: translateY(0) scale(1); } to { opacity: 0; transform: translateY(8px) scale(.98); } }
+@keyframes plugin-dialog-in { from { opacity: 0; transform: scale(.98); } to { opacity: 1; transform: none; } }
+@keyframes plugin-dialog-out { from { opacity: 1; transform: none; } to { opacity: 0; transform: scale(.98); } }
 @keyframes plugin-backdrop-in { from { opacity: 0; } to { opacity: 1; } }
 @keyframes plugin-backdrop-out { from { opacity: 1; } to { opacity: 0; } }
 @media (max-width: 1000px) { #page-plugins .plugin-workbench { grid-template-columns: minmax(255px, 1fr) minmax(0, 1.2fr); } #pluginDetail { padding: 17px; } .plugin-detail-identity { gap: 9px; } .plugin-detail-identity .plugin-avatar { width: 37px; height: 37px; } .plugin-detail-title h2 { font-size: 17px; } .plugin-role-tab { padding: 7px 8px; } }

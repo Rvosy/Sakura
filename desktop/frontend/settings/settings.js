@@ -102,6 +102,8 @@ const fields = {
   applyButton: document.getElementById("applyButton"),
   cancelButton: document.getElementById("cancelButton"),
   pageHead: document.querySelector(".page-head"),
+  pageScroll: document.querySelector(".page-scroll"),
+  footer: document.querySelector("footer"),
   pageTitle: document.getElementById("pageTitle"),
   pageSubtitle: document.getElementById("pageSubtitle"),
   navItems: Array.from(document.querySelectorAll(".nav-item[data-page]")),
@@ -744,7 +746,26 @@ const pageMeta = {
   "open-help": { title: "应用打开遇到问题？" },
 };
 
+function syncFooterShadow() {
+  const { pageScroll, footer } = fields;
+  footer.classList.toggle("has-content-below",
+    !pageScroll.classList.contains("is-admin-active")
+      && pageScroll.scrollHeight - pageScroll.clientHeight - pageScroll.scrollTop > 1);
+}
+
+const pageScrollResize = new ResizeObserver(syncFooterShadow);
+fields.pageScroll.addEventListener("scroll", syncFooterShadow, { passive: true });
+
+function observePageScroll() {
+  pageScrollResize.disconnect();
+  pageScrollResize.observe(fields.pageScroll);
+  const page = document.querySelector(".settings-page.is-active");
+  if (page) pageScrollResize.observe(page);
+  syncFooterShadow();
+}
+
 function showPage(page) {
+  const pageChanged = document.querySelector(".settings-page.is-active")?.id !== `page-${page}`;
   Array.from(document.querySelectorAll(".settings-page")).map(element => [element.id.slice(5), element]).forEach(([key, element]) => {
     element.hidden = key !== page;
     element.classList.toggle("is-active", key === page);
@@ -758,7 +779,7 @@ function showPage(page) {
       item.removeAttribute("aria-current");
     }
   });
-  document.querySelector(".page-scroll")?.classList.toggle(
+  fields.pageScroll.classList.toggle(
     "is-admin-active",
     page === "memory" || page === "plugins" || page === "providers",
   );
@@ -767,7 +788,7 @@ function showPage(page) {
     fields.pageTitle.textContent = meta.title;
     fields.pageSubtitle.textContent = "";
     fields.pageSubtitle.hidden = true;
-    replayMotion(fields.pageHead, "is-switching");
+    if (pageChanged) replayMotion(fields.pageHead, "is-switching");
   }
   runtimeProviderFeature?.onPageChanged(page);
   runtimePluginController?.onPageChanged(page);
@@ -775,6 +796,7 @@ function showPage(page) {
   runtimeAsrController?.onPageChanged(page);
   void runtimeVoiceController?.onPageChanged(page);
   runtimeCharacterFeature?.onPageChanged(page);
+  observePageScroll();
 }
 
 function syncBubbleState() {
@@ -1724,6 +1746,7 @@ detailCard?.addEventListener("input", (event) => {
 
 window.addEventListener("beforeunload", () => {
   beginSettingsWindowClose();
+  pageScrollResize.disconnect();
   errorDialog.dispose();
   runtimeAppearanceController?.dispose();
   runtimeCharacterFeature?.dispose();
@@ -2013,6 +2036,7 @@ async function startSettingsFrontend() {
 
 startSettingsFrontend()
   .then(async () => {
+    observePageScroll();
     const { createFirstRunGuide, firstRunGuideRequested } = await import("./first-run-guide.js");
     firstRunGuideController = createFirstRunGuide({
       document,

@@ -1,4 +1,4 @@
-/* 角色工坊直接沿用设置页的主题令牌、布局、控件和反馈样式。 */
+/* 共用主题、控件和反馈样式；工坊的工具栏与标题按编辑用途组织。 */
 @import url("../settings/styles.css");
 @import url("../core/error-dialog.css");
 @import url("./visual-editor.css");
@@ -23,21 +23,31 @@
 
 .studio-character-controls {
   display: grid;
-  grid-template-columns: max-content minmax(120px, 1fr) max-content max-content;
+  grid-template-columns: minmax(0, 320px) max-content max-content;
   gap: 8px;
   align-items: center;
-  width: min(100%, 760px);
+  justify-content: start;
+  width: 100%;
+}
+
+.studio-character-identity {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
 }
 
 .studio-character-controls label {
   color: var(--sakura-secondary-text);
   font-size: 12.5px;
+  line-height: 20px;
   font-weight: var(--font-weight-medium);
   white-space: nowrap;
 }
 
-.studio-character-controls > select,
-.studio-character-controls > .custom-select {
+.studio-character-identity > select,
+.studio-character-identity > .custom-select {
   width: 100%;
   min-width: 0;
   max-width: none;
@@ -45,6 +55,62 @@
 
 .studio-character-controls button {
   white-space: nowrap;
+}
+
+.studio-character-identity .custom-select__trigger {
+  height: 36px;
+  padding: 7px 10px;
+  font-size: 14px;
+  line-height: 20px;
+  font-weight: var(--font-weight-medium);
+  box-shadow: none;
+}
+
+.studio-character-identity .custom-select__trigger:hover:not(:disabled),
+.studio-character-identity .custom-select.is-open .custom-select__trigger {
+  border-color: var(--sakura-primary);
+}
+
+.studio-character-identity .custom-select__trigger:focus-visible {
+  outline: 2px solid var(--sakura-primary);
+  outline-offset: 2px;
+}
+
+.studio-character-identity .custom-select__caret {
+  background-color: var(--sakura-secondary-text);
+}
+
+.studio-character-identity .custom-select__source {
+  font-weight: var(--font-weight-medium);
+}
+
+.studio-character-controls > button {
+  height: 36px;
+  min-width: 80px;
+  padding: 7px 12px;
+  font-size: 12.5px;
+  line-height: 20px;
+}
+
+.studio-character-controls > .danger-button:disabled {
+  color: var(--sakura-muted-text);
+  border-color: var(--hairline);
+}
+
+.studio-shell .page-head {
+  padding: 18px var(--settings-content-gutter) 0;
+  border: 0;
+}
+
+.studio-shell .page-title {
+  font-size: 20px;
+  font-weight: var(--font-weight-semibold);
+  line-height: 28px;
+  letter-spacing: 0;
+}
+
+.studio-shell .page-scroll {
+  padding-top: 12px;
 }
 
 .studio-shell .settings-page {
@@ -472,17 +538,16 @@ body.has-modal-open .settings-shell {
 }
 
 @media (max-width: 940px) {
-  .studio-character-bar {
-    padding-block: 10px;
-  }
-
-  .studio-character-controls {
-    width: min(100%, 560px);
-  }
-
   .setting-row > .path-control {
     width: clamp(340px, 44vw, 560px);
   }
+}
+
+@media (max-width: 740px) {
+  .studio-character-controls { gap: 6px; }
+  .studio-character-identity { gap: 8px; }
+  .studio-character-controls > button { min-width: 72px; padding-inline: 8px; }
+  .studio-character-identity .custom-select__source { display: none; }
 }
 
 @media (max-width: 860px) {
