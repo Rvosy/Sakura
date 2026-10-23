@@ -850,14 +850,17 @@ class _HostRegistrationProxy:
         return self._context._remote_call(self._service_key, "collect", [registration_id, dict(request)])
 
     def execute(self, registration_id: str, name: str, arguments: Mapping[str, Any],
-                *, timeout_seconds: float | None = None) -> object:
+                invocation: Mapping[str, Any] | None = None, *, timeout_seconds: float | None = None) -> object:
+        args = [registration_id, name, dict(arguments)]
+        if invocation is not None:
+            args.append(dict(invocation))
         if timeout_seconds is not None:
             return self._context._remote_request("service.call", {
                 "serviceKey": self._service_key, "method": "execute",
-                "args": [registration_id, name, dict(arguments)], "timeoutSeconds": timeout_seconds,
+                "args": args, "timeoutSeconds": timeout_seconds,
             })
         return self._context._remote_call(
-            self._service_key, "execute", [registration_id, name, dict(arguments)]
+            self._service_key, "execute", args
         )
 
     def register(
@@ -889,11 +892,14 @@ class _HostRegistrationProxy:
                 )
 
             def cleanup() -> object:
-                return self._context._remote_call(
-                    self._service_key,
-                    "unregister",
-                    [registration_id],
-                )
+                try:
+                    return self._context._remote_call(
+                        self._service_key,
+                        "unregister",
+                        [registration_id],
+                    )
+                finally:
+                    dispose_callback()
 
             return cleanup
 
@@ -902,6 +908,43 @@ class _HostRegistrationProxy:
         except Exception:
             dispose_callback()
             raise
+
+
+class _HooksProxy(_HostRegistrationProxy):
+    def __init__(self, context):
+        super().__init__(context, "sakura.host.hooks", "hooks.handler")
+
+    def register(self, descriptor, callback):
+        from sakura_hooks import pack_hook_value, unpack_hook_value
+
+        artifacts = self._context.get("sakura.host.artifacts")
+
+        def invoke(envelope):
+            return pack_hook_value(callback(unpack_hook_value(envelope, artifacts, release=False)), artifacts)
+
+        return super().register(descriptor, invoke)
+
+    def catalog(self, hook=None):
+        return self._context._remote_call(self._service_key, "catalog", [] if hook is None else [hook])
+
+    def run(self, hook, data, metadata=None):
+        from sakura_hooks import pack_hook_value, unpack_hook_value
+
+        if not self.catalog(hook):
+            return data
+        artifacts = self._context.get("sakura.host.artifacts")
+        envelope = pack_hook_value(data, artifacts)
+        try:
+            result = self._context._remote_call(self._service_key, "run", [hook, envelope, dict(metadata or {})])
+            return unpack_hook_value(result, artifacts)
+        finally:
+            if "artifact" in envelope:
+                try:
+                    artifacts.release_received(envelope["artifact"]["artifactId"])
+                except Exception as error:
+                    self._context.get("sakura.host.logging").warning("钩子临时数据回收失败",
+                        fields={"event": "plugin.hook.cleanup.failed", "hook": hook,
+                                **exception_diagnostics(error)})
 
 
 class _CharacterProxy:
@@ -1566,6 +1609,8 @@ class PluginContext:
             return _LocalServiceProxy(service_key, local[0], local[1])
         if key == "sakura.host.character":
             return _CharacterProxy(self)
+        if key == "sakura.host.hooks":
+            return _HooksProxy(self)
         if key == "sakura.host.artifacts":
             return _ArtifactsProxy(self)
         if key == "sakura.host.settings":

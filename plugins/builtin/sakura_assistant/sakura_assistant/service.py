@@ -78,6 +78,8 @@ class RemoteTools(ToolRegistry):
             code = str(getattr(error, "code", ""))
             if not re.fullmatch(r"[A-Z0-9_]{1,80}", code):
                 code = "PLUGIN_TOOL_EXECUTION_FAILED"
+            if code == "HOOK_ABORTED":
+                return ToolExecutionResult(name, False, "", str(error), code)
             attributes = {**diagnostics.diagnostic_attributes(error),
                           **getattr(error, "diagnostics", {}), "tool_name": name, "reason_code": code}
             diagnostics.log_event("ToolRegistry", "工具执行失败", attributes,
@@ -406,6 +408,8 @@ def classify_failure(error):
     from .llm.prompts.runtime import ContextWindowExceededError
     from sakura_provider_errors import provider_http_status, public_provider_http_message
     code = getattr(error, "code", "")
+    if code == "HOOK_ABORTED":
+        return {"code": code, "message": str(error), "retryable": False}
     if isinstance(error, OperationCancelled):
         return {"code": "OPERATION_CANCELLED", "message": "对话已取消。", "retryable": False}
     if isinstance(error, (ContextContributionError, ContextWindowExceededError)):

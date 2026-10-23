@@ -26,6 +26,7 @@ class Context:
     def __init__(self):
         self.config = Config()
         self.callbacks = {}
+        self.logs = []
         self.host = _SettingsHostService(lambda handle, _shape, *args: self.callbacks[handle](*args))
     def effect(self, _cleanup):
         pass
@@ -42,6 +43,8 @@ class Context:
     def get(self, key):
         if key == "sakura.host.artifacts":
             return None
+        if key == "sakura.host.logging":
+            return SimpleNamespace(warning=lambda message, **kwargs: self.logs.append((message, kwargs)))
         assert key == "sakura.host.settings"
         def register(descriptor, *, load=None, save=None, actions=None):
             return self.host.call("register", [SERVICE_KEY, descriptor, {"load": self.handle(load), "save": self.handle(save),
@@ -88,6 +91,18 @@ def test_invalid_second_connection_does_not_partially_save(provider):
     with pytest.raises(ProfileError):
         profiles.save_editor(draft)
     assert context.config.get() == before
+
+
+def test_editor_preserves_connection_creation_order_after_save_and_reload(provider):
+    profiles, context = provider
+    draft = profiles.load_editor()
+    draft["connections"].append({"id": "new", "alias": "New", "base_url": "https://example.test/v1", "models": [], "createdAt": 12345})
+    profiles.save_editor(draft)
+    reloaded = ProviderProfiles(context).load_editor()
+    assert reloaded["connections"][-1]["createdAt"] == 12345
+    reloaded["connections"][-1]["alias"] = "Renamed"
+    profiles.save_editor(reloaded)
+    assert ProviderProfiles(context).load_editor()["connections"][-1]["createdAt"] == 12345
 
 
 @pytest.mark.parametrize(("returned", "result_type", "state_type", "has_state", "field", "reason"), [
@@ -167,12 +182,17 @@ def test_existing_long_connection_values_can_be_saved_without_shortening(provide
         label="自建模型服务" * 30,
         base_url="https://fixture.invalid/" + "gateway/" * 300 + "v1",
         api_key="token-" + "a" * 17000,
+        models=[{"modelId": "model-" + "a" * 300, "label": "模型" * 300,
+                 "contextWindowTokens": 4_000_000, "inputModalities": ["text", "image", "audio"]}],
     )
-    expected = ProviderProfiles(context).resolve("fixture", "model")
+    model = context.config.get()["profiles"][0]["models"][0]
+    expected = ProviderProfiles(context).resolve("fixture", model["modelId"])
     draft = profiles.load_editor()
     draft["connections"][0].update(credential_action="replace", api_key=expected["api_key"])
     profiles.save_editor(draft)
-    assert ProviderProfiles(context).resolve("fixture", "model") == expected
+    restored = ProviderProfiles(context)
+    assert restored.resolve("fixture", model["modelId"]) == expected
+    assert restored.catalog()[0]["models"] == [model]
     assert profiles.load_editor()["connections"][0]["alias"] == draft["connections"][0]["alias"]
 
 
@@ -231,7 +251,7 @@ def test_probe_failure_preserves_reason_redacts_credentials_and_always_releases(
     assert draft_secret not in str(result)
 
 
-def test_successful_probe_reports_cleanup_failure_and_keeps_numeric_diagnostics(provider):
+def test_successful_probe_keeps_models_when_cleanup_fails(provider):
     profiles, context = provider
     released = threading.Event()
 
@@ -249,11 +269,13 @@ def test_successful_probe_reports_cleanup_failure_and_keeps_numeric_diagnostics(
     assert released.wait(2)
     profiles.close()
     result = profiles.editor_probe_status({})["values"]["probeResult"]
-    assert result["state"] == "failed"
-    assert result["code"] == "MODEL_PROBE_CLEANUP_FAILED"
-    assert result["diagnostics"]["errno"] == 5
-    assert "cleanup failed" in result["message"]
+    assert result["state"] == "completed"
+    assert result["models"] == [{"modelId": "model", "label": "model"}]
+    assert "cleanup failed" in result["diagnostics"]["recovery_diagnostic"]
+    assert context.logs[-1][1]["fields"]["errno"] == 5
+    assert "cleanup failed" in str(context.logs)
     assert SECRET not in repr(result)
+    assert SECRET not in str(context.logs)
 
 
 def test_global_timeout_is_applied_only_on_explicit_edit(provider):

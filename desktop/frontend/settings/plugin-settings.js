@@ -78,8 +78,17 @@ export function createPluginSettingsFeature({
   let memoryListScroll = 0;
   let availableUpdates = [], openUpdate = () => {};
   const pluginModules = new Map();
+  let disposed = false;
+  const modelServices = () => [...pluginModules.keys()].flatMap(module => module.contributions()?.modelServices || []);
+  const modelServicePresets = () => [...pluginModules.keys()].flatMap(module => module.contributions()?.modelServicePresets || []);
   const pendingApplication = new Set();
   const settingsUI = createSettingsUI({ document, showPage, createSection: createContributedSection });
+
+  function moduleContributionsChanged() {
+    if (disposed) return;
+    for (const module of pluginModules.keys()) module.updateContributions();
+    onModelCatalogChanged();
+  }
 
   function createContributedSection(plugin, section) {
     const read = key => pluginSectionValues(plugin.id, section.section_id)[key];
@@ -106,10 +115,11 @@ export function createPluginSettingsFeature({
     if (presentation.component === "module") {
       const generation = runtimePluginController.snapshot()?.coreGenerationId;
       const component = createPluginModule({ document, source: presentation.source,
-        onError: setError, onReady: onModelCatalogChanged,
+        onError: setError, onReady: moduleContributionsChanged,
         context: { document, window, section, read, write, invoke, notify, onError: setError,
           enhanceSelect, refreshSelect, closeSelects, createIcon,
-          onCatalogChanged: onModelCatalogChanged,
+          onCatalogChanged: moduleContributionsChanged,
+          modelServices, modelServicePresets,
           readSection: (sectionId, key) => pluginSectionValues(plugin.id, sectionId)[key],
           isCurrent: () => generation === runtimePluginController.snapshot()?.coreGenerationId,
           action: (actionId, values) => runtimePluginController.action({
@@ -118,9 +128,9 @@ export function createPluginSettingsFeature({
           importModule: path => import(new URL(`../${path}`, import.meta.url)),
         },
       });
-      pluginModules.set(component, { pluginId: plugin.plugin_id, sectionId: section.section_id });
+      pluginModules.set(component, { pluginId: plugin.plugin_id, sectionId: section.section_id, pageId: sectionDestination(section) });
       const dispose = component.dispose;
-      component.dispose = () => { pluginModules.delete(component); dispose(); };
+      component.dispose = () => { pluginModules.delete(component); dispose(); moduleContributionsChanged(); };
       return component;
     }
     if (presentation.component === "record-table") {
@@ -3221,6 +3231,11 @@ export function createPluginSettingsFeature({
     dialogElement: () => pluginSettingsDialog?.dialog,
     onPageChanged(page) {
       clearPluginActivityRefresh();
+      if (page !== "providers") {
+        for (const [module, owner] of pluginModules) {
+          if (owner.pageId === "host:providers") void Promise.resolve(module.cancel()).catch(setError);
+        }
+      }
       if (page === "plugins" || page === "about") schedulePluginActivityRefresh();
       if (page === "memory") renderMemorySurface();
       if (page === "interaction") renderScreenAwarenessSurface();
@@ -3245,6 +3260,7 @@ export function createPluginSettingsFeature({
       refreshDirty();
     },
     dispose() {
+      disposed = true;
       settingsUI.dispose();
       memorySettingsComponents.forEach(component => component.dispose?.());
       memorySettingsComponents = [];
