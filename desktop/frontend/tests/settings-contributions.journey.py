@@ -116,6 +116,22 @@ def run():
                 page.route('**/settings/', lambda route: route.fulfill(content_type='text/html',
                     headers={'Content-Security-Policy': csp}, body=(ROOT/'desktop/frontend/settings/index.html').read_text(encoding="utf-8")))
                 page.goto(origin+'/desktop/frontend/settings/');page.wait_for_selector('body[data-ready="true"]')
+                # 滚动到控件后立即打开菜单，随后仍能选中模型；再次滚动才关闭。
+                page.evaluate("""async () => {
+                  const {enhanceSelect}=await import('./select-control.js');
+                  const container=document.createElement('div'); container.id='scroll-select-fixture';
+                  container.style.cssText='position:fixed;top:100px;left:100px;width:300px;height:160px;overflow:auto;z-index:9999';
+                  container.innerHTML='<div></div><select aria-label="滚动后选择模型"><option value="first">模型一</option><option value="second">模型二</option></select><div></div>';
+                  for (const spacer of container.querySelectorAll(':scope > div')) spacer.style.height='250px';
+                  document.body.append(container); enhanceSelect(container.querySelector('select'));
+                  container.scrollTop=200; container.querySelector('button').click();
+                }""")
+                page.get_by_role('option',name='模型二',exact=True).click()
+                expect(page.locator('#scroll-select-fixture select')).to_have_value('second')
+                page.get_by_role('combobox',name='滚动后选择模型',exact=True).click()
+                page.locator('#scroll-select-fixture').evaluate('element=>element.scrollTop=210')
+                expect(page.get_by_role('combobox',name='滚动后选择模型',exact=True)).to_have_attribute('aria-expanded','false')
+                page.locator('#scroll-select-fixture').evaluate('element=>element.remove()')
                 expect(page.locator('[data-provider-field="api_key"]')).to_have_value('')
                 page.screenshot(animations="disabled", path=str(output/'providers.png'))
                 original=config.read_bytes()

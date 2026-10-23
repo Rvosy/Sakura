@@ -35,6 +35,7 @@ class CodexProfiles:
         self.active = context.config.get()
         self.accounts = {}
         self.operations = {}
+        self.usage = {}
         self.service = None
         self.closed = False
         self.logger = context.get("sakura.host.logging")
@@ -137,6 +138,7 @@ class CodexProfiles:
             account.close()
             account.logout()
             self.accounts.pop(profile_id, None)
+            self.usage.pop(profile_id, None)
         if operation and operation.worker:
             operation.worker.join(2)
         return self.status({})
@@ -148,6 +150,7 @@ class CodexProfiles:
                 profile_id = profile["profileId"]
                 operation = self.operations.get(profile_id)
                 profiles.append({**deepcopy(profile), "account": self.account_for(profile_id).public(),
+                                 "usage": deepcopy(self.usage.get(profile_id)),
                                  "operationResult": deepcopy(operation.result) if operation else {}})
             return {"values": {"profiles": profiles}}
 
@@ -176,22 +179,37 @@ class CodexProfiles:
             def run():
                 started = time.monotonic()
                 fields = {"operation_id": identity, "profile_id": profile_id, "stage": kind}
+                if kind == "test_connection":
+                    fields["model_id"] = request["modelId"]
                 self.logger.info("Codex 操作开始", fields=fields)
                 failure = None
                 settings = None
                 try:
                     if kind == "login":
                         account.login(check, publish)
-                    publish({"userCode": None, "message": "正在获取全部可用模型…"})
-                    self.logger.info("Codex 获取模型目录", fields={**fields, "stage": "models"})
-                    settings = self.resolve_probe(profile_id, {})
-                    response = self.service.execute(settings, {}, cancel_checker=check, progress=lambda _event: None, operation="list_models")
-                    models = response["models"]
-                    with self.lock:
-                        check()
-                        self.update_config({"profiles": [dict(p, models=models) if p["profileId"] == profile_id else p
-                                                         for p in self.active["profiles"]]})
-                    result = {"state": "completed", "message": f"已添加 {len(models)} 个模型。" if models else "账号暂无可用模型。"}
+                        with self.lock:
+                            self.usage.pop(profile_id, None)
+                    settings = self.resolve_probe(profile_id, request, require_model=kind == "test_connection")
+                    if kind == "usage":
+                        response = self.service.execute(settings, {}, cancel_checker=check, progress=lambda _event: None, operation="usage")
+                        with self.lock:
+                            check()
+                            self.usage[profile_id] = response["usage"]
+                        result = {"state": "completed", "message": "额度已更新。"}
+                    elif kind == "test_connection":
+                        response = self.service.execute(settings, {}, cancel_checker=check, progress=lambda _event: None, operation="test_connection")
+                        result = {"state": "completed", "message": "模型请求完成。", "modelId": settings["model"],
+                                  "reply": response["message"]["content"]}
+                    else:
+                        publish({"userCode": None, "message": "正在获取全部可用模型…"})
+                        self.logger.info("Codex 获取模型目录", fields={**fields, "stage": "models"})
+                        response = self.service.execute(settings, {}, cancel_checker=check, progress=lambda _event: None, operation="list_models")
+                        models = response["models"]
+                        with self.lock:
+                            check()
+                            self.update_config({"profiles": [dict(p, models=models) if p["profileId"] == profile_id else p
+                                                             for p in self.active["profiles"]]})
+                        result = {"state": "completed", "message": f"已同步 {len(models)} 个模型。" if models else "账号暂无可用模型。"}
                 except OperationCancelled:
                     result = {"state": "cancelled", "message": "已取消。"}
                 except Exception as error:
@@ -203,8 +221,9 @@ class CodexProfiles:
                 with self.lock:
                     if operation.cancelled.is_set():
                         result = {"state": "cancelled", "message": "已取消。"}
+                    result["elapsedMs"] = round((time.monotonic() - started) * 1000)
                     operation.result = {"requestId": identity, "operation": kind, **result}
-                fields = {**fields, "state": result["state"], "elapsed_ms": round((time.monotonic() - started) * 1000)}
+                fields = {**fields, "state": result["state"], "elapsed_ms": result["elapsedMs"]}
                 if failure and result["state"] != "cancelled":
                     self.logger.warning("Codex 操作失败", fields={**fields, **failure})
                 else:
@@ -235,6 +254,7 @@ class CodexProfiles:
                 operation.cancelled.set()
                 operation.result = {}
             self.account_for(profile_id).logout()
+            self.usage.pop(profile_id, None)
         self.logger.info("Codex 已退出登录", fields={"profile_id": profile_id})
         return self.status({})
 
