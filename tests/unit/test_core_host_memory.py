@@ -1188,6 +1188,40 @@ def test_existing_memory_snapshot_failure_aborts_curation_before_write() -> None
     assert writes == 0
 
 
+def test_imported_history_is_skipped_without_losing_new_local_curation(tmp_path, monkeypatch):
+    root = _root(tmp_path)
+    timeline = _timeline(root, turns=0)
+    timeline.store.import_records("sakura", [{
+        "entry_id": "imported-human", "turn_id": "imported-turn", "kind": "human",
+        "origin": "chat", "created_at": "2026-08-25T12:00:00+08:00",
+        "payload": {"text": "导入的旧对话"},
+    }], preview=False)
+    boundary = _boundary(root, FakeMemoryStore(), config={"triggerTurns": 1, "curationModelRef": MODEL_REF})
+    processed = []
+
+    class Curator:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def curate_entries(self, entries, *, cancel_checker=None):
+            processed.extend(entry.entry_id for entry in entries)
+            return MemoryCurationResult(processed_entries=len(entries))
+
+    monkeypatch.setattr("plugins.optional.sakura_mem0.boundary.MemoryCurator", Curator)
+    monkeypatch.setattr(boundary._curation_threads, "spawn", lambda target, **_kwargs: target())
+    try:
+        boundary.note_timeline_changed(timeline)
+        assert processed == []
+        _append_timeline_turn(timeline, 1)
+        boundary.note_timeline_changed(timeline)
+        assert processed == ["human-1", "assistant-1"]
+        assert len(timeline.store.read_all("sakura")) == 3
+        boundary.note_timeline_changed(timeline)
+        assert processed == ["human-1", "assistant-1"]
+    finally:
+        boundary.close()
+
+
 def test_backend_write_failure_does_not_advance_curation_cursor(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
