@@ -82,6 +82,42 @@ test("native image refresh clears QR while record reads preserve permission draf
   ui.feature.dispose();
 });
 
+test("record tabs preserve independent drafts across navigation and refresh, and cancel restores them", async () => {
+  const data = snapshot();
+  const records = (sectionId, columns, values) => ({ sectionId, title: sectionId, reasonCode: "READY", surface: null,
+    presentation: { component: "record-table", itemsField: "items", valueField: "grants", columns },
+    fields: [field("items", { type: "data", readonly: true }), field("grants", { type: "data", default: {} })],
+    actions: [], collections: [], values: { items: [{ id: "one", label: sectionId }], grants: { one: values } } });
+  data.plugins[0].sections = [records("devices", [field("alias"), field("mode", { type: "select", default: "hidden", options: [
+    { value: "hidden", label: "不开放" }, { value: "read", label: "仅查询" }, { value: "control", label: "允许控制" }] })], { alias: "", mode: "hidden" }),
+    records("scenes", [field("allowed", { type: "boolean", default: false })], { allowed: false })];
+  const ui = featureFixture(async () => structuredClone(data));
+  ui.feature.initialize(structuredClone(data)); await ui.openSettings();
+  const dialog = ui.document.querySelector('.plugin-settings-dialog');
+  const panels = dialog.querySelectorAll('[role="tabpanel"]');
+  const tabs = dialog.querySelectorAll('[role="tab"]');
+  const alias = panels[0].querySelector('.record-editor input');
+  alias.value = "床头灯"; await alias.fire("input");
+  const control = panels[0].querySelectorAll('.record-option input')[2];
+  control.checked = true; await control.fire("change");
+  await tabs[1].fire("click");
+  assert.equal(panels[0].hidden, true);
+  assert.equal(panels[1].hidden, false);
+  const allowed = panels[1].querySelector('.record-editor input'); allowed.checked = true; await allowed.fire("change");
+  await ui.feature.refreshCurrent();
+  await tabs[1].fire("keydown", { key: "ArrowLeft" });
+  assert.equal(panels[0].hidden, false);
+  assert.equal(panels[1].hidden, true);
+  assert.equal(alias.value, "床头灯");
+  assert.equal(control.checked, true);
+  assert.equal(allowed.checked, true);
+  assert.equal(ui.feature.isDirty(), true);
+  await ui.document.querySelector('.plugin-settings-dialog').fire('cancel');
+  assert.equal(ui.feature.isDirty(), false);
+  assert.deepEqual(ui.errors, []);
+  ui.feature.dispose();
+});
+
 const collectionSurfaces = ["memory", null, "custom_archive"];
 
 test("connection stages show only available actions and connected records", async () => {
