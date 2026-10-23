@@ -172,11 +172,7 @@ pub(crate) async fn history_page(
     {
         return Err("HISTORY_IDENTITY_MISMATCH".to_string());
     }
-    let page = request_history_page(
-        settings_core_handle(&lifecycle)?,
-        &request,
-    )
-    .await?;
+    let page = request_history_page(settings_core_handle(&lifecycle)?, &request).await?;
     if page.core_generation_id != request.core_generation_id
         || page.character_id != request.character_id
     {
