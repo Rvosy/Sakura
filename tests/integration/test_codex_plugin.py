@@ -41,10 +41,18 @@ def handler(request):
         return httpx.Response(200, json={'access_token':access, 'refresh_token':'private-refresh'})
     if path.endswith('/models'):
         return httpx.Response(200, json={'models':[{'slug':'fixture-model', 'display_name':'Fixture', 'context_window':200000, 'input_modalities':['text','image']}]})
+    if path.endswith('/wham/usage'):
+        used = 25 if request.headers['chatgpt-account-id'] == 'device-1' else 75
+        return httpx.Response(200, json={'rate_limit':{'primary_window':{
+            'used_percent':used, 'limit_window_seconds':18000, 'reset_at':1800000000}}})
     body = json.loads(request.content)
     account = request.headers['chatgpt-account-id']
     assert account in {'device-1', 'device-2'}
-    assert body['input'][0]['content'][1]['image_url'].startswith('data:image/png')
+    assert body['model'] == 'fixture-model'
+    if body['input'][0]['content'][0]['text'] == 'look':
+        assert body['input'][0]['content'][1]['image_url'].startswith('data:image/png')
+    else:
+        assert all(item['type'] == 'input_text' for item in body['input'][0]['content'])
     result = {'type':'response.completed', 'response':{'id':'resp-1', 'status':'completed', 'output':[
         {'type':'message','role':'assistant','content':[{'type':'output_text','text':'fixture reply '+account}]}],
         'usage':{'input_tokens':10,'output_tokens':2,'total_tokens':12}}}
@@ -95,8 +103,8 @@ class Consumer:
     def profile_values(result, identity):
         return next(p for p in result["values"]["profiles"] if p["profileId"] == identity)
 
-    def operation(name, identity):
-        request = {"operationRequest": {"profileId": identity, "operation": name, "requestId": name}}
+    def operation(name, identity, **values):
+        request = {"operationRequest": {"profileId": identity, "operation": name, "requestId": name, **values}}
         result = profile_values(app.settings_action(SERVICE, "account", "start", request), identity)
         deadline = time.monotonic() + 5
         while result["operationResult"]["state"] == "running":
@@ -123,7 +131,14 @@ class Consumer:
         response = app.call_service("fixture.consumer", "complete", first)
         assert response["message"]["content"] == "fixture reply device-1"
         assert response["usage"]["total_tokens"] == 12
+        assert operation("usage", first)["usage"]["windows"][0]["usedPercent"] == 25
+        probe = operation("test_connection", first, modelId="fixture-model")["operationResult"]
+        assert probe["reply"] == "fixture reply device-1" and probe["modelId"] == "fixture-model"
+        assert probe["elapsedMs"] >= 0
         operation("login", second)
+        assert operation("usage", second)["usage"]["windows"][0]["usedPercent"] == 75
+        assert profile_values(app.settings_action(SERVICE, "account", "status", {}), first)["usage"]["windows"][0]["usedPercent"] == 25
+        assert operation("sync_models", second)["models"][0]["modelId"] == "fixture-model"
         assert app.call_service("fixture.consumer", "complete", second)["message"]["content"] == "fixture reply device-2"
         app.settings_action(SERVICE, "account", "remove", {"operationRequest": {"profileId": first}})
         assert app.call_service("fixture.consumer", "complete", second)["message"]["content"] == "fixture reply device-2"
