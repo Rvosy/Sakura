@@ -2671,17 +2671,25 @@ export function createPluginSettingsFeature({
     }
     const metadata = pluginPresentation.pluginMetadata(plugin);
     const status = pluginLiveStatus(plugin);
+    const summary = pluginNode('section', 'plugin-detail-summary');
     const heading = pluginNode('header', 'plugin-detail-heading');
     const identity = pluginNode('div', 'plugin-detail-identity');
     const title = pluginNode('div', 'plugin-detail-title');
-    title.append(pluginNode('h2', '', plugin.name || plugin.id), pluginNode('p', 'plugin-detail-tags', `${pluginPresentation.pluginCategories[metadata.category]} · ${plugin.source === 'user' ? '用户安装' : '内置'}`));
+    const tags = pluginNode('div', 'plugin-detail-tags');
+    const liveStatus = renderSemanticStatus(status);
+    liveStatus.setAttribute('aria-label', `运行状态：${status.label}`);
+    tags.append(pluginNode('span', '', [plugin.author || '未知作者', plugin.version && `v${plugin.version}`].filter(Boolean).join(' · ')), liveStatus);
+    title.append(pluginNode('h2', '', plugin.name || plugin.id), tags);
     identity.append(pluginIcon(plugin), title);
-    const aside = pluginNode('div', 'plugin-detail-aside');
+    heading.append(identity);
+    summary.append(heading);
+    if (plugin.description) summary.append(pluginNode('p', 'detail-desc', plugin.description));
+    const toolbar = pluginNode('div', 'plugin-detail-toolbar');
     if (hasPrivateSettings(plugin)) {
       const configure = pluginNode('button', 'secondary-button plugin-configure', '插件设置');
       configure.prepend(createIcon(document, 'settings'));
       configure.type = 'button'; configure.setAttribute('aria-haspopup', 'dialog');
-      configure.addEventListener('click', () => openPluginSettingsDialog(plugin)); aside.append(configure);
+      configure.addEventListener('click', () => openPluginSettingsDialog(plugin)); toolbar.append(configure);
     }
     const destinations = new Set(pluginSettingsSections(plugin).map(sectionDestination).filter(Boolean));
     const labels = { providers: "模型服务", model: "模型", voice: "语音", memory: "记忆", interaction: "交互" };
@@ -2691,36 +2699,15 @@ export function createPluginSettingsFeature({
       const available = pluginSettingsSections(plugin).some(s => sectionDestination(s) === destination && s.placement?.available !== false);
       const link = pluginNode("button", "secondary-button plugin-settings-link", title && available ? `打开${title}设置` : "设置页面不可用");
       link.type = "button"; link.disabled = !title || !available;
-      link.addEventListener("click", () => showPage(target)); aside.append(link);
+      link.addEventListener("click", () => showPage(target)); toolbar.append(link);
     }
-    heading.append(identity);
-    if (aside.childElementCount) heading.append(aside);
-    fields.pluginDetail.append(heading);
-    if (plugin.description) fields.pluginDetail.append(pluginNode('p', 'detail-desc', plugin.description));
-    const runtime = pluginNode('section', 'plugin-runtime-summary');
-    const runtimeHeading = pluginNode('div', 'plugin-runtime-heading');
-    runtimeHeading.append(pluginNode('h3', '', '运行状态'), renderSemanticStatus(status));
-    runtime.append(runtimeHeading);
-    fields.pluginDetail.append(runtime);
     const update = availableUpdates.find(item => item.id === plugin.plugin_id);
     if (update) {
       const button = pluginNode("button", "secondary-button", `查看更新 ${update.currentVersion} → ${update.version}`);
       button.type = "button";
       button.addEventListener("click", () => openUpdate(update.id));
-      fields.pluginDetail.append(button);
+      toolbar.append(button);
     }
-    if (status.message || status.diagnostic) {
-      const notice = pluginNode('div', 'plugin-health-notice');
-      if (plugin.diagnostics?.diagnostic) notice.append(pluginNode('p', '', status.message));
-      if (status.diagnostic || ["warning", "error", "failed"].includes(status.state)) {
-        notice.append(errorDetailsButton(status, status.label));
-      } else if (status.message) notice.append(pluginNode('p', '', status.message));
-      runtime.append(notice);
-    }
-    const enableRow = pluginNode('section', 'plugin-enable-row');
-    const enableCopy = pluginNode('div', '');
-    enableCopy.append(pluginNode('h3', '', '启用插件'));
-    if (plugin.required) enableCopy.append(pluginNode('p', '', 'Sakura 必需组件'));
     const enabled = Boolean(pluginState.enabledById[plugin.id] || plugin.required);
     const enableControls = pluginNode('div', 'plugin-enable-controls');
     enableControls.append(pluginNode('span', 'plugin-enable-label', enabled ? '已启用' : '已停用'));
@@ -2736,32 +2723,49 @@ export function createPluginSettingsFeature({
     }
     const toggle = switchLabel.querySelector('input'); toggle.checked = enabled;
     toggle.disabled = Boolean(plugin.required || pluginState.managementBusy || !plugin.plugin_id || plugin.reason_code === 'PLUGIN_ID_CONFLICT' || (!plugin.supported && !enabled));
-    enableControls.append(switchLabel); enableRow.append(enableCopy, enableControls); fields.pluginDetail.append(enableRow);
+    enableControls.append(switchLabel); toolbar.append(enableControls); summary.append(toolbar);
+    if (plugin.required) summary.append(pluginNode('p', 'plugin-required-note', 'Sakura 必需组件'));
+    if (status.message || status.diagnostic) {
+      const notice = pluginNode('div', 'plugin-health-notice');
+      if (plugin.diagnostics?.diagnostic) notice.append(pluginNode('p', '', status.message));
+      if (status.diagnostic || ["warning", "error", "failed"].includes(status.state)) {
+        notice.append(errorDetailsButton(status, status.label));
+      } else if (status.message) notice.append(pluginNode('p', '', status.message));
+      summary.append(notice);
+    }
+    fields.pluginDetail.append(summary);
     const providers = pluginPresentation.requiredPluginProviders(plugin, pluginView.items);
     if (providers.length) {
-      const section = pluginNode('section', 'plugin-dependencies'); section.append(pluginNode('h3', '', `依赖组件 ${providers.length}`));
+      const section = pluginNode('section', 'plugin-detail-section plugin-dependencies'); section.append(pluginNode('h3', '', `依赖组件 ${providers.length}`));
       for (const provider of providers) {
         const dependency = pluginNode('button', 'plugin-dependency'); dependency.type = 'button';
-        dependency.append(pluginNode('span', '', provider.name), renderSemanticStatus(pluginLiveStatus(provider)));
+        const copy = pluginNode('span', 'plugin-dependency-copy');
+        const providerMetadata = pluginPresentation.pluginMetadata(provider);
+        copy.append(pluginNode('strong', '', provider.name), pluginNode('span', '', pluginPresentation.pluginKinds[providerMetadata.kind]));
+        dependency.append(pluginIcon(provider), copy, renderSemanticStatus(pluginLiveStatus(provider)), createIcon(document, 'chevron-right'));
         dependency.addEventListener('click', () => selectManagedPlugin(provider.id, { reveal: true })); section.append(dependency);
       }
       fields.pluginDetail.append(section);
     }
+    const info = pluginNode('section', 'plugin-detail-section');
+    info.append(pluginNode('h3', '', '插件信息'));
     const meta = pluginNode('dl', 'detail-meta');
-    for (const [label, value] of [['版本', plugin.version], ['安装目录', plugin.directory_name], ['作者', plugin.author || '未知'], ['安装来源', plugin.source === 'user' ? '用户安装' : 'Sakura 内置'], ['插件类型', pluginPresentation.pluginKinds[metadata.kind]]]) {
+    for (const [label, value] of [['插件类型', pluginPresentation.pluginKinds[metadata.kind]], ['功能分类', pluginPresentation.pluginCategories[metadata.category]], ['安装来源', plugin.source === 'user' ? '用户安装' : 'Sakura 内置']]) {
       meta.append(pluginNode('dt', '', label), pluginNode('dd', '', value));
     }
-    fields.pluginDetail.append(meta);
+    info.append(meta);
     const technical = pluginNode('details', 'plugin-technical'); technical.append(pluginNode('summary', '', '技术信息'));
-    for (const [label, values] of [['插件 ID', [plugin.plugin_id || plugin.id]], ['提供的服务', plugin.provides || []], ['依赖的服务', plugin.requires || []]]) {
-      if (values.length) technical.append(pluginNode('p', '', `${label}：${values.join('、')}`));
+    const technicalMeta = pluginNode('dl', 'detail-meta');
+    for (const [label, values] of [['安装目录', [plugin.directory_name]], ['插件 ID', [plugin.plugin_id || plugin.id]], ['提供的服务', plugin.provides || []], ['依赖的服务', plugin.requires || []]]) {
+      if (values.length) technicalMeta.append(pluginNode('dt', '', label), pluginNode('dd', '', values.join('、')));
     }
-    fields.pluginDetail.append(technical);
+    technical.append(technicalMeta); info.append(technical); fields.pluginDetail.append(info);
     if (plugin.can_uninstall) {
+      const footer = pluginNode('footer', 'plugin-detail-footer');
       const uninstall = pluginNode('button', 'danger-button', pluginState.managementBusy ? '卸载中…' : '卸载插件');
       uninstall.type = 'button'; uninstall.disabled = pluginState.managementBusy;
       uninstall.addEventListener('click', () => uninstallLocalPlugin(plugin));
-      fields.pluginDetail.append(uninstall);
+      footer.append(uninstall); fields.pluginDetail.append(footer);
     }
     if (previousId !== plugin.id) replayMotion(fields.pluginDetail, 'plugin-detail-enter');
   }

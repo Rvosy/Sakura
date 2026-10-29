@@ -23,6 +23,8 @@
 
 侧栏的 Sakura 名称居中，导航项目保持左对齐。模型服务详情中的服务名称使用 20px、半粗体，与下方表单留出 20px 间距；API 服务和账号服务采用相同层级。
 
+插件详情顶部集中展示名称、作者、版本、运行状态和说明，设置入口、更新入口与启用开关放在同一操作区，窄窗口允许换行。依赖组件使用纵向排列的小卡片，展示图标、名称、类型、状态和跳转箭头，整张卡片可点击。插件信息在下方单独成组，安装目录、插件 ID 与服务声明收进“技术信息”。卸载按钮放在详情底部，不占满整行。
+
 卡片边框用于区分独立区块，继续保留。区块内部只在不同任务或内容层级确实需要区分时使用分割线，不给每个字段、每组导航或每段说明都画线。
 
 ## 角色工坊的工具栏与标题
@@ -63,7 +65,7 @@
 
 系统要求减少动态效果时，同级页面直接显示。动画不能延迟内容可用、抢走焦点或承担唯一的状态提示。引导流程的前进、返回，以及聊天、日志等窗口的内容更新动效按各自用途处理。
 
-标题与内容的组织参考 [WinUI Gallery 设置页](https://github.com/microsoft/WinUI-Gallery/blob/main/WinUIGallery/Pages/SettingsPage.xaml)；按用途选择过渡的原则参考 [Fluent 2 动效指南](https://fluent2.microsoft.design/motion)。本页的尺寸、分割线与时长是 Sakura 设置页的具体约定。
+标题与内容的组织参考 [WinUI Gallery 设置页](https://github.com/microsoft/WinUI-Gallery/blob/main/WinUIGallery/Pages/SettingsPage.xaml)；插件详情的信息与操作分组参考 [VS Code 扩展详情页](https://code.visualstudio.com/docs/configure/extensions/extension-marketplace#extension-details)；按用途选择过渡的原则参考 [Fluent 2 动效指南](https://fluent2.microsoft.design/motion)。本页的尺寸、分割线与时长是 Sakura 设置页的具体约定。
 
 ## 实现入口与检查
 
