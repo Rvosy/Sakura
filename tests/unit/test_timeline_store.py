@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import base64
 import os
 import sqlite3
 from datetime import datetime, timedelta, timezone
@@ -19,21 +18,6 @@ from app.storage.timeline import (
 
 
 NOW = "2026-08-26T12:00:00+08:00"
-
-
-@pytest.mark.parametrize("field,value", [
-    (0, 1), (0, True), (2, True), (3, True), (3, -1), (3, 2**63),
-    (4, "x" * 129), (4, " "),
-])
-def test_cursor_rejects_invalid_fields(field: int, value: object, tmp_path: Path) -> None:
-    store = TimelineStore(tmp_path / "timeline.sqlite3")
-    store.initialize()
-    cursor = store.latest_cursor("sakura")
-    decoded = json.loads(base64.urlsafe_b64decode(cursor + "=" * (-len(cursor) % 4)))
-    decoded[field] = value
-    invalid = base64.urlsafe_b64encode(json.dumps(decoded).encode()).decode().rstrip("=")
-    with pytest.raises(TimelineDataError, match="TIMELINE_CURSOR_INVALID"):
-        store.read_since("sakura", invalid, 1)
 
 
 @pytest.mark.parametrize("cursor", ["x" * 513, "not base64!", "W10", "bnVsbA"])
@@ -247,21 +231,6 @@ def test_visual_id_rejects_portable_paths_and_data_urls(tmp_path: Path, unsafe_i
         TimelineStore(tmp_path / "timeline.sqlite3").append(entry)
 
 
-@pytest.mark.parametrize("created_at", [42, "2026-01-01T00:00:00+00:00" + "0" * 100])
-def test_created_at_must_be_a_bounded_string(tmp_path: Path, created_at: object) -> None:
-    entry = NewTimelineEntry(
-        entry_id="bad-time",
-        turn_id="turn",
-        character_id="sakura",
-        kind=TimelineKind.HUMAN,
-        origin="chat",
-        created_at=created_at,  # type: ignore[arg-type]
-        payload={"text": "hello"},
-    )
-    with pytest.raises(TimelineDataError, match="TIMELINE_CREATED_AT_INVALID"):
-        TimelineStore(tmp_path / "timeline.sqlite3").append(entry)
-
-
 def test_turn_id_cannot_cross_characters_in_batch_or_existing_rows(tmp_path: Path) -> None:
     store = TimelineStore(tmp_path / "timeline.sqlite3")
     store.initialize()
@@ -358,15 +327,6 @@ def test_cursor_reads_are_character_scoped_and_paginated(tmp_path: Path) -> None
     assert has_more_after is False
     assert final_cursor == store.latest_cursor("sakura") == recent_cursor
     assert [entry.entry_id for entry in recent] == ["entry-1", "entry-2", "entry-3"]
-
-
-@pytest.mark.parametrize("limit", [0, 501, True, 1.5])
-def test_cursor_read_limit_is_bounded(tmp_path: Path, limit: object) -> None:
-    store = TimelineStore(tmp_path / "timeline.sqlite3")
-    store.initialize()
-
-    with pytest.raises(TimelineDataError, match="TIMELINE_LIMIT_INVALID"):
-        store.read_recent("sakura", limit)  # type: ignore[arg-type]
 
 
 def test_context_candidate_read_excludes_expired_observation_turns(

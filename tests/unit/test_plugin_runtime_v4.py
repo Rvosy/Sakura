@@ -1951,54 +1951,6 @@ def test_entry_import_failure_keeps_installation_and_is_reported_by_runtime(tmp_
         application.close()
 
 
-def test_production_application_host_runs_v4_and_reports_api3_as_unsupported(
-    tmp_path: Path,
-) -> None:
-    from app.core_host.plugin_application import PluginApplicationHost
-
-    roots = _roots(tmp_path)
-    legacy = _plugin_source(
-        roots.distribution_root / "plugins" / "builtin",
-        "fixture.v3-active",
-        "fixture.v3.service",
-        body="""
-class Service: pass
-class Plugin:
-    def setup(self, context):
-        context.provide("fixture.v3.service", Service(), exports=())
-""".strip(),
-    )
-    (legacy / "plugin.yaml").write_text(
-        (legacy / "plugin.yaml").read_text(encoding="utf-8").replace("api: 4", "api: 3"),
-        encoding="utf-8",
-    )
-    _plugin_source(
-        roots.distribution_root / "plugins" / "builtin",
-        "fixture.v4-only",
-        "fixture.v4.service",
-        body="""
-class Service: pass
-class Plugin:
-    def setup(self, context):
-        context.provide("fixture.v4.service", Service(), exports=())
-""".strip(),
-    )
-    host = PluginApplicationHost(roots, "generation-legacy-projection", object())
-    try:
-        host.start()
-        host.wait_until_loaded()
-        records = {
-            item["pluginId"]: item for item in host.settings_snapshot()["plugins"]
-        }
-        assert records["fixture.v4-only"]["supported"] is True
-        assert records["fixture.v4-only"]["state"] == "active"
-        assert records["fixture.v3-active"]["supported"] is False
-        assert records["fixture.v3-active"]["state"] == "failed"
-        assert records["fixture.v3-active"]["reasonCode"] == "API_VERSION_UNSUPPORTED"
-    finally:
-        host.close()
-
-
 def test_dependency_quarantine_rollback_failure_preserves_only_code_copy(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

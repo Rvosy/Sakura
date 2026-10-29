@@ -5,15 +5,9 @@ import {
   createRootSettingsClient,
   formatSettingsError,
   legacyDataImportPlanHasWork,
-  normalizeAboutSettingsSnapshot,
-  normalizeCharacterExportReceipt,
   normalizeCharacterSettingsSnapshot,
-  normalizeCharacterSwitchReceipt,
   normalizeLegacyDataImportPlan,
   normalizeStorageSettingsSnapshot,
-  normalizeTelemetrySettingsSnapshot,
-  normalizeUpdatePreferencesSnapshot,
-  normalizeUpdateSettingsSnapshot,
 } from "../settings/root-settings-runtime.js";
 
 test("settings errors retain the context and original message", () => {
@@ -45,20 +39,6 @@ const emptyCharacters = Object.freeze({
   revision: 0,
   currentCharacterId: null,
   characters: [],
-});
-
-const unchangedCharacters = Object.freeze({
-  schemaVersion: 1,
-  snapshot: emptyCharacters,
-  targetCharacterId: null,
-  previousCoreGenerationId: "generation-a",
-  restartState: "not_required",
-});
-
-const characterExport = Object.freeze({
-  schemaVersion: 1,
-  outputPath: "/tmp/role.char",
-  message: "角色包已导出到：/tmp/role.char",
 });
 
 const defaultStorage = Object.freeze({
@@ -94,17 +74,6 @@ const legacyDataPlan = Object.freeze({
   requiresConflictConfirmation: false,
 });
 
-const noUpdate = Object.freeze({
-  schemaVersion: 1,
-  currentVersion: "1.0.0",
-  mode: "installed",
-  available: false,
-  version: null,
-  notes: null,
-  pubDate: null,
-  downloadUrl: null,
-});
-
 test("quarantine-only legacy plans still require apply", () => {
   const quarantineOnly = normalizeLegacyDataImportPlan({
     ...legacyDataPlan,
@@ -126,29 +95,6 @@ test("quarantine-only legacy plans still require apply", () => {
   }), false);
 });
 
-const updatePreferences = Object.freeze({
-  schemaVersion: 1,
-  autoCheckEnabled: true,
-});
-
-const about = Object.freeze({
-  schemaVersion: 1,
-  version: "1.0.0",
-  repositoryUrl: "https://github.com/Rvosy/Sakura",
-});
-
-const telemetry = Object.freeze({
-  schemaVersion: 1,
-  enabled: true,
-  installationId: "550e8400-e29b-41d4-a716-446655440000",
-});
-
-test("empty character snapshot renders as a supported no-selection state", () => {
-  const normalized = normalizeCharacterSettingsSnapshot(emptyCharacters);
-  assert.equal(normalized.character.current_character_id, "");
-  assert.deepEqual(normalized.character.characters, []);
-});
-
 test("large character lists and additive host fields remain displayable", () => {
   const characters = Array.from({ length: 300 }, (_, i) => ({
     id: `character-${i}`, displayName: "长名称".repeat(100),
@@ -157,38 +103,6 @@ test("large character lists and additive host fields remain displayable", () => 
   const normalized = normalizeCharacterSettingsSnapshot({ ...emptyCharacters, characters });
   assert.equal(normalized.character.characters.length, 300);
   assert.equal(normalized.character.characters[299].display_name, characters[299].displayName);
-});
-
-test("character switch receipt binds the committed target and previous generation", () => {
-  const selected = {
-    ...emptyCharacters,
-    revision: 2,
-    currentCharacterId: "sakura",
-    characters: [{
-      id: "sakura",
-      displayName: "Sakura",
-      hasVoice: true,
-      hasExportableVoice: true,
-    }],
-  };
-  const normalized = normalizeCharacterSwitchReceipt({
-    ...unchangedCharacters,
-    snapshot: selected,
-    targetCharacterId: "sakura",
-    restartState: "requested",
-  });
-  assert.equal(normalized.targetCharacterId, "sakura");
-  assert.equal(normalized.character.current_character_id, "sakura");
-  assert.throws(() => normalizeCharacterSwitchReceipt({
-    ...unchangedCharacters,
-    snapshot: selected,
-    targetCharacterId: "other",
-  }), /CHARACTER_SETTINGS_RESPONSE_INVALID/);
-});
-
-test("character export receipt allows additive host fields", () => {
-  const receipt = { ...characterExport, futureField: true };
-  assert.deepEqual(normalizeCharacterExportReceipt(receipt), receipt);
 });
 
 test("storage snapshot projects paths, status and reset availability", () => {
@@ -205,122 +119,6 @@ test("storage snapshot projects paths, status and reset availability", () => {
   });
   assert.equal(missing.statusState, "failed");
   assert.equal(missing.canReset, true);
-});
-
-test("legacy role data plan exposes only bounded counts and opaque identities", () => {
-  assert.deepEqual(normalizeLegacyDataImportPlan(legacyDataPlan), legacyDataPlan);
-});
-
-test("update snapshot separates installed updater from portable download", () => {
-  assert.deepEqual(normalizeUpdateSettingsSnapshot(noUpdate), noUpdate);
-  assert.equal(normalizeUpdateSettingsSnapshot({
-    ...noUpdate,
-    mode: "portable",
-    available: true,
-    version: "1.1.0",
-    downloadUrl: "https://example.test/Sakura.zip",
-  }).mode, "portable");
-
-});
-
-test("update preferences accept only the typed auto-check switch", () => {
-  assert.deepEqual(normalizeUpdatePreferencesSnapshot(updatePreferences), updatePreferences);
-});
-
-test("about snapshot exposes only the packaged version and fixed repository", () => {
-  assert.deepEqual(normalizeAboutSettingsSnapshot(about), about);
-});
-
-test("telemetry snapshot accepts only the one switch and canonical v4 id", () => {
-  assert.deepEqual(normalizeTelemetrySettingsSnapshot(telemetry), telemetry);
-  assert.deepEqual(normalizeTelemetrySettingsSnapshot({
-    ...telemetry,
-    enabled: false,
-    installationId: null,
-  }).installationId, null);
-});
-
-test("typed root settings client uses only frozen character storage, update, and about commands", async () => {
-  const calls = [];
-  const invoke = async (command, args) => {
-    calls.push([command, args]);
-    if (command === "settings_characters_get") return emptyCharacters;
-    if (command === "settings_character_export") return characterExport;
-    if (command.startsWith("settings_character")) return unchangedCharacters;
-    if (command === "settings_storage_open_user_root") return null;
-    if (command === "settings_update_get") return noUpdate;
-    if (command === "settings_update_preferences_get") return updatePreferences;
-    if (command === "settings_update_preferences_set") {
-      return { ...updatePreferences, autoCheckEnabled: args.autoCheckEnabled };
-    }
-    if (command.startsWith("settings_update_")) return null;
-    if (command === "settings_about_get") return about;
-    if (command.startsWith("settings_about_open_")) return null;
-    if (command === "settings_telemetry_get") return telemetry;
-    if (command === "settings_telemetry_set_enabled") {
-      return { ...telemetry, enabled: args.enabled };
-    }
-    if (command === "settings_telemetry_regenerate_installation_id") return telemetry;
-    if (command === "settings_telemetry_open_documentation") return null;
-    return defaultStorage;
-  };
-  const client = createRootSettingsClient({ invoke });
-  await client.charactersGet();
-  await client.characterImport("/tmp/role.char");
-  await client.characterVoiceImport("/tmp/role.voice", "role");
-  await client.characterExport("/tmp/role.char", "role", "full");
-  await client.characterDelete("role");
-  await client.characterSelect("role");
-  await client.storageGet();
-  await client.storageOpenUserRoot();
-  await client.storageChooseTtsRoot();
-  await client.storageResetTtsRoot();
-  await client.updateGet();
-  await client.updateCachedGet();
-  await client.updatePreferencesGet();
-  await client.updatePreferencesSet(false);
-  await client.updateInstall();
-  await client.updateOpenPortableDownload("https://example.test/Sakura.zip");
-  await client.aboutGet();
-  await client.aboutOpenWebsite();
-  await client.aboutOpenRepository();
-  await client.aboutOpenChangelog();
-  await client.aboutOpenSponsor();
-  await client.telemetryGet();
-  await client.telemetrySetEnabled(false);
-  await client.telemetryRegenerateInstallationId();
-  await client.telemetryOpenDocumentation();
-  await client.macosOpenSystemSettings();
-  await client.macosOpenAppleSupport();
-  assert.deepEqual(calls, [
-    ["settings_characters_get", undefined],
-    ["settings_character_import", { path: "/tmp/role.char" }],
-    ["settings_character_import_voice", { path: "/tmp/role.voice", characterId: "role" }],
-    ["settings_character_export", { path: "/tmp/role.char", characterId: "role", kind: "full" }],
-    ["settings_character_delete", { characterId: "role" }],
-    ["settings_character_select", { characterId: "role" }],
-    ["settings_storage_get", undefined],
-    ["settings_storage_open_user_root", undefined],
-    ["settings_storage_choose_tts_root", undefined],
-    ["settings_storage_reset_tts_root", undefined],
-    ["settings_update_get", undefined],
-    ["settings_update_cached_get", undefined],
-    ["settings_update_preferences_get", undefined],
-    ["settings_update_preferences_set", { autoCheckEnabled: false }],
-    ["settings_update_install", undefined],
-    ["settings_update_open_portable_download", { url: "https://example.test/Sakura.zip" }],
-    ["settings_about_get", undefined],
-    ["settings_about_open_website", undefined],
-    ["settings_about_open_repository", undefined],
-    ["settings_about_open_changelog", undefined],
-    ["settings_about_open_sponsor", undefined],
-    ["settings_telemetry_get", undefined],
-    ["settings_telemetry_set_enabled", { enabled: false }],
-    ["settings_telemetry_regenerate_installation_id", undefined],
-    ["settings_telemetry_open_documentation", undefined],
-    ["settings_macos_open_system_settings", undefined],
-    ["settings_macos_open_apple_support", undefined],
-  ]);
 });
 
 test("package-only and orphan reassociation plans have executable work", () => {

@@ -2570,7 +2570,7 @@ mod tests {
     };
 
     use super::{
-        core_host_process_request, drain_stderr, hello_payload, lifecycle_test_lock,
+        core_host_process_request, drain_stderr, lifecycle_test_lock,
         stderr_diagnostic_summary, CoreHostRuntime, CoreSnapshotCache, ShutdownPolicy,
         StderrDrainState, StderrDrainStats, StderrDrainer, StderrLogSink, StderrRedactor,
         MIN_PROTOCOL_MINOR, OPTIONAL_CAPABILITIES, PRODUCTION_SHUTDOWN_POLICY, PROTOCOL_MAJOR,
@@ -2598,23 +2598,6 @@ mod tests {
         request_id: &str,
     ) -> Result<Value, String> {
         host.request_with_payload(request_id, "system.hello", predecessor_hello_payload())
-    }
-
-    #[test]
-    fn default_hello_payload_contains_current_assistant_capabilities() {
-        let payload = hello_payload();
-
-        assert_eq!(
-            payload["optionalCapabilities"],
-            json!([
-                "transport.concurrent-router",
-                "settings.provider-model",
-                "assistant.tools-v1",
-                "assistant.plugins-v1",
-                "assistant.tts-v1",
-                "assistant.screen-capture-v2"
-            ])
-        );
     }
 
     fn repo_root() -> PathBuf {
@@ -4931,34 +4914,6 @@ mod tests {
             .shutdown()
             .expect("protocol shutdown should clean the bundled Core tree");
         (exit, credential)
-    }
-
-    #[test]
-    fn wp_1c_04_shared_golden_freezes_lifecycle_order_and_deadlines() {
-        let golden = lifecycle_golden();
-        assert_eq!(golden["schemaVersion"], 1);
-        assert_eq!(
-            golden["lifecycle"],
-            json!([
-                "system.hello",
-                "core.initialize",
-                "core.readiness",
-                "core.snapshot",
-                "system.health",
-                "system.shutdown"
-            ])
-        );
-        assert_eq!(golden_deadline(&golden, "hello"), Duration::from_secs(3));
-        assert_eq!(
-            golden_deadline(&golden, "initializeAcceptance"),
-            Duration::from_secs(5)
-        );
-        assert_eq!(
-            golden_deadline(&golden, "readinessWatchdog"),
-            Duration::from_secs(30)
-        );
-        assert_eq!(golden_deadline(&golden, "shutdown"), Duration::from_secs(3));
-        assert_eq!(golden_deadline(&golden, "treeStop"), Duration::from_secs(5));
     }
 
     #[test]

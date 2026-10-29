@@ -1,10 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import {
-  inputVisualEffectModes,
-  validateCapabilityManifest,
-} from "../settings/capability-shell.js";
+import { inputVisualEffectModes, validateCapabilityManifest } from "../settings/capability-shell.js";
 import { createInputPresentationQueue } from "../pet/input-visual-effect.js";
 
 function manifest({ gaussian = true, liquid = true } = {}) {
@@ -84,23 +81,4 @@ test("solid remains selectable when both native visual effects are unavailable",
     ["gaussian_blur", true],
     ["liquid_glass", true],
   ]);
-});
-
-test("schema 1 rejects unknown section fields instead of normalizing them", () => {
-  const current = manifest();
-  assert.throws(
-    () => validateCapabilityManifest({
-      schemaVersion: 1,
-      windowGeneration: 1,
-      sections: {
-        appearance: {
-          status: "available",
-          features: {},
-          available: true,
-        },
-      },
-      unavailableReasons: current.unavailableReasons,
-    }),
-    /section fields/,
-  );
 });

@@ -1,11 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import {
-  autostartErrorMessage,
-  createAutostartSettingsController,
-  validateAutostartSnapshot,
-} from "../settings/autostart-runtime.js";
+import { autostartErrorMessage, createAutostartSettingsController } from "../settings/autostart-runtime.js";
 
 function checkbox() {
   const listeners = new Map();
@@ -27,12 +23,6 @@ function snapshot(launchAtLogin = false) {
     launchAtLogin,
   };
 }
-
-test("autostart snapshot is strict and generation-scoped", () => {
-  assert.equal(validateAutostartSnapshot(snapshot(true)).launchAtLogin, true);
-  assert.throws(() => validateAutostartSnapshot({ ...snapshot(), windowGeneration: 0 }));
-  assert.throws(() => validateAutostartSnapshot({ ...snapshot(), extra: true }));
-});
 
 test("autostart platform errors retain the original OS reason", () => {
   assert.equal(

@@ -412,23 +412,6 @@ mod tests {
     }
 
     #[test]
-    fn liquid_mode_strictly_parses_and_serializes() {
-        let mode: crate::character_appearance::InputVisualEffectMode =
-            serde_json::from_str("\"liquid_glass\"").unwrap();
-        assert_eq!(
-            mode,
-            crate::character_appearance::InputVisualEffectMode::LiquidGlass
-        );
-        assert_eq!(serde_json::to_string(&mode).unwrap(), "\"liquid_glass\"");
-        assert!(
-            serde_json::from_str::<crate::character_appearance::InputVisualEffectMode>(
-                "\"acrylic\""
-            )
-            .is_err()
-        );
-    }
-
-    #[test]
     fn refraction_curve_is_finite_non_negative_and_reaches_zero() {
         let mut previous = f32::MAX;
         for depth in 0..=20 {

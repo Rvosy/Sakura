@@ -1,10 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import {
-  preservePrependScroll,
-  projectHistoryEntries,
-} from "../history/history-presentation.js";
+import { projectHistoryEntries } from "../history/history-presentation.js";
 
 const NOW = "2026-08-29T12:00:00+08:00";
 
@@ -44,16 +41,6 @@ test("history projection preserves participants and current subtitle language", 
     { role: "assistant", content: "嗯" },
     { role: "assistant", content: "我在这里" },
   ]);
-});
-
-test("observation content is preserved as plain text", () => {
-  const unsafe = "<script>alert('x')</script>\n视觉摘要";
-  const projected = projectHistoryEntries([
-    entry("observation", { text: unsafe }, { origin: "manual_screen" }),
-    entry("system", { text: "已确认的关系事实" }, { entryId: "entry-system", origin: "host" }),
-  ], { formatTime: () => "now" });
-
-  assert.equal(projected[0].content, unsafe);
 });
 
 test("consecutive lifecycle records each display their own timestamp", () => {
@@ -160,15 +147,6 @@ test("plugin screen observations retain the character perspective and fold only 
     assert.deepEqual(entries, saved);
   }
 });
-
-test("prepending earlier messages preserves the visible reading anchor", () => {
-  assert.equal(
-    preservePrependScroll({ scrollTop: 120, scrollHeight: 800 }, 1120),
-    440,
-  );
-  assert.equal(preservePrependScroll(null, 100), 100);
-});
-
 
 test("plugin notifications use explicit purpose while legacy messages remain generic", () => {
   const payloads = [

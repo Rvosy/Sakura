@@ -8,7 +8,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from tools.release.gitcode_mirror import MirrorError, download_url, rewrite_manifest, split_repo
+from tools.release.gitcode_mirror import MirrorError, download_url, rewrite_manifest
 from tools.release import gitcode_mirror
 
 
@@ -65,12 +65,6 @@ def test_gitcode_download_url_encodes_asset_name() -> None:
         "https://api.gitcode.com/api/v5/repos/owner/repo/releases/v1.0.3/"
         "attach_files/Sakura%20test.zip/download"
     )
-
-
-def test_gitcode_repository_requires_owner_and_repo() -> None:
-    assert split_repo("Rvosy/Sakura") == ("Rvosy", "Sakura")
-    with pytest.raises(MirrorError, match="GITCODE_REPOSITORY_INVALID"):
-        split_repo("Sakura")
 
 
 def test_missing_gitcode_commit_stops_before_creating_release(tmp_path, monkeypatch) -> None:

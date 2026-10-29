@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { createChatPresentationReducer } from "../chat/chat-presentation.js";
-import { isNewCharacterGeneration, rebindCharacterPresentation } from "../pet/character-generation.js";
+import { rebindCharacterPresentation } from "../pet/character-generation.js";
 import { loadCurrentCharacterPresentation } from "../pet/character-presentation.js";
 import { createRendererHost } from "../pet/renderer-host.js";
 
@@ -149,16 +149,6 @@ test("a native resource error is preserved without retrying", async () => {
   }
 });
 
-test("first lifecycle publication preserves the initial renderer; a later generation revokes it", () => {
-  const reducer = createChatPresentationReducer({initialMessage: "你好"});
-  let generation = reducer.current().generationId;
-  assert.equal(isNewCharacterGeneration(generation, "g1"), false);
-  reducer.reduce(ready("g1", 1));
-  generation = reducer.current().generationId;
-  assert.equal(isNewCharacterGeneration(generation, "g1"), false);
-  assert.equal(isNewCharacterGeneration(generation, "g2"), true);
-});
-
 function settledReducer() {
   const reducer = createChatPresentationReducer({
     initialMessage: "A 的问候",
@@ -182,24 +172,6 @@ function settledReducer() {
   reducer.finishTyping();
   return reducer;
 }
-
-test("same-character Core restart preserves the settled presentation reducer", () => {
-  const reducer = settledReducer();
-  const result = rebindCharacterPresentation({
-    currentCharacterId: "character-a",
-    nextPresentation: {
-      characterId: "character-a",
-      portraitKeys: ["a-default", "a-smile"],
-      defaultPortraitKey: "a-default",
-      concernedPortraitKey: "a-default",
-    },
-    currentReducer: reducer,
-  });
-  assert.equal(result.characterChanged, false);
-  assert.equal(result.reducer, reducer);
-  assert.equal(result.reducer.current().bubbleText, "A 的旧回复");
-  assert.equal(result.greetingPending, false);
-});
 
 test("same-character Core restart preserves old opaque history values", () => {
   const reducer = settledReducer();

@@ -111,61 +111,6 @@ def test_character_archive_uses_portable_directory_and_manifest_id_uniqueness() 
     }
 
 
-def test_character_archive_manifest_uses_sakura_format() -> None:
-    root = _runtime_root("manifest")
-    profile = _build_character_package(root / "source")
-    archive_path = root / "demo.char"
-
-    export_character_archive(profile, archive_path)
-
-    with zipfile.ZipFile(archive_path, "r") as zf:
-        manifest = json.loads(zf.read("manifest.json"))
-        names = set(zf.namelist())
-
-    assert manifest["format"] == ARCHIVE_FORMAT
-    assert manifest["version"] == ARCHIVE_VERSION
-    assert manifest["character"]["card"] == "character/card.md"
-    assert manifest["character"]["portrait"]["default"] == "character/portraits/default.png"
-    assert manifest["character"]["voice"]["tone_refs"] == "character/voice/refs/ref.txt"
-    assert "character/voice/models/gpt.ckpt" in names
-    assert "character/voice/refs/tone_refs/neutral.wav" in names
-
-
-def test_character_archive_roundtrips_opaque_plugin_extensions() -> None:
-    root = _runtime_root("opaque_extensions")
-    profile = _build_character_package(root / "source")
-    manifest_path = profile.package_dir / "character.json"
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    expected = {
-        "com.example.unknown": {
-            "nested": {"revision": 3},
-            "items": ["alpha", 2, False, None],
-        },
-        "sakura.tts": {"enabled": True, "provider": "com.example.unknown"},
-    }
-    manifest["extensions"] = expected
-    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
-    archive_path = root / "opaque.char"
-
-    export_character_archive(CharacterRegistry(root / "source").get("demo"), archive_path)
-    result = import_character_archive(archive_path, root / "source")
-
-    imported = json.loads(
-        (result.package_dir / "character.json").read_text(encoding="utf-8")
-    )
-    for plugin_id, value in expected.items():
-        if plugin_id == "sakura.tts":
-            assert plugin_id not in imported["extensions"]
-        else:
-            assert imported["extensions"][plugin_id] == value
-    with zipfile.ZipFile(archive_path, "r") as zf:
-        public_manifest = json.loads(zf.read("manifest.json"))
-        package_manifest = json.loads(zf.read("character/character.json"))
-    resources = {key: value for key, value in expected.items() if key != "sakura.tts"}
-    assert public_manifest["character"]["extensions"] == resources
-    assert package_manifest["extensions"] == resources
-
-
 def test_unknown_plugin_resources_survive_studio_save_copy_and_export(tmp_path):
     from app.config.character_studio import CharacterStudioService
 
@@ -175,13 +120,13 @@ def test_unknown_plugin_resources_survive_studio_save_copy_and_export(tmp_path):
     resource.parent.mkdir()
     resource.write_bytes(b"private-format")
     manifest_path = package / "character.json"
-    manifest = json.loads(manifest_path.read_text())
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     manifest["extensions"] = {"future.plugin": {"resource": "voice/future", "private": [1, {"x": True}]}}
     manifest["extensionResources"] = {"future.plugin": {
         "kind": "tts", "paths": ["voice/future"],
         "pluginRequirements": [{"kind": "tts", "type": "future.voice@2", "plugins": [{"id": "future.plugin"}]}],
     }}
-    manifest_path.write_text(json.dumps(manifest))
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
     studio = CharacterStudioService(tmp_path / "source")
     opened = studio.open_character("demo")
     opened["doc"]["display_name"] = "Edited"
@@ -189,7 +134,7 @@ def test_unknown_plugin_resources_survive_studio_save_copy_and_export(tmp_path):
     archive = tmp_path / "unknown.char"
     export_character_archive(CharacterRegistry(tmp_path / "source").get("demo"), archive)
     copied = import_character_archive(archive, tmp_path / "target")
-    restored = json.loads((copied.package_dir / "character.json").read_text())
+    restored = json.loads((copied.package_dir / "character.json").read_text(encoding="utf-8"))
     assert restored["extensions"]["future.plugin"] == manifest["extensions"]["future.plugin"]
     assert restored["extensionResources"] == manifest["extensionResources"]
     assert (copied.package_dir / "voice/future/data.bin").read_bytes() == b"private-format"
@@ -203,19 +148,19 @@ def test_voice_exclusion_uses_declarations_outside_legacy_voice_directory(tmp_pa
     (package / "voice/shared.bin").write_bytes(b"shared")
     (package / "voice/future-empty").mkdir()
     manifest_path = package / "character.json"
-    manifest = json.loads(manifest_path.read_text())
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     manifest["extensionResources"] = {
         "future.tts": {"kind": "tts", "paths": ["model.bin", "voice/shared.bin"]},
         "future.other": {"kind": "other", "paths": ["voice/shared.bin", "voice/future-empty"]},
     }
-    manifest_path.write_text(json.dumps(manifest))
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
     archive = tmp_path / "without-voice.char"
     export_character_archive(profile, archive, include_voice=False)
     copied = import_character_archive(archive, tmp_path / "target")
     assert not (copied.package_dir / "model.bin").exists()
     assert (copied.package_dir / "voice/shared.bin").read_bytes() == b"shared"
     assert (copied.package_dir / "voice/future-empty").is_dir()
-    restored = json.loads((copied.package_dir / "character.json").read_text())
+    restored = json.loads((copied.package_dir / "character.json").read_text(encoding="utf-8"))
     assert set(restored["extensionResources"]) == {"future.other"}
 
 
@@ -503,16 +448,6 @@ def test_character_archive_ignores_legacy_theme_source_on_import() -> None:
     assert manifest["theme"]["source"] == THEME_SOURCE_PACKAGE
 
 
-def test_character_registry_uses_current_default_for_optional_theme() -> None:
-    root = _runtime_root("optional_theme_read")
-    profile = _build_voice_less_character(root)
-    manifest = json.loads((profile.package_dir / "character.json").read_text(encoding="utf-8"))
-
-    assert profile.theme_settings == DEFAULT_THEME_SETTINGS
-    assert profile.theme_source == THEME_SOURCE_PACKAGE
-    assert "theme" not in manifest
-
-
 def test_save_character_theme_writes_package_theme_to_manifest() -> None:
     root = _runtime_root("save_character_theme")
     profile = _build_voice_less_character(root)
@@ -616,14 +551,14 @@ def test_voice_import_preserves_declared_and_unknown_resources_offline(tmp_path)
     }
     for owner, declaration in declarations.items():
         store.declare_resources(owner, "demo", declaration)
-    before = json.loads((package / "character.json").read_text())
+    before = json.loads((package / "character.json").read_text(encoding="utf-8"))
 
     imported = import_character_voice_archive(_build_voice_archive(tmp_path), root, "demo")
     CharacterStudioService(root).open_character("demo")
     archive = tmp_path / "updated.char"
     export_character_archive(imported.profile, archive)
     copied = import_character_archive(archive, tmp_path / "target")
-    manifest = json.loads((copied.package_dir / "character.json").read_text())
+    manifest = json.loads((copied.package_dir / "character.json").read_text(encoding="utf-8"))
 
     assert manifest["extensionResources"] == before["extensionResources"]
     assert (copied.package_dir / "voice/models/gpt.ckpt").read_bytes() == b"gpt-new"

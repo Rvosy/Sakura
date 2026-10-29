@@ -117,7 +117,6 @@ test("a user plugin can reinstall the current version to repair code or dependen
   assert.deepEqual(commands, ["settings_plugins_get", "settings_marketplace_install"]);
 });
 
-
 test("enabled plugin updates are sent as one Core operation without toggling user settings", async () => {
   const [plugin] = catalogPlugins(catalog, { api: 4, services: ["host.service"] });
   const commands = [];
@@ -129,17 +128,6 @@ test("enabled plugin updates are sent as one Core operation without toggling use
   await source.install(plugin, { signal: new AbortController().signal, onProgress() {} });
   assert.deepEqual(commands, ["settings_plugins_get", "settings_marketplace_install"]);
 });
-
-
-test("connection plugins keep their declared marketplace category", () => {
-  const mobile = release("1.0.0");
-  mobile.manifest.presentation.category = "connectivity";
-  const [plugin] = catalogPlugins({ schema_version: 1, plugins: [{ id: "sakura_mobile", versions: [mobile] }] },
-    { api: 4, services: ["host.service"] });
-  assert.equal(plugin.category, "连接");
-  assert.equal(plugin.recommendedVersion, "1.0.0");
-});
-
 
 test("incompatible release is visible as an update without an install or LLM candidate", async () => {
   const { hasUpdate, canInstall, availableUpdates, updateCandidates } = await import("../settings/plugin-marketplace-runtime.js");

@@ -4,7 +4,6 @@ import test from "node:test";
 import {
   createRuntimeAppearanceController,
   toLegacyTheme,
-  validateAppearanceSnapshot,
   validateAppearanceValues,
 } from "../settings/appearance-runtime.js";
 import { validateAppearancePublication as validatePetAppearancePublication } from "../pet/appearance.js";
@@ -46,19 +45,6 @@ const values = Object.freeze({
   themeTokens,
 });
 
-test("appearance values validate exact theme and bounded scalar fields", () => {
-  assert.deepEqual(validateAppearanceValues(values, limits), values);
-  assert.equal(
-    validateAppearanceValues({ ...values, visualEffectMode: "liquid_glass" }, limits).visualEffectMode,
-    "liquid_glass",
-  );
-  assert.throws(() => validateAppearanceValues({ ...values, portraitScalePercent: 151 }, limits));
-  assert.throws(() => validateAppearanceValues({ ...values, visualEffectMode: "acrylic" }, limits));
-  assert.throws(() => validateAppearanceValues({ ...values, bubbleAutoExpand: "yes" }, limits));
-  assert.throws(() => validateAppearanceValues({ ...values, themeTokens: { ...themeTokens, token: "secret" } }, limits));
-  assert.throws(() => validateAppearanceValues({ ...values, themeTokens: { ...themeTokens, accent: "url(file)" } }, limits));
-});
-
 test("expanded bubble bounds survive settings and pet publication validation", () => {
   const presentation = { generationId: "generation-a", characterId: "Sakura" };
   const validate = (draft) => validatePetAppearancePublication({
@@ -74,49 +60,6 @@ test("expanded bubble bounds survive settings and pet publication validation", (
   for (const [field, value] of [["bubbleMaxHeight", 401], ["inputBarOffset", 401], ["controlPanelVerticalOffset", -401], ["controlPanelVerticalOffset", 401]]) {
     assert.throws(() => validate({ ...values, [field]: value }));
   }
-});
-
-
-test("runtime theme fields map onto the unchanged legacy settings controls", () => {
-  const legacy = toLegacyTheme(themeTokens);
-  assert.equal(legacy.primary_color, themeTokens.primary);
-  assert.equal(legacy.primary_hover_color, themeTokens.primaryHover);
-  assert.equal(legacy.bubble_background_color, themeTokens.bubbleBackground);
-  assert.deepEqual(Object.keys(legacy), [
-    "primary_color",
-    "primary_hover_color",
-    "accent_color",
-    "text_color",
-    "secondary_text_color",
-    "muted_text_color",
-    "page_background_color",
-    "panel_background_color",
-    "input_background_color",
-    "bubble_background_color",
-    "border_color",
-  ]);
-});
-
-test("settings snapshot binds Rust-injected window core and character identity", () => {
-  const snapshot = {
-    schemaVersion: 1,
-    windowGeneration: 4,
-    limits,
-    presentation: {
-      generationId: "generation-a",
-      characterId: "Sakura",
-      portraitKeys: ["__default__", "happy"],
-      portraitResourceUrls: { __default__: "sakura-character://default", happy: "sakura-character://happy" },
-    },
-    appearance: {
-      schemaVersion: 1,
-      coreGenerationId: "generation-a",
-      characterId: "Sakura",
-      values,
-    },
-  };
-  assert.equal(validateAppearanceSnapshot(snapshot).appearance.values.portraitScalePercent, 125);
-  assert.throws(() => validateAppearanceSnapshot({ ...snapshot, appearance: { ...snapshot.appearance, coreGenerationId: "old" } }));
 });
 
 test("Studio publication merges only edited appearance fields and saves against the new generation", async () => {

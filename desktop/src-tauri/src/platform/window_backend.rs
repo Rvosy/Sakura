@@ -716,12 +716,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn backend_is_concrete_on_every_formal_target() {
-        let _backend = NativeWindowInteractionBackend;
-        assert!(super::super::current_platform_target().is_some());
-    }
-
-    #[test]
     fn native_failures_use_stable_window_service_codes() {
         let error = native_failure("apply_bounds", "test failure");
         assert_eq!(

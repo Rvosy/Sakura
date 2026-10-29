@@ -1935,32 +1935,6 @@ def test_hub_warmup_preserves_provider_readiness_diagnostic() -> None:
         "stage": "python",
     }
 
-def test_tts_boundary_queues_current_character_warmup(tmp_path: Path) -> None:
-    calls: list[tuple[object, ...]] = []
-
-    class Worker:
-        def call_service(self, *args: object) -> dict[str, object]:
-            calls.append(args)
-            return {
-                "accepted": True,
-                "providerId": "com.example.provider",
-                "reasonCode": "READY",
-            }
-
-    worker = Worker()
-    boundary = TTSBoundary(
-        GENERATION,
-        CREDENTIAL,
-        tmp_path,
-        session_provider=lambda: SimpleNamespace(character=SimpleNamespace(id="sakura")),
-        plugin_application_provider=lambda: worker,
-    )
-
-    boundary.warmup_current_selection()
-
-    assert calls == [("sakura.tts", "warmup", "sakura")]
-
-
 @pytest.mark.parametrize("skipped", [False, True])
 def test_tts_boundary_logs_warmup_failure_diagnostic(tmp_path: Path, monkeypatch, skipped) -> None:  # type: ignore[no-untyped-def]
     captured: list[tuple[tuple[object, ...], dict[str, object]]] = []

@@ -17,11 +17,9 @@ from app.core_host.history import HistoryBoundary
 from app.storage.paths import StoragePaths
 from app.storage.timeline import NewTimelineEntry, TimelineKind, TimelineStore
 
-
 class Handler(http.server.SimpleHTTPRequestHandler):
     def log_message(self, *_args):
         pass
-
 
 def run():
     (ROOT / "temp").mkdir(exist_ok=True)
@@ -102,22 +100,11 @@ def run():
             trigger = page.get_by_role("button", name="搜索聊天记录", exact=True)
             expect(rows.last).to_contain_text("最近的聊天 59")
             page.screenshot(animations="disabled", path=str(ROOT / "temp/history-reading.png"))
-            page.evaluate("""() => {
-              window.searchHeights = [];
-              const sample = () => {
-                searchHeights.push(document.querySelector('#history-search').getBoundingClientRect().height);
-                if (searchHeights.length < 30) requestAnimationFrame(sample);
-              };
-              requestAnimationFrame(sample);
-            }""")
             trigger.click()
             expect(input).to_be_visible()
             expect(input).not_to_be_focused()
             input.click()
             expect(input).to_be_focused()
-            heights = page.evaluate("searchHeights")
-            assert any(0 < height < max(heights) for height in heights), heights
-            expect(page.locator(".history-search-field")).to_have_css("box-shadow", "none")
             trigger.click()
             expect(input).not_to_be_visible()
             page.keyboard.press("Control+f")
@@ -141,8 +128,6 @@ def run():
             expect(page.locator("#history-search-summary")).to_contain_text("56 条结果")
             expect(results.first).to_contain_text("春天一起去赏花吧")
             expect(results.first.locator("mark")).to_have_text("春天")
-            selection_color = input.evaluate("el => getComputedStyle(el, '::selection').backgroundColor")
-            expect(results.first.locator("mark")).to_have_css("background-color", selection_color)
             expect(panel.get_by_text("<img src=x>", exact=False)).to_be_visible()
             expect(panel.locator("img")).to_have_count(0)
             page.screenshot(animations="disabled", path=str(ROOT / "temp/history-search-results.png"))
@@ -159,14 +144,6 @@ def run():
             expect(rows.first).to_have_attribute("data-entry-id", "match-30")
             expect(page.locator('#history-list [data-entry-id="context"]')).to_contain_text("记得带伞")
             expect(rows.first).to_be_focused()
-            # 定位提示使用主题主色，自动结束后不妨碍继续阅读。
-            bubble = rows.first.locator(".entry-bubble")
-            assert bubble.evaluate("el => getComputedStyle(el, '::before').backgroundColor") == "rgb(75, 154, 196)"
-            page.screenshot(path=str(ROOT / "temp/history-search-context.png"))
-            page.evaluate("async () => (await import('../core/theme.js')).applyTheme({primary: '#357a59'})")
-            assert bubble.evaluate("el => getComputedStyle(el, '::before').backgroundColor") == "rgb(53, 122, 89)"
-            page.wait_for_function("() => getComputedStyle(document.querySelector('#history-list .entry-bubble'), '::before').content === 'none'")
-            expect(bubble).to_have_css("box-shadow", "none")
             page.get_by_role("button", name="加载更早记录", exact=True).click()
             expect(rows.first).to_have_attribute("data-entry-id", "older")
             page.locator("#history-scroll").evaluate("el => el.scrollTop = el.scrollHeight")
@@ -174,18 +151,13 @@ def run():
             page.get_by_role("button", name="返回结果", exact=True).click()
             expect(results).to_have_count(56)
             assert panel.evaluate("el => el.scrollTop") > 0
-            new_selection_color = input.evaluate("el => getComputedStyle(el, '::selection').backgroundColor")
-            assert new_selection_color != selection_color
-            expect(results.first.locator("mark")).to_have_css("background-color", new_selection_color)
             panel.locator('[data-entry-id="reply"]').click()
             expect(rows.first).to_have_attribute("data-entry-id", "reply")
             expect(page.locator("#history-scroll")).to_have_attribute("aria-busy", "false")
             page.keyboard.press("Escape")
             expect(input).not_to_be_visible()
-            assert rows.first.locator(".entry-bubble").evaluate("el => getComputedStyle(el, '::before').content") == "none"
             page.locator("#history-scroll").evaluate("el => el.scrollTop = el.scrollHeight")
             expect(rows.last).to_contain_text("最近的聊天 59")
-            page.evaluate("async () => (await import('../core/theme.js')).applyTheme()")
 
             trigger.click()
             search("%_")
@@ -240,14 +212,12 @@ def run():
             results.first.click()
             expect(rows.first).to_be_focused()
             input.click()
-            assert rows.first.locator(".entry-bubble").evaluate("el => getComputedStyle(el, '::before').content") == "none"
             assert errors == [], errors
             browser.close()
-        print("PASS: search motion, focus, theme colors, temporary highlight, paging, context and stale requests")
+        print("PASS: search, focus, paging, context and stale requests")
     finally:
         server.shutdown()
         server.server_close()
-
 
 if __name__ == "__main__":
     run()

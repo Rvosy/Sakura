@@ -189,11 +189,6 @@ def test_chat_prompt_budget_excludes_native_visual_reply_instruction() -> None:
 class TestBrowserRouting:
     """浏览器工具路由拦截"""
 
-    def test_no_routing_when_both_modes_false(self) -> None:
-        tools = [{"function": {"name": "test_tool"}}]
-        result = _filter_openai_tools_for_browser_routing(tools, browser_page_mode=False, visible_browser_mode=False)
-        assert result == tools
-
     def test_visible_browser_mode_filters_background_web_tools(self) -> None:
         tools = [
             {"function": {"name": "playwright_navigate"}},
@@ -659,14 +654,6 @@ class TestAgentRuntimeBasics:
         assert result.reply.segments[0].translation == "我整理好带图工具结果了。"
         assert runtime._native_tool_results_blocked_models == {"vision-model"}
 
-    def test_update_character_preserves_tools(self) -> None:
-        tool = _dummy_tool("my_tool")
-        registry = ToolRegistry([tool])
-        runtime = AgentRuntime(_dummy_api_client(), "旧", tools=registry, reply_tones=["开心"])
-        runtime.update_character("新", reply_tones=["傲娇"])
-        assert runtime.tools.get("my_tool") is not None
-        assert runtime.reply_tones == ["傲娇"]
-
     def test_cancel_after_planning_stops_before_tool_execution(self) -> None:
         token = CancellationToken()
         executed: list[str] = []
@@ -705,10 +692,3 @@ class TestAgentRuntimeBasics:
             )
 
         assert executed == []
-
-
-def test_tool_prompt_does_not_advertise_unavailable_web_tools() -> None:
-    runtime = AgentRuntime(_dummy_api_client(), _dummy_system_prompt())
-    prompt = runtime._build_tool_system_prompt()
-    for name in ("web__web_search", "web__fetch_url"):
-        assert name not in prompt

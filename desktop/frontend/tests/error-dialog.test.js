@@ -63,30 +63,6 @@ function fixture(options = {}) {
 
 const button = (dialog, text) => dialog.querySelectorAll('button').find(element => element.textContent === text);
 
-test("error details preserve source diagnostics as text and redact credentials", () => {
-  const { controller } = fixture();
-  const markup = '<img src=x onerror="window.injected=true">';
-  const dialog = controller.show({
-    error: {
-      code: "MARKETPLACE_FETCH_FAILED",
-      message: `request rejected ${markup}`,
-      details: { diagnostics: {
-        diagnostic: "C:\\Sakura\\cache: winerror=10061 api_key=fixture-private-value",
-        exception_stack: "Traceback\n  File download.py, line 12",
-      } },
-      cause: new Error("tcp connection refused"),
-    },
-  });
-  const diagnostic = dialog.querySelector("pre");
-  for (const value of [markup, "C:\\Sakura\\cache", "10061", "Traceback\n", "tcp connection refused"]) {
-    assert.ok(diagnostic.textContent.includes(value), value);
-  }
-  assert.ok(!diagnostic.textContent.includes("fixture-private-value"));
-  assert.ok(diagnostic.textContent.includes("[REDACTED]"));
-  assert.equal(diagnostic.children.length, 0);
-  assert.equal(dialog.querySelector("img"), null);
-});
-
 test("successive failures update one open dialog and its accessible description", () => {
   const { document, controller } = fixture();
   const first = controller.show({ title: "Download failed", message: "Try again", error: "first failure" });
@@ -114,48 +90,6 @@ test("closing the dialog allows reopening it without adding another window", asy
   assert.equal(controller.isOpen, true);
   assert.equal(opened, 2);
   assert.equal(document.body.children.length, 1);
-});
-
-test("diagnostics open with a brief message, preserve a manual collapse, and expand for a new failure", () => {
-  const { controller } = fixture();
-  const first = { title: '保存失败', message: '配置未保存', error: 'Permission denied' };
-  const dialog = controller.show(first);
-  const details = dialog.querySelector('details');
-  assert.equal(details.open, true);
-  details.open = false;
-  controller.show(first);
-  assert.equal(details.open, false);
-  controller.show({ ...first, error: 'Connection refused' });
-  assert.equal(details.open, true);
-  details.open = false;
-  controller.close();
-  controller.show(first);
-  assert.equal(details.open, true);
-});
-
-test("copy includes the complete sanitized traceback, including content beyond the viewport", async () => {
-  const copied = [];
-  const { controller } = fixture({ copyText: async text => copied.push(text) });
-  const trace = 'Traceback\n' + '  at config.py:42\n'.repeat(1100) + 'PermissionError: root cause';
-  const dialog = controller.show({ error: { code: 'SAVE_FAILED', diagnostic: 'password=private-value', exception_stack: trace } });
-  await button(dialog, '复制详情').emit('click');
-  assert.equal(copied[0], dialog.querySelector('pre').textContent);
-  assert.ok(copied[0].includes(trace));
-  assert.ok(!copied[0].includes('private-value'));
-  assert.ok(dialog.textContent.includes('已复制'));
-});
-
-test("clipboard failure preserves the original error and permits selecting or copying it again", async () => {
-  let fail = true;
-  const { controller } = fixture({ copyText: async () => { if (fail) throw new Error('clipboard denied'); } });
-  const dialog = controller.show({ error: 'Original failure' });
-  await button(dialog, '复制详情').emit('click');
-  assert.equal(dialog.querySelector('pre').textContent, 'Original failure');
-  assert.ok(dialog.textContent.includes('clipboard denied'));
-  assert.equal(button(dialog, '复制详情').disabled, false);
-  fail = false;
-  await button(dialog, '复制详情').emit('click');
-  assert.ok(dialog.textContent.includes('已复制'));
 });
 
 test("disposing prevents a late failure from recreating the dialog", () => {

@@ -48,7 +48,6 @@ document.getElementById('applyButton').onclick=async()=>{const surfaces=document
 showPage('providers');document.body.dataset.ready='true';
 """
 
-
 def run():
     requests = []
     class Handler(http.server.SimpleHTTPRequestHandler):
@@ -80,15 +79,19 @@ def run():
             config = roots.user_root/'data/plugins'/OPENAI_SERVICE/'config.json'; config.parent.mkdir(parents=True)
             config.write_text(json.dumps({'profiles':[{'profileId':'fixture','label':'测试服务','base_url':origin+'/v1','api_key':'fixture-saved-key','timeout_seconds':60,'models':[{'modelId':'fixture-model','contextWindowTokens':96000}]}]}))
             ModelReferenceRepository(roots.user_root).save({'chat':{'serviceKey':OPENAI_SERVICE,'profileId':'fixture','modelId':'fixture-model'},'vision_chat':{'serviceKey':'','profileId':'','modelId':''}})
-            deps = DistributionPaths(roots.distribution_root).plugin_dependency_root_for(OPENAI_SERVICE)
-            deps.mkdir(parents=True)
-            for name in ("openai", "httpx", "httpcore", "h11", "anyio", "sniffio", "idna", "certifi", "pydantic", "pydantic_core", "typing_extensions", "annotated_types", "typing_inspection", "jiter", "distro", "tqdm", "socksio", "colorama"):
-                spec=importlib.util.find_spec(name)
-                if spec is None: continue
-                source=Path(next(iter(spec.submodule_search_locations))) if spec.submodule_search_locations else Path(spec.origin)
-                if source.is_dir(): shutil.copytree(source,deps/source.name,ignore=shutil.ignore_patterns('__pycache__'))
-                else: shutil.copy2(source,deps/source.name)
-            (deps/'.sakura-dependencies.json').write_text(json.dumps({'schemaVersion':1,'kind':'requirements.txt','python':f'{sys.version_info.major}.{sys.version_info.minor}'}))
+            common = ("pydantic", "pydantic_core", "typing_extensions", "annotated_types", "typing_inspection")
+            for plugin_id, modules in (
+                (OPENAI_SERVICE, common + ("openai", "httpx", "httpcore", "h11", "anyio", "sniffio", "idna", "certifi", "jiter", "distro", "tqdm", "socksio", "colorama")),
+                ("sakura.assistant.default", common + ("json_repair",)),
+            ):
+                deps = DistributionPaths(roots.distribution_root).plugin_dependency_root_for(plugin_id)
+                deps.mkdir(parents=True)
+                for name in modules:
+                    spec = importlib.util.find_spec(name)
+                    source = Path(next(iter(spec.submodule_search_locations))) if spec.submodule_search_locations else Path(spec.origin)
+                    if source.is_dir(): shutil.copytree(source, deps/source.name, ignore=shutil.ignore_patterns('__pycache__'))
+                    else: shutil.copy2(source, deps/source.name)
+                (deps/'.sakura-dependencies.json').write_text(json.dumps({'schemaVersion':1,'kind':'requirements.txt','python':f'{sys.version_info.major}.{sys.version_info.minor}'}))
             app = PluginApplicationHost(roots, 'journey', ToolRegistry())
             try:
                 app.start(); assert app.wait_until_loaded(timeout=10)

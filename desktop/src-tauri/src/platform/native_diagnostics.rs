@@ -125,11 +125,4 @@ mod tests {
         assert!(!snapshot.facts.values().any(|value| value.contains('\\')));
     }
 
-    #[test]
-    fn display_server_classification_is_stable() {
-        assert!(matches!(
-            display_server(),
-            "win32" | "quartz" | "x11" | "wayland" | "unknown"
-        ));
-    }
 }

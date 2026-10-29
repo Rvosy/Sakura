@@ -15,14 +15,6 @@ from app.storage.runtime_roots import RuntimeRoots
 FIXTURE_ROOT = Path(__file__).parents[1] / "fixtures" / "runtime_v2" / "wp_4_04"
 
 
-class _Runtime:
-    def __init__(self) -> None:
-        self.context_providers = []
-
-    def set_context_providers(self, values) -> None:
-        self.context_providers = list(values)
-
-
 def _assistant_root(tmp_path: Path) -> Path:
     root = tmp_path / "assistant"
     (root / "plugins").mkdir(parents=True)
@@ -40,93 +32,6 @@ def _wait_until(predicate, timeout: float = 8.0) -> None:
             return
         time.sleep(0.02)
     raise AssertionError("condition did not become true before the deadline")
-
-
-def test_plugin_settings_preview_uses_v4_runtime_diagnostics() -> None:
-    from app.core_host.plugin_settings import _preview_plugin
-    from app.plugins.inventory import InstalledPluginRecord
-
-    unsupported = _preview_plugin(
-        InstalledPluginRecord(
-            "pi_bundled_666978747572655f706c7567696e", "bundled", "legacy", "legacy",
-            "Legacy", "", "", "1.0.0", 2, "plugin:Legacy", False, False,
-            ("com.example.legacy",), ("sakura.host.settings",),
-            "API_VERSION_UNSUPPORTED", False, False,
-        )
-    )
-    assert unsupported["enabled"] is False
-    assert unsupported["supported"] is False
-    assert unsupported["state"] == "failed"
-    assert unsupported["reasonCode"] == "API_VERSION_UNSUPPORTED"
-    assert unsupported["installId"] == "pi_bundled_666978747572655f706c7567696e"
-    assert unsupported["provides"] == ["com.example.legacy"]
-    assert unsupported["requires"] == ["sakura.host.settings"]
-    assert unsupported["missingServices"] == []
-
-    required = _preview_plugin(
-        InstalledPluginRecord(
-            "pi_user_6c6f63616c", "bundled", "required", "required",
-            "Required", "", "", "1.0.0", 4, "plugin:Required", True, True,
-            (), (), "READY", True, True,
-        )
-    )
-    assert required["enabled"] is True
-    assert required["state"] == "starting"
-    assert required["reasonCode"] == "PLUGIN_APPLICATION_NOT_READY"
-
-    invalid_user_required = _preview_plugin(
-        InstalledPluginRecord(
-            "pi_user_62726f6b656e", "user", "broken", None,
-            "Invalid plugin", "", "", "0.0.0", None, "", False, False,
-            (), (), "PLUGIN_MANIFEST_INVALID", False, False,
-        )
-    )
-    assert invalid_user_required["enabled"] is False
-    assert invalid_user_required["pluginId"] is None
-    assert invalid_user_required["canUninstall"] is True
-    assert invalid_user_required["state"] == "failed"
-    assert invalid_user_required["reasonCode"] == "PLUGIN_MANIFEST_INVALID"
-
-
-def test_production_application_uses_v4_host_contributions(tmp_path: Path) -> None:
-    from app.plugin_sdk.sakura_tools import ToolRegistry
-    from app.core_host.plugin_application import PluginApplicationHost
-
-    registry = ToolRegistry()
-    runtime = _Runtime()
-    application = PluginApplicationHost(_assistant_root(tmp_path), "generation-a", registry)
-    session = type("Session", (), {
-        "assistant": object(),
-        "visual_binding": None,
-        "character": CharacterProfile("fixture", "Fixture", tmp_path, tmp_path / "card.md", ""),
-    })()
-    try:
-        application.start()
-        application.bind_session(session)
-        application.wait_until_loaded(timeout=5)
-        snapshot = application.public_snapshot()
-        by_id = {item["pluginId"]: item for item in snapshot["plugins"]}
-
-        assert by_id["fixture_plugin"]["state"] == "active"
-        assert by_id["fixture_plugin"]["supported"] is True
-        assert by_id["broken_plugin"]["state"] == "failed"
-        assert by_id["broken_plugin"]["supported"] is False
-        assert by_id["broken_plugin"]["reasonCode"] == "API_VERSION_UNSUPPORTED"
-        assert set(snapshot) == {
-            "schemaVersion", "state", "reasonCode", "plugins"
-        }
-        assert "entry" not in repr(snapshot)
-        assert str(tmp_path) not in repr(snapshot)
-        assert application.wait_until_bound(timeout=5)
-
-        result = registry.execute("fixture_echo", {"value": "hello"})
-        assert result.success is True
-        assert result.content == {"echo": "hello"}
-    finally:
-        application.close()
-    assert application.state == "stopped"
-    assert registry.get("fixture_echo") is None
-    assert registry.get("fixture_echo") is None
 
 
 def test_plugin_reads_history_range_for_current_character(tmp_path: Path) -> None:

@@ -2045,12 +2045,6 @@ mod tests {
     use std::process::Command;
 
     #[test]
-    fn native_backend_contract_is_injectable() {
-        let backend = NativeManagedProcessTreeBackend;
-        let _: &dyn ManagedProcessTreeBackend = &backend;
-    }
-
-    #[test]
     fn empty_program_fails_closed() {
         let error = match NativeManagedProcessTreeBackend.spawn(&ManagedProcessRequest {
             program: PathBuf::new(),

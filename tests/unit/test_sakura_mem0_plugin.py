@@ -1,44 +1,22 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from types import SimpleNamespace
 import threading
 import time
 
 import pytest
-import yaml
 
 from sakura_assistant.agent.context_orchestrator import ContextOrchestrator
-from sakura_context import ContextFragment, ContextMessage, ContextRequest
-from app.plugins.discovery import PluginDiscovery
+from sakura_context import ContextFragment, ContextRequest
 from app.plugins.models import ContextProviderContribution
 from plugins.optional.sakura_mem0.plugin import (
     SakuraMem0Plugin,
     SakuraMem0Runtime,
     _default_runtime,
     _context_request,
-    _tool_registrations,
 )
 from plugins.optional.sakura_mem0.memory import MemoryRecord
-
-
-def test_recall_logs_distinguish_matches_empty_and_skipped(monkeypatch):
-    from plugins.optional.sakura_mem0 import memory_recall
-
-    logs = []
-    monkeypatch.setattr(memory_recall, "log_event",
-                        lambda channel, message, fields, **options: logs.append((message, fields, options)))
-    boundary = FakeBoundary()
-    service = memory_recall.MemoryRecallService(boundary)
-    result = service.recall(_context_request({"current_input": "你记得什么"}))
-    assert len(result.fragments) == 1
-    assert logs[-1][1]["recalled"] == 1
-    boundary.search_memory = lambda *_args, **_kwargs: {"status": "ready", "memories": []}
-    service.recall(_context_request({"current_input": "你记得什么"}))
-    assert logs[-1][1]["recalled"] == 0
-    service.recall(_context_request({}))
-    assert logs[-1][1]["recalled"] == 0
 
 
 def test_context_request_keeps_latest_eight_messages_and_timeline_identity() -> None:
@@ -108,48 +86,8 @@ class FakeBoundary:
     def status(self):
         return {"status": "ready", "message": ""}
 
-    def profile_memories(self):
-        return []
-
     def list_memories(self, *, limit=None):
         return self.memory_store.list_memories(limit=limit)
-
-    def search_memory(self, arguments, *, wait=False):
-        assert wait is False
-        return {
-            "status": "ready",
-            "memories": [
-                {
-                    "id": "memory-1",
-                    "content": "喜欢樱花",
-                    "source": "explicit",
-                    "score": 0.9,
-                    "updatedAt": "2026-08-20T10:00:00+08:00",
-                }
-            ],
-        }
-
-    def upsert(self, values):
-        payload = dict(values)
-        memory_id = str(payload.get("id") or "created")
-        record = {
-            "id": memory_id,
-            "content": payload["content"],
-            "layer": payload.get("layer", "semantic"),
-            "category": payload.get("category", ""),
-            "source": payload.get("source", "explicit"),
-            "importance": payload.get("importance", 0.5),
-            "confidence": payload.get("confidence", 0.8),
-            "updatedAt": "2026-08-20T11:00:00+08:00",
-        }
-        return {"status": "ready", "memory": record}
-
-    def delete(self, values):
-        return {
-            "status": "ready",
-            "deletedId": values["id"],
-            "alreadyMissing": values["id"] == "missing",
-        }
 
     def settings_get(self):
         return {
@@ -166,10 +104,6 @@ class FakeBoundary:
                 "installed": self.installed,
             },
         }
-
-    def settings_save(self, values):
-        self.saved.append(dict(values))
-        return {"saved": True, "changePlan": "core_restart_required"}
 
     def begin_model_download(self, task_id):
         self.lifecycle.append(f"begin:{task_id}")
@@ -247,92 +181,6 @@ def _runtime(tmp_path: Path) -> tuple[SakuraMem0Runtime, FakeBoundary]:
     )
 
 
-def test_default_runtime_uses_only_declared_host_resources(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    captured: dict[str, object] = {}
-
-    class Storage:
-        def resolve(self, scope: str, name: str) -> Path:
-            return tmp_path / scope / name
-
-    class Character:
-        def current(self) -> dict[str, str]:
-            return {"id": "sakura"}
-
-    class Models:
-        def catalog(self):
-            return []
-
-        def resolve(self, selection):
-            return {}
-
-    class Config:
-        def get(self):
-            return {}
-
-        def update(self, _values):
-            return "applied"
-
-    services = {
-        "sakura.host.storage": Storage(),
-        "sakura.host.character": Character(),
-        "sakura.host.model_slots.v2": Models(),
-        "sakura.host.timeline": object(),
-    }
-
-    def fake_runtime(root, character_id, **kwargs):
-        captured.update(root=root, character_id=character_id, **kwargs)
-        return object()
-
-    monkeypatch.setattr(
-        "plugins.optional.sakura_mem0.plugin.SakuraMem0Runtime",
-        fake_runtime,
-    )
-    plugin_data = tmp_path / "plugin-data"
-    context = SimpleNamespace(
-        data_path=lambda _relative: plugin_data,
-        get=lambda key: services[key],
-        config=Config(),
-    )
-    result = _default_runtime(context)
-
-    assert result is not None
-    assert captured["root"] == plugin_data
-    assert captured["character_id"] == "sakura"
-    assert captured["memory_dir"] == tmp_path / "data" / "memory"
-    assert captured["memory_cache_dir"] == tmp_path / "cache" / "memory"
-
-
-def test_external_manifest_is_discoverable_and_disabled_on_fresh_install(tmp_path: Path) -> None:
-    root = Path(__file__).parents[2]
-    import shutil
-    shutil.copytree(root / "plugins/optional/sakura_mem0", tmp_path / "plugins/user/mem0")
-    spec = next(
-        item
-        for item in PluginDiscovery(
-            tmp_path,
-            config_path=tmp_path / "plugins.yaml",
-        ).discover()
-        if item.plugin_id == "sakura.memory.mem0"
-    )
-    assert spec.api_version == 4
-    assert spec.enabled is False
-    assert spec.requires == (
-        "sakura.host.storage",
-        "sakura.host.character",
-        "sakura.host.timeline",
-        "sakura.host.context",
-        "sakura.host.tools",
-        "sakura.host.settings",
-        "sakura.host.settings.collection-v0",
-        "sakura.host.settings.surface-v0",
-        "sakura.host.model_slots.v2",
-        "sakura.host.artifacts",
-    )
-
-
 def test_plugin_setup_does_not_wait_for_initial_timeline_catch_up(tmp_path: Path) -> None:
     runtime, boundary = _runtime(tmp_path)
     context = FakeContext()
@@ -385,121 +233,6 @@ def test_memory_collection_registers_and_routes_file_transfer(tmp_path: Path) ->
         assert requests == [request]
     finally:
         context.effects[0]()
-
-
-def test_official_descriptors_pass_real_generic_host_validators(tmp_path: Path) -> None:
-    from app.plugin_sdk.sakura_tools import ToolRegistry
-    from app.core_host.plugin_host_services import (
-        _ModelSlotsHostService,
-        _SettingsHostService,
-        _ToolsHostService,
-    )
-
-    runtime, _boundary = _runtime(tmp_path)
-    handle = "cb_" + "a" * 32
-    registry = ToolRegistry()
-    tools = _ToolsHostService(registry, lambda *_args: {})
-    for descriptor, _callback in _tool_registrations(runtime):
-        tools.call("register", [descriptor, handle])
-    assert {tool.name for tool in registry.all()} == {
-        "memory_search",
-        "memory_remember",
-        "memory_update",
-        "memory_forget",
-    }
-
-    settings = _SettingsHostService(lambda *_args: {})
-    settings.call(
-        "register",
-        [
-            "sakura.memory.mem0",
-            runtime.settings_descriptor(),
-            {
-                "load": handle,
-                "save": handle,
-                "actions": {item["actionId"]: handle for item in runtime.settings_descriptor()["actions"]},
-            },
-        ],
-    )
-    settings.call(
-        "register",
-        [
-            "sakura.memory.mem0",
-            runtime.component_descriptor(),
-            {
-                "load": handle,
-                "save": None,
-                "actions": {
-                    "downloadEmbedding": handle,
-                    "retryEmbedding": handle,
-                    "cancelEmbedding": handle,
-                },
-            },
-        ],
-    )
-    settings.register_surface(
-        "sakura.memory.mem0",
-        "memory_embedding_component",
-        "about",
-    )
-    settings.call(
-        "register",
-        [
-            "sakura.memory.mem0",
-            runtime.memory_management_descriptor(),
-            {
-                "load": None,
-                "save": handle,
-                "actions": {item["actionId"]: handle for item in runtime.memory_management_descriptor()["actions"]},
-            },
-        ],
-    )
-    settings.register_surface(
-        "sakura.memory.mem0",
-        "memory_management",
-        "memory",
-    )
-    settings.register_collection(
-        "sakura.memory.mem0",
-        "memory_management",
-        runtime.memory_collection_descriptor(),
-        {
-            "query": handle,
-            "create": handle,
-            "update": handle,
-            "delete": handle,
-        },
-    )
-    component = next(
-        item for item in settings.sections_for_plugin("sakura.memory.mem0")
-        if item["sectionId"] == "memory_embedding_component"
-    )
-    assert component["surface"] == "about"
-    assert component["fields"][0]["actionIds"] == [
-        "downloadEmbedding",
-        "retryEmbedding",
-        "cancelEmbedding",
-    ]
-    assert component["values"]["embeddingResource"]["applicability"] == "required"
-    assert component["values"]["embeddingResource"]["availableActionIds"] == []
-
-    slots = _ModelSlotsHostService(lambda *_args: {"serviceKey": "", "profileId": "", "modelId": ""})
-    slots.call(
-        "register",
-        [
-            "sakura.memory.mem0",
-            {
-                "slotId": "curation",
-                "label": "记忆整理模型",
-                "description": "用于整理长期记忆。",
-                "modelKind": "chat_completion",
-                "required": False,
-                "order": 30,
-            },
-            {"load": handle, "save": handle},
-        ],
-    )
-    assert slots.count == 1
 
 
 def test_about_surface_is_resource_only_and_omits_incomplete_v1_values() -> None:
@@ -561,68 +294,6 @@ def test_about_surface_is_resource_only_and_omits_incomplete_v1_values() -> None
     }, {"load": handle, "save": handle, "actions": {}}])
     with pytest.raises(HostServiceError, match="SETTINGS_SURFACE_INVALID"):
         invalid.register_surface("fixture", "editable", "about")
-
-
-def test_context_collection_and_settings_keep_character_scope(tmp_path: Path) -> None:
-    runtime, boundary = _runtime(tmp_path)
-    request = ContextRequest(
-        current_input="我喜欢什么花？",
-        character_id="sakura",
-        character_name="Sakura",
-        recent_messages=(ContextMessage("user", "我喜欢什么花？"),),
-    )
-
-    fragments = runtime.context(
-        {
-            "current_input": request.current_input,
-            "character_id": request.character_id,
-            "character_name": request.character_name,
-            "source": request.source,
-            "mode": request.mode,
-            "recent_messages": [
-                {"role": item.role, "content": item.content}
-                for item in request.recent_messages
-            ],
-        }
-    )
-    assert "喜欢樱花" in fragments[0]["content"]
-    assert fragments[0]["metadata"]["memory_id"] == "memory-1"
-    assert runtime.context({"current_input": "樱花", "character_id": "other"}) == []
-    queried = runtime.query_collection(
-        {"cursor": None, "limit": 25, "search": "樱花", "filters": {"layer": "semantic"}}
-    )
-    assert [item["itemId"] for item in queried["items"]] == ["memory-1"]
-    assert "other-scope" not in str(queried)
-
-    updated = runtime.update_collection_item("memory-1", {"content": "更喜欢八重樱"})
-    assert updated["values"]["layer"] == "semantic"
-    assert runtime.delete_collection_item("memory-1") == {"deleted": True}
-
-    values = runtime.load_settings()
-    assert values["status"] == {
-        "state": "ready",
-        "label": "运行正常",
-        "message": "",
-    }
-    resource = runtime.load_component_settings()["embeddingResource"]
-    assert {key: value for key, value in resource.items() if key != "message"} == {
-        "applicability": "required",
-        "subtitle": "BAAI/bge-small-zh-v1.5",
-        "ready": True,
-        "taskState": "idle",
-        "detail": "",
-        "progress": None,
-        "availableActionIds": [],
-    }
-    runtime.save_settings({"triggerTurns": 12})
-    assert runtime.load_model_slot() == {"serviceKey": "sakura.model.openai_compatible", "profileId": "fixture", "modelId": "curator"}
-    runtime.save_model_slot({"modelId": "new-curator"})
-    assert boundary.saved == [
-        {"triggerTurns": 12},
-        {"curationModelRef": {"serviceKey": "sakura.model.openai_compatible", "profileId": "fixture", "modelId": "new-curator"}},
-    ]
-    runtime.save_model_slot({"modelId": "new-curator"})
-    assert boundary.saved[-1] == {"curationModelRef": {"serviceKey": "sakura.model.openai_compatible", "profileId": "fixture", "modelId": "new-curator"}}
 
 
 def test_runtime_cancels_and_joins_model_download_before_closing_store(

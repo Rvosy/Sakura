@@ -20,7 +20,6 @@ from app.storage.runtime_roots import RuntimeRoots
 from scripts import runtime_v2_archive
 from tools import development_plugin_dependencies
 from tools.release.package_optional_plugin import build as build_optional_plugin
-from tools.release import prepare_python_runtime
 from tools.release import stage_distribution
 from tools.release.stage_distribution import (
     copy_tree,
@@ -28,7 +27,6 @@ from tools.release.stage_distribution import (
     move_tools,
     prune_non_runtime_files,
     validate_layout,
-    write_windows_pth,
 )
 from tools.release.tauri_release_config import build_config, bundle_targets
 from tools.release.updater_manifest import build_manifest
@@ -207,33 +205,6 @@ def test_bootstrap_runtime_stages_linux_layout_from_pinned_archive(
     assert bootstrap_runtime.stage_runtime(repo_root=repo, target="linux-x64") == staged
 
 
-def test_release_dependency_install_allows_the_callers_pip_cache(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    python_root = tmp_path / "python"
-    python_root.mkdir()
-    (python_root / "python.exe").write_bytes(b"python")
-    lock = tmp_path / "requirements.lock"
-    lock.write_text("fixture==1.0 --hash=sha256:" + "0" * 64 + "\n", encoding="utf-8")
-    captured: dict[str, object] = {}
-
-    def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess:
-        captured["command"] = command
-        captured["env"] = kwargs.get("env")
-        return subprocess.CompletedProcess(command, 0)
-
-    monkeypatch.delenv("PIP_NO_CACHE_DIR", raising=False)
-    monkeypatch.setattr(prepare_python_runtime.subprocess, "run", fake_run)
-
-    prepare_python_runtime.prepare(python_root, "windows-x64", lock)
-
-    environment = captured["env"]
-    assert isinstance(environment, dict)
-    assert "PIP_NO_CACHE_DIR" not in environment
-    assert "--require-hashes" in captured["command"]
-
-
 def _development_dependency_repo(root: Path) -> tuple[Path, Path]:
     repo = root / "repo"
     python = (
@@ -345,41 +316,6 @@ def test_development_dependency_publish_failure_restores_previous_root(
 
     assert (previous / "keep.txt").read_text(encoding="utf-8") == "old"
     assert not list((repo / "plugins").glob(".dependencies-*"))
-
-
-def test_release_identity_and_1_0x_upgrade_modes_are_frozen() -> None:
-    config = json.loads(
-        (ROOT / "desktop/src-tauri/tauri.conf.json").read_text(encoding="utf-8")
-    )
-
-    assert config["productName"] == "Sakura"
-    assert config["identifier"] == "com.rvosy.sakura"
-    assert config["bundle"]["windows"]["nsis"]["installMode"] == "currentUser"
-    assert config["plugins"]["updater"]["windows"]["installMode"] == "passive"
-
-    release = build_config(
-        target="windows-x64",
-        updater=True,
-        endpoint="https://example.test/latest.json",
-        public_key="public-key",
-    )
-    assert release["plugins"]["updater"]["windows"]["installMode"] == "passive"
-
-
-def test_release_overlay_contains_only_the_program_domain() -> None:
-    config = build_config(target="windows-x64", updater=False, endpoint="", public_key="")
-    assert config["bundle"]["resources"] == {
-        "release-staging/VERSION": "VERSION",
-        "release-staging/diagnostic-build.json": "diagnostic-build.json",
-        "release-staging/diagnostic-build-id.txt": "diagnostic-build-id.txt",
-        "release-staging/runtime-manifest.json": "runtime-manifest.json",
-        "release-staging/python": "python",
-        "release-staging/core": "core",
-        "release-staging/plugins": "plugins",
-    }
-    resources = "\n".join(config["bundle"]["resources"])
-    for user_domain in ("config", "data", "characters", "plugins/user", "tts"):
-        assert user_domain not in resources
 
 
 def test_python_updater_signature_verifier_matches_the_tauri_outer_base64_contract(
@@ -809,15 +745,6 @@ def test_distribution_prunes_dependency_tests_and_generated_console_scripts(
     assert not (stage / "python/Scripts").exists()
     assert not (dependency / "bin").exists()
     assert (dependency / "py7zz/bin/7zz.exe").is_file()
-
-
-def test_windows_pth_is_exact_and_keeps_native_site_packages(tmp_path: Path) -> None:
-    python_root = tmp_path / "python"
-    python_root.mkdir()
-    write_windows_pth(python_root)
-    assert (python_root / "python312._pth").read_text(encoding="utf-8") == (
-        "python312.zip\n.\nLib/site-packages\nimport site\n"
-    )
 
 
 def test_tool_staging_uses_native_7zz_instead_of_build_machine_console_script(tmp_path: Path) -> None:

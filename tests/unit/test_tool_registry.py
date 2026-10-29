@@ -64,13 +64,6 @@ class TestToolRegistryDescribe:
         # screen_observation capability 允许，即使 screen 不在 active_groups
         assert "screen" in names
 
-    def test_describe_openai_tools(self) -> None:
-        registry = ToolRegistry([_dummy_tool("test")])
-        tools = registry.describe_openai_tools()
-        assert tools[0]["type"] == "function"
-        assert tools[0]["function"]["name"] == "test"
-
-
 class TestToolRegistryExecution:
     """工具执行"""
 

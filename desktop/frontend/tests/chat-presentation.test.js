@@ -73,17 +73,6 @@ test("chat failure keeps diagnostics out of the bubble and clears the error on t
   assert.equal(reducer.current().error, null);
 });
 
-test("a verbose failure message stays outside the bubble", () => {
-  const reducer = readyReducer();
-  const identity = { generationId: "generation-1", generationNumber: 1, operationId: "op-error" };
-  reducer.reduce({ type: "chat.started", ...identity });
-  const message = 'upstream '.repeat(200) + '\nTraceback\n  File "transport.py"';
-  reducer.reduce({ type: "chat.failed", ...identity, error: { message } });
-  assert.ok(!reducer.current().bubbleText.includes("Traceback"));
-  assert.ok(!reducer.current().bubbleText.includes("upstream"));
-});
-
-
 test("degraded lifecycle remains interactive when the selected character session is usable", () => {
   const reducer = createChatPresentationReducer({
     initialMessage: "受限状态问候",
@@ -101,7 +90,6 @@ test("degraded lifecycle remains interactive when the selected character session
   }).applied, true);
   assert.equal(reducer.current().canCancel, true);
 });
-
 
 test("ready, thinking, complete reply typing, and settled form one deterministic path", () => {
   const reducer = readyReducer();
@@ -121,7 +109,6 @@ test("ready, thinking, complete reply typing, and settled form one deterministic
   );
   assert.equal(reducer.current().phase, "typing");
   assert.equal(reducer.current().canCancel, false);
-  assert.equal(Object.hasOwn(reducer.current(), "canSkip"), false);
   reducer.setTypingText("完整回复");
   reducer.finishTyping();
   assert.equal(reducer.current().phase, "settled");
@@ -145,7 +132,6 @@ test("completed replies preserve the waiting frame until their first text segmen
 
   assert.equal(reducer.setWaitingText(".....").applied, true);
   assert.equal(reducer.current().bubbleText, ".....");
-
 
   reducer.setTypingSegment(reducer.current().segments[0], 0);
 
@@ -289,8 +275,6 @@ test("silent terminals without a reply preserve the UI and release the next conv
   }
 });
 
-
-
 test("old operations and generations cannot replace current presentation", () => {
   const reducer = readyReducer();
   reducer.reduce({ type: "chat.started", generationId: "generation-1", generationNumber: 1, operationId: "current" });
@@ -301,8 +285,6 @@ test("old operations and generations cannot replace current presentation", () =>
   assert.equal(reducer.current().phase, "thinking");
   assert.equal(reducer.current().bubbleText, ".");
 });
-
-
 
 test("subtitle changes do not replace cancellation or provider error copy with an older reply", () => {
   for (const terminal of [

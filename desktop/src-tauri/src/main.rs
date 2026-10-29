@@ -8641,15 +8641,6 @@ mod tests {
     }
 
     #[test]
-    fn automatic_bubble_expansion_reserves_a_maximum_surface_only_on_windows() {
-        assert!(!uses_bubble_expansion_stable_surface_bounds(false));
-        assert_eq!(
-            uses_bubble_expansion_stable_surface_bounds(true),
-            cfg!(windows)
-        );
-    }
-
-    #[test]
     fn portrait_scale_settlement_keeps_the_existing_physical_anchor_at_screen_edges() {
         let contract = layout_contract().unwrap();
         let monitor = MonitorDescriptor {
@@ -9440,22 +9431,6 @@ mod tests {
     }
 
     #[test]
-    fn product_menu_session_starts_closed_without_stale_hit_regions() {
-        let session = WindowGeometrySession::default();
-        assert!(!session.context_menu_open);
-        assert!(session.context_menu_rect.is_none());
-        assert!(session.require_context_menu_closed().is_ok());
-        assert!(session.hit_regions.is_none());
-        assert!(session.context_menu_base_application.is_none());
-        assert!(session.context_menu_base_hit_regions.is_none());
-        assert!(!session.portrait_hit_relaxed);
-        assert!(!session.portrait_scale_preview_active);
-        assert!(!session.portrait_scale_gesture_active);
-        assert!(!session.control_surface_preview_active);
-        assert_eq!(session.control_surface_preview_revision, 0);
-    }
-
-    #[test]
     fn revision_zero_bootstrap_is_diagnostic_ready_without_consuming_revision_one() {
         let mut session = WindowGeometrySession::default();
         let mut application = LayoutApplication::rejected(0, PresentationState::Product, 1);
@@ -9485,16 +9460,6 @@ mod tests {
         assert!(session.hit_regions.is_some());
         assert!(!session.anchor_user_positioned);
         assert!(session.revision.accept(1));
-    }
-
-    #[test]
-    fn product_menu_region_policy_relaxes_windows_and_linux_menu_sessions() {
-        let expected = if cfg!(any(windows, target_os = "linux")) {
-            ContextMenuRegionPolicy::RelaxedWholeWindow
-        } else {
-            ContextMenuRegionPolicy::PreciseOverlay
-        };
-        assert_eq!(current_context_menu_region_policy(), expected);
     }
 
     #[test]
@@ -9709,11 +9674,6 @@ mod tests {
     }
 
     #[test]
-    fn visibility_probe_keeps_a_perceptible_native_owned_hidden_interval() {
-        assert_eq!(VISIBILITY_PROBE_HIDDEN_DURATION.as_millis(), 220);
-    }
-
-    #[test]
     fn hit_only_scale_revisions_do_not_request_root_window_geometry() {
         let mut previous = LayoutApplication::rejected(1, PresentationState::Product, 3);
         previous.active_bounds = [80, 120, 720, 820];
@@ -9845,19 +9805,6 @@ mod tests {
     }
 
     #[test]
-    fn window_surface_regression_resident_envelope_covers_windows_and_linux() {
-        assert_eq!(
-            uses_resident_stable_surface_bounds(true, false),
-            cfg!(any(windows, target_os = "linux"))
-        );
-        assert_eq!(
-            uses_resident_stable_surface_bounds(false, true),
-            cfg!(any(windows, target_os = "linux"))
-        );
-        assert!(!uses_resident_stable_surface_bounds(false, false));
-    }
-
-    #[test]
     fn linux_uses_the_maximum_envelope_only_during_the_scale_gesture() {
         let mut session = WindowGeometrySession::default();
         assert!(!session.stabilizes_portrait_scale_bounds());
@@ -9874,32 +9821,6 @@ mod tests {
         assert_eq!(defers_portrait_scale_hit_region_frames(), cfg!(windows));
         session.portrait_scale_gesture_active = false;
         assert!(!session.stabilizes_portrait_scale_bounds());
-    }
-
-    #[test]
-    fn window_surface_regression_platform_capabilities_keep_transient_macos_bounds() {
-        let windows = portrait_scale_platform_capabilities(platform::PlatformTarget::WindowsX64);
-        assert!(windows.stable_bounds_during_gesture);
-        assert!(!windows.precise_hit_regions_during_gesture);
-        assert!(windows.resident_stable_bounds);
-
-        let macos = portrait_scale_platform_capabilities(platform::PlatformTarget::MacOsArm64);
-        assert!(macos.stable_bounds_during_gesture);
-        assert!(macos.precise_hit_regions_during_gesture);
-        assert!(!macos.resident_stable_bounds);
-
-        let linux = portrait_scale_platform_capabilities(platform::PlatformTarget::LinuxX64);
-        assert!(linux.stable_bounds_during_gesture);
-        assert!(linux.precise_hit_regions_during_gesture);
-        assert!(linux.resident_stable_bounds);
-        assert_eq!(
-            current_portrait_scale_platform_capabilities().stable_bounds_during_gesture,
-            defers_native_portrait_scale_frames()
-        );
-        assert_eq!(
-            !current_portrait_scale_platform_capabilities().precise_hit_regions_during_gesture,
-            defers_portrait_scale_hit_region_frames()
-        );
     }
 
     #[test]

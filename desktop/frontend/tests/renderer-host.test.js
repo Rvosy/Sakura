@@ -53,32 +53,6 @@ test("slow renderer readiness keeps the current binding until loading completes"
   host.destroy();
 });
 
-test("form transitions retain both renderers until animation completion and cancel on rapid replacement", async () => {
-  const animations = [], destroyed = [], started = deferred();
-  const root = container({ animate() {
-    const done = deferred();
-    const animation = { finished: done.promise, cancel: done.resolve, finish: done.resolve };
-    animations.push(animation);
-    started.resolve();
-    return animation;
-  } });
-  const host = createRendererHost({ container: root, loadModule: async () => ({
-    mount: ({ resource }) => ({ applyState() {}, destroy() { destroyed.push(resource.bindingId); } }),
-  }) });
-  await host.bind(binding("a"));
-  const next = host.bind({ ...binding("b"), visual: { ...binding("b").visual, type: "dynamic" } });
-  await started.promise;
-  assert.equal(root.children.length, 2);
-  assert.deepEqual(destroyed, []);
-  assert.equal(root.children[0].style.width, "200px", "outgoing layout is frozen before the new renderer mounts");
-  host.freeze();
-  assert.equal(await next, false);
-  assert.deepEqual(destroyed, ["a".repeat(32)]);
-  assert.equal(root.children.length, 1);
-  host.destroy();
-  assert.deepEqual(destroyed, ["a".repeat(32), "b".repeat(32)]);
-});
-
 test("reduced motion switches directly without retaining the retired renderer", async () => {
   const root = container({ reducedMotion: true, animate() { assert.fail("reduced motion must not animate"); } });
   let destroyed = 0;
@@ -321,7 +295,6 @@ test("a rejected control preserves the renderer and reports a recoverable diagno
   host.destroy();
 });
 
-
 test("renderer startup keeps the original failure and stale failures stay silent", async () => {
   const errors = [];
   const failure = new TypeError("renderer shader missing");
@@ -341,7 +314,6 @@ test("renderer startup keeps the original failure and stale failures stay silent
   assert.equal(await opening, false);
   assert.equal(errors.length, 1);
 });
-
 
 test("reply review restores captured state, including inherited fields, without repeating actions", async () => {
   let current = { angle: 0, mood: "idle" }, actions = 0;

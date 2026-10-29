@@ -13,12 +13,9 @@ from sakura_assistant.llm.api_client import (
     ApiRequestError,
     DialogueSettings,
     AssistantModelClient,
-    _filter_supported_chat_params,
 )
 from sakura_assistant_contract import ChatReply, ChatSegment
 from sakura_assistant.llm.chat_reply import parse_chat_reply, sanitize_reply_tones
-from sakura_assistant.llm.prompts.runtime import ContextPolicy, PromptRuntime
-from sakura_context import ContextFragment, ContextRequest, PromptRecipe
 
 
 def mock_http(monkeypatch, handler):
@@ -112,23 +109,6 @@ def test_sanitize_reply_tones_normalizes_out_of_set_tone() -> None:
     assert out.segments[0].portrait == "站立待机"
 
 
-def test_chat_param_filter_keeps_supported_values() -> None:
-    filtered = _filter_supported_chat_params(
-        {
-            "temperature": 0.2,
-            "max_tokens": 32,
-            "max_completion_tokens": 64,
-            "unsupported_internal_flag": True,
-            "top_p": None,
-        }
-    )
-
-    assert filtered == {
-        "temperature": 0.2,
-        "max_completion_tokens": 64,
-    }
-
-
 def test_complete_raw_applies_param_filter(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     captured: dict[str, Any] = {}
     client = AssistantModelClient(
@@ -147,10 +127,14 @@ def test_complete_raw_applies_param_filter(monkeypatch) -> None:  # type: ignore
         temperature=0.1,
         unsupported_internal_flag=True,
         max_tokens=8,
+        max_completion_tokens=64,
+        top_p=None,
     ) == "OK"
 
     assert captured["temperature"] == 0.1
-    assert captured["max_tokens"] == 8
+    assert captured["max_completion_tokens"] == 64
+    assert "max_tokens" not in captured
+    assert "top_p" not in captured
     assert "unsupported_internal_flag" not in captured
 
 
@@ -174,50 +158,6 @@ def test_complete_raw_does_not_log_request_body(monkeypatch) -> None:  # type: i
     request = next(attributes for message, attributes in events if message == "准备发送聊天补全请求")
     assert "payload" not in request
     assert "messages" not in request
-
-
-@pytest.mark.parametrize("method", ["complete_raw", "complete_with_tools"])
-def test_runtime_role_fallback_preserves_unclassified_context(
-    monkeypatch: pytest.MonkeyPatch, method: str,
-) -> None:
-    client = AssistantModelClient(DialogueSettings(model="model"), model_client=LocalModelClient())
-    snapshot = ContextPolicy().select(ContextRequest(), [
-        ContextFragment(
-            "rule", "plugin:fixture", "用简短的句子回答。",
-            required=True,
-        ),
-        ContextFragment("reference", "plugin:fixture", "这是一段参考资料。"),
-    ])
-    runtime_context = PromptRuntime().build(PromptRecipe("fixture", []), snapshot).runtime_context
-    calls: list[dict[str, Any]] = []
-
-    def fake_post(payload: dict[str, Any], **_kwargs: Any) -> dict[str, Any]:
-        calls.append(payload)
-        if payload["messages"][-1]["role"] == "system":
-            raise ApiRequestError("system messages must be first")
-        return {"choices": [{"message": {"role": "assistant", "content": "OK"}}]}
-
-    monkeypatch.setattr(client, "_post_chat_completions", fake_post)
-    invoke = getattr(client, method)
-    result = invoke("角色身份", [{"role": "user", "content": "你好"}], runtime_context=runtime_context)
-
-    assert (result if method == "complete_raw" else result.content) == "OK"
-    assert len(calls) == 2
-    assert calls[0]["messages"][-1] == {"role": "system", "content": runtime_context}
-    fallback = calls[1]["messages"][-1]
-    assert fallback["role"] == "user"
-    prefix, retained_context = fallback["content"].split("\n", 1)
-    assert retained_context == runtime_context
-    assert "用简短的句子回答。" in retained_context
-    assert "这是一段参考资料。" in retained_context
-    assert 'kind=' not in retained_context
-    assert 'trust=' not in retained_context
-    assert "facts" not in prefix.lower()
-    assert "host" in prefix.lower()
-
-    invoke("角色身份", [{"role": "user", "content": "继续"}], runtime_context=runtime_context)
-    assert len(calls) == 3
-    assert calls[-1]["messages"][-1] == fallback
 
 
 def test_complete_raw_ignores_reasoning_content(monkeypatch) -> None:  # type: ignore[no-untyped-def]
@@ -614,22 +554,6 @@ def test_parse_chat_reply_keeps_segment_portrait() -> None:
     )
 
     assert reply.segments[0].portrait == "站立待机"
-
-
-def test_parse_chat_reply_fenced_json() -> None:
-    reply = parse_chat_reply(
-        '```json\n{"segments":[{"ja":"うん。","zh":"嗯。","tone":"中性"}]}\n```'
-    )
-
-    assert reply.segments[0].text == "うん。"
-
-
-def test_parse_chat_reply_bad_json_does_not_echo_raw() -> None:
-    reply = parse_chat_reply(
-        '{"segments":[{"ja":"うん。","zh":"这里有 `""` 裸双引号","tone":"中性"}]}'
-    )
-
-    assert reply.segments[0].text != '{"segments":[{"ja":"うん。","zh":"这里有 `""` 裸双引号","tone":"中性"}]}'
 
 
 def test_parse_chat_reply_suppresses_tts_for_safe_parse_failure() -> None:

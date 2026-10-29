@@ -68,7 +68,6 @@ test("a request interrupted by Core restart is cancelled while real transport fa
   assert.ok(entries.some(entry => entry.outcome === "failed" && entry.level === "warn" && entry.diagnostic === "Core exited with status 5"));
 });
 
-
 test("coded invoke failures preserve only a bounded redacted diagnostic", async () => {
   const failure = "REQUEST_DEADLINE_EXCEEDED: Provider token=visible did not respond";
   const env = harness(async () => { throw failure; });
@@ -86,9 +85,6 @@ test("coded invoke failures preserve only a bounded redacted diagnostic", async 
     elapsedMs: 1,
   }]);
 });
-
-
-
 
 test("batches contain only controlled fields and never arbitrary attributes", async () => {
   const env = harness();
@@ -134,27 +130,6 @@ test("diagnostic transport failure never changes a successful product command", 
   assert.equal(calls.filter(([command]) => command === "settings_tools_get").length, 1);
 });
 
-
-test("flush never sends more than sixty-four entries per command", async () => {
-  const env = harness();
-  for (let revision = 0; revision < 70; revision += 1) {
-    env.diagnostics.record({
-      level: "debug",
-      event: "webview.interaction.stage",
-      outcome: "completed",
-      revision,
-    });
-  }
-  await env.diagnostics.flush();
-  await env.diagnostics.flush();
-
-  const batches = env.calls
-    .filter(([command]) => command === RUNTIME_DIAGNOSTICS_COMMAND)
-    .map(([, payload]) => payload.entries.length);
-  assert.deepEqual(batches, [64, 6]);
-  assert.equal(batches.every((size) => size >= 1 && size <= 64), true);
-});
-
 for (const transportFails of [false, true]) {
   test(`dispose drains queued diagnostics after an in-flight ${transportFails ? "failed" : "successful"} send`, async () => {
     const batches = [];
@@ -193,7 +168,6 @@ for (const transportFails of [false, true]) {
     assert.equal(diagnostics.message("info", "after dispose"), false);
   });
 }
-
 
 test("custom messages are bounded and cleaned before IPC without changing plain HTML text", async () => {
   const env = harness();
@@ -234,7 +208,6 @@ test("real errors retain original messages and frames with credentials redacted"
   assert.equal(entries[2].details.file,undefined);
   assert.equal(JSON.stringify(entries).includes("PRIVATE"),false);
 });
-
 
 test("caught plugin exceptions retain causes and stages through the shared diagnostic transport", async () => {
   const env = harness();

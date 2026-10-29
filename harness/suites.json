@@ -692,7 +692,7 @@
     {
       "id": "plugin-marketplace-update",
       "description": "验证运行中插件自动更新、依赖恢复和失败回滚",
-      "argv": ["{python}", "-m", "pytest", "-q", "tests/unit/test_marketplace_update.py", "tests/unit/test_plugin_installer.py", "tests/unit/test_plugin_app_compatibility.py", "tests/unit/test_plugin_frontend_modules.py", "tests/integration/test_core_host_real_chat_integration.py::test_failed_local_assistant_update_preserves_error_and_restores_chat"],
+      "argv": ["{python}", "-m", "pytest", "-q", "tests/unit/test_marketplace_update.py", "tests/unit/test_plugin_installer.py", "tests/unit/test_plugin_app_compatibility.py", "tests/unit/test_plugin_frontend_modules.py", "tests/integration/test_core_host_real_chat_integration.py::test_failed_local_assistant_update_reports_error_and_reinstall_restores_chat"],
       "timeout_seconds": 120
     },
     {

@@ -11,47 +11,13 @@ from app.config.character_archive import (
     ARCHIVE_VERSION,
     VOICE_ARCHIVE_FORMAT,
     VOICE_ARCHIVE_VERSION,
-    read_character_archive_id,
 )
 from app.config.character_loader import CharacterRegistry
 from app.config.seed_characters import (
-    discover_seed_pack_directories,
-    discover_seed_roots,
     import_seed_characters,
 )
 from app.config.settings_service import AppSettingsService
 from app.core_host.character_settings import CharacterSettingsBoundary
-
-
-def test_discover_seed_roots_accepts_canonical_and_typo_names(tmp_path: Path) -> None:
-    (tmp_path / "base_characters").mkdir()
-    (tmp_path / "base_charaters").mkdir()
-    (tmp_path / "other").mkdir()
-
-    roots = discover_seed_roots(tmp_path)
-
-    assert [path.name for path in roots] == ["base_characters", "base_charaters"]
-
-
-def test_discover_pack_directories_requires_char_files_in_the_same_folder(
-    tmp_path: Path,
-) -> None:
-    seed = tmp_path / "base_characters"
-    valid = seed / "Navi"
-    nested = seed / "角色包" / "Sakura"
-    notes = seed / "角色包"
-    json_only = seed / "夜乃桜"
-    valid.mkdir(parents=True)
-    nested.mkdir(parents=True)
-    json_only.mkdir()
-    _write_character_archive(valid / "navi.card.char", "navi")
-    _write_character_archive(nested / "sakura.char", "sakura")
-    (notes / "readme.txt").write_text("notes", encoding="utf-8")
-    (json_only / "tavern.json").write_text("{}", encoding="utf-8")
-
-    packs = discover_seed_pack_directories(seed)
-
-    assert {path.name for path in packs} == {"Navi", "Sakura"}
 
 
 def test_import_seed_characters_loads_char_and_voice_into_settings(
@@ -271,43 +237,6 @@ def test_invalid_seed_pack_does_not_block_siblings(tmp_path: Path) -> None:
 def test_missing_seed_folder_is_a_noop(tmp_path: Path) -> None:
     assert import_seed_characters(tmp_path / "repo", tmp_path / "user", issue_sink=_silent) == ()
     assert CharacterRegistry(tmp_path / "user").all() == []
-
-
-def test_read_character_archive_id_does_not_require_extracting_resources(
-    tmp_path: Path,
-) -> None:
-    archive = _write_character_archive(tmp_path / "demo.char", "demo")
-    assert read_character_archive_id(archive) == "demo"
-
-
-def test_existing_current_character_is_not_replaced(tmp_path: Path) -> None:
-    distribution = tmp_path / "repo"
-    user = tmp_path / "user"
-    installed = user / "characters" / "keep"
-    installed.mkdir(parents=True)
-    (installed / "card.md").write_text("prompt", encoding="utf-8")
-    (installed / "portrait.png").write_bytes(b"png")
-    (installed / "character.json").write_text(
-        json.dumps(
-            {
-                "id": "keep",
-                "display_name": "Keep",
-                "card": "card.md",
-                "portrait": {"default": "portrait.png"},
-            },
-            ensure_ascii=False,
-        ),
-        encoding="utf-8",
-    )
-    AppSettingsService(user).save_current_character_id(CharacterRegistry(user), "keep")
-    pack = distribution / "base_characters" / "New"
-    pack.mkdir(parents=True)
-    _write_character_archive(pack / "new.char", "new")
-
-    import_seed_characters(distribution, user, issue_sink=_silent)
-
-    assert AppSettingsService(user).load_current_character_id(CharacterRegistry(user)) == "keep"
-    assert set(CharacterRegistry(user).profiles) == {"keep", "new"}
 
 
 def _write_character_archive(

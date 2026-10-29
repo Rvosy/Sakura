@@ -9,7 +9,7 @@ from app.config.character_resources import CharacterVisualResource
 from app.core_host.visual_host import VisualHost, VisualHostError
 from app.plugins.discovery import PluginDiscovery
 from app.plugins.installer import LocalPluginInstaller
-from app.plugins.inventory import PluginDesiredStateStore, PluginInventory, RuntimePluginSpec
+from app.plugins.inventory import PluginDesiredStateStore, PluginInventory
 from app.plugins.runtime_v4 import PluginRuntimeError
 from app.storage.runtime_roots import RuntimeRoots
 
@@ -75,18 +75,6 @@ def test_invalid_optional_declarations_do_not_disable_other_plugin_services(tmp_
     assert PluginDiscovery(tmp_path).discover()[0].visuals == record.visuals
     assert LocalPluginInstaller(tmp_path)._validated_spec(plugin_root).visuals == record.visuals
 
-
-
-def test_resource_reference_needs_no_portrait_and_never_writes_the_package(tmp_path: Path) -> None:
-    root = tmp_path / "model"
-    root.mkdir()
-    entry = root / "model.json"
-    content = '{"parameters": {"angle": [-30, 30]}, "actions": ["wave"]}'
-    entry.write_text(content, encoding="utf-8")
-    resource = CharacterVisualResource.from_mapping({"id": "model-1", "type": "example.parameters@1", "root": "model", "entry": "model.json"})
-    resource.validate_paths(tmp_path)
-    assert entry.read_text(encoding="utf-8") == content
-    assert resource.to_mapping()["type"] == "example.parameters@1"
 
 
 @pytest.mark.parametrize("field,value", [

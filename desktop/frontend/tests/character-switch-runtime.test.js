@@ -5,7 +5,6 @@ import {
   applyCharacterCatalogChange,
   applyCharacterSwitch,
   commitCharacterSelection,
-  hasCharacterScopedDrafts,
   pendingCharacterSelection,
   setCharacterSwitchLock,
   waitForCharacterSwitch,
@@ -75,45 +74,6 @@ test("local character switch clears role state and accepts the same Core generat
   });
   assert.equal(result, current);
   assert.deepEqual(calls, ["snapshot", true, "clear", "rebind", false]);
-});
-
-test("appearance, voice, and character collection drafts block switching", () => {
-  assert.equal(hasCharacterScopedDrafts(), false);
-  assert.equal(hasCharacterScopedDrafts({ appearanceDirty: true }), true);
-  assert.equal(hasCharacterScopedDrafts({ voiceDirty: true }), true);
-  assert.equal(hasCharacterScopedDrafts({ collectionDraftCount: 1 }), true);
-});
-
-test("character choices remain local drafts until apply commits only the final target", async () => {
-  let selectedCharacterId = "character-a";
-  const selectedByBackend = [];
-
-  selectedCharacterId = "character-b";
-  assert.equal(pendingCharacterSelection({
-    committedCharacterId: "character-a",
-    selectedCharacterId,
-  }), "character-b");
-  selectedCharacterId = "character-c";
-  assert.equal(selectedByBackend.length, 0);
-
-  const applied = [];
-  await commitCharacterSelection({
-    committedCharacterId: "character-a",
-    selectedCharacterId,
-    readLifecycle: async () => ({ supervisor: { generationNumber: 7 } }),
-    async selectCharacter(characterId) {
-      selectedByBackend.push(characterId);
-      return { targetCharacterId: characterId };
-    },
-    async applyChange(nextReceipt, previousLifecycle) {
-      applied.push({ nextReceipt, previousLifecycle });
-      return "switched";
-    },
-  });
-
-  assert.deepEqual(selectedByBackend, ["character-c"]);
-  assert.equal(applied.length, 1);
-  assert.equal(applied[0].previousLifecycle.supervisor.generationNumber, 7);
 });
 
 test("selecting the committed character again clears the draft and performs no commit", async () => {

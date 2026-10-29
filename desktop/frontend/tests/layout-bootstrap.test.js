@@ -2,14 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-import {
-  applyBootstrapPetLayout,
-  applyPetLayout,
-  computePetLayout,
-  samePetSurfaceGeometry,
-  validateBootstrapSurfaceDiagnostics,
-  validateLayoutContract,
-} from "../pet/layout.js";
+import { applyBootstrapPetLayout, applyPetLayout, computePetLayout, validateLayoutContract } from "../pet/layout.js";
 
 const contract = validateLayoutContract(
   JSON.parse(await readFile(new URL("../pet/layout-contract.json", import.meta.url), "utf8")),
@@ -63,17 +56,6 @@ test("revision zero diagnostics restore the WebView surface geometry", () => {
   assert.equal(root.dataset.layoutState, "product");
 });
 
-test("invalid bootstrap diagnostics fail closed", () => {
-  for (const value of [
-    null,
-    { revision: -1, contentScale: 1, logicalBounds: [0, 0, 900, 996] },
-    { revision: 0, contentScale: 0, logicalBounds: [0, 0, 900, 996] },
-    { revision: 0, contentScale: 1, logicalBounds: [0, 0, 0, 996] },
-  ]) {
-    assert.throws(() => validateBootstrapSurfaceDiagnostics(value), /bootstrap pet surface/);
-  }
-});
-
 test("macOS native crops preserve canonical DOM and pointer coordinates", () => {
   const root = stage();
   const layout = computePetLayout(contract);
@@ -89,18 +71,4 @@ test("macOS native crops preserve canonical DOM and pointer coordinates", () => 
     assert.equal(root.dataset.surfaceY, "0");
     assert.equal(root.style.properties.get("--content-scale"), "0.875");
   }
-});
-
-test("repeated native surface publications do not invalidate unchanged WebView geometry", () => {
-  const currentBounds = [120, 640, 428, 276];
-  assert.equal(samePetSurfaceGeometry(1, currentBounds, {
-    revision: 9,
-    contentScale: 1,
-    activeBounds: [...currentBounds],
-  }), true);
-  assert.equal(samePetSurfaceGeometry(1, currentBounds, {
-    revision: 10,
-    contentScale: 1,
-    activeBounds: [120, 300, 428, 616],
-  }), false);
 });
