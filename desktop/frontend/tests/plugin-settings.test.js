@@ -24,7 +24,7 @@ test("memory maintenance refreshes progress and returns to the same list search"
   ui.feature.initialize(structuredClone(data)); await ui.runTimers(0);
   const search = ui.document.querySelector('.memory-search-input');
   search.value = "咖啡"; await search.fire("input"); await ui.runTimers(220);
-  await ui.document.getElementById("memory-view-maintenance").fire("click");
+  await ui.document.getElementById("memory-advanced").fire("click");
   let panel = ui.document.querySelector(".memory-maintenance");
   await panel.querySelector(".plugin-setting-actions button").fire("click");
   assert.equal(calls[0].actionId, "updateNow");
@@ -32,7 +32,7 @@ test("memory maintenance refreshes progress and returns to the same list search"
   await ui.runTimers(1200); await ui.runTimers(0);
   panel = ui.document.querySelector(".memory-maintenance");
   assert.match(panel.textContent, /20 \/ 30/);
-  await ui.document.getElementById("memory-view-list").fire("click");
+  await ui.document.getElementById("memory-collection-0").fire("click");
   await ui.runTimers(0);
   assert.equal(ui.document.querySelector('.memory-search-input').value, "咖啡");
   assert.match(ui.document.querySelector(".memory-record-content").textContent, /已有记忆/);
@@ -378,9 +378,7 @@ test("a pending character choice locks only character-owned Memory collections i
     ui.feature.initialize(data);
     await ui.runTimers(0);
     assert.equal(ui.document.querySelector(".memory-archive").inert, true);
-    const select = ui.document.querySelector('[aria-label="查看记忆"]');
-    select.value = select.children[1].value;
-    await select.fire("change");
+    await ui.document.getElementById("memory-collection-1").fire("click");
     await ui.runTimers(0);
     assert.equal(ui.document.querySelector(".memory-archive").inert, false);
     assert.match(ui.document.querySelector(".memory-record-content").textContent, /global-note/);

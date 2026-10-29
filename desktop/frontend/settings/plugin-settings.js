@@ -80,6 +80,8 @@ export function createPluginSettingsFeature({
   const modelServices = () => [...pluginModules.keys()].flatMap(module => module.contributions()?.modelServices || []);
   const modelServicePresets = () => [...pluginModules.keys()].flatMap(module => module.contributions()?.modelServicePresets || []);
   const pendingApplication = new Map();
+  const memoryModuleDrafts = new Map();
+  let memoryDraftOwner = "";
   const settingsUI = createSettingsUI({ document, showPage, createSection: createContributedSection });
 
   function moduleContributionsChanged() {
@@ -112,10 +114,27 @@ export function createPluginSettingsFeature({
     }
     if (presentation.component === "module") {
       const generation = runtimePluginController.snapshot()?.coreGenerationId;
+      const owner = `${generation}:${currentCharacterId()}`;
+      if (owner !== memoryDraftOwner) { memoryModuleDrafts.clear(); memoryDraftOwner = owner; }
+      const key = `${plugin.id}:${section.section_id}`;
+      if (section.surface === "memory") {
+        const existing = [...pluginModules].find(([, info]) => info.key === key && info.owner === owner
+          && info.source === presentation.source);
+        if (existing) return existing[0];
+      }
+      if (!memoryModuleDrafts.has(key)) memoryModuleDrafts.set(key, {});
       const component = createPluginModule({ document, source: presentation.source,
         onError: setError, onReady: moduleContributionsChanged,
         context: { document, window, section, read, write, invoke, notify, onError: setError,
-          enhanceSelect, refreshSelect, closeSelects, createIcon,
+          enhanceSelect, refreshSelect, closeSelects, createIcon, draft: memoryModuleDrafts.get(key),
+          onDataChanged: () => {
+            if (owner !== `${runtimePluginController.snapshot()?.coreGenerationId}:${currentCharacterId()}`) return;
+            for (const [collectionKey, state] of pluginCollectionState) {
+              if (collectionKey.startsWith(`${plugin.id}:`)) {
+                state.loaded = false; state.error = ""; state.queryRevision++;
+              }
+            }
+          },
           onCatalogChanged: moduleContributionsChanged,
           modelServices, modelServicePresets,
           readSection: (sectionId, key) => pluginSectionValues(plugin.id, sectionId)[key],
@@ -126,7 +145,8 @@ export function createPluginSettingsFeature({
           importModule: path => import(new URL(`../${path}`, import.meta.url)),
         },
       });
-      pluginModules.set(component, { pluginId: plugin.plugin_id, sectionId: section.section_id, pageId: sectionDestination(section) });
+      pluginModules.set(component, { pluginId: plugin.plugin_id, sectionId: section.section_id,
+        key, owner, pageId: sectionDestination(section), source: presentation.source });
       const dispose = component.dispose;
       component.dispose = () => { pluginModules.delete(component); dispose(); moduleContributionsChanged(); };
       return component;
@@ -1934,7 +1954,13 @@ export function createPluginSettingsFeature({
     details.addEventListener("toggle", () => { if (state.editor) state.editor.detailsOpen = details.open; });
     const detailsFields = pluginNode("div", "memory-dialog-form");
     details.append(detailsFields);
-    (collection.fields || []).forEach((field) => {
+    const editorFields = [...(collection.fields || [])];
+    const primaryKeys = ["subject", "predicate", "target", collection.columns[0]?.key];
+    editorFields.sort((a, b) => {
+      const rank = field => primaryKeys.includes(field.key) ? primaryKeys.indexOf(field.key) : primaryKeys.length;
+      return rank(a) - rank(b);
+    });
+    editorFields.forEach((field) => {
       const group = document.createElement("label");
       group.className = `memory-dialog-field${field.key === collection.columns[0]?.key ? " is-content" : ""}`;
       const label = document.createElement("span");
@@ -2007,7 +2033,8 @@ export function createPluginSettingsFeature({
         description.textContent = field.description;
         group.append(description);
       }
-      if (field.key === collection.columns[0]?.key) form.append(group);
+      if (field.key === collection.columns[0]?.key || ["subject", "predicate"].includes(field.key)
+        || (field.key === "target" && (collection.collection_id === "knowledge" || state.editor.values.target))) form.append(group);
       else detailsFields.append(group);
     });
     if (detailsFields.childElementCount) form.append(details);
@@ -2160,7 +2187,7 @@ export function createPluginSettingsFeature({
     return archive;
   }
 
-  function renderMemoryCollection(plugin, section, collection, collections = []) {
+  function renderMemoryCollection(plugin, section, collection) {
     const state = pluginCollectionRuntimeState(plugin, section, collection);
     const activity = projectPluginActivity(plugin);
     const initializing = activity.state === "working";
@@ -2215,23 +2242,6 @@ export function createPluginSettingsFeature({
       state.searchTimer = setTimer(() => queryPluginCollection(plugin, section, collection), 220);
     });
     toolbar.append(search);
-    if (collections.length > 1) {
-      const select = document.createElement("select");
-      select.setAttribute("aria-label", "查看记忆");
-      for (const item of collections) {
-        const option = document.createElement("option");
-        option.value = item.key;
-        option.textContent = item.collection.title;
-        select.append(option);
-      }
-      select.value = selectedMemoryCollection;
-      select.addEventListener("change", () => {
-        selectedMemoryCollection = select.value;
-        renderMemorySurface();
-      });
-      toolbar.append(select);
-      setTimer(() => enhanceSelect(select), 0);
-    }
     (collection.filters || []).forEach((filter) => {
       const select = document.createElement("select");
       select.setAttribute("aria-label", filter.label);
@@ -2267,6 +2277,8 @@ export function createPluginSettingsFeature({
 
     const body = document.createElement("div");
     body.className = "memory-archive-list";
+    body.classList.toggle("is-profile", collection.collection_id === "profile");
+    body.classList.toggle("is-experiences", collection.collection_id === "experiences");
     if (initializing) {
       body.classList.add("is-preparing");
       body.append(createMemoryPreparingState());
@@ -2295,6 +2307,7 @@ export function createPluginSettingsFeature({
       empty.append(mark, heading);
       body.append(empty);
     } else if (!initializing && !activityUnavailable) {
+      const groups = new Map();
       state.items.forEach((item) => {
         const values = item.values || {};
         const card = document.createElement("article");
@@ -2326,12 +2339,29 @@ export function createPluginSettingsFeature({
         const meta = document.createElement("div");
         meta.className = "memory-record-meta";
         for (const column of collection.columns.slice(1)) {
-          const value = collectionDisplayValue(collection, column, values[column.key]);
+          if (["subject", "predicate", "target"].includes(column.key)) continue;
+          if (column.key === "kindLabel" && ["profile", "agreements", "experiences"].includes(collection.collection_id)) continue;
+          const eventTime = collection.collection_id === "experiences" && column.key === "updatedAt" && values.occurredAt;
+          const value = collectionDisplayValue(collection, column, eventTime || values[column.key]);
           if (!value) continue;
           const detail = document.createElement("span");
-          detail.textContent = column.type === "string" ? value : `${column.label} ${value}`;
-          detail.title = column.label;
+          detail.textContent = column.type === "string" ? value : `${eventTime ? "记录于" : column.label} ${value}`;
+          detail.title = eventTime ? "记录时间" : column.label;
           meta.append(detail);
+        }
+        const structured = collection.fields.some(field => field.key === "subject");
+        if (structured) {
+          const heading = pluginNode("div", "memory-fact-heading");
+          if (values.target) {
+            heading.classList.add("is-relation");
+            heading.append(pluginNode("span", "memory-relation-person", values.subject),
+              pluginNode("span", "memory-relation-name", values.predicate),
+              createIcon(document, "arrow-right"),
+              pluginNode("span", "memory-relation-person", values.target));
+          } else {
+            heading.textContent = collection.collection_id === "experiences" ? values.subject : values.predicate;
+          }
+          main.append(heading);
         }
         main.append(content, meta);
         const aside = document.createElement("div");
@@ -2339,7 +2369,7 @@ export function createPluginSettingsFeature({
         const edit = document.createElement("button");
         edit.type = "button";
         edit.className = "memory-card-edit";
-        edit.append(createIcon(document, "pencil"));
+        edit.append(createIcon(document, "pencil"), "编辑");
         edit.setAttribute("aria-label", "编辑记忆");
         edit.title = "编辑记忆";
         edit.addEventListener("click", (event) => {
@@ -2348,7 +2378,24 @@ export function createPluginSettingsFeature({
         });
         aside.append(edit);
         card.append(main, aside);
-        body.append(card);
+        if (["profile", "knowledge"].includes(collection.collection_id) && values.subject) {
+          const entityName = values.subject === "用户" && values.target ? values.target : values.subject;
+          const entityKind = values.subject === "用户" && values.target ? values.target_kind : values.subject_kind;
+          const entityKey = `${entityKind}:${entityName}`;
+          let group = groups.get(entityKey);
+          if (!group) {
+            group = pluginNode("section", "memory-entity-group");
+            const name = entityName === "用户" ? "关于你" : entityName;
+            const groupHead = pluginNode("header", "memory-entity-head");
+            const icon = pluginNode("span", "memory-entity-icon");
+            icon.append(createIcon(document, entityKind === "person" ? "user-round" : "folder"));
+            groupHead.append(icon, pluginNode("h4", "memory-entity-name", name));
+            group.append(groupHead);
+            groups.set(entityKey, group);
+            body.append(group);
+          }
+          group.append(card);
+        } else body.append(card);
       });
     }
     state.motion = null;
@@ -2379,10 +2426,17 @@ export function createPluginSettingsFeature({
     const focused = document.activeElement;
     const focusId = (fields.memorySurface.contains(focused) || focused?.closest(".memory-record-dialog")) ? focused?.id : "";
     const selection = focusId && typeof focused.selectionStart === "number" ? [focused.selectionStart, focused.selectionEnd] : null;
-    const openSections = new Set(Array.from(fields.memorySurface.querySelectorAll("details"))
+    const openSections = new Set(Array.from(fields.memorySurface.querySelectorAll("details[data-plugin-section]"))
       .filter(element => element.open).map(element => element.dataset.pluginSection));
     const scrollPositions = Array.from(fields.memorySurface.querySelectorAll(".memory-archive-list")).map(element => element.scrollTop);
-    memorySettingsComponents.forEach(component => component.dispose?.());
+    const owner = `${runtimePluginController.snapshot()?.coreGenerationId}:${currentCharacterId()}`;
+    for (const component of memorySettingsComponents) {
+      const info = pluginModules.get(component);
+      const retained = info && memoryView === "advanced" && !isCharacterTransitioning() && info.owner === owner
+        && pluginView.items.some(plugin => plugin.plugin_id === info.pluginId && pluginSettingsSections(plugin)
+          .some(section => section.section_id === info.sectionId && section.presentation?.source === info.source));
+      if (!retained) component.dispose?.();
+    }
     memorySettingsComponents = [];
     clearMemoryEditorPortal();
     fields.memorySurface.textContent = "";
@@ -2433,60 +2487,88 @@ export function createPluginSettingsFeature({
       schedulePluginActivityRefresh();
       return;
     }
-    const hasMaintenance = contributions.some(({ section }) => section.fields.length || section.actions.length);
-    if (hasMaintenance) {
-      const tabs = pluginNode("nav", "memory-view-tabs");
-      tabs.setAttribute("aria-label", "记忆页面");
-      tabs.setAttribute("role", "tablist");
-      for (const [view, label] of [["list", "记忆列表"], ["maintenance", "记忆维护"]]) {
-        const tab = pluginNode("button", "", label);
-        tab.type = "button";
-        tab.id = `memory-view-${view}`;
-        tab.setAttribute("role", "tab");
-        tab.setAttribute("aria-selected", String(memoryView === view));
-        tab.setAttribute("aria-controls", "memory-view-panel");
-        tab.tabIndex = memoryView === view ? 0 : -1;
-        const changeView = () => {
-          const list = fields.memorySurface.querySelector(".memory-archive-list");
-          if (list) memoryListScroll = list.scrollTop;
-          memoryView = view;
-          renderMemorySurface();
-          document.getElementById(tab.id)?.focus();
-        };
-        tab.addEventListener("click", changeView);
-        tab.addEventListener("keydown", event => {
-          if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
-          event.preventDefault();
-          const target = event.key === "Home" ? "list" : event.key === "End" ? "maintenance" : memoryView === "list" ? "maintenance" : "list";
-          document.getElementById(`memory-view-${target}`)?.click();
-        });
-        tabs.append(tab);
-      }
-      fields.memorySurface.append(tabs);
-    } else memoryView = "list";
-    const tools = pluginNode("div", "memory-maintenance");
-    if (memoryView === "maintenance") {
-      for (const plugin of new Set(contributions.map(item => item.plugin))) {
-        const settings = renderPluginSettings(plugin, "memory", { includeCollections: false });
-        if (!settings.childElementCount) continue;
-        memorySettingsComponents.push(...settings.components);
-        tools.append(settings);
-      }
-    }
     const collections = contributions.flatMap(({ plugin, section }) => (section.collections || [])
       .map(collection => ({ plugin, section, collection, key: pluginCollectionKey(plugin, section, collection) })));
-    if (!collections.some(item => item.key === selectedMemoryCollection)) selectedMemoryCollection = collections[0]?.key || "";
-    const selected = collections.find(item => item.key === selectedMemoryCollection);
-    const panel = memoryView === "maintenance" ? tools : selected ? renderMemoryCollection(selected.plugin, selected.section, selected.collection, collections) : null;
+    const mainCollections = collections.filter(({ collection }) => !(collection.collection_id === "memories"
+      && collection.fields.some(field => field.key === "subject")));
+    if (!mainCollections.some(item => item.key === selectedMemoryCollection)) selectedMemoryCollection = mainCollections[0]?.key || "";
+    const selected = mainCollections.find(item => item.key === selectedMemoryCollection);
+    const navigation = pluginNode("div", "memory-navigation");
+    const tabs = pluginNode("nav", "memory-view-tabs");
+    tabs.setAttribute("aria-label", "记忆内容");
+    tabs.setAttribute("role", "tablist");
+    mainCollections.forEach((item, index) => {
+      const tab = pluginNode("button", "");
+      const icon = { profile: "user-round", agreements: "heart", experiences: "calendar-days", knowledge: "folder" }[item.collection.collection_id] || "brain";
+      tab.append(createIcon(document, icon), pluginNode("span", "", item.collection.title));
+      tab.type = "button";
+      tab.id = `memory-collection-${index}`;
+      tab.setAttribute("role", "tab");
+      const active = memoryView === "list" && item.key === selectedMemoryCollection;
+      tab.setAttribute("aria-selected", String(active));
+      tab.setAttribute("aria-controls", "memory-view-panel");
+      tab.tabIndex = item.key === selectedMemoryCollection ? 0 : -1;
+      tab.addEventListener("click", () => {
+        memoryView = "list";
+        selectedMemoryCollection = item.key;
+        memoryListScroll = 0;
+        renderMemorySurface();
+        document.getElementById(tab.id)?.focus();
+      });
+      tab.addEventListener("keydown", event => {
+        if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+        event.preventDefault();
+        const next = event.key === "Home" ? 0 : event.key === "End" ? mainCollections.length - 1
+          : (index + (event.key === "ArrowRight" ? 1 : -1) + mainCollections.length) % mainCollections.length;
+        document.getElementById(`memory-collection-${next}`)?.click();
+      });
+      tabs.append(tab);
+    });
+    navigation.append(tabs);
+    const hasAdvanced = contributions.some(({ section }) => section.fields.length || section.actions.length)
+      || collections.some(({ collection }) => collection.can_transfer);
+    if (hasAdvanced) {
+      const advanced = pluginNode("button", "memory-advanced-button");
+      advanced.append(createIcon(document, "settings-2"), "高级设置");
+      advanced.type = "button";
+      advanced.id = "memory-advanced";
+      advanced.setAttribute("aria-pressed", String(memoryView === "advanced"));
+      advanced.addEventListener("click", () => {
+        const list = fields.memorySurface.querySelector(".memory-archive-list");
+        if (list) memoryListScroll = list.scrollTop;
+        memoryView = memoryView === "advanced" ? "list" : "advanced";
+        renderMemorySurface();
+        document.getElementById("memory-advanced")?.focus();
+      });
+      navigation.append(advanced);
+    }
+    fields.memorySurface.append(navigation);
+    let panel;
+    if (memoryView === "advanced") {
+      panel = pluginNode("div", "memory-maintenance");
+      panel.append(pluginNode("h3", "memory-advanced-title", "高级设置"));
+      for (const plugin of new Set(contributions.map(item => item.plugin))) {
+        const settings = renderPluginSettings(plugin, "memory", { includeCollections: false });
+        memorySettingsComponents.push(...settings.components);
+        panel.append(settings);
+      }
+      for (const { plugin, section, collection } of collections.filter(item => item.collection.can_transfer)) {
+        const transfer = pluginNode("div", "memory-data-actions");
+        transfer.append(pluginNode("span", "", "备份或迁入记忆"), collectionTransferMenu(plugin, section, collection));
+        panel.append(transfer);
+      }
+    } else if (selected) {
+      panel = renderMemoryCollection(selected.plugin, selected.section, selected.collection);
+    }
     if (panel) {
       panel.id = "memory-view-panel";
-      if (hasMaintenance) {
+      if (memoryView === "list") {
         panel.setAttribute("role", "tabpanel");
-        panel.setAttribute("aria-labelledby", `memory-view-${memoryView}`);
+        panel.setAttribute("aria-labelledby", `memory-collection-${mainCollections.indexOf(selected)}`);
       }
       fields.memorySurface.append(panel);
     }
-    fields.memorySurface.querySelectorAll("details").forEach(element => {
+    fields.memorySurface.querySelectorAll("details[data-plugin-section]").forEach(element => {
       element.open = openSections.has(element.dataset.pluginSection);
     });
     fields.memorySurface.querySelectorAll(".memory-archive-list").forEach((element, index) => {
@@ -2497,6 +2579,8 @@ export function createPluginSettingsFeature({
       const input = document.getElementById(focusId);
       input?.focus({ preventScroll: true });
       if (input && selection) input.setSelectionRange(...selection);
+    } else if (focused?.isConnected && fields.memorySurface.contains(focused)) {
+      focused.focus({ preventScroll: true });
     }
     schedulePluginActivityRefresh();
   }
@@ -3267,6 +3351,10 @@ export function createPluginSettingsFeature({
           if (owner.pageId === "host:providers") void Promise.resolve(module.cancel()).catch(setError);
         }
       }
+      if (page !== "memory") {
+        memorySettingsComponents.forEach(component => component.dispose?.());
+        memorySettingsComponents = [];
+      }
       if (page === "plugins" || page === "about") schedulePluginActivityRefresh();
       if (page === "memory") renderMemorySurface();
       if (page === "interaction") renderScreenAwarenessSurface();
@@ -3274,6 +3362,9 @@ export function createPluginSettingsFeature({
     },
     clearCharacterState() {
       memoryListScroll = 0;
+      memorySettingsComponents.forEach(component => component.dispose?.());
+      memorySettingsComponents = [];
+      memoryModuleDrafts.clear();
       const snapshot = runtimePluginController.snapshot();
       if (snapshot) runtimePluginController.initialize(snapshot, { preserveDraft: true });
       pluginCollectionState.forEach((state, key) => {
@@ -3293,6 +3384,7 @@ export function createPluginSettingsFeature({
     dispose() {
       disposed = true;
       settingsUI.dispose();
+      memoryModuleDrafts.clear();
       memorySettingsComponents.forEach(component => component.dispose?.());
       memorySettingsComponents = [];
       const editor = pluginSettingsDialog;

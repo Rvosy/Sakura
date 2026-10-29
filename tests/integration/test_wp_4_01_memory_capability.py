@@ -26,7 +26,7 @@ from tests.integration.test_core_host_real_chat_integration import (
 )
 
 
-def _install_official_mem0(distribution_root: Path, user_root: Path) -> None:
+def _install_official_mem0(distribution_root: Path, user_root: Path, assistant_dependencies: Path) -> None:
     (distribution_root / "app").mkdir(parents=True)
     shutil.copy2(REPO_ROOT / "VERSION", distribution_root / "VERSION")
     plugin_root = user_root / "plugins" / "user"
@@ -41,7 +41,7 @@ def _install_official_mem0(distribution_root: Path, user_root: Path) -> None:
     )
     from app.plugins.inventory import PluginDesiredStateStore
     PluginDesiredStateStore(user_root).set("sakura.memory.mem0", True)
-    dependency_root.mkdir(parents=True)
+    shutil.copytree(assistant_dependencies, dependency_root)
     import jieba
     shutil.copytree(Path(jieba.__file__).parent, dependency_root / "jieba")
     (dependency_root / ".sakura-dependencies.json").write_text(
@@ -116,11 +116,12 @@ def _negotiate_mem0_plugin(process) -> None:
 def test_real_core_runs_mem0_as_generic_plugin_without_mutating_owned_config_or_chat(
     tmp_path: Path,
     monkeypatch,
+    assistant_dependencies: Path,
 ) -> None:
     provider, provider_thread = _start_provider("complete")
     app_root = _configure_app_root(tmp_path, provider.server_address[1])
     distribution_root = tmp_path / "distribution"
-    _install_official_mem0(distribution_root, app_root)
+    _install_official_mem0(distribution_root, app_root, assistant_dependencies)
     api_path = app_root / "config" / "api.yaml"
     system_path = app_root / "config" / "system_config.yaml"
     api_before = api_path.read_bytes()
@@ -181,7 +182,7 @@ def test_real_core_runs_mem0_as_generic_plugin_without_mutating_owned_config_or_
             if item["sectionId"] == "memory_management"
         )
         assert management["surface"] == "memory"
-        assert management["collections"][0]["collectionId"] == "memories"
+        assert all(item["scope"] == "character" for item in management["collections"])
         assert "LOCAL_TEST_KEY" not in json.dumps(settings)
         recall = _exchange(
             process,
@@ -200,9 +201,10 @@ def test_real_core_runs_mem0_as_generic_plugin_without_mutating_owned_config_or_
             ),
         )
         assert recall["payload"] == {"items": [], "nextCursor": None, "total": 0}
-        collection = {"pluginId": "sakura.memory.mem0", "sectionId": "memory_management", "collectionId": "memories"}
+        collection = {"pluginId": "sakura.memory.mem0", "sectionId": "memory_management", "collectionId": "experiences"}
         created = _exchange(process, _request("memory-create", "plugins.collection.create", {
-            **collection, "values": {"content": "上次排查语音合成卡顿，改用流式播放后恢复正常", "layer": "episodic"},
+            **collection, "values": {"content": "上次排查语音合成卡顿，改用流式播放后恢复正常", "layer": "episodic",
+                                     "subject": "语音卡顿排查", "predicate": "经过", "subject_kind": "event"},
         }))
         assert created["ok"], created
         item_id = created["payload"]["itemId"]
@@ -212,8 +214,10 @@ def test_real_core_runs_mem0_as_generic_plugin_without_mutating_owned_config_or_
         assert updated["ok"], updated
         assert updated["payload"]["values"]["pinned"] is False
         profile = _exchange(process, _request("profile-create", "plugins.collection.create", {
-            **collection, "values": {"content": "用户长期使用左手写字", "layer": "semantic"},
+            **collection, "collectionId": "profile", "values": {"content": "用户长期使用左手写字", "layer": "semantic",
+                                                               "subject": "用户", "predicate": "惯用手"},
         }))
+        assert profile["ok"], profile
         profile_id = profile["payload"]["itemId"]
         moved = _exchange(process, _request("profile-move", "plugins.collection.update", {
             **collection, "itemId": profile_id, "values": {"layer": "core_profile"},
@@ -273,7 +277,7 @@ def test_mem0_model_slot_saves_in_one_phase_without_restarting_plugin(
 
     app_root = _configure_app_root(tmp_path, 9)
     distribution_root = tmp_path / "distribution"
-    _install_official_mem0(distribution_root, app_root)
+    _install_official_mem0(distribution_root, app_root, assistant_dependencies)
     service_key = "sakura.model.openai_compatible"
     shutil.copytree(
         REPO_ROOT / "plugins" / "builtin" / "sakura_model_openai_compatible",
@@ -380,11 +384,12 @@ def test_mem0_model_slot_saves_in_one_phase_without_restarting_plugin(
 
 def test_plugin_settings_without_negotiation_fails_closed_without_opening_memory_storage(
     tmp_path: Path,
+    assistant_dependencies: Path,
 ) -> None:
     provider, provider_thread = _start_provider("complete")
     app_root = _configure_app_root(tmp_path, provider.server_address[1])
     distribution_root = tmp_path / "distribution"
-    _install_official_mem0(distribution_root, app_root)
+    _install_official_mem0(distribution_root, app_root, assistant_dependencies)
     process = real_chat_fixture._start_host(app_root, distribution_root=distribution_root)
     try:
         hello = _request(

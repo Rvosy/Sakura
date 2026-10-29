@@ -3468,9 +3468,11 @@ button:active:not(:disabled) {
 }
 
 #memorySurface {
+  --memory-muted: color-mix(in srgb, var(--sakura-text) 5%, var(--surface-raised));
+  --memory-emphasis: color-mix(in srgb, var(--sakura-primary) 55%, var(--sakura-text));
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 24px;
 }
 
 .memory-maintenance {
@@ -3481,14 +3483,14 @@ button:active:not(:disabled) {
 
 .memory-maintenance .plugin-settings {
   display: grid;
-  gap: 12px;
+  gap: 16px;
 }
 
 .memory-maintenance .plugin-contribution {
   margin: 0;
-  border: 1px solid var(--hairline);
-  border-radius: var(--radius-md);
-  padding: 18px 20px;
+  border: 0;
+  border-radius: 12px;
+  padding: 20px 24px;
   background: var(--surface-raised);
 }
 
@@ -3570,28 +3572,171 @@ button:active:not(:disabled) {
   accent-color: var(--sakura-primary);
 }
 
-.memory-view-tabs {
+.memory-navigation {
   display: flex;
-  gap: 20px;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
   flex: none;
-  border-bottom: 1px solid var(--hairline);
 }
 
-.memory-view-tabs button {
-  min-width: 0;
-  padding: 10px 2px;
-  border: 0;
-  border-bottom: 2px solid transparent;
-  border-radius: 0;
-  background: transparent;
-  box-shadow: none;
+.memory-view-tabs button:hover {
+  background: var(--surface-raised);
+}
+
+.memory-navigation button:focus-visible {
+  outline: 2px solid var(--sakura-text);
+  outline-offset: 3px;
+}
+
+.memory-entity-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 4px 0;
+}
+
+.memory-entity-icon {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 12px;
+  background: var(--memory-muted);
   color: var(--sakura-secondary-text);
 }
 
-.memory-view-tabs button[aria-selected="true"] {
-  border-bottom-color: var(--sakura-primary);
+.memory-archive-list.is-profile .memory-record-main {
+  display: grid;
+  grid-template-columns: 104px minmax(0, 1fr);
+  column-gap: 16px;
+}
+
+.memory-archive-list.is-profile .memory-fact-heading {
+  grid-row: span 2;
+  margin: 0;
+  font-size: 13px;
+  color: var(--sakura-secondary-text);
+  font-weight: var(--font-weight-medium);
+}
+
+.memory-archive-list.is-profile .memory-record-meta {
+  grid-column: 2;
+}
+
+.memory-view-tabs {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  flex: 1 1 340px;
+  gap: 4px;
+  padding: 4px;
+  border-radius: 12px;
+  background: var(--memory-muted);
+}
+
+.memory-view-tabs button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-width: 0;
+  min-height: 44px;
+  padding: 10px 12px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  box-shadow: none;
   color: var(--sakura-text);
+  white-space: nowrap;
+}
+
+.memory-view-tabs button[aria-selected="true"] {
+  background: var(--memory-emphasis);
+  color: var(--surface-raised);
   font-weight: var(--font-weight-semibold);
+}
+
+.memory-advanced-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  margin-left: auto;
+  border: 0;
+  background: var(--surface-raised);
+  color: var(--sakura-secondary-text);
+}
+
+.memory-advanced-button[aria-pressed="true"] {
+  background: var(--memory-emphasis);
+  color: var(--surface-raised);
+}
+
+.memory-entity-group {
+  display: grid;
+  gap: 12px;
+  padding: 0 0 8px;
+}
+
+.memory-archive-list.is-profile {
+  scroll-snap-type: none;
+}
+
+.memory-entity-name {
+  margin: 0;
+  color: var(--sakura-text);
+  font-size: 18px;
+  font-weight: var(--font-weight-semibold);
+}
+
+.memory-entity-group .memory-record-card {
+  margin: 0;
+  padding: 16px 20px;
+}
+
+.memory-fact-heading {
+  margin-bottom: 8px;
+  color: var(--sakura-text);
+  font-size: 14px;
+  font-weight: var(--font-weight-semibold);
+}
+
+.memory-fact-heading.is-relation {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.memory-relation-person {
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: var(--memory-muted);
+}
+
+.memory-relation-name {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--sakura-secondary-text);
+  font-weight: var(--font-weight-medium);
+}
+
+.memory-data-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 20px 24px;
+  margin-top: 16px;
+  border-radius: 12px;
+  background: var(--surface-raised);
+}
+
+.memory-advanced-title {
+  margin: 0 0 12px;
+  font-size: 19px;
 }
 
 .memory-editor-details {
@@ -3609,23 +3754,22 @@ button:active:not(:disabled) {
 }
 
 .memory-archive-description {
-  margin: 6px 0 0;
+  margin: 8px 0 0;
   color: var(--sakura-secondary-text);
-  font-size: 12px;
+  font-size: 13px;
   line-height: 1.5;
 }
 
 .memory-archive {
   display: grid;
   grid-template-rows: auto auto minmax(0, 1fr);
-  gap: 14px;
+  gap: 20px;
   flex: 1 1 0;
   min-height: 0;
-  padding: clamp(14px, 2vw, 20px);
+  padding: 0;
   overflow: hidden;
-  border: 1px solid var(--hairline);
-  border-radius: var(--radius-lg);
-  background: color-mix(in srgb, var(--surface-raised) 90%, var(--sakura-panel-bg));
+  border: 0;
+  background: transparent;
 }
 
 .memory-archive-head {
@@ -3682,28 +3826,30 @@ button:active:not(:disabled) {
 .memory-add-button {
   flex: none;
   min-width: 112px;
-  box-shadow: var(--shadow-pop);
+  border: 0;
+  background: var(--memory-emphasis);
+  color: var(--surface-raised);
 }
 
 .memory-archive-toolbar {
-  display: grid;
-  grid-template-columns: minmax(210px, 1fr) minmax(130px, 0.32fr) auto;
+  display: flex;
+  flex-wrap: wrap;
   gap: 8px;
   align-items: center;
-  padding: 8px;
-  border: 1px solid var(--hairline);
-  border-radius: var(--radius-md);
-  background: color-mix(in srgb, var(--surface-raised) 82%, transparent);
+  padding: 0;
+  border: 0;
+  background: transparent;
 }
 
 .memory-search-input {
+  flex: 1 1 180px;
   width: 100%;
   min-width: 0;
-  min-height: 40px;
-  padding: 8px 11px;
-  border: 1px solid var(--sakura-border);
-  border-radius: var(--radius-sm);
-  background: var(--sakura-input-bg);
+  min-height: 44px;
+  padding: 12px 16px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--surface-raised);
   color: var(--sakura-text);
   font: inherit;
 }
@@ -3757,12 +3903,11 @@ button:active:not(:disabled) {
   display: grid;
   grid-auto-rows: max-content;
   align-content: start;
-  gap: 9px;
+  gap: 16px;
   min-height: 0;
-  overflow: auto; scrollbar-gutter: stable;
-  padding: 1px 4px 10px 1px;
-  scroll-padding-block: 1px 10px;
-  scroll-snap-type: y proximity;
+  overflow: auto;
+  scrollbar-gutter: stable;
+  padding: 2px 4px 10px 2px;
   scrollbar-width: thin;
   scrollbar-color: var(--sakura-border) transparent;
 }
@@ -3770,21 +3915,18 @@ button:active:not(:disabled) {
 .memory-record-card {
   position: relative;
   display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  gap: 12px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 16px;
   align-items: center;
   min-height: 72px;
-  padding: 11px 12px;
+  padding: 20px 24px;
   overflow: hidden;
-  border: 1px solid var(--sakura-border);
-  border-radius: var(--radius-md);
+  border: 0;
+  border-radius: 12px;
   background: var(--surface-raised);
+  box-shadow: 0 1px 3px color-mix(in srgb, var(--sakura-text) 8%, transparent);
   cursor: default;
-  transition:
-    border-color var(--motion-base) var(--ease),
-    background var(--motion-base) var(--ease);
-  scroll-snap-align: start;
-  scroll-margin-top: 1px;
+  transition: background var(--motion-base) var(--ease);
 }
 
 .memory-record-card.is-entering {
@@ -3820,8 +3962,8 @@ button:active:not(:disabled) {
 .memory-record-content {
   margin: 0;
   color: var(--sakura-text);
-  font-size: 13.5px;
-  line-height: 1.55;
+  font-size: 14px;
+  line-height: 1.7;
   overflow-wrap: anywhere;
   white-space: pre-wrap;
 }
@@ -3835,11 +3977,10 @@ button:active:not(:disabled) {
 }
 
 .memory-record-meta {
-  margin-top: 7px;
-  color: var(--sakura-muted-text);
-  font-size: 11.5px;
-  min-height: 22px;
-  padding-right: 32px;
+  margin-top: 8px;
+  color: var(--sakura-secondary-text);
+  font-size: 12px;
+  min-height: 18px;
 }
 
 .memory-record-meta > span:not(.memory-layer-chip)::before {
@@ -3855,9 +3996,7 @@ button:active:not(:disabled) {
 }
 
 .memory-record-aside {
-  position: absolute;
-  right: 9px;
-  bottom: 7px;
+  align-self: start;
 }
 
 .memory-score-row {
@@ -3868,14 +4007,13 @@ button:active:not(:disabled) {
 }
 
 .memory-card-edit {
-  display: grid;
-  place-items: center;
-  width: 28px;
-  height: 28px;
-  min-width: 28px;
-  min-height: 28px;
-  padding: 5px;
-  font-size: 15px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 36px;
+  min-width: 64px;
+  padding: 6px 8px;
+  border: 0;
 }
 
 .memory-load-more {
@@ -4243,12 +4381,15 @@ button:active:not(:disabled) {
 }
 
 @media (max-width: 940px) {
-  .memory-archive-toolbar {
-    grid-template-columns: minmax(190px, 1fr) minmax(126px, auto) auto;
+  .memory-view-tabs button {
+    padding-inline: 6px;
+    gap: 6px;
+    font-size: 12px;
   }
 
-  .memory-record-meta > span:nth-last-child(1) {
-    display: none;
+  .memory-archive-list.is-profile .memory-record-main {
+    grid-template-columns: 80px minmax(0, 1fr);
+    column-gap: 12px;
   }
 }
 

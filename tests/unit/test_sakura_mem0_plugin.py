@@ -20,6 +20,7 @@ from plugins.optional.sakura_mem0.plugin import (
     _context_request,
     _tool_registrations,
 )
+from plugins.optional.sakura_mem0.memory import MemoryRecord
 
 
 def test_recall_logs_distinguish_matches_empty_and_skipped(monkeypatch):
@@ -85,7 +86,11 @@ class FakeStore:
         ]
 
     def list_memories(self, *, limit=None):
-        return list(self.memories if limit is None else self.memories[:limit])
+        records = self.memories if limit is None else self.memories[:limit]
+        return [{**MemoryRecord(id=item["id"], content=item["content"]).to_dict(),
+                 "pinned": False, "state": "active", "revision": 1, "evidence": [], "occurred_at": "",
+                 "subject": "未分类", "subject_kind": "topic", "predicate": "一般事实", "target": "", "target_kind": "",
+                 **item, **item["metadata"]} for item in records]
 
 
 class FakeBoundary:
@@ -105,6 +110,9 @@ class FakeBoundary:
 
     def profile_memories(self):
         return []
+
+    def list_memories(self, *, limit=None):
+        return self.memory_store.list_memories(limit=limit)
 
     def search_memory(self, arguments, *, wait=False):
         assert wait is False
@@ -350,6 +358,36 @@ def test_plugin_setup_does_not_wait_for_initial_timeline_catch_up(tmp_path: Path
     assert boundary.closed is True
 
 
+def test_memory_collection_registers_and_routes_file_transfer(tmp_path: Path) -> None:
+    from app.core_host.plugin_host_services import _SettingsHostService
+
+    runtime, boundary = _runtime(tmp_path)
+    requests = []
+    def transfer(request):
+        requests.append(request)
+        return {"exported": 2}
+    boundary.transfer = transfer
+    context = FakeContext()
+    SakuraMem0Plugin(lambda _context: runtime).setup(context)
+    try:
+        (section_id, descriptor), callbacks = next(call for call in context.services["sakura.host.settings.collection-v0"].calls if "transfer" in call[1])
+        service = _SettingsHostService(lambda _handle, _shape, payload: callbacks["transfer"](payload))
+        service.call("register", ["sakura.memory.mem0",
+            {"sectionId": section_id, "title": "记忆", "fields": []},
+            {"load": None, "save": None, "actions": {}}])
+        service.register_collection("sakura.memory.mem0", section_id, descriptor,
+            {name: "cb_" + "a" * 32 for name in callbacks})
+        section, = service.sections_for_plugin("sakura.memory.mem0")
+        assert section["collections"][0]["canTransfer"] is True
+        request = {"action": "export", "path": str(tmp_path / "memory_sakura.json"),
+                   "format": "json", "expectedCharacterId": "sakura"}
+        assert service.collection("transfer", "sakura.memory.mem0", section_id,
+                                  descriptor["collectionId"], request) == {"exported": 2}
+        assert requests == [request]
+    finally:
+        context.effects[0]()
+
+
 def test_official_descriptors_pass_real_generic_host_validators(tmp_path: Path) -> None:
     from app.plugin_sdk.sakura_tools import ToolRegistry
     from app.core_host.plugin_host_services import (
@@ -584,6 +622,8 @@ def test_context_collection_and_settings_keep_character_scope(tmp_path: Path) ->
         {"triggerTurns": 12},
         {"curationModelRef": {"serviceKey": "sakura.model.openai_compatible", "profileId": "fixture", "modelId": "new-curator"}},
     ]
+    runtime.save_model_slot({"modelId": "new-curator"})
+    assert boundary.saved[-1] == {"curationModelRef": {"serviceKey": "sakura.model.openai_compatible", "profileId": "fixture", "modelId": "new-curator"}}
 
 
 def test_runtime_cancels_and_joins_model_download_before_closing_store(
@@ -648,7 +688,8 @@ def test_long_legacy_memory_round_trips_through_generic_collection(tmp_path: Pat
             "metadata": {
                 "scope": "sakura",
                 "layer": "semantic",
-                "source": "explicit",
+                "source": "explicit", "subject": "未分类", "subject_kind": "topic",
+                "predicate": "一般事实", "target": "", "target_kind": "",
             },
         }
     )

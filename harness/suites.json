@@ -5,6 +5,10 @@
       "description": "验证记忆读写、双路检索、证据整理、历史导入和插件运行",
       "cases": ["runtime-v2-memory-tests"]
     },
+    "memory-ui": {
+      "description": "验证记忆页面的画像、人与事、约定和经历可编辑并用于聊天",
+      "cases": ["memory-browser-journey"]
+    },
     "smoke": {
       "description": "快速验证 Product Harness 与 Runtime v2 核心协议边界",
       "cases": [
@@ -1219,6 +1223,13 @@
       "id": "settings-contributions-browser",
       "description": "使用真实插件、隔离配置和浏览器验证旧设置交互与统一保存",
       "argv": ["{python}", "desktop/frontend/tests/settings-contributions.journey.py"],
+      "timeout_seconds": 120,
+      "env": {"PYTHONIOENCODING": "utf-8", "PYTHONDONTWRITEBYTECODE": "1"}
+    },
+    {
+      "id": "memory-browser-journey",
+      "description": "用隔离三表存储验证记忆页面编辑、对象查询和聊天上下文",
+      "argv": ["{python}", "desktop/frontend/tests/memory.journey.py"],
       "timeout_seconds": 120,
       "env": {"PYTHONIOENCODING": "utf-8", "PYTHONDONTWRITEBYTECODE": "1"}
     },

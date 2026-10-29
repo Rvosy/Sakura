@@ -59,6 +59,117 @@ def test_offline_chinese_recall_is_independent_and_can_be_empty(store):
     assert store.search_memory({"query": "我下在 H8", "automatic": True})["memories"] == []
 
 
+def test_entity_attributes_and_relations_are_searchable_editable_and_transferable(store, tmp_path):
+    profile = store.create_memory({"content": "我用 RTX 4060", "layer": "core_profile", "subject": "用户",
+                                   "subject_kind": "person", "predicate": "显卡"})["memory"]
+    relation = store.create_memory({"content": "小樱是我的义女儿", "subject": "用户", "subject_kind": "person",
+                                    "predicate": "义女儿", "target": "小樱", "target_kind": "person"})["memory"]
+    found = store.search_memory({"subject": "用户", "predicate": "显卡"})["memories"]
+    assert [item["id"] for item in found] == [profile["id"]]
+    assert store.search_memory({"query": "小樱"})["memories"][0]["target"] == "小樱"
+    store.update_memory({"id": profile["id"], "content": "我换成 RTX 5060 了"})
+    exported = store.export_records()
+    store.close()
+    reopened = MemoryStore(tmp_path, "sakura")
+    try:
+        assert reopened.get(profile["id"])["predicate"] == "显卡"
+        assert reopened.search_memory({"subject": "用户", "predicate": "显卡"})["memories"][0]["content"] == "我换成 RTX 5060 了"
+        other = MemoryStore(tmp_path, "other")
+        try:
+            assert other.search_memory({"target": "小樱"})["memories"] == []
+            other.restore_records(exported)
+            assert other.get(relation["id"])["target"] == "小樱"
+            other.forget_memory({"id": relation["id"]})
+            other.restore_records(exported)
+            assert other.search_memory({"target": "小樱"})["memories"] == []
+        finally:
+            other.close()
+    finally:
+        reopened.close()
+
+
+def test_curation_keeps_full_user_fact_even_when_summary_and_quote_drop_negation(store):
+    human = entry(content="我不喜欢咖啡，喝了会睡不着。")
+    proposed = add_operation(human, content="用户喜欢咖啡", layer="semantic",
+                             subject="用户", subject_kind="person", predicate="饮食偏好")
+    proposed["evidence"][0]["quote"] = "喜欢咖啡"
+    result = MemoryCurator(Client([proposed]), store).curate_entries([human])
+    assert result.created == 1
+    assert store.search_memory({"subject": "用户", "predicate": "饮食偏好"})["memories"][0]["content"] == human.content
+
+
+def test_curation_writes_relationship_with_user_evidence(store):
+    human = entry(content="小樱是我的义女儿。")
+    result = MemoryCurator(Client([add_operation(human, subject="用户", subject_kind="person",
+        predicate="义女儿", target="小樱", target_kind="person")]), store).curate_entries([human])
+    assert result.created == 1
+    relationship, = store.search_memory({"target": "小樱"})["memories"]
+    assert relationship["subject"] == "用户" and relationship["predicate"] == "义女儿"
+    assert relationship["evidence"][0]["entry_id"] == human.entry_id
+
+
+def test_existing_sqlite_records_keep_identity_evidence_and_deletions_during_upgrade(tmp_path):
+    directory = tmp_path / "data" / "memory"
+    directory.mkdir(parents=True)
+    original = {"id": "existing", "scope": "sakura", "content": "我不喜欢咖啡", "layer": "core_profile",
+                "source": "manual", "revision": 7, "state": "active", "pinned": False,
+                "created_at": "2026-01-01T00:00:00Z", "updated_at": "2026-06-01T00:00:00Z",
+                "occurred_at": "2026-01-01T00:00:00Z", "metadata": {"custom": "保留此字段"}}
+    evidence = {"entry_id": "original-entry", "role": "user", "quote": "我不喜欢咖啡"}
+    with sqlite3.connect(directory / "memory.sqlite3") as db:
+        db.execute("""CREATE TABLE memories (scope TEXT, id TEXT, document TEXT, content TEXT,
+                   layer TEXT, revision INTEGER, deleted INTEGER, point_id TEXT, vector_revision INTEGER,
+                   PRIMARY KEY(scope,id))""")
+        db.execute("CREATE TABLE evidence (scope TEXT, memory_id TEXT, entry_id TEXT, document TEXT, PRIMARY KEY(scope,memory_id,entry_id))")
+        for deleted in (False, True):
+            record = {**original, "id": "removed" if deleted else "existing", "deleted": deleted}
+            db.execute("INSERT INTO memories VALUES (?,?,?,?,?,?,?,?,?)", (
+                "sakura", record["id"], json.dumps(record), record["content"], record["layer"], 7,
+                int(deleted), "point-" + record["id"], 7))
+        db.execute("INSERT INTO evidence VALUES (?,?,?,?)", ("sakura", "existing", "original-entry", json.dumps(evidence)))
+    memory = MemoryStore(tmp_path)
+    try:
+        restored = memory.get("existing")
+        assert restored["content"] == original["content"] and restored["revision"] == 7
+        assert restored["updated_at"] == original["updated_at"]
+        assert restored["metadata"]["custom"] == "保留此字段"
+        assert restored["evidence"] == [evidence]
+        assert memory.search_memory({"subject": "用户"})["memories"][0]["id"] == "existing"
+        assert memory.get("removed") is None and memory.get("removed", include_deleted=True)["deleted"]
+        memory.update_memory({"id": "existing", "content": "现在更喜欢喝茶", "predicate": "饮食偏好"})
+        assert memory.search_memory({"subject": "用户", "predicate": "饮食偏好"})["memories"][0]["revision"] == 8
+    finally:
+        memory.close()
+
+
+def test_manual_unpinned_agreement_is_in_chat_context(store, tmp_path):
+    boundary = MemoryBoundary(tmp_path, "sakura", memory_store=store)
+    try:
+        saved = boundary.upsert({"content": "不用提醒我睡觉", "layer": "procedural", "source": "manual", "pinned": False})
+        result = MemoryRecallService(boundary).recall(ContextRequest(current_input="今天聊聊代码", character_id="sakura"))
+        assert [fragment.metadata["memory_id"] for fragment in result.fragments] == [saved["memory"]["id"]]
+        assert "不用提醒我睡觉" in result.fragments[0].content
+    finally:
+        boundary.close()
+
+
+def test_temporary_search_failure_does_not_disable_later_reads_or_writes(store, tmp_path, monkeypatch):
+    store.create_memory({"content": "咖啡不加糖"})
+    boundary = MemoryBoundary(tmp_path, "sakura", memory_store=store)
+    original = store.search_memory
+    def fail(*args, **kwargs):
+        raise sqlite3.OperationalError("temporary read failure")
+    try:
+        monkeypatch.setattr(store, "search_memory", fail)
+        assert boundary.search({"query": "咖啡"})["status"] == "degraded"
+        monkeypatch.setattr(store, "search_memory", original)
+        assert boundary.search({"query": "咖啡"})["memories"][0]["content"] == "咖啡不加糖"
+        boundary.upsert({"content": "茶也不加糖"})
+        assert len(boundary.list_memories()) == 2
+    finally:
+        boundary.close()
+
+
 def test_merge_duplicates_preserves_evidence_and_protected_records(store):
     for i in range(2):
         store.create_memory({"id": f"duplicate-{i}", "content": "用户喝咖啡不加糖", "source": "curation",
@@ -156,6 +267,160 @@ def test_observation_cannot_overwrite_user_fact_but_can_record_activity(store):
     assert result.created == 1 and result.ignored == 1
 
 
+def test_independent_profile_facts_keep_their_sentence_without_temporary_requests(store):
+    human = entry(content="我不喜欢咖啡。我的工作是软件开发。明天帮我查一下天气。")
+    client = Client([
+        add_operation(human, layer="core_profile", predicate="饮食偏好", content="喜欢咖啡",
+                      evidence=[{"entry_id": "u1", "quote": "喜欢咖啡"}]),
+        add_operation(human, layer="core_profile", predicate="职业", content="软件开发",
+                      evidence=[{"entry_id": "u1", "quote": "软件开发"}]),
+    ])
+    MemoryCurator(client, store).curate_entries([human])
+    facts = {item["predicate"]: item["content"] for item in store.profile_memories()}
+    assert facts == {"饮食偏好": "用户原话：我不喜欢咖啡。", "职业": "用户原话：我的工作是软件开发。"}
+
+
+def test_incomplete_candidate_does_not_mark_source_as_processed(store):
+    human = entry()
+    with pytest.raises(ValueError, match="结构无效"):
+        MemoryCurator(Client([{"op": "add", "layer": "semantic"}]), store).curate_entries([human], cursor="next")
+    assert store.unprocessed_entries([human]) == [human]
+    assert store.get_state("curation", default={}) == {}
+    assert not store.list_memories()
+
+
+def test_repeated_short_quote_keeps_the_change_in_preference(store):
+    human = entry(content="我以前喜欢咖啡。但是现在不喜欢咖啡。")
+    client = Client([add_operation(human, layer="core_profile", content="用户现在不喜欢咖啡",
+                                  evidence=[{"entry_id": "u1", "quote": "喜欢咖啡"}])])
+    MemoryCurator(client, store).curate_entries([human])
+    content = store.profile_memories()[0]["content"]
+    assert "以前喜欢咖啡" in content and "现在不喜欢咖啡" in content
+
+
+def _wait_text_import(boundary, request):
+    deadline = time.monotonic() + 3
+    while time.monotonic() < deadline:
+        result = boundary.text_import_status(request)
+        if result["state"] != "running":
+            return result
+        time.sleep(.01)
+    pytest.fail("文本提取未结束")
+
+
+def test_text_import_previews_then_saves_selected_edits_atomically(tmp_path):
+    request = {"requestId": "test-import", "text": "我不喝咖啡。请不要提醒我睡觉。小雨是我的同事。"}
+    document = entry("text-import:test-import", request["text"], "document")
+    client = Client([
+        add_operation(document, layer="core_profile", subject="用户", subject_kind="person", predicate="饮食偏好", content="不喝咖啡"),
+        add_operation(document, layer="procedural", subject="用户", predicate="睡觉提醒", content="不要提醒睡觉"),
+        add_operation(document, subject="用户", predicate="同事", target="小雨", content="小雨是同事"),
+    ])
+    boundary = MemoryBoundary(tmp_path, "sakura", model_client_factory=lambda _: client,
+                              model_resolver=lambda _: {"serviceKey": "model", "profileId": "p", "modelId": "m"})
+    try:
+        boundary.start_text_import(request)
+        result = _wait_text_import(boundary, request)
+        assert result["state"] == "preview"
+        assert boundary.list_memories() == []
+        selected = result["candidates"][:2]
+        selected[0]["content"] = "我喜欢绿茶，不喝咖啡。"
+        selected[1]["content"] = ""
+        with pytest.raises(ValueError):
+            boundary.save_text_import({**request, "candidates": selected})
+        assert boundary.list_memories() == []
+        selected[1]["content"] = "以后不用提醒我要睡觉了。"
+        confirmation = {**request, "candidates": selected}
+        assert boundary.save_text_import(confirmation)["saved"] == 2
+        assert boundary.save_text_import(confirmation)["saved"] == 2
+        records = boundary.memory_store.list_memories(limit=None)
+        assert len(records) == 2
+        assert {item["content"] for item in boundary.memory_store.profile_memories()} == {
+            "我喜欢绿茶，不喝咖啡。", "以后不用提醒我要睡觉了。"}
+        assert all(item["source"] == "manual" and item["evidence"][0]["role"] == "document" for item in records)
+        assert all(item["evidence"][0]["quote"] == request["text"] for item in records)
+        assert boundary.memory_store.get_state("curation", default={}) == {}
+    finally:
+        boundary.close()
+
+
+def test_text_import_cancel_discards_late_model_result(tmp_path):
+    entered, release = threading.Event(), threading.Event()
+
+    class SlowClient(Client):
+        def complete_raw(self, *args, **kwargs):
+            entered.set()
+            assert release.wait(3)
+            return super().complete_raw(*args, **kwargs)
+
+    request = {"requestId": "cancelled-import", "text": "我喜欢茶"}
+    client = SlowClient([add_operation(entry("text-import:cancelled-import", request["text"], "document"))])
+    boundary = MemoryBoundary(tmp_path, "sakura", model_client_factory=lambda _: client,
+                              model_resolver=lambda _: {"serviceKey": "model", "profileId": "p", "modelId": "m"})
+    try:
+        boundary.start_text_import(request)
+        assert entered.wait(3)
+        boundary.cancel_text_import(request)
+        release.set()
+        boundary._curation_threads.stop(3000)
+        assert boundary.text_import_status(request)["state"] == "cancelled"
+        with pytest.raises(ValueError):
+            boundary.save_text_import({**request, "candidates": []})
+        assert not boundary.list_memories()
+    finally:
+        release.set()
+        boundary.close()
+
+
+def test_text_import_requires_a_model_and_keeps_unverifiable_output_unsaved(tmp_path):
+    request = {"requestId": "bad-quote", "text": "我喜欢茶"}
+    boundary = MemoryBoundary(tmp_path, "sakura")
+    try:
+        with pytest.raises(ValueError, match="记忆整理模型"):
+            boundary.start_text_import(request)
+        assert not boundary.list_memories()
+    finally:
+        boundary.close()
+    client = Client([add_operation(entry("text-import:bad-quote", "原文没有这句话", "document"))])
+    boundary = MemoryBoundary(tmp_path, "sakura", model_client_factory=lambda _: client,
+                              model_resolver=lambda _: {"serviceKey": "model", "profileId": "p", "modelId": "m"})
+    try:
+        boundary.start_text_import(request)
+        result = _wait_text_import(boundary, request)
+        assert result["state"] == "failed" and "无法核对原文" in result["error"]
+        assert not boundary.list_memories()
+    finally:
+        boundary.close()
+
+
+def test_old_json_without_entity_fields_restores_and_can_be_exported_again(tmp_path):
+    from sakura_data_transfer import write_archive
+
+    record = {"id": "old-profile", "content": "用户喜欢绿茶，不喝咖啡。", "layer": "core_profile",
+              "scope": "sakura", "category": "", "source": "manual", "importance": .8, "confidence": .9,
+              "created_at": "2025-01-01T12:00:00+00:00", "updated_at": "2025-01-02T12:00:00+00:00",
+              "last_accessed_at": "", "metadata": {"pinned": True}}
+    archive = tmp_path / "old-memory.json"
+    write_archive(archive, kind="memory", provider="sakura.memory.mem0", character_id="sakura", records=[record])
+    boundary = MemoryBoundary(tmp_path, "sakura")
+    request = {"expectedCharacterId": "sakura", "path": str(archive)}
+    try:
+        assert boundary.transfer({**request, "action": "preview"})["added"] == 1
+        assert boundary.transfer({**request, "action": "import"})["added"] == 1
+        restored = boundary.memory_store.get(record["id"])
+        assert restored["content"] == record["content"] and restored["created_at"] == record["created_at"]
+        assert restored["subject"] == "用户" and restored["pinned"]
+        boundary.upsert({"id": record["id"], "content": "现在也喜欢乌龙茶。"})
+        assert boundary.transfer({**request, "action": "import"})["added"] == 0
+        assert boundary.memory_store.get(record["id"])["content"] == "现在也喜欢乌龙茶。"
+        exported = tmp_path / "new-memory.json"
+        boundary.transfer({**request, "action": "export", "format": "json", "path": str(exported)})
+        assert boundary.transfer({**request, "action": "import", "path": str(exported)})["identical"] == 1
+        assert len(boundary.list_memories()) == 1
+    finally:
+        boundary.close()
+
+
 def test_human_edit_during_model_request_is_preserved_without_blocking(store):
     old = store.create_memory({"content": "午饭喜欢面条", "occurred_at": "2026-01-01T00:00:00Z"})["memory"]
     human = entry(content="午饭现在喜欢米饭")
@@ -180,8 +445,9 @@ def test_human_edit_during_model_request_is_preserved_without_blocking(store):
 
 
 def test_curation_batch_rollback_keeps_cursor_and_fts_consistent(store, monkeypatch):
-    human = entry(content="喜欢咖啡，也喜欢茶")
-    client = Client([add_operation(human, content="喜欢咖啡"), add_operation(human, content="喜欢茶")])
+    human = entry(content="喜欢咖啡")
+    another = entry("u2", "喜欢茶")
+    client = Client([add_operation(human), add_operation(another)])
     save = store._save
     def fail_second(record, **kwargs):
         if record["content"] == "喜欢茶":
@@ -189,12 +455,12 @@ def test_curation_batch_rollback_keeps_cursor_and_fts_consistent(store, monkeypa
         return save(record, **kwargs)
     monkeypatch.setattr(store, "_save", fail_second)
     with pytest.raises(sqlite3.OperationalError, match="disk full"):
-        MemoryCurator(client, store).curate_entries([human], cursor="bad-cursor")
+        MemoryCurator(client, store).curate_entries([human, another], cursor="bad-cursor")
     assert store.list_memories(limit=None) == []
     assert store.get_state("curation", default={}) == {}
     assert store.search_memory({"query": "咖啡"})["memories"] == []
     monkeypatch.setattr(store, "_save", save)
-    MemoryCurator(client, store).curate_entries([human], cursor="ok")
+    MemoryCurator(client, store).curate_entries([human, another], cursor="ok")
     assert len(store.list_memories(limit=None)) == 2
 
 

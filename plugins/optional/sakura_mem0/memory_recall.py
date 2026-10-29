@@ -6,9 +6,11 @@ from time import monotonic
 try:
     from .support import log_event
     from .domain_types import ContextFragment, ContextRequest
+    from .memory import memory_text
 except ImportError:
     from support import log_event
     from domain_types import ContextFragment, ContextRequest
+    from memory import memory_text
 
 
 @dataclass(frozen=True)
@@ -49,7 +51,7 @@ class MemoryRecallService:
             for memory, label in selected:
                 evidence = memory.get("evidence", [])
                 quotes = "；".join(dict.fromkeys(source["quote"] for source in evidence if source["role"] == "user"))
-                content = f"{label}（发生时间：{memory.get('occurredAt', '')}，状态：{memory.get('state', 'active')}）：{memory['content']}"
+                content = f"{label}（发生时间：{memory.get('occurredAt', '')}，状态：{memory.get('state', 'active')}）：{memory_text(memory)}"
                 if quotes and quotes not in memory["content"]:
                     content += f"\n用户原话依据：{quotes}"
                 fragments.append(ContextFragment(

@@ -9,7 +9,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 try:
     from . import model_assets
@@ -47,6 +47,17 @@ DEFAULT_MEMORY_CONFIDENCE = 0.75
 DEFAULT_MEMORY_SOURCE = "manual"
 DENSE_THRESHOLD = 0.48
 DENSE_SCORE_WINDOW = 0.06
+KNOWLEDGE_FIELDS = ("subject", "subject_kind", "predicate", "target", "target_kind")
+ENTITY_KINDS = ("person", "project", "place", "thing", "event", "topic")
+
+
+def memory_text(record: dict) -> str:
+    """检索和聊天共用实体、属性或关系的完整表达。"""
+    subject = record.get("subject", "")
+    predicate = record.get("predicate", "")
+    target = record.get("target", "")
+    heading = " · ".join(value for value in (subject, predicate, target) if value)
+    return f"{heading}：{record['content']}" if heading else record["content"]
 
 
 class MemoryRuntimeUnavailableError(RuntimeError):
@@ -130,7 +141,7 @@ def looks_like_sensitive_memory(content: str) -> bool:
 
 
 class MemoryStore:
-    """SQLite 保存正文、证据和整理进度；FTS 和向量都从这些记录生成。"""
+    """实体、属性和关系保存当前记忆，检索索引从这些记录生成。"""
 
     def __init__(
         self, base_dir: Path | None = None, scope_id: str = DEFAULT_MEMORY_SCOPE,
@@ -145,18 +156,10 @@ class MemoryStore:
         self._lock = threading.RLock()
         self._transaction_depth = 0
         self._closed = False
-        self._listeners: list[Callable] = []
         self._db = sqlite3.connect(self.memory_dir / "memory.sqlite3", check_same_thread=False)
         self._db.row_factory = sqlite3.Row
         self._db.execute("PRAGMA journal_mode=WAL")
         self._db.executescript("""
-            CREATE TABLE IF NOT EXISTS memories (
-                scope TEXT NOT NULL, id TEXT NOT NULL, document TEXT NOT NULL,
-                content TEXT NOT NULL, layer TEXT NOT NULL, revision INTEGER NOT NULL,
-                deleted INTEGER NOT NULL DEFAULT 0, point_id TEXT NOT NULL,
-                vector_revision INTEGER NOT NULL DEFAULT 0,
-                PRIMARY KEY (scope, id)
-            );
             CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
                 scope UNINDEXED, id UNINDEXED, words, tokenize='unicode61'
             );
@@ -177,10 +180,85 @@ class MemoryStore:
         """)
         self._index = VectorIndex(self)
         try:
+            self._initialize_knowledge()
             self._migrate()
         except Exception:
             self._db.close()
             raise
+
+    def _initialize_knowledge(self) -> None:
+        # 三张业务表保存当前事实；只读视图供检索、证据和数据交换共用。
+        with self.transaction():
+            self._db.execute("""CREATE TABLE IF NOT EXISTS entities (
+                scope TEXT NOT NULL, id TEXT NOT NULL, name TEXT NOT NULL, kind TEXT NOT NULL,
+                PRIMARY KEY(scope,id), UNIQUE(scope,name,kind)
+            )""")
+            columns = """scope TEXT NOT NULL, id TEXT NOT NULL, document TEXT NOT NULL,
+                content TEXT NOT NULL, layer TEXT NOT NULL, revision INTEGER NOT NULL,
+                deleted INTEGER NOT NULL DEFAULT 0, point_id TEXT NOT NULL,
+                vector_revision INTEGER NOT NULL DEFAULT 0, entity_id TEXT NOT NULL,
+                predicate TEXT NOT NULL"""
+            self._db.execute(f"CREATE TABLE IF NOT EXISTS entity_attrs ({columns}, PRIMARY KEY(scope,id))")
+            self._db.execute(f"""CREATE TABLE IF NOT EXISTS entity_relations (
+                {columns}, target_id TEXT NOT NULL, PRIMARY KEY(scope,id))""")
+            old = self._db.execute("SELECT type FROM sqlite_master WHERE name='memories'").fetchone()
+            if old and old["type"] == "table":
+                for row in self._db.execute("SELECT * FROM memories").fetchall():
+                    record = json.loads(row["document"])
+                    record.update(scope=row["scope"], id=row["id"], revision=row["revision"], deleted=bool(row["deleted"]))
+                    self._write_knowledge(record, point_id=row["point_id"])
+                self._db.execute("DROP TABLE memories")
+            self._db.execute("""CREATE VIEW IF NOT EXISTS memories AS
+                SELECT a.*, '' AS target_id, e.name AS subject, e.kind AS subject_kind,
+                       '' AS target, '' AS target_kind
+                FROM entity_attrs a JOIN entities e ON e.scope=a.scope AND e.id=a.entity_id
+                UNION ALL
+                SELECT r.*, e.name AS subject, e.kind AS subject_kind, t.name AS target, t.kind AS target_kind
+                FROM entity_relations r JOIN entities e ON e.scope=r.scope AND e.id=r.entity_id
+                JOIN entities t ON t.scope=r.scope AND t.id=r.target_id
+            """)
+            if old and old["type"] == "table":
+                self._db.execute("DELETE FROM memory_fts")
+                for row in self._db.execute("SELECT * FROM memories WHERE deleted=0").fetchall():
+                    self._db.execute("INSERT INTO memory_fts VALUES (?,?,?)",
+                                     (row["scope"], row["id"], index_text(memory_text(dict(row)))))
+
+    def _entity(self, scope: str, name: str, kind: str) -> str:
+        row = self._db.execute("SELECT id FROM entities WHERE scope=? AND name=? AND kind=?",
+                               (scope, name, kind)).fetchone()
+        if row:
+            return row["id"]
+        entity_id = str(uuid.uuid4())
+        self._db.execute("INSERT INTO entities VALUES (?,?,?,?)", (scope, entity_id, name, kind))
+        return entity_id
+
+    def _write_knowledge(self, record: dict, *, point_id: str) -> None:
+        layer = record["layer"]
+        values = {**record.get("metadata", {}), **record}
+        defaults = {"core_profile": ("用户", "person"), "procedural": ("用户", "person"),
+                    "episodic": ("共同经历", "event"), "session": ("当前事项", "topic")}
+        subject, kind = defaults.get(layer, ("未分类", "topic"))
+        record.update({
+            "subject": str(values.get("subject") or subject).strip(),
+            "subject_kind": str(values.get("subject_kind") or kind),
+            "predicate": str(values.get("predicate") or values.get("category") or MEMORY_LAYER_LABELS[layer]).strip(),
+            "target": str(values.get("target") or "").strip(),
+            "target_kind": str(values.get("target_kind") or "person") if values.get("target") else "",
+        })
+        for key in ("subject_kind", "target_kind"):
+            if record[key] and record[key] not in ENTITY_KINDS:
+                raise ValueError("实体类型无效。")
+        record["metadata"].update({key: record[key] for key in KNOWLEDGE_FIELDS})
+        scope, memory_id = record["scope"], record["id"]
+        entity_id = self._entity(scope, record["subject"], record["subject_kind"])
+        table = "entity_relations" if record["target"] else "entity_attrs"
+        other = "entity_attrs" if record["target"] else "entity_relations"
+        self._db.execute(f"DELETE FROM {other} WHERE scope=? AND id=?", (scope, memory_id))
+        fields = [scope, memory_id, json.dumps(record, ensure_ascii=False), record["content"], layer,
+                  record["revision"], int(record["deleted"]), point_id, 0, entity_id, record["predicate"]]
+        if record["target"]:
+            fields.append(self._entity(scope, record["target"], record["target_kind"]))
+        self._db.execute(f"INSERT OR REPLACE INTO {table} VALUES ({','.join('?' for _ in fields)})", fields)
 
     @contextmanager
     def transaction(self):
@@ -217,13 +295,14 @@ class MemoryStore:
         record = json.loads(row["document"])
         record["revision"] = row["revision"]
         record["deleted"] = bool(row["deleted"])
+        record.update({key: row[key] for key in KNOWLEDGE_FIELDS})
         record["evidence"] = [
             json.loads(item["document"]) for item in self._db.execute(
                 "SELECT document FROM evidence WHERE scope=? AND memory_id=?", (row["scope"], row["id"]),
             )
         ]
         record["metadata"].update({key: record[key] for key in
-                                   ("revision", "deleted", "evidence", "state", "pinned", "occurred_at")})
+                                   ("revision", "deleted", "evidence", "state", "pinned", "occurred_at", *KNOWLEDGE_FIELDS)})
         return record
 
     def get(self, memory_id: str, *, include_deleted: bool = False) -> dict | None:
@@ -267,17 +346,14 @@ class MemoryStore:
                 record["metadata"][key] = values[key]
         for key in ("revision", "deleted", "state", "pinned", "occurred_at", "evidence"):
             record["metadata"][key] = record[key]
-        self._db.execute(
-            "INSERT INTO memories VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(scope,id) DO UPDATE SET "
-            "document=excluded.document,content=excluded.content,layer=excluded.layer,"
-            "revision=excluded.revision,deleted=excluded.deleted",
-            (scope, memory_id, json.dumps(record, ensure_ascii=False), record["content"], record["layer"],
-             revision, int(record["deleted"]), str(uuid.uuid4()), 0),
-        )
+        for key in KNOWLEDGE_FIELDS:
+            if key in values:
+                record[key] = values[key]
+        self._write_knowledge(record, point_id=previous_row["point_id"] if previous_row else str(uuid.uuid4()))
         self._db.execute("DELETE FROM memory_fts WHERE scope=? AND id=?", (scope, memory_id))
         if not record["deleted"]:
             self._db.execute("INSERT INTO memory_fts VALUES (?,?,?)",
-                             (scope, memory_id, index_text(record["content"])))
+                             (scope, memory_id, index_text(memory_text(record))))
         if "evidence" in raw:
             self._db.execute("DELETE FROM evidence WHERE scope=? AND memory_id=?", (scope, memory_id))
         for evidence in record["evidence"]:
@@ -345,10 +421,9 @@ class MemoryStore:
                     record = self._record(row)
                     record.update(scope=target, id=new_id)
                     record["metadata"]["scope"] = target
-                    self._db.execute(
-                        "UPDATE memories SET scope=?,id=?,document=?,vector_revision=0 WHERE scope=? AND id=?",
-                        (target, new_id, json.dumps(record, ensure_ascii=False), source, old_id),
-                    )
+                    self._write_knowledge(record, point_id=row["point_id"])
+                    for table in ("entity_attrs", "entity_relations"):
+                        self._db.execute(f"DELETE FROM {table} WHERE scope=? AND id=?", (source, old_id))
                     self._db.execute("UPDATE memory_fts SET scope=?,id=? WHERE scope=? AND id=?",
                                      (target, new_id, source, old_id))
                     self._db.execute("UPDATE evidence SET scope=?,memory_id=? WHERE scope=? AND memory_id=?",
@@ -410,7 +485,7 @@ class MemoryStore:
         for item in self.list_memories(limit=None):
             if item["pinned"] or item["source"] == "manual":
                 continue
-            key = (item["layer"], item["state"], item["content"].strip())
+            key = (item["layer"], item["state"], *(item[key] for key in KNOWLEDGE_FIELDS), item["content"].strip())
             groups.setdefault(key, []).append(item)
         return [items for items in groups.values() if len(items) > 1]
 
@@ -440,9 +515,10 @@ class MemoryStore:
     def profile_memories(self) -> list[dict]:
         return [item for item in self.list_memories(limit=None)
                 if item["state"] == "active" and (
-                    item["layer"] == "core_profile" or
+                    item["layer"] == "core_profile" and item["subject"] == "用户" or
                     item["layer"] == "procedural" and
-                    (item["pinned"] or item["metadata"].get("evidence_kind") == "human"))]
+                    (item["pinned"] or item["source"] in {"manual", "user_tool"} or
+                     item["metadata"].get("evidence_kind") == "human"))]
 
     def core_profile(self) -> dict | None:
         return next((item for item in self.profile_memories() if item["layer"] == "core_profile"), None)
@@ -463,10 +539,17 @@ class MemoryStore:
         automatic = bool(arguments.get("automatic", False))
         layer = arguments.get("layer")
         match, words = match_query(query)
-        if automatic and not words:
+        structured = {key: arguments[key] for key in ("subject", "predicate", "target") if arguments.get(key)}
+        if automatic and not words and not structured:
             return {"status": "ready", "query": query, "memories": [], "count": 0}
         candidates: dict[str, dict] = {}
         with self.transaction():
+            if structured and not query:
+                where = " AND ".join(f"{key}=?" for key in structured)
+                rows = self._db.execute(f"SELECT * FROM memories WHERE scope=? AND deleted=0 AND {where}",
+                                        [self.scope_id, *structured.values()]).fetchall()
+                for row in rows:
+                    candidates[row["id"]] = {"memory": self._record(row), "rrf": 1, "matched_terms": [], "structured": True}
             if match:
                 rows = self._db.execute(
                     "SELECT id,bm25(memory_fts) AS rank FROM memory_fts WHERE memory_fts MATCH ? AND scope=? "
@@ -475,10 +558,11 @@ class MemoryStore:
                 for rank, row in enumerate(rows, 1):
                     memory = self.get(row["id"])
                     if memory:
-                        overlap = words & set(tokens(memory["content"]))
+                        overlap = words & set(tokens(memory_text(memory)))
                         candidates[memory["id"]] = {"memory": memory, "rrf": 1 / (60 + rank),
                                                    "lexical_rank": rank, "matched_terms": sorted(overlap)}
-        for rank, dense in enumerate(self._index.search(query, self.scope_id, max(20, limit)), 1):
+        dense_results = self._index.search(query, self.scope_id, max(20, limit)) if query else []
+        for rank, dense in enumerate(dense_results, 1):
             memory = self.get(dense["id"])
             if memory is None or memory["revision"] != dense["revision"]:
                 continue
@@ -491,6 +575,8 @@ class MemoryStore:
             memory = candidate["memory"]
             if layer and memory["layer"] != layer:
                 continue
+            if any(arguments.get(key) and memory[key] != arguments[key] for key in ("subject", "predicate", "target")):
+                continue
             if automatic and (memory["state"] == "cancelled" or
                               memory["layer"] == "session" and memory["state"] != "active"):
                 continue
@@ -500,12 +586,12 @@ class MemoryStore:
             coverage = len(matched) / max(1, len(words))
             lexical_relevant = bool(matched) and coverage >= 0.5
             dense_relevant = candidate.get("dense_score", 0) >= max(DENSE_THRESHOLD, best_dense - DENSE_SCORE_WINDOW)
-            if automatic and not lexical_relevant and not dense_relevant:
+            if automatic and not lexical_relevant and not dense_relevant and not candidate.get("structured"):
                 continue
             details = {key: value for key, value in candidate.items() if key != "memory"}
             memory["score"] = candidate["rrf"]
             memory["retrieval"] = {**details, "lexical_coverage": coverage,
-                                   "reason": "keyword+semantic" if lexical_relevant and dense_relevant else
+                                   "reason": "entity" if candidate.get("structured") else "keyword+semantic" if lexical_relevant and dense_relevant else
                                    "keyword" if lexical_relevant else "semantic",
                                    "index_state": self._index.status, "model": DEFAULT_EMBEDDING_MODEL}
             result.append(memory)
@@ -572,19 +658,22 @@ class MemoryStore:
 
     def index_rows(self, *, all_rows: bool = False, limit: int = 32) -> list[dict]:
         with self.transaction():
-            sql = "SELECT scope,id,content,revision,deleted,point_id FROM memories"
+            sql = "SELECT scope,id,content,subject,predicate,target,revision,deleted,point_id FROM memories"
             if not all_rows:
                 sql += " WHERE vector_revision != revision LIMIT ?"
-            return [dict(row) for row in self._db.execute(sql, () if all_rows else (limit,))]
+            return [{**dict(row), "content": memory_text(dict(row))}
+                    for row in self._db.execute(sql, () if all_rows else (limit,))]
 
     def mark_indexed(self, rows: list[dict]) -> None:
         with self.transaction():
-            self._db.executemany("UPDATE memories SET vector_revision=? WHERE scope=? AND id=? AND revision=?",
-                                 [(row["revision"], row["scope"], row["id"], row["revision"]) for row in rows])
+            for table in ("entity_attrs", "entity_relations"):
+                self._db.executemany(f"UPDATE {table} SET vector_revision=? WHERE scope=? AND id=? AND revision=?",
+                                     [(row["revision"], row["scope"], row["id"], row["revision"]) for row in rows])
 
     def activate_index(self, collection: str, rows: list[dict]) -> None:
         with self.transaction():
-            self._db.execute("UPDATE memories SET vector_revision=0")
+            for table in ("entity_attrs", "entity_relations"):
+                self._db.execute(f"UPDATE {table} SET vector_revision=0")
             self.mark_indexed(rows)
             self._set_state("vector_collection", collection, scope="")
 
@@ -613,13 +702,6 @@ class MemoryStore:
 
     def load_diagnostic(self) -> dict:
         return {"stage": "sqlite", "status": "ready" if self.is_ready() else "stopped"}
-
-    def add_status_listener(self, listener: Callable) -> None:
-        self._listeners.append(listener)
-
-    def remove_status_listener(self, listener: Callable) -> None:
-        if listener in self._listeners:
-            self._listeners.remove(listener)
 
     def scoped(self, scope_id: str):
         if scope_id != self.scope_id:
