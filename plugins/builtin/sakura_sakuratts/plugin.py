@@ -3,6 +3,7 @@ from sakura_provider_errors import provider_failure
 
 from concurrent.futures import ThreadPoolExecutor
 import json
+import os
 from pathlib import Path
 import threading
 import time
@@ -89,9 +90,7 @@ class Provider:
         self.logger = context.get('sakura.host.logging')
         self.directory = Path(context.data_path('.'))
         storage = context.get('sakura.host.storage').resolve('tts', 'sakura')
-        runtime_path = runtime_directory(self.directory, storage / 'runtime-data',
-            lambda level, message, **fields: getattr(self.logger, level)(message, fields=fields))
-        self.runtime = Runtime(runtime_path, self.log)
+        log = lambda level, message, **fields: getattr(self.logger, level)(message, fields=fields)
         self.config = configuration(context.config.get())
         self.executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix='sakuratts')
         self.lock = threading.RLock()
@@ -100,12 +99,19 @@ class Provider:
         self.active = None
         self.wake = None
         self.error = ''
-        self.bundle = None
-        self.bundle = BundleStore(self.directory / 'bundles', probe, self.publish, self.log,
+        self.bundle = BundleStore(self.directory / 'bundles', probe, self.publish, log,
                                   default_storage=storage)
+        runtime_storage = storage
+        if (os.name == 'nt' and self.bundle.current() and not str(storage).isascii()
+                and str(self.bundle.storage_directory).isascii()):
+            runtime_storage = self.bundle.storage_directory
+        source = storage if runtime_storage != storage and (storage / 'runtime-data').exists() else self.directory
+        runtime_path = runtime_directory(source, runtime_storage / 'runtime-data', log)
+        self.runtime = Runtime(runtime_path, self.log)
+        self.bundle.log = self.log
 
     def log(self, level, message, **fields):
-        bundle = self.bundle.current() if self.bundle is not None else None
+        bundle = self.bundle.current()
         release = bundle[1] if bundle else {}
         context = {'provider_id': PROVIDER_ID, 'requested_backend': self.config['backend'],
                    'backend': self.runtime.backend or None, 'profile': self.runtime.profile,
@@ -124,10 +130,10 @@ class Provider:
     def engine_state(self):
         if not self.bundle.current():
             if self.bundle.installation_error:
-                return {'state': 'error', 'label': '运行环境不可用', 'message': self.bundle.installation_error[-240:]}
+                return {'state': 'error', 'label': '运行环境不可用', 'message': self.bundle.installation_error}
             return {'state': 'warning', 'label': '未安装运行环境', 'message': '请先导入整合包。'}
         if self.error:
-            return {'state': 'error', 'label': '语音运行失败', 'message': self.error[-240:]}
+            return {'state': 'error', 'label': '语音运行失败', 'message': self.error}
         try:
             status = self.runtime.status()
         except RuntimeError as error:
@@ -143,7 +149,9 @@ class Provider:
             'stopping': ('working', '正在休眠'), 'failed': ('error', '启动失败'),
             'running': ('ready', '运行中'),
         }.get(status, ('ready', status))
-        message = '模型资源已释放，下次合成自动加载。' if status == 'sleeping' else self.runtime.selection_reason
+        message = self.runtime.selection_reason
+        if status == 'sleeping':
+            message = '\n'.join(filter(None, (message, '模型资源已释放，下次合成自动加载。')))
         backend_label = {'directml': 'AMD / Intel 显卡'}.get(self.runtime.backend, self.runtime.backend.upper())
         return {'state': state,
                 'label': label + (f' · {backend_label}' if backend_label else ''),

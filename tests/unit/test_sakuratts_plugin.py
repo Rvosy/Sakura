@@ -10,6 +10,7 @@ import pytest
 
 from plugins.builtin.sakura_sakuratts._bundle import BundleStore, unpack
 from plugins.builtin.sakura_sakuratts.plugin import Provider, character_voice
+from plugins.builtin.sakura_sakuratts._runtime import RuntimeFailure
 from app.plugin_sdk.sakura_tools import ToolRegistry
 from app.core_host.plugin_runtime_application import PluginRuntimeApplication
 from app.plugins.inventory import PluginInventory
@@ -517,7 +518,9 @@ def test_precision_reaches_engine_and_switching_profile_restarts_service(tmp_pat
         runtime.stop()
 
 
-@pytest.mark.parametrize('failure', [RuntimeError('CUDA unavailable'), TimeoutError('check timed out'),
+@pytest.mark.parametrize('failure', [RuntimeFailure(json.dumps({'error': 'cudaErrorInsufficientDriver',
+                                    'error_type': 'CUDARuntimeError'}), 'cuda', 'check.log'),
+                                    RuntimeError('missing compiler header'), TimeoutError('check timed out'),
                                     OSError('cannot execute check')])
 def test_auto_backend_rechecks_on_restart_and_preserves_check_errors(tmp_path, monkeypatch, failure):
     from plugins.builtin.sakura_sakuratts import _runtime
@@ -541,7 +544,7 @@ def test_auto_backend_rechecks_on_restart_and_preserves_check_errors(tmp_path, m
     voice, cancel = {'gpt': 'voice.ckpt', 'sovits': 'voice.pth'}, threading.Event()
     config = configuration({})
     try:
-        if isinstance(failure, RuntimeError):
+        if isinstance(failure, RuntimeFailure) and failure.device_unavailable:
             runtime.start(bundle, config, voice, cancel)
             assert runtime.backend == 'cpu'
             assert logs[0]['diagnostic'] == str(failure)
@@ -557,7 +560,7 @@ def test_auto_backend_rechecks_on_restart_and_preserves_check_errors(tmp_path, m
         assert runtime.selection_reason == ''
         runtime.start(bundle, config, voice, cancel)
         assert len(checks) == 2
-        assert len(launches) == (2 if isinstance(failure, RuntimeError) else 1)
+        assert len(launches) == (2 if isinstance(failure, RuntimeFailure) and failure.device_unavailable else 1)
     finally:
         runtime.stop()
 
@@ -571,9 +574,26 @@ def test_runtime_preserves_engine_http_error_details(tmp_path, monkeypatch):
     monkeypatch.setattr('plugins.builtin.sakura_sakuratts._runtime.urlopen_direct_for_loopback', fail)
     runtime = Runtime(tmp_path)
     runtime.url = 'http://127.0.0.1'
-    with pytest.raises(RuntimeError, match='DLL load failed: path too long'):
+    with pytest.raises(RuntimeError, match='DLL load failed: path too long') as caught:
         runtime.request('/tts', {'text': 'test'})
+    from sakura_provider_errors import provider_failure
+    details = provider_failure('TTS_SYNTHESIS_FAILED', caught.value)['diagnostics']
+    assert 'DLL load failed: path too long' in details['diagnostic']
+    assert 'HTTPError' in details['exception_chain']
     assert response.closed
+
+
+def test_cpu_selection_reason_survives_idle_sleep(tmp_path, monkeypatch):
+    p, _ = provider(tmp_path, monkeypatch)
+    p.runtime.backend = 'cpu'
+    p.runtime.selection_reason = '自动选择了 CPU。NVIDIA 驱动无法运行当前 CUDA 环境，请更新显卡驱动。'
+    monkeypatch.setattr(p.runtime, 'status', lambda: 'sleeping')
+    try:
+        status = p.engine_state()
+        assert 'CPU' in status['label']
+        assert p.runtime.selection_reason in status['message']
+    finally:
+        p.close()
 
 
 def test_engine_status_http_failure_keeps_settings_available(tmp_path, monkeypatch):
