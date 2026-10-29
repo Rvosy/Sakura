@@ -49,6 +49,51 @@ def test_provider_response_failure_reaches_chat_with_specific_reason(monkeypatch
     assert "private-conversation" not in repr(failure)
 
 
+@pytest.mark.parametrize("finish,refusal,detail", [
+    ("length", None, "长度上限"),
+    ("content_filter", None, "拦截"),
+    ("stop", "模型拒绝了该请求", "模型拒绝了该请求"),
+])
+def test_incomplete_or_refused_reply_is_not_repaired(monkeypatch, finish, refusal, detail):
+    from sakura_assistant.agent.runtime import AgentRuntime
+    from sakura_assistant.service import classify_failure
+
+    requests = []
+    def handler(request):
+        requests.append(request)
+        return httpx.Response(200, json={"choices": [{"finish_reason": finish, "message": {
+            "content": '{"segments":[{"ja":"こんにちは。","zh":"你好。"}]}', "refusal": refusal,
+        }}], "usage": {"completion_tokens": 4096}})
+    mock_http(monkeypatch, handler)
+    runtime = AgentRuntime(AssistantModelClient(DialogueSettings(model="model"), model_client=LocalModelClient()),
+                           "角色", strict_provider_errors=True)
+    with pytest.raises(RuntimeError) as caught:
+        runtime.handle_user_message([{"role": "user", "content": "你好"}])
+    assert len(requests) == 1
+    failure = classify_failure(caught.value)
+    assert detail in failure["message"]
+    assert failure["retryable"] is False
+
+
+@pytest.mark.parametrize("content", [
+    '```json\n{"segments":[{"ja":"こんにちは。","zh":"你好。"}]}\n```',
+    '{"segments":[{"ja":"「こんにちは」って言ったよ。","zh":"我说了"你好"。"}]}',
+])
+def test_chat_repairs_syntax_locally_without_another_generation(monkeypatch, content):
+    from sakura_assistant.agent.runtime import AgentRuntime
+
+    requests = []
+    def handler(request):
+        requests.append(request)
+        return httpx.Response(200, json={"choices": [{"finish_reason": "stop", "message": {"content": content}}]})
+    mock_http(monkeypatch, handler)
+    runtime = AgentRuntime(AssistantModelClient(DialogueSettings(model="model"), model_client=LocalModelClient()), "角色")
+    result = runtime.handle_user_message([{"role": "user", "content": "你好"}])
+    assert "こんにちは" in result.reply.segments[0].text
+    assert "你好" in result.reply.segments[0].translation
+    assert len(requests) == 1
+
+
 def test_sanitize_reply_tones_normalizes_out_of_set_tone() -> None:
     allowed = ["中性", "不满", "害羞", "请求", "惊讶"]
     reply = ChatReply(
@@ -235,7 +280,10 @@ def test_complete_raw_requests_structured_json_by_default_for_chat(monkeypatch) 
 
     client.chat("system", [{"role": "user", "content": "hello"}])
 
-    assert captured["response_format"] == {"type": "json_object"}
+    assert captured["response_format"]["type"] == "json_schema"
+    schema = captured["response_format"]["json_schema"]
+    assert schema["strict"] is True
+    assert schema["schema"]["required"] == ["segments"]
 
 
 
@@ -531,7 +579,6 @@ def test_complete_with_tools_ignores_plain_json_reply_without_tool_call(monkeypa
     turn = client.complete_with_tools(
         "system",
         [{"role": "user", "content": "hello"}],
-        structured_response=True,
     )
 
     assert turn.tool_calls == []
@@ -546,6 +593,36 @@ def test_complete_with_tools_ignores_plain_json_reply_without_tool_call(monkeypa
 
 
 
+
+
+@pytest.mark.parametrize("invalid_segment", [42, {"ja": "おはよう。"}])
+def test_chat_correction_keeps_context_and_identifies_invalid_segment(monkeypatch, invalid_segment):
+    from sakura_assistant.agent.runtime import AgentRuntime
+
+    requests = []
+    def handler(request):
+        requests.append(json.loads(request.content))
+        segments = [{"ja": "こんにちは。", "zh": "你好。"}]
+        if len(requests) == 1:
+            segments.append(invalid_segment)
+        return httpx.Response(200, json={"choices": [{"finish_reason": "stop", "message": {
+            "content": json.dumps({"segments": segments}, ensure_ascii=False),
+        }}]})
+    mock_http(monkeypatch, handler)
+    runtime = AgentRuntime(AssistantModelClient(DialogueSettings(model="model"), model_client=LocalModelClient()), "角色")
+    result = runtime.handle_user_message([{"role": "user", "content": "原始问题"}])
+    assert result.reply.segments[0].translation == "你好。"
+    assert len(requests) == 2
+    correction = requests[-1]["messages"]
+    assert any(message["content"] == "原始问题" for message in correction)
+    assert any("segments.1" in str(message["content"]) for message in correction)
+
+
+def test_invalid_optional_control_keeps_readable_reply():
+    reply = parse_chat_reply('{"segments":[{"ja":"うん。","zh":"嗯。","control":"broken"}]}')
+    assert reply.segments[0].text == "うん。"
+    assert reply.segments[0].translation == "嗯。"
+    assert reply.segments[0].control is None
 
 
 def test_parse_chat_reply_keeps_segment_portrait() -> None:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import sqlite3
 import sys
@@ -402,10 +403,10 @@ def test_plugin_settings_without_negotiation_fails_closed_without_opening_memory
             },
         )
         _exchange(process, hello)
-        _exchange(process, _request("plain-initialize", "core.initialize", {}))
+        # 插件启动由启停配置决定；这里单独验证未授权的管理请求不会打开存储。
         response = _exchange(
             process,
-                _request("denied-memory", "plugins.settings.get", {}),
+            _request("denied-memory", "plugins.settings.get", {}),
         )
         assert response["ok"] is False
         assert response["error"]["code"] == "CAPABILITY_NEGOTIATION_FAILED"

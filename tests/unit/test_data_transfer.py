@@ -7,6 +7,7 @@ from app.plugin_sdk.sakura_data_transfer import read_archive, write_archive
 from app.storage.paths import StoragePaths
 from app.storage.timeline import NewTimelineEntry, TimelineKind, TimelineStore, timeline_record
 from plugins.optional.sakura_mem0.boundary import _project_timeline_entries, _curation_evidence_turns
+from plugins.optional.sakura_mem0.memory import MemoryStore, MemoryRecord
 
 
 def entry(identity, date, *, turn=None, kind=TimelineKind.HUMAN):

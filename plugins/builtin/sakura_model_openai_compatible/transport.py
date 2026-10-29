@@ -30,9 +30,9 @@ def _unsupported(error, parameter):
     if error.status_code not in {400, 422}:
         return False
     text = error.response.text.lower()
-    if parameter not in text and not (parameter == "response_format" and "json_object" in text):
+    if parameter not in text and not (parameter == "response_format" and any(name in text for name in ("json_object", "json_schema"))):
         return False
-    if any(marker in text for marker in ("between", "range", "minimum", "maximum", "less than", "greater than", "<=", ">=")):
+    if any(marker in text for marker in ("invalid schema", "additionalproperties", "required property", "between", "range", "minimum", "maximum", "less than", "greater than", "<=", ">=")):
         return False
     if parameter == "temperature" and "only 1 is allowed" in text:
         return True
@@ -206,7 +206,7 @@ def execute(settings, request, *, cancel_checker, progress, operation="generate"
                     return decode_response(response.http_response)
 
                 fallbacks = []
-                for attempt in range(1, 4):
+                for attempt in range(1, 5):
                     check_cancelled(cancel_checker)
                     diagnostics["attemptCount"] = attempt
                     try:
@@ -214,13 +214,18 @@ def execute(settings, request, *, cancel_checker, progress, operation="generate"
                         if operation == "list_models":
                             return {"models": _model_ids(data)}
                         result = _response(data)
-                        result["diagnostics"] = {**diagnostics, "compatibilityFallbacks": fallbacks}
+                        result["diagnostics"] = {**diagnostics, "compatibilityFallbacks": fallbacks, "responseFormat": (payload.get("response_format") or {}).get("type", "text")}
                         return result
                     except APIStatusError as error:
                         parameter = next((name for name in ("response_format", "temperature") if name in payload and _unsupported(error, name)), None)
-                        if parameter is None or request.get("stream") or attempt == 3:
+                        if parameter is None or request.get("stream") or attempt == 4:
                             raise
-                        payload.pop(parameter)
+                        # 带工具时不降到 JSON mode，避免兼容服务把工具调用写进正文。
+                        if (parameter == "response_format" and payload[parameter].get("type") == "json_schema" and not payload.get("tools")
+                                and "json_schema" in error.response.text.lower()):
+                            payload[parameter] = {"type": "json_object"}
+                        else:
+                            payload.pop(parameter)
                         fallbacks.append(parameter)
                 raise AssertionError("compatibility attempts exhausted")
     try:

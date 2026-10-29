@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
-from typing import Any
+from pydantic import ValidationError
 from sakura_assistant_contract import ChatReply, ChatSegment
+from sakura_structured_output import load_json_object, validation_message
+from .reply_schema import ReplyOutput
 
 
 DEFAULT_TONE = "中性"
@@ -19,14 +20,13 @@ class ChatReplyParseResult:
     needs_retry: bool = False
     repaired: bool = False
     reason: str = ""
+    diagnostic: str = ""
 
 
 @dataclass(frozen=True)
 class StructuredJsonParseResult:
-    value: Any | None
+    value: dict | None
     raw_status: str
-    fence_extracted: bool = False
-    object_extracted: bool = False
     deterministic_repair: bool = False
 
 
@@ -41,7 +41,8 @@ def parse_chat_reply_result(content: str) -> ChatReplyParseResult:
     if not content:
         return ChatReplyParseResult(ChatReply([ChatSegment("", DEFAULT_TONE)]), ok=False, needs_retry=True, reason="empty")
 
-    data, repaired = _try_load_json(content)
+    structured = parse_structured_json(content)
+    data, repaired = structured.value, structured.deterministic_repair
     if data is None:
         if _looks_structured_reply(content):
             return ChatReplyParseResult(
@@ -52,23 +53,20 @@ def parse_chat_reply_result(content: str) -> ChatReplyParseResult:
             )
         return ChatReplyParseResult(ChatReply([ChatSegment(content, DEFAULT_TONE)]), ok=True)
 
-    if isinstance(data, dict):
-        segments, has_language_issue = _parse_segments(data)
-        if segments:
-            return ChatReplyParseResult(
-                ChatReply(segments),
-                ok=not has_language_issue,
-                needs_retry=has_language_issue,
-                repaired=repaired,
-                reason="language_issue" if has_language_issue else "",
-            )
-
+    try:
+        output = ReplyOutput.model_validate(data)
+    except ValidationError as error:
+        return ChatReplyParseResult(_build_safe_parse_failure_reply(), ok=False, needs_retry=True,
+                                    reason="invalid_structure", diagnostic=validation_message(error))
+    parsed = [_build_segment(item.ja, item.tone, item.zh, item.portrait, item.control) for item in output.segments]
+    segments = [segment for segment, _issue in parsed]
+    has_language_issue = any(issue for _segment, issue in parsed)
     return ChatReplyParseResult(
-        _build_safe_parse_failure_reply(),
-        ok=False,
-        needs_retry=True,
+        ChatReply(segments),
+        ok=not has_language_issue,
+        needs_retry=has_language_issue,
         repaired=repaired,
-        reason="missing_segments",
+        reason="language_issue" if has_language_issue else "",
     )
 
 
@@ -103,81 +101,28 @@ def sanitize_reply_tones(reply: ChatReply, allowed_tones: list[str] | None) -> C
     return ChatReply(new_segments) if changed else reply
 
 
-def _parse_segments(data: dict[str, Any]) -> tuple[list[ChatSegment], bool]:
-    raw_segments = data.get("segments")
-    if isinstance(raw_segments, list):
-        parsed = [_parse_segment(item) for item in raw_segments]
-        segments = [segment for segment, _issue in parsed if segment is not None]
-        has_language_issue = any(issue for _segment, issue in parsed)
-        return segments, has_language_issue
-
-    text = _clean_first_text(data, "ja", "japanese", "reply", "text")
-    if text:
-        tone = data.get("tone")
-        translation = _clean_first_text(data, "zh", "chinese", "translation")
-        segment, has_language_issue = _build_segment(text, tone, translation, data.get("portrait"), data.get("control"))
-        return [segment], has_language_issue
-
-    return [], False
-
-
-def _parse_segment(item: Any) -> tuple[ChatSegment | None, bool]:
-    if isinstance(item, str):
-        text = item.strip()
-        return (ChatSegment(text, DEFAULT_TONE), False) if text else (None, False)
-    if not isinstance(item, dict):
-        return None, False
-
-    text = _clean_first_text(item, "ja", "japanese", "text")
-    if not text:
-        return None, False
-    translation = _clean_first_text(item, "zh", "chinese", "translation")
-    return _build_segment(text, item.get("tone"), translation, item.get("portrait"), item.get("control"))
-
-
-def _build_segment(text: str, tone: Any, translation: str, portrait: Any, control: Any = None) -> tuple[ChatSegment, bool]:
-    text = text.strip()
-    translation = translation.strip()
+def _build_segment(text: str, tone: str, translation: str, portrait: str, control: dict | None = None) -> tuple[ChatSegment, bool]:
+    tone = tone or DEFAULT_TONE
     # 只在 ja 明显是中文、zh 明显是日文时交换，避免误判“ 大丈夫 ”这类日语汉字句。
     if text and translation and _looks_chinese(text) and _looks_japanese(translation):
         text, translation = translation, text
-        return ChatSegment(text, _clean_tone(tone), translation, _clean_portrait(portrait), control=control), False
+        return ChatSegment(text, tone, translation, portrait, control=control), False
 
     if text and _has_obvious_chinese(text):
         fallback_translation = translation or text
         return (
             ChatSegment(
                 SAFE_LANGUAGE_FALLBACK_TEXT,
-                _clean_tone(tone),
+                tone,
                 fallback_translation,
-                _clean_portrait(portrait),
+                portrait,
                 suppress_tts=True,
                 control=control,
             ),
             True,
         )
 
-    return ChatSegment(text, _clean_tone(tone), translation, _clean_portrait(portrait), control=control), False
-
-
-def _clean_tone(value: Any) -> str:
-    if isinstance(value, str) and value.strip():
-        return value.strip()
-    return DEFAULT_TONE
-
-
-def _clean_portrait(value: Any) -> str:
-    if isinstance(value, str) and value.strip():
-        return value.strip()
-    return ""
-
-
-def _clean_first_text(data: dict[str, Any], *keys: str) -> str:
-    for key in keys:
-        value = data.get(key)
-        if isinstance(value, str) and value.strip():
-            return value.strip()
-    return ""
+    return ChatSegment(text, tone, translation, portrait, control=control), False
 
 
 def _looks_japanese(value: str) -> bool:
@@ -209,136 +154,18 @@ def _has_obvious_chinese(value: str) -> bool:
     )
 
 
-def _try_load_json(content: str) -> tuple[Any | None, bool]:
-    parsed = parse_structured_json(content)
-    return parsed.value, bool(
-        parsed.fence_extracted
-        or parsed.object_extracted
-        or parsed.deterministic_repair
-    )
-
-
 def parse_structured_json(content: str) -> StructuredJsonParseResult:
-    original = content.strip()
-    if not original:
+    if not content.strip():
         return StructuredJsonParseResult(None, "empty")
-    stripped = _strip_code_fence(original)
-    fence_extracted = stripped != original
-    candidates = [stripped]
-    extracted = _extract_json_object(candidates[0])
-    if extracted and extracted not in candidates:
-        candidates.append(extracted)
-
-    for index, candidate in enumerate(candidates):
-        try:
-            return StructuredJsonParseResult(
-                json.loads(candidate),
-                "valid",
-                fence_extracted=fence_extracted,
-                object_extracted=index > 0,
-            )
-        except json.JSONDecodeError:
-            repaired = _escape_unescaped_string_quotes(candidate)
-            if repaired != candidate:
-                try:
-                    return StructuredJsonParseResult(
-                        json.loads(repaired),
-                        "valid",
-                        fence_extracted=fence_extracted,
-                        object_extracted=index > 0,
-                        deterministic_repair=True,
-                    )
-                except json.JSONDecodeError:
-                    pass
-    return StructuredJsonParseResult(
-        None,
-        "invalid_json" if _looks_structured_reply(original) else "text",
-        fence_extracted=fence_extracted,
-        object_extracted=len(candidates) > 1,
-    )
-
-
-def _strip_code_fence(content: str) -> str:
-    lines = content.strip().splitlines()
-    if len(lines) >= 3 and lines[0].strip().startswith("```") and lines[-1].strip() == "```":
-        body = lines[1:-1]
-        opening = lines[0].strip()[3:].strip()
-        if opening and opening.lower() not in {"json", "jsonc"}:
-            return content
-        return "\n".join(body).strip()
-    return content
-
-
-def _extract_json_object(content: str) -> str | None:
-    start = content.find("{")
-    if start < 0:
-        return None
-    depth = 0
-    in_string = False
-    escaped = False
-    for index in range(start, len(content)):
-        char = content[index]
-        if in_string:
-            if escaped:
-                escaped = False
-            elif char == "\\":
-                escaped = True
-            elif char == '"':
-                in_string = False
-            continue
-        if char == '"':
-            in_string = True
-        elif char == "{":
-            depth += 1
-        elif char == "}":
-            depth -= 1
-            if depth == 0:
-                return content[start : index + 1].strip()
-    return None
-
-
-def _escape_unescaped_string_quotes(content: str) -> str:
-    """修复值字符串中偶发的裸双引号，例如中文说明里的 `""`。"""
-    result: list[str] = []
-    in_string = False
-    escaped = False
-    for index, char in enumerate(content):
-        if not in_string:
-            if char == '"':
-                in_string = True
-            result.append(char)
-            continue
-
-        if escaped:
-            escaped = False
-            result.append(char)
-            continue
-        if char == "\\":
-            escaped = True
-            result.append(char)
-            continue
-        if char == '"':
-            next_non_space = _next_non_space(content, index + 1)
-            if next_non_space in {":", ",", "}", "]", ""}:
-                in_string = False
-                result.append(char)
-            else:
-                result.append('\\"')
-            continue
-        result.append(char)
-    return "".join(result)
-
-
-def _next_non_space(content: str, start: int) -> str:
-    for char in content[start:]:
-        if not char.isspace():
-            return char
-    return ""
+    try:
+        value, repaired = load_json_object(content)
+        return StructuredJsonParseResult(value, "valid", deterministic_repair=repaired)
+    except ValueError:
+        return StructuredJsonParseResult(None, "invalid_json" if _looks_structured_reply(content) else "text")
 
 
 def _looks_structured_reply(content: str) -> bool:
-    stripped = _strip_code_fence(content).strip()
-    return stripped.startswith("{") or '"segments"' in stripped or "'segments'" in stripped
+    return content.lstrip().startswith(("{", "[", "```")) or '"segments"' in content or "'segments'" in content
 
 
 def _build_safe_parse_failure_reply() -> ChatReply:

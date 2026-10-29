@@ -172,7 +172,34 @@ def test_parameter_fallback_is_bounded_and_does_not_mutate_request(monkeypatch, 
     assert "temperature" in REQUEST["parameters"] and REQUEST["responseFormat"]
 
 
-@pytest.mark.parametrize("status,message", [(401, "response_format unsupported"), (429, "try later"), (503, "unavailable"), (400, "temperature must be between 0 and 2")])
+@pytest.mark.parametrize("with_tools", [False, True])
+def test_schema_falls_back_only_after_explicit_provider_rejection(monkeypatch, with_tools):
+    calls = []
+    def handler(request):
+        body = json.loads(request.content)
+        calls.append(body)
+        format = body.get("response_format", {}).get("type")
+        if format in {"json_schema", "json_object"}:
+            return httpx.Response(400, json={"error": {"message": f"response_format {format} is not supported"}})
+        if "temperature" in body:
+            return httpx.Response(400, json={"error": {"message": "temperature is not supported"}})
+        return httpx.Response(200, json={"choices": [{"message": {"content": "OK"}}]})
+    mock_http(monkeypatch, handler)
+    request = {**REQUEST, "responseFormat": {"type": "json_schema", "json_schema": {
+        "name": "reply", "strict": True, "schema": {"type": "object", "properties": {}, "additionalProperties": False},
+    }}}
+    if with_tools:
+        request["tools"] = [{"name": "search", "parameters": {"type": "object", "properties": {}}}]
+    result = run(request=request)
+    formats = [body.get("response_format", {}).get("type") for body in calls]
+    assert formats == (["json_schema", None, None] if with_tools else ["json_schema", "json_object", None, None])
+    assert all(body["messages"] == request["messages"] for body in calls)
+    assert result["message"]["content"] == "OK"
+    assert result["diagnostics"]["responseFormat"] == "text"
+    assert request["responseFormat"]["type"] == "json_schema"
+
+
+@pytest.mark.parametrize("status,message", [(401, "response_format unsupported"), (429, "try later"), (503, "unavailable"), (400, "temperature must be between 0 and 2"), (400, "Invalid schema for response_format: additionalProperties is not allowed")])
 def test_http_failure_is_not_replayed_and_credentials_stay_private(monkeypatch, status, message):
     calls = []
     def handler(request):

@@ -180,14 +180,6 @@ class ModelClient:
                 if not pending:
                     self._artifact_cleanups.pop(operation_id, None)
 
-    def complete_raw(self, system_prompt, messages, *, temperature=.2, response_format=None, max_tokens=None, cancel_checker=None, trace_metadata=None):
-        parameters = {"temperature": temperature}
-        if max_tokens is not None:
-            parameters["max_tokens"] = max_tokens
-        response = self.complete({"messages": [{"role": "system", "content": system_prompt}, *messages],
-                                  "parameters": parameters, "responseFormat": response_format}, cancel_checker=cancel_checker)
-        return str(response["message"].get("content") or "")
-
     def close(self):
         with self._lock:
             self._closed = True

@@ -41,9 +41,9 @@ class Client:
         self.operations = operations
         self.requests = []
 
-    def complete_raw(self, system, messages, **kwargs):
-        self.requests.append((system, json.loads(messages[0]["content"])))
-        return json.dumps({"operations": self.operations}, ensure_ascii=False)
+    def complete(self, request, **kwargs):
+        self.requests.append((request["messages"][0]["content"], json.loads(request["messages"][1]["content"])))
+        return {"message": {"content": json.dumps({"operations": self.operations}, ensure_ascii=False)}, "finishReason": "stop"}
 
     def close(self):
         pass
@@ -348,10 +348,10 @@ def test_text_import_cancel_discards_late_model_result(tmp_path):
     entered, release = threading.Event(), threading.Event()
 
     class SlowClient(Client):
-        def complete_raw(self, *args, **kwargs):
+        def complete(self, *args, **kwargs):
             entered.set()
             assert release.wait(3)
-            return super().complete_raw(*args, **kwargs)
+            return super().complete(*args, **kwargs)
 
     request = {"requestId": "cancelled-import", "text": "我喜欢茶"}
     client = SlowClient([add_operation(entry("text-import:cancelled-import", request["text"], "document"))])
@@ -426,12 +426,12 @@ def test_human_edit_during_model_request_is_preserved_without_blocking(store):
     human = entry(content="午饭现在喜欢米饭")
     entered, proceed = threading.Event(), threading.Event()
     client = Client([add_operation(human, op="update", id=old["id"])])
-    original = client.complete_raw
+    original = client.complete
     def complete(*args, **kwargs):
         entered.set()
         assert proceed.wait(5)
         return original(*args, **kwargs)
-    client.complete_raw = complete
+    client.complete = complete
     results = []
     worker = threading.Thread(target=lambda: results.append(MemoryCurator(client, store).curate_entries([human])))
     worker.start()
@@ -466,8 +466,8 @@ def test_curation_batch_rollback_keeps_cursor_and_fts_consistent(store, monkeypa
 
 def test_failed_model_and_cancelled_generation_do_not_advance_cursor(store):
     class BrokenClient:
-        def complete_raw(self, *_args, **_kwargs):
-            return "not JSON"
+        def complete(self, *_args, **_kwargs):
+            return {"message": {"content": "not JSON"}, "finishReason": "stop"}
     with pytest.raises(ValueError):
         MemoryCurator(BrokenClient(), store).curate_entries([entry()], cursor="bad")
     assert store.get_state("curation", default={}) == {}
@@ -609,14 +609,14 @@ def test_backfill_resumes_after_model_failure_without_duplicate_memories(tmp_pat
     timeline = SimpleNamespace(read_range=lambda payload: service.call("read_range", [payload]))
     class BackfillClient(Client):
         fail = True
-        def complete_raw(self, system, messages, **kwargs):
-            messages = json.loads(messages[0]["content"])["messages"]
+        def complete(self, request, **kwargs):
+            messages = json.loads(request["messages"][1]["content"])["messages"]
             self.requests.append(messages)
             if self.fail and len(self.requests) == 2:
                 raise RuntimeError("上游连接断开")
             first = messages[0]
-            return json.dumps({"operations": [{"op": "add", "layer": "episodic", "content": first["content"],
-                "evidence": [{"entry_id": first["entry_id"], "quote": first["content"]}]}]})
+            return {"message": {"content": json.dumps({"operations": [{"op": "add", "layer": "episodic", "content": first["content"],
+                "evidence": [{"entry_id": first["entry_id"], "quote": first["content"]}]}]})}, "finishReason": "stop"}
     client = BackfillClient([])
     boundary = MemoryBoundary(tmp_path, "sakura",
         curation_config_getter=lambda: {"curationModelRef": {"serviceKey": "model", "profileId": "p", "modelId": "m"}},
@@ -664,10 +664,10 @@ def test_cancel_backfill_does_not_commit_a_late_model_result(tmp_path):
                                     "2026-10-01T12:00:00Z", {"text": "喜欢拿铁"}))
     service = _TimelineHostService(history, lambda: "sakura")
     class SlowClient(Client):
-        def complete_raw(self, *args, **kwargs):
+        def complete(self, *args, **kwargs):
             entered.set()
             assert resume.wait(5)
-            return super().complete_raw(*args, **kwargs)
+            return super().complete(*args, **kwargs)
     boundary = MemoryBoundary(tmp_path, "sakura",
         curation_config_getter=lambda: {"curationModelRef": {"serviceKey": "model", "profileId": "p", "modelId": "m"}},
         model_client_factory=lambda _: SlowClient([add_operation(entry("u1", "喜欢拿铁"))]))

@@ -22,10 +22,25 @@ from plugins.optional.sakura_codex.transport import execute
 from sakura_cancellation import OperationCancelled
 from sakura_model import ModelError
 from sakura_model_provider import Job
-from sakura_openai_responses import build_request
+from sakura_openai_responses import build_request, response_result
+from sakura_structured_output import require_complete_response
 
 
 PROFILE_ID = "chatgpt"
+
+
+@pytest.mark.parametrize("refused", [False, True])
+def test_responses_preserves_incomplete_and_refusal_for_consumers(refused):
+    response = {"status": "completed" if refused else "incomplete", "output": [{
+        "type": "message", "content": [{"type": "refusal", "refusal": "请求被拒绝"} if refused else {
+            "type": "output_text", "text": '{"operations":[]}',
+        }],
+    }]}
+    if not refused:
+        response["incomplete_details"] = {"reason": "max_output_tokens"}
+    with pytest.raises(ModelError) as caught:
+        require_complete_response(response_result(response))
+    assert caught.value.code == ("MODEL_OUTPUT_REFUSED" if refused else "MODEL_OUTPUT_TRUNCATED")
 
 
 def token(account="account-a", *, expires=None, marker="first"):

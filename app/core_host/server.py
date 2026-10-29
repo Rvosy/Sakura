@@ -782,13 +782,13 @@ class ReadinessController:
                 if callable(bind_presentation):
                     bind_presentation(str(presentation["characterId"]))
         except BaseException as error:  # noqa: BLE001 - publish a stable, sanitized readiness
-            from .assistant_adapter import report_assistant_failure
-
-            report_assistant_failure(error, stage=stage, code="ASSISTANT_INITIALIZATION_FAILED")
             with self._lock:
                 if self._closed:
                     claimed = self._claim_initializer_close_locked()
                 else:
+                    from .assistant_adapter import report_assistant_failure
+
+                    report_assistant_failure(error, stage=stage, code="ASSISTANT_INITIALIZATION_FAILED")
                     self._readiness = "failed"
                     self._component = {
                         "state": "failed",

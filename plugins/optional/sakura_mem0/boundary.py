@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from sakura_data_transfer import read_archive, write_archive, plan_merge
+
 import threading
 import uuid
 from collections.abc import Mapping
@@ -812,13 +814,7 @@ class MemoryBoundary:
                     diagnostic = (
                         diagnostic_getter() if callable(diagnostic_getter) else {}
                     )
-                    reason_code = str(getattr(exc, "code", ""))
-                    if reason_code not in {
-                        "MEMORY_CURATION_SNAPSHOT_FAILED",
-                        "MEMORY_CURATION_WRITE_FAILED",
-                        "CURATION_RESPONSE_INVALID",
-                    }:
-                        reason_code = "CURATION_FAILED"
+                    reason_code = str(getattr(exc, "code", "") or "CURATION_FAILED")
                     log_event(
                         "Memory",
                         "后台记忆整理失败，后续历史更新时重试",

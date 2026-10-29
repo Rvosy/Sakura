@@ -34,7 +34,8 @@ from sakura_assistant.agent.trace import (
 )
 
 
-STRUCTURED_JSON_RESPONSE_FORMAT = {"type": "json_object"}
+from sakura_structured_output import require_complete_response
+from sakura_assistant.llm.reply_schema import reply_response_format
 ChatMessage = dict[str, Any]
 SUPPORTED_CHAT_COMPLETION_PARAMS = {
     "temperature",
@@ -216,7 +217,7 @@ class AssistantModelClient:
             f"{system_prompt.strip()}\n\n{segmented_reply_instruction}",
             messages,
             temperature=temperature,
-            response_format=STRUCTURED_JSON_RESPONSE_FORMAT,
+            response_format=reply_response_format(reply_tones, reply_visual, include_observation=messages_contain_image(messages)),
             cancel_checker=cancel_checker,
             runtime_context=runtime_context,
             trace_metadata=trace_metadata,
@@ -340,16 +341,12 @@ class AssistantModelClient:
                 raise
         check_cancelled(cancel_checker)
 
-        try:
-            raw_message = data["choices"][0]["message"]
-            content = raw_message["content"]
-        except (KeyError, IndexError, TypeError) as exc:
-            raise ApiRequestError(f"API 返回格式无法解析：{json.dumps(data, ensure_ascii=False)}") from exc
-
-        result = str(content).strip()
+        raw_message = data["choices"][0]["message"]
+        content = raw_message["content"]
+        result = str(content or "").strip()
         usage = _summarize_token_usage(data.get("usage"))
         trace_call = self.last_trace_call
-        if self._agent_trace_recorder is not None and isinstance(raw_message, dict):
+        if self._agent_trace_recorder is not None:
             self._agent_trace_recorder.record_model_reply(
                 trace_call,
                 raw_message=raw_message,
@@ -389,7 +386,6 @@ class AssistantModelClient:
         tools: list[dict[str, Any]] | None = None,
         tool_choice: str | dict[str, Any] | None = "auto",
         temperature: float = 0.8,
-        structured_response: bool = False,
         runtime_context: str = "",
         trace_metadata: PromptTraceMetadata | None = None,
         cancel_checker: CancelChecker | None = None,
@@ -402,8 +398,6 @@ class AssistantModelClient:
         if tools:
             chat_params["tools"] = tools
             chat_params["tool_choice"] = tool_choice
-        if structured_response and "response_format" not in chat_params:
-            chat_params["response_format"] = STRUCTURED_JSON_RESPONSE_FORMAT
         runtime_context_role = self._runtime_context_role
         request_messages = _messages_with_runtime_context(
             messages,
@@ -478,13 +472,7 @@ class AssistantModelClient:
                 raise
         check_cancelled(cancel_checker)
 
-        try:
-            raw_message = data["choices"][0]["message"]
-        except (KeyError, IndexError, TypeError) as exc:
-            raise ApiRequestError(f"API 返回格式无法解析：{json.dumps(data, ensure_ascii=False)}") from exc
-        if not isinstance(raw_message, dict):
-            raise ApiRequestError(f"API 返回 message 格式无法解析：{json.dumps(data, ensure_ascii=False)}")
-
+        raw_message = data["choices"][0]["message"]
         content = raw_message.get("content")
         usage = _summarize_token_usage(data.get("usage"))
         trace_call = self.last_trace_call
@@ -602,19 +590,9 @@ class AssistantModelClient:
         try:
             data = self._send_request(payload, cancel_checker=cancel_checker)
             check_cancelled(cancel_checker)
-            if (
-                not isinstance(data, dict)
-                or not isinstance(data.get("choices"), list)
-                or not data["choices"]
-                or not isinstance(data["choices"][0], dict)
-                or not isinstance(data["choices"][0].get("message"), dict)
-            ):
-                self._trace_local.request_diagnostic.update(
-                    faultDomain="protocol",
-                    reasonCode="MODEL_RESPONSE_INVALID",
-                    stage="decode",
-                )
-                raise ApiRequestError("API 返回的消息结构无效。")
+            choice = data["choices"][0]
+            require_complete_response({"message": choice["message"], "finishReason": choice.get("finish_reason"),
+                                       "usage": data.get("usage")})
         except Exception as exc:  # noqa: BLE001 — 仅用于派发失败事件，随后原样抛出
             self._emit_llm_event(
                 "llm.request.failed",

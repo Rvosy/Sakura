@@ -88,14 +88,14 @@ def response_result(response):
         body = {"error": response.get("error") or {"status": response["status"]}}
         message = public_provider_http_message(RuntimeError("API HTTP 200: " + json.dumps(body, ensure_ascii=False)), 200)
         raise ModelError("MODEL_REQUEST_FAILED", message)
-    content, calls = [], []
+    content, calls, refusals = [], [], []
     for item in response["output"]:
         if item["type"] == "message":
             for part in item.get("content", []):
                 if part["type"] == "output_text":
                     content.append(part["text"])
                 elif part["type"] == "refusal":
-                    content.append(part["refusal"])
+                    refusals.append(part["refusal"])
         elif item["type"] == "function_call":
             calls.append({"id": item["call_id"], "name": item["name"], "arguments": item["arguments"]})
     raw_usage = response.get("usage") or {}
@@ -106,7 +106,7 @@ def response_result(response):
     reason = (response.get("incomplete_details") or {}).get("reason")
     finish = "length" if reason == "max_output_tokens" else "content_filter" if reason == "content_filter" else "tool_calls" if calls else "stop"
     return {"message": {"role": "assistant", "content": "".join(content), "toolCalls": calls,
-                        "providerData": {"responsesOutput": deepcopy(response["output"])}},
+                        "providerData": {"responsesOutput": deepcopy(response["output"]), **({"refusal": "\n".join(refusals)} if refusals else {})}},
         "usage": usage, "finishReason": finish}
 
 

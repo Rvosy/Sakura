@@ -60,7 +60,7 @@ def assistant_dependencies():
     root = _TEST_TMP_ROOT / f"assistant-dependencies-{uuid.uuid4().hex}"
     root.mkdir(parents=True)
     packages = ("openai", "httpx", "httpcore", "h11", "anyio", "sniffio", "idna", "certifi", "pydantic",
-                "pydantic_core", "typing_extensions", "annotated_types", "typing_inspection", "jiter", "distro", "tqdm", "socksio", "colorama")
+                "pydantic_core", "typing_extensions", "annotated_types", "typing_inspection", "jiter", "distro", "tqdm", "socksio", "colorama", "json_repair")
     for name in packages:
         spec = importlib.util.find_spec(name)
         if spec is None:
