@@ -75,7 +75,7 @@ export function createPluginSettingsFeature({
   let disposed = false;
   const modelServices = () => [...pluginModules.keys()].flatMap(module => module.contributions()?.modelServices || []);
   const modelServicePresets = () => [...pluginModules.keys()].flatMap(module => module.contributions()?.modelServicePresets || []);
-  const pendingApplication = new Set();
+  const pendingApplication = new Map();
   const settingsUI = createSettingsUI({ document, showPage, createSection: createContributedSection });
 
   function moduleContributionsChanged() {
@@ -2586,18 +2586,21 @@ export function createPluginSettingsFeature({
       const sections = pluginSettingsSections(plugin);
       if (sections.length) {
         sections.forEach((section) => {
-          const values = clonePlain(editablePluginSectionValues(
+          const values = editablePluginSectionValues(
             section,
             pluginSectionValues(plugin.id, section.section_id),
-          ));
+          );
           const initial = editablePluginSectionValues(
             section,
             pluginState.initialSettingsValues[plugin.id]?.[section.section_id] || {},
           );
-          if (!plainEqual(values, initial) || pendingApplication.has(`${plugin.plugin_id}/${section.section_id}`)) {
+          const pending = pendingApplication.get(`${plugin.plugin_id}/${section.section_id}`) || {};
+          const changed = Object.fromEntries(Object.entries(values).filter(([key, value]) =>
+            Object.hasOwn(pending, key) || JSON.stringify(value) !== JSON.stringify(initial[key])));
+          if (Object.keys(changed).length) {
             if (!plugin.plugin_id) return;
             settingsById[plugin.plugin_id] = settingsById[plugin.plugin_id] || {};
-            settingsById[plugin.plugin_id][section.section_id] = values;
+            settingsById[plugin.plugin_id][section.section_id] = clonePlain(changed);
           }
         });
       }
@@ -2617,7 +2620,7 @@ export function createPluginSettingsFeature({
         throw new Error(`${plugin.name}设置暂不可用，修改已保留。`);
       }
       for (const field of section.fields) {
-        if (!pluginFieldEditable(field)) continue;
+        if (!pluginFieldEditable(field) || !Object.hasOwn(values, field.key)) continue;
         const value = values[field.key];
         let invalid = field.required && (value == null || value === "");
         if (value != null && ["integer", "number"].includes(field.type)) invalid ||= !Number.isFinite(value)
@@ -2771,11 +2774,11 @@ export function createPluginSettingsFeature({
     applySnapshot: applyRuntimePluginSnapshot,
     readDraft: runtimePluginDraft,
     onDirty: refreshDirty,
-    onSectionFailed(pluginId, sectionId) { pendingApplication.add(`${pluginId}/${sectionId}`); },
+    onSectionFailed(pluginId, sectionId, values) { pendingApplication.set(`${pluginId}/${sectionId}`, values); },
     onSectionSaved(pluginId, sectionId, values) {
       pendingApplication.delete(`${pluginId}/${sectionId}`);
       const plugin = pluginView.items.find(p => p.plugin_id === pluginId);
-      if (plugin) pluginState.initialSettingsValues[plugin.id][sectionId] = clonePlain(values);
+      if (plugin) Object.assign(pluginState.initialSettingsValues[plugin.id][sectionId], clonePlain(values));
     },
   });
 

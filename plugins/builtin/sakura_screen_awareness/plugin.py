@@ -52,8 +52,7 @@ class ScreenAwarenessRuntime:
         return ScreenAwarenessSettings.parse(self._config.get()).values()
 
     def save_settings(self, values):
-        settings = ScreenAwarenessSettings.parse(values)
-        return {"applicationState": self._config.update(settings.values())}
+        return {"applicationState": self._config.update(values)}
 
     def apply_settings(self, values):
         settings = ScreenAwarenessSettings.parse(values)

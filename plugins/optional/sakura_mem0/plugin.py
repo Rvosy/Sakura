@@ -320,7 +320,7 @@ class SakuraMem0Runtime:
         }
 
     def save_model_slot(self, selection: Mapping[str, object]) -> dict[str, str]:
-        parsed = _parse_model_slot_selection(selection)
+        parsed = _parse_model_slot_selection({**self.load_model_slot(), **selection})
         self._config_updater(
             {
                 "curationModelRef": parsed,

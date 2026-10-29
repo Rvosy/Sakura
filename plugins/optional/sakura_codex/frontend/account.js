@@ -136,7 +136,7 @@ function createAccountPanel(context, initial, apply) {
   };
   const login = button("登录 ChatGPT", () => pending ? cancel() : start("login"), "primary-button");
   const logout = button("退出登录", () => mutate("logout"));
-  const remove = button("删除模型服务", async () => { await cancel(); await mutate("remove"); }, "danger-button");
+  const remove = button("删除模型服务", () => mutate("remove"), "danger-button");
   const refreshModels = button("刷新模型", () => pending?.operation === "sync_models" ? cancel() : start("sync_models"));
   const refreshUsage = button("刷新额度", () => pending?.operation === "usage" ? cancel() : start("usage"), "secondary-button compact-button");
   const testModelButton = button("测试模型", () => pending?.operation === "test_connection" ? cancel() : start("test_connection", { modelId: testModel.value }));
@@ -176,8 +176,7 @@ function createAccountPanel(context, initial, apply) {
   testCard.append(node("h3", "", "测试模型"), testControls, testHint);
   feedback.append(status, reply, copyDetails);
   generalFeedback.append(feedback);
-  // 进度和登录代码出现在操作区下方，按钮在状态切换时保持原位。
-  panel.append(heading, nameRow, accountLabel, hint, actions, generalFeedback, codeSection, usageCard, testCard);
+  panel.append(heading, nameRow, accountLabel, hint, generalFeedback, codeSection, usageCard, testCard, actions);
   enhanceSelect(testModel);
 
   const dateText = timestamp => new Date(timestamp * 1000).toLocaleString("zh-CN", {

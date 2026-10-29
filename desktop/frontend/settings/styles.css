@@ -2882,7 +2882,20 @@ body[data-settings-host="runtime-v2"] .nav-item:disabled {
   gap: 8px;
 }
 
-.provider-account,
+.admin-detail:has(> .provider-account) {
+  align-content: stretch;
+}
+
+.provider-account {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.provider-account > .detail-actions {
+  margin-top: auto;
+}
+
 .provider-login {
   display: grid;
   align-content: start;

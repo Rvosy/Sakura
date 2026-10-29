@@ -577,10 +577,10 @@ def test_context_collection_and_settings_keep_character_scope(tmp_path: Path) ->
     }
     runtime.save_settings({"triggerTurns": 12})
     assert runtime.load_model_slot() == {"serviceKey": "sakura.model.openai_compatible", "profileId": "fixture", "modelId": "curator"}
-    runtime.save_model_slot({"serviceKey": "sakura.model.openai_compatible", "profileId": "fixture", "modelId": "curator"})
+    runtime.save_model_slot({"modelId": "new-curator"})
     assert boundary.saved == [
         {"triggerTurns": 12},
-        {"curationModelRef": {"serviceKey": "sakura.model.openai_compatible", "profileId": "fixture", "modelId": "curator"}},
+        {"curationModelRef": {"serviceKey": "sakura.model.openai_compatible", "profileId": "fixture", "modelId": "new-curator"}},
     ]
 
 

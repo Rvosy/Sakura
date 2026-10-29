@@ -139,8 +139,10 @@ class AssistantPlugin:
             return _read_generation(self.context.config.get().get("generation", {}))
         def save(request):
             values = request.get("values", request)
-            result = {}
+            result = dict(self.context.config.get().get("generation", {}))
             for field in fields:
+                if field["key"] not in values:
+                    continue
                 value = values.get(field["key"])
                 if value is not None and (isinstance(value, bool) or not isinstance(value, (int, float)) or not field["minimum"] <= value <= field["maximum"] or (field["type"] == "integer" and not isinstance(value, int))):
                     raise ApiConfigError("生成参数无效。")

@@ -26,7 +26,8 @@ function fixture(action, initial = {}) {
     action: async (name, args) => {
       calls.push({ name, args });
       const result = await action(name, args);
-      Object.assign(values.profiles[0], result.values || {});
+      if (result.values?.profiles) values.profiles = result.values.profiles;
+      else Object.assign(values.profiles[0], result.values || {});
       return { values: structuredClone(values) };
     }, signal: lifetime.signal,
     createIcon: () => browser.document.createElement("span"), enhanceSelect() {}, refreshSelect() {}, closeSelects() {},
@@ -112,6 +113,33 @@ test("交替添加 API 和多个账号连接按添加顺序排列，登录相互
   assert.equal(editor.querySelector('[data-provider-field="alias"]').value, "Unsaved");
   assert.equal(ui.feature.isDirty(), true);
   assert.deepEqual(ui.errors, []);
+});
+
+test("删除模型服务不等待登录取消返回，迟到结果不恢复已删除连接", async t => {
+  let finishLogin, finishCancel;
+  const loginResponse = new Promise(resolve => { finishLogin = resolve; });
+  const cancelResponse = new Promise(resolve => { finishCancel = resolve; });
+  const f = fixture(async name => {
+    if (name === "start") return loginResponse;
+    if (name === "cancel") return cancelResponse;
+    if (name === "remove") return { values: { profiles: [] } };
+    return {};
+  });
+  const lateProfiles = structuredClone(f.values.profiles);
+  Object.assign(lateProfiles[0], { account, models });
+  const login = f.button("登录 ChatGPT").fire("click");
+  await settle();
+  const deleting = f.button("删除模型服务").fire("click");
+  t.after(async () => {
+    finishCancel({ values: { profiles: [] } }); finishLogin({ values: { profiles: lateProfiles } });
+    await Promise.all([login, deleting]); f.component.dispose();
+  });
+  await settle();
+  assert.equal(f.component.contributions().modelServices.length, 0);
+  finishLogin({ values: { profiles: lateProfiles } });
+  await login;
+  assert.deepEqual(f.component.contributions().modelCatalog[0].profiles, []);
+  assert.deepEqual(f.errors, []);
 });
 
 test("登录代码可以复制，登录后全部模型立即进入用途目录", async () => {
