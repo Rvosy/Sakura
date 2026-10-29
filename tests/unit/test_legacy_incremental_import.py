@@ -548,14 +548,13 @@ def test_incremental_cross_role_history_identity_is_never_overwritable(
     with sqlite3.connect(target / "data/chat_history/timeline.sqlite3") as connection:
         connection.execute("UPDATE timeline_entries SET character_id = 'Beta'")
 
-    blocked = inspect_character_data_import(source, target)
-    assert blocked["blocked"] is False
+    plan = inspect_character_data_import(source, target)
     connection.close()
     _, pending = run_character_data_import(
         source,
         target,
         import_id="incremental-scope-02",
-        plan_token=str(blocked["planToken"]),
+        plan_token=str(plan["planToken"]),
         overwrite_conflicts=True,
     )
     finalize_commit(pending)
@@ -725,15 +724,14 @@ def test_incremental_cross_role_memory_identity_is_never_overwritable(
             "INSERT INTO history VALUES ('shared-event', 'target-memory', 'ADD', 'Beta')"
         )
 
-    blocked = inspect_character_data_import(source, target)
-    assert blocked["blocked"] is False
-    assert blocked["totals"]["recoverableErrors"] >= 1
+    plan = inspect_character_data_import(source, target)
+    assert plan["totals"]["recoverableErrors"] >= 1
     connection.close()
     _, pending = run_character_data_import(
         source,
         target,
         import_id="incremental-memory-scope-01",
-        plan_token=str(blocked["planToken"]),
+        plan_token=str(plan["planToken"]),
         overwrite_conflicts=True,
     )
     finalize_commit(pending)
@@ -775,7 +773,6 @@ def test_incremental_history_scope_must_match_referenced_point(tmp_path: Path) -
         )
 
     plan = inspect_character_data_import(source, target)
-    assert plan["blocked"] is False
     assert plan["totals"]["recoverableErrors"] >= 1
     connection.close()
     _, pending = run_character_data_import(
@@ -833,7 +830,6 @@ def test_incremental_history_scope_must_match_preserved_target_point(
 
     plan = inspect_character_data_import(source, target)
 
-    assert plan["blocked"] is False
     assert plan["totals"]["recoverableErrors"] == (2 if source_point else 1)
     assert plan["totals"]["memoryNew"] == 0
     connection.close()
@@ -899,7 +895,6 @@ def test_incremental_history_uses_one_canonical_row_for_inspect_and_apply(
     connection.close()
 
     plan = inspect_character_data_import(source, target)
-    assert plan["blocked"] is False
     assert plan["totals"]["memoryConflicts"] == 0
     assert plan["totals"]["memoryIdentical"] == 2
     _report, pending = run_character_data_import(
@@ -925,7 +920,6 @@ def test_incremental_unscoped_history_is_applied_as_quarantine_only(tmp_path: Pa
         )
 
     plan = inspect_character_data_import(source, target)
-    assert plan["blocked"] is False
     assert plan["totals"]["memoryNew"] == 0
     assert plan["totals"]["recoverableErrors"] == 1
     _report, pending = run_character_data_import(

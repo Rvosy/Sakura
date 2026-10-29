@@ -151,7 +151,6 @@ let runtimeVoiceController = null;
 let runtimeAsrController = null;
 let runtimeAutostartController = null;
 let firstRunGuideController = null;
-let runtimeCapabilityManifest = null;
 let runtimeVisualEffectModes = Object.freeze([
   Object.freeze({ id: "solid", label: "纯色块", disabled: false, reason: "" }),
   Object.freeze({ id: "gaussian_blur", label: "高斯模糊", disabled: false, reason: "" }),
@@ -1424,11 +1423,6 @@ function setThemeValues(theme, options = {}) {
   update();
 }
 
-function runtimeFeatureAvailable(feature) {
-  return Object.values(runtimeCapabilityManifest?.sections || {})
-    .some((section) => section?.features?.[feature] === "available");
-}
-
 // 布局滑块的输出显示；预览和保存由 Appearance controller 处理。
 const layoutSliders = [
   "portraitScale",
@@ -1833,7 +1827,6 @@ async function startSettingsFrontend() {
     inputVisualEffectModes,
   } = await import("./capability-shell.js");
   manifest = applyCapabilityManifest(document, manifest);
-  runtimeCapabilityManifest = manifest;
   runtimeVisualEffectModes = inputVisualEffectModes(manifest);
   const openVoicePlugin = (pluginId) => {
     const plugin = runtimePluginController?.installedPlugins().find(item => item.pluginId === pluginId);

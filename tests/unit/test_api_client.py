@@ -13,7 +13,6 @@ from sakura_assistant.llm.api_client import (
     ApiRequestError,
     DialogueSettings,
     AssistantModelClient,
-    _build_chat_completion_payload,
     _filter_supported_chat_params,
 )
 from sakura_assistant_contract import ChatReply, ChatSegment
@@ -128,22 +127,6 @@ def test_chat_param_filter_keeps_supported_values() -> None:
         "temperature": 0.2,
         "max_completion_tokens": 64,
     }
-
-
-def test_build_chat_payload_drops_unsupported_params() -> None:
-    payload = _build_chat_completion_payload(
-        model="gpt-compatible",
-        system_prompt=" system ",
-        messages=[{"role": "user", "content": "hi"}],
-        temperature=0.8,
-        chat_params={"presence_penalty": 0.1, "bad": "ignored"},
-    )
-
-    assert payload["model"] == "gpt-compatible"
-    assert payload["temperature"] == 0.8
-    assert payload["presence_penalty"] == 0.1
-    assert "bad" not in payload
-    assert payload["messages"][0] == {"role": "system", "content": "system"}
 
 
 def test_complete_raw_applies_param_filter(monkeypatch) -> None:  # type: ignore[no-untyped-def]

@@ -41,16 +41,13 @@ export function createPluginSettingsFeature({
     pluginInstallFolderButton: document.getElementById("pluginInstallFolderButton"),
     pluginList: document.getElementById("pluginList"),
     pluginDetail: document.getElementById("pluginDetail"),
-    pluginTotal: document.getElementById("pluginTotal"),
     pluginRoleTabs: document.getElementById("pluginRoleTabs"),
     aboutComponentsSummary: document.getElementById("aboutComponentsSummary"),
     aboutComponentsRefresh: document.getElementById("aboutComponentsRefresh"),
     aboutComponentsState: document.getElementById("aboutComponentsState"),
     aboutComponentsList: document.getElementById("aboutComponentsList"),
     memorySurface: document.getElementById("memorySurface"),
-    screenAwarenessSurface: document.getElementById("screenAwarenessSurface"),
     modelProviderSurface: document.getElementById("modelProviderSurface"),
-    modelSettingsSurface: document.getElementById("modelSettingsSurface"),
     pages: {
       memory: document.getElementById("page-memory"),
       plugins: document.getElementById("page-plugins"),
@@ -397,14 +394,6 @@ export function createPluginSettingsFeature({
 
 
 
-  function compactText(value, max = 110) {
-    const text = String(value || "").replace(/\s+/g, " ").trim();
-    if (text.length <= max) {
-      return text;
-    }
-    return `${text.slice(0, max - 1)}…`;
-  }
-
   function clonePlain(value) {
     return JSON.parse(JSON.stringify(value || {}));
   }
@@ -595,7 +584,6 @@ export function createPluginSettingsFeature({
       fields.pluginList.append(issue);
     }
     fields.pluginRoleTabs.textContent = '';
-    fields.pluginTotal.textContent = String(all.length);
     const roles = { all: '全部', ...pluginPresentation.pluginKinds };
     fields.pluginRoleTabs.style.setProperty('--active-tab', Object.keys(roles).indexOf(pluginState.role));
     Object.entries(roles).forEach(([key, label]) => {
@@ -1704,7 +1692,6 @@ export function createPluginSettingsFeature({
     settingsUI.render(pluginView.items || []);
     renderProviderFallback();
   }
-  function renderScreenAwarenessSurface() { settingsUI.render(pluginView.items || []); }
 
   function memorySurfaceIsTransitioning() {
     const snapshot = runtimePluginController?.snapshot();
@@ -3389,7 +3376,7 @@ export function createPluginSettingsFeature({
       }
       if (page === "plugins" || page === "about") schedulePluginActivityRefresh();
       if (page === "memory") renderMemorySurface();
-      if (page === "interaction") renderScreenAwarenessSurface();
+      if (page === "interaction") settingsUI.render(pluginView.items || []);
       if (page === "providers" || page === "model") { renderModelSurfaces(); schedulePluginActivityRefresh(); }
     },
     clearCharacterState() {

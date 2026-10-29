@@ -105,8 +105,8 @@ def test_device_login_persists_own_account_without_exposing_credentials(tmp_path
         return httpx.Response(200, json=tokens())
     mock_http(monkeypatch, handler)
     account = Account(tmp_path / "auth.json")
-    public = account.login(None, published.append)
-    assert public == {"loggedIn": True, "email": "person@example.com", "plan": "plus"}
+    account.login(None, published.append)
+    assert account.public() == {"loggedIn": True, "email": "person@example.com", "plan": "plus"}
     assert published[0]["userCode"] == "ABCD-EFGH"
     assert "private-device" not in repr(published)
     assert Account(account.path).snapshot()["tokens"]["refresh_token"] == "private-refresh"

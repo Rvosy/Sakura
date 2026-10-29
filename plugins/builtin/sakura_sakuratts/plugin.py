@@ -83,12 +83,11 @@ def character_voice(character, character_id, tone='中性', *, optional=False):
 
 class Provider:
     def __init__(self, context):
-        self.context = context
         self.character = context.get('sakura.host.character')
         self.artifacts = context.get('sakura.host.artifacts')
         self.hub = context.get('sakura.tts')
         self.logger = context.get('sakura.host.logging')
-        self.directory = Path(context.data_path('.'))
+        directory = Path(context.data_path('.'))
         storage = context.get('sakura.host.storage').resolve('tts', 'sakura')
         log = lambda level, message, **fields: getattr(self.logger, level)(message, fields=fields)
         self.config = configuration(context.config.get())
@@ -99,13 +98,13 @@ class Provider:
         self.active = None
         self.wake = None
         self.error = ''
-        self.bundle = BundleStore(self.directory / 'bundles', probe, self.publish, log,
+        self.bundle = BundleStore(directory / 'bundles', probe, self.publish, log,
                                   default_storage=storage)
         runtime_storage = storage
         if (os.name == 'nt' and self.bundle.current() and not str(storage).isascii()
                 and str(self.bundle.storage_directory).isascii()):
             runtime_storage = self.bundle.storage_directory
-        source = storage if runtime_storage != storage and (storage / 'runtime-data').exists() else self.directory
+        source = storage if runtime_storage != storage and (storage / 'runtime-data').exists() else directory
         runtime_path = runtime_directory(source, runtime_storage / 'runtime-data', log)
         self.runtime = Runtime(runtime_path, self.log)
         self.bundle.log = self.log

@@ -2,10 +2,6 @@ const SNAPSHOT_KEYS = ["schemaVersion", "state", "reasonCode", "plugins", "windo
 
 function clone(value) { return structuredClone(value); }
 
-function isObject(value) {
-  return Boolean(value && typeof value === "object" && !Array.isArray(value));
-}
-
 function transitionError(error) {
   const message = String(error?.message || error || "");
   return ["SETTINGS_CORE_GENERATION_MISMATCH", "SETTINGS_CORE_UNAVAILABLE", "CORE_RESTART", "CORE_GENERATION"]

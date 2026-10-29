@@ -88,7 +88,6 @@ def _save_plan(plan: "_Plan", source: Path, target: Path, converted: Path) -> No
     path.parent.mkdir(mode=0o700, exist_ok=False)
     value = {
         "source": str(source), "target": str(target), "roleMapping": plan.role_mapping,
-        "public": plan.public(),
         "identities": [
             [identity, kind, item_id]
             for (identity, kind), item_id in read_history_identities(converted).items()
@@ -144,7 +143,6 @@ class _Plan:
     by_character: dict[str, _Counts] = field(default_factory=lambda: defaultdict(_Counts))
     conflicts: list[dict[str, str]] = field(default_factory=list)
     recoverable_errors: int = 0
-    blocked: bool = False
     token: str = field(default_factory=lambda: uuid.uuid4().hex)
 
     role_mapping: dict[str, str] = field(default_factory=dict)
@@ -181,7 +179,6 @@ class _Plan:
                         "itemId": item_id[:128],
                     }
                 )
-            self.blocked = self.blocked or hard
 
     def public(self) -> dict[str, object]:
         totals = _Counts()
@@ -215,7 +212,6 @@ class _Plan:
             "requiresMapping": any(item["requiresMapping"] for item in self.package_records),
             "conflicts": self.conflicts,
             "requiresConflictConfirmation": bool(self.conflicts),
-            "blocked": self.blocked,
         }
 
 
@@ -277,9 +273,6 @@ def run_character_data_import(
     if public_plan["requiresMapping"]:
         shutil.rmtree(staging, ignore_errors=True)
         raise LegacyImportError("LEGACY_DATA_MAPPING_REQUIRED", "inspect")
-    if plan.blocked:
-        shutil.rmtree(staging, ignore_errors=True)
-        raise LegacyImportError("LEGACY_DATA_SCOPE_CONFLICT", "inspect")
     if plan.conflicts and not overwrite_conflicts:
         shutil.rmtree(staging, ignore_errors=True)
         raise LegacyImportError("LEGACY_DATA_IMPORT_CONFIRMATION_REQUIRED", "inspect")
@@ -383,8 +376,6 @@ def _inspect_into_plan(
     mapped_targets = set(role_mapping.values())
     scopes = set(character_ids) | (set(plan.by_character) - mapped_targets)
     scopes.update(key for key, value in role_mapping.items() if value in plan.by_character)
-    if set(role_mapping) - (scopes | set(plan.packages)):
-        raise LegacyImportError("LEGACY_DATA_MAPPING_INVALID", "inspect")
     plan.package_records = public_packages(plan.packages, targets, scopes, role_mapping)
     plan.target_characters = [{"characterId": role, "displayName": profile.display_name} for role, profile in sorted(targets.items())]
     plan.target_characters.extend(

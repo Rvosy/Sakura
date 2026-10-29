@@ -292,7 +292,7 @@ def test_web_failure_logs_code_without_request_content(monkeypatch):
     def fail(*args):
         raise TimeoutError("private request detail")
     monkeypatch.setattr(web, "search_web", fail)
-    result = _handler("web_search", Logger())({"query": "private search"})
+    result = _handler("web_search", logger=Logger())({"query": "private search"})
     assert result["reasonCode"] == "WEB_TIMEOUT"
     assert rows == [{"tool": "web_search", "reason_code": "WEB_TIMEOUT"}]
 

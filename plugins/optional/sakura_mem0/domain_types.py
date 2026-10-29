@@ -59,17 +59,9 @@ class ChatHistoryEntry:
     evidence_ready: bool = False
 
 
-@dataclass(frozen=True)
-class PromptTraceMetadata:
-    purpose: str
-    curation_turn_ids: tuple[str, ...] = ()
-    curation_evidence_kinds: tuple[str, ...] = ()
-
-
 __all__ = [
     "ChatHistoryEntry",
     "ContextFragment",
     "ContextMessage",
     "ContextRequest",
-    "PromptTraceMetadata",
 ]

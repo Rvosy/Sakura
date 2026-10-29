@@ -303,7 +303,6 @@ function renderInspection(snapshot) {
       LEGACY_TARGET_NOT_DIRECTORY: "当前数据目录不可用。",
       LEGACY_IMPORT_RECOVERY_REQUIRED: "请先恢复上次未完成的导入。",
       LEGACY_COMMIT_TARGET_LINK_UNSUPPORTED: "当前数据目录含有无法覆盖的链接。",
-      LEGACY_DATA_SCOPE_CONFLICT: "角色数据存在冲突，无法导入。",
       LEGACY_TARGET_SPACE_UNAVAILABLE: "无法检查当前数据目录的可用空间。",
       LEGACY_TARGET_SPACE_INSUFFICIENT: "可用空间不足，请先释放磁盘空间。",
       LEGACY_TTS_LINK_BROKEN: "外置语音资源链接已失效，无法导入这些资源。",

@@ -92,7 +92,6 @@ const legacyDataPlan = Object.freeze({
   },
   conflicts: [],
   requiresConflictConfirmation: false,
-  blocked: false,
 });
 
 const noUpdate = Object.freeze({

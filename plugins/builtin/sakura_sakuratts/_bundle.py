@@ -405,8 +405,7 @@ class BundleStore:
         self.state = 'succeeded'
 
     def download(self, values=None):
-        with self.lock:
-            return self._start_task(self._download_and_install, '正在准备安装', False, self._destination(values))
+        return self._start_task(self._download_and_install, '正在准备安装', False, self._destination(values))
 
     def reinstall(self, values=None):
         return self._start_task(self._download_and_install, '正在准备重新安装', True, self._destination(values))

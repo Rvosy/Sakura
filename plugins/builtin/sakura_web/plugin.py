@@ -41,7 +41,7 @@ class WebPlugin:
                 "description": tool["description"],
                 "parameters": tool["inputSchema"],
                 "risk": risks.get(name, "low"),
-            }, _handler(name, logger, context.config.get, context.exception_diagnostics))
+            }, _handler(name, context.config.get, logger, context.exception_diagnostics))
 
 
     def load(self):
@@ -69,9 +69,9 @@ class WebPlugin:
         return {}
 
     def _run_test(self, query, config):
-        result = _execute_handler("web_search", lambda: config,
-                                  self.context.get("sakura.host.logging"),
-                                  self.context.exception_diagnostics)({"query": query, "max_results": 5})
+        result = _handler("web_search", lambda: config,
+                          self.context.get("sakura.host.logging"),
+                          self.context.exception_diagnostics)({"query": query, "max_results": 5})
         if result.get("isError"):
             text = result["error"]
             status = {"state": "error", "label": "搜索失败", "message": ""}
@@ -118,11 +118,7 @@ def _settings_descriptor():
     }
 
 
-def _handler(name: str, logger=None, config_get=None, diagnose=None):
-    return _execute_handler(name, config_get, logger, diagnose)
-
-
-def _execute_handler(name: str, config_get=None, logger=None, diagnose=None):
+def _handler(name: str, config_get=None, logger=None, diagnose=None):
     def execute(arguments: dict[str, Any]) -> dict[str, Any]:
         config = {}
         try:

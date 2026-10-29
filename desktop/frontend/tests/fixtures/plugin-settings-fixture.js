@@ -134,7 +134,7 @@ export function browserFixture() {
     const group = new Element("div"); const label = new Element("h3"); label.id = `navgrp-${name}`; group.append(label); shell.append(group);
   }
   for (const id of [
-    "pluginTotal", "pluginRoleTabs", "pluginSearch", "pluginInstallMenuRoot", "pluginInstallMenuButton", "pluginInstallMenu",
+    "pluginRoleTabs", "pluginSearch", "pluginInstallMenuRoot", "pluginInstallMenuButton", "pluginInstallMenu",
     "pluginInstallZipButton", "pluginInstallFolderButton", "pluginList", "pluginDetail",
     "aboutComponentsSummary", "aboutComponentsRefresh", "aboutComponentsState", "aboutComponentsList",
     "memorySurface", "screenAwarenessSurface", "page-memory", "page-plugins", "page-about",

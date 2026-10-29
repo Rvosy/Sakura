@@ -38,16 +38,12 @@ class HistoryImportStats:
     source_records: int
     timeline_entries: int
     errors_quarantined: int
-    per_character_records: dict[str, int]
-    cutoff_entry_ids: dict[str, str]
 
 
 @dataclass(frozen=True)
 class _SourceRecord:
-    path: Path
     relative: str
     line: int
-    ordinal: int
     identity: str
     timestamp: str
     raw: bytes
@@ -120,7 +116,6 @@ def import_history(
     staged_root: Path,
     *,
     character_ids: tuple[str, ...],
-    processed_counts: dict[str, int] | None = None,
     import_id: str = "history-import",
     identity_root: Path | None = None,
     identities: dict[tuple[str, str], str] | None = None,
@@ -136,8 +131,6 @@ def import_history(
     visual = _load_visual_records(source_root / "data" / "visual_observations")
     source_records = 0
     quarantine = _HistoryQuarantineWriter(staged_root, import_id)
-    per_character: dict[str, int] = {}
-    cutoffs: dict[str, str] = {}
     try:
         for scope, paths in _history_groups(history_root, character_ids):
             scan = {"ordinal": 0}
@@ -148,7 +141,6 @@ def import_history(
                 scan=scan,
                 quarantine=quarantine,
             )
-            processed = max(0, int((processed_counts or {}).get(scope, 0)))
             current_turn = ""
             current_has_human = False
             current_scheduled = False
@@ -160,7 +152,7 @@ def import_history(
                     return
                 # Keep only the current Runtime v2-sized reply chunk in memory.
                 chunk = assistant_buffer
-                first, last = chunk[0], chunk[-1]
+                first = chunk[0]
                 turn_id = current_turn or ids.get("turn", first)
                 entry_id = ids.get("assistant", first)
                 segments = [_segment(record, quarantine) for record in chunk]
@@ -176,8 +168,6 @@ def import_history(
                     ),
                     source=first,
                 )
-                if last.ordinal <= processed:
-                    cutoffs[scope] = entry_id
                 assistant_buffer = []
 
             for record in records:
@@ -198,7 +188,7 @@ def import_history(
                         )
                     )
                     continue
-                content = str(record.value["content"])
+                content = record.value["content"]
                 if role == "user":
                     current_turn = ids.get("turn", record)
                     current_has_human = True
@@ -216,8 +206,6 @@ def import_history(
                         ),
                         source=record,
                     )
-                    if record.ordinal <= processed:
-                        cutoffs[scope] = ids.get("human", record)
                     if cleaned != content:
                         observation_id = ids.get("observation", record)
                         writer.append(
@@ -232,8 +220,6 @@ def import_history(
                             ),
                             source=record,
                         )
-                        if record.ordinal <= processed:
-                            cutoffs[scope] = observation_id
                     continue
                 if role == "system":
                     scheduled_id, cleaned = _strip_marker(content, _SCHEDULED_MARKER)
@@ -269,8 +255,6 @@ def import_history(
                             ),
                             source=record,
                         )
-                    if record.ordinal <= processed:
-                        cutoffs[scope] = entry_id
                     continue
                 quarantine.append(
                     HistoryIssue(
@@ -281,9 +265,7 @@ def import_history(
                     )
                 )
             flush_assistant()
-            group_records = scan["ordinal"]
-            source_records += group_records
-            per_character[scope] = group_records
+            source_records += scan["ordinal"]
 
         with closing(sqlite3.connect(timeline.path)) as connection:
             write_history_identities(connection, ids.values)
@@ -295,8 +277,6 @@ def import_history(
         source_records=source_records,
         timeline_entries=writer.count,
         errors_quarantined=quarantine.count,
-        per_character_records=per_character,
-        cutoff_entry_ids=cutoffs,
     )
 
 
@@ -371,7 +351,7 @@ def _iter_records(
                         )
                     )
                     continue
-                timestamp = _parse_timestamp(str(value["created_at"]))
+                timestamp = _parse_timestamp(value["created_at"])
                 if not timestamp:
                     quarantine.append(
                         HistoryIssue(
@@ -382,7 +362,7 @@ def _iter_records(
                         )
                     )
                     continue
-                role = str(value["role"])
+                role = value["role"]
                 occurrence_key = (role, timestamp)
                 occurrence = occurrences.get(occurrence_key, 0) + 1
                 occurrences[occurrence_key] = occurrence
@@ -390,10 +370,8 @@ def _iter_records(
                     [scope, role, timestamp, occurrence], ensure_ascii=True, separators=(",", ":")
                 )
                 yield _SourceRecord(
-                    path,
                     relative,
                     line_number,
-                    scan["ordinal"],
                     identity,
                     timestamp,
                     raw_bytes,

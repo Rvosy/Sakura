@@ -129,6 +129,54 @@ def test_production_application_uses_v4_host_contributions(tmp_path: Path) -> No
     assert registry.get("fixture_echo") is None
 
 
+def test_plugin_reads_history_range_for_current_character(tmp_path: Path) -> None:
+    from app.core_host.plugin_application import PluginApplicationHost
+    from app.plugin_sdk.sakura_tools import ToolRegistry
+    from app.storage.paths import StoragePaths
+    from app.storage.timeline import NewTimelineEntry, TimelineKind, TimelineStore
+
+    root = tmp_path / "plugins" / "builtin" / "history_reader"
+    root.mkdir(parents=True)
+    (root / "plugin.yaml").write_text(
+        "api: 4\nid: history.reader\nname: 历史读取\nversion: 1.0.0\nentry: plugin:Plugin\n"
+        "provides: [fixture.history]\nrequires: [sakura.host.timeline]\n", encoding="utf-8",
+    )
+    (root / "plugin.py").write_text('''
+class Plugin:
+    def setup(self, context):
+        self.timeline = context.get("sakura.host.timeline")
+        context.provide("fixture.history", self, exports=("read",))
+
+    def read(self, request):
+        return self.timeline.read_range(request)
+''', encoding="utf-8")
+    timeline = TimelineStore(StoragePaths(tmp_path).timeline_database())
+    timeline.initialize()
+    for identity, character, date in (
+        ("selected", "sakura", "2026-10-02"),
+        ("outside-range", "sakura", "2026-10-01"),
+        ("other-character", "other", "2026-10-02"),
+    ):
+        timeline.append(NewTimelineEntry(identity, identity, character, TimelineKind.HUMAN,
+            "chat", date + "T12:00:00Z", {"text": identity}))
+    application = PluginApplicationHost(tmp_path, "history-range", ToolRegistry())
+    try:
+        application.start()
+        assert application.wait_until_loaded(timeout=5)
+        for character, expected in (("sakura", "selected"), ("other", "other-character")):
+            application.bind_session(SimpleNamespace(
+                assistant=object(), visual_binding=None,
+                character=CharacterProfile(character, character, tmp_path, tmp_path / "card.md", ""),
+            ))
+            page = application.call_service("fixture.history", "read", {
+                "startDate": "2026-10-02", "endDate": "2026-10-02",
+            })
+            assert [entry["entryId"] for entry in page["entries"]] == [expected]
+            assert page["total"] == 1 and not page["hasMore"]
+    finally:
+        application.close()
+
+
 def test_assistant_failure_keeps_plugin_application_manageable(tmp_path: Path) -> None:
     from app.core_host.server import HostConfig, ReadinessController
 

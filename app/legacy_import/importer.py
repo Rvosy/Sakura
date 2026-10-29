@@ -33,7 +33,7 @@ from .files import (
     tree_stats,
 )
 from .history import import_history
-from .incremental import _merge_memory, _merge_timeline
+from .incremental import _legacy_current_scope, _merge_memory, _merge_timeline
 from .inspector import (
     detect_legacy_source_platform,
     inspect_installation,
@@ -137,7 +137,6 @@ def run_legacy_import(
         # character identity comes from the legacy scope itself; a character
         # package is useful for case normalization but is not their owner.
         discovered_character_ids = _discover_character_ids(source)
-        _processed_counts, _current_character = _legacy_curation(source)
         _log_stage(
             import_id,
             "history",
@@ -201,7 +200,7 @@ def run_legacy_import(
                 converted,
                 payload,
                 overwrite_conflicts=True,
-                current_scope=_current_character,
+                current_scope=_legacy_current_scope(source),
                 quarantine=payload
                 / "data"
                 / "legacy-imports"
@@ -2119,39 +2118,6 @@ def _quarantine_invalid_memory_store(root: Path, quarantine: Path, domain: str) 
         if destination.exists():
             shutil.rmtree(destination)
         os.replace(source, destination)
-def _legacy_curation(source: Path) -> tuple[dict[str, int], str]:
-    current = ""
-    config = source / "data" / "config" / "characters.yaml"
-    if config.is_file():
-        try:
-            value = yaml.safe_load(config.read_text(encoding="utf-8"))
-            current = str(value.get("current_character_id") or "") if isinstance(value, dict) else ""
-        except (OSError, UnicodeError, yaml.YAMLError):
-            current = ""
-    current = current.strip()
-    counts: dict[str, int] = {}
-    global_path = source / "data" / "memory_curation_state.json"
-    if current:
-        counts[current] = _read_processed_count(global_path)
-    for path in sorted((source / "data").glob("memory_curation_state.*.json")):
-        scope = path.name.removeprefix("memory_curation_state.").removesuffix(".json").strip()
-        if scope:
-            counts[scope] = _read_processed_count(path)
-    return {scope: count for scope, count in counts.items() if count > 0}, current
-
-
-def _read_processed_count(path: Path) -> int:
-    if not path.is_file():
-        return 0
-    try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-        if not isinstance(value, dict):
-            raise TypeError("curation state must be an object")
-        return max(0, int(value.get("processed_history_count", 0)))
-    except (OSError, UnicodeError, json.JSONDecodeError, TypeError, ValueError):
-        # This cursor is rebuildable from authoritative Timeline and Memory.
-        # Dirty 0.9 state must not block importing either domain.
-        return 0
 
 
 def _write_report(payload: Path, report: ImportReport) -> None:

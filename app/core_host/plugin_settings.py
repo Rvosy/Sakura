@@ -86,7 +86,6 @@ class PluginSettingsBoundary:
         self._generation_credential = generation_credential
         self._roots = coerce_runtime_roots(roots)
         self._user_root = self._roots.user_root
-        self._config_path = StoragePaths(self._user_root).plugins_config()
         self._application_provider = application_provider
         self._initialization_failed = initialization_failed or (lambda: False)
         self._save_lock = threading.Lock()
@@ -726,28 +725,6 @@ def _object(value: object) -> Mapping[str, Any]:
     if not isinstance(value, Mapping):
         raise PluginSettingsError("INVALID_REQUEST", "插件设置必须是 object。")
     return value
-
-
-def _boolean_mapping(value: object) -> dict[str, bool]:
-    raw = _object(value)
-    result: dict[str, bool] = {}
-    for key, item in raw.items():
-        if not isinstance(key, str) or not isinstance(item, bool):
-            raise PluginSettingsError("INVALID_REQUEST", "插件启停字段无效。")
-        result[_identifier(key)] = item
-    return result
-
-
-def _settings_mapping(value: object) -> dict[str, dict[str, dict[str, Any]]]:
-    raw = _object(value)
-    result: dict[str, dict[str, dict[str, Any]]] = {}
-    for plugin_id, sections in raw.items():
-        section_map = _object(sections)
-        result[_identifier(plugin_id)] = {
-            _identifier(section_id): dict(_object(values))
-            for section_id, values in section_map.items()
-        }
-    return result
 
 
 def _identifier(value: object) -> str:

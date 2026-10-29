@@ -259,7 +259,7 @@ def test_default_runtime_uses_only_declared_host_resources(
 
     class Character:
         def current(self) -> dict[str, str]:
-            return {"id": "sakura", "systemPrompt": "system prompt"}
+            return {"id": "sakura"}
 
     class Models:
         def catalog(self):
@@ -301,7 +301,6 @@ def test_default_runtime_uses_only_declared_host_resources(
     assert result is not None
     assert captured["root"] == plugin_data
     assert captured["character_id"] == "sakura"
-    assert captured["system_prompt"] == "system prompt"
     assert captured["memory_dir"] == tmp_path / "data" / "memory"
     assert captured["memory_cache_dir"] == tmp_path / "cache" / "memory"
 

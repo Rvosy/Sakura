@@ -44,7 +44,7 @@ def parse_chat_reply_result(content: str) -> ChatReplyParseResult:
     structured = parse_structured_json(content)
     data, repaired = structured.value, structured.deterministic_repair
     if data is None:
-        if _looks_structured_reply(content):
+        if structured.raw_status == "invalid_json":
             return ChatReplyParseResult(
                 _build_safe_parse_failure_reply(),
                 ok=False,
@@ -103,12 +103,13 @@ def sanitize_reply_tones(reply: ChatReply, allowed_tones: list[str] | None) -> C
 
 def _build_segment(text: str, tone: str, translation: str, portrait: str, control: dict | None = None) -> tuple[ChatSegment, bool]:
     tone = tone or DEFAULT_TONE
+    chinese_text = _has_obvious_chinese(text)
     # 只在 ja 明显是中文、zh 明显是日文时交换，避免误判“ 大丈夫 ”这类日语汉字句。
-    if _looks_chinese(text) and _looks_japanese(translation):
+    if chinese_text and _looks_japanese(translation):
         text, translation = translation, text
         return ChatSegment(text, tone, translation, portrait, control=control), False
 
-    if _has_obvious_chinese(text):
+    if chinese_text:
         return (
             ChatSegment(
                 SAFE_LANGUAGE_FALLBACK_TEXT,
@@ -129,10 +130,6 @@ def _looks_japanese(value: str) -> bool:
         "\u3040" <= char <= "\u30ff" or "\uff66" <= char <= "\uff9f"
         for char in value
     )
-
-
-def _looks_chinese(value: str) -> bool:
-    return _has_obvious_chinese(value) and not _looks_japanese(value)
 
 
 def _has_obvious_chinese(value: str) -> bool:

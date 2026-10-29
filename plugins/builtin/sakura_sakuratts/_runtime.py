@@ -151,8 +151,7 @@ class Runtime:
         root, release = bundle
         backend = config['backend']
         profile = config['cudaProfile'] if backend == 'cuda' else None
-        with self.lock:
-            self.stop()
+        self.stop()
         if os.name == 'nt' and not str(self.directory).isascii() and str(root).isascii():
             self.directory = runtime_directory(self.directory.parent, root.parent / 'runtime-data', self.emit)
         self.backend, self.profile = '', None

@@ -43,7 +43,6 @@ class SakuraMem0Runtime:
         app_root: Path,
         character_id: str,
         *,
-        system_prompt: str = "",
         boundary: MemoryBoundary | None = None,
         timeline: object | None = None,
         config_getter: Callable[[], Mapping[str, object]] | None = None,
@@ -62,7 +61,6 @@ class SakuraMem0Runtime:
         self._boundary = boundary or MemoryBoundary(
             self._app_root,
             character_id,
-            system_prompt=system_prompt,
             memory_dir=memory_dir,
             memory_cache_dir=memory_cache_dir,
             curation_config_getter=self._config_getter,
@@ -922,8 +920,7 @@ def _default_runtime(context: object) -> SakuraMem0Runtime | None:
         raise
     model_slots = getattr(context, "get")("sakura.host.model_slots.v2")
     character_id = str(character.get("id", ""))
-    system_prompt = str(character.get("systemPrompt", ""))
-    if not character_id or not system_prompt:
+    if not character_id:
         raise RuntimeError("MEMORY_CHARACTER_UNAVAILABLE")
     plugin_config = getattr(context, "config")
     config_getter = getattr(plugin_config, "get")
@@ -931,7 +928,6 @@ def _default_runtime(context: object) -> SakuraMem0Runtime | None:
     return SakuraMem0Runtime(
         plugin_data_root,
         character_id,
-        system_prompt=system_prompt,
         timeline=getattr(context, "get")("sakura.host.timeline"),
         config_getter=config_getter,
         config_updater=config_updater,

@@ -38,15 +38,10 @@ kbd { border: 1px solid var(--hairline); border-radius: 3px; color: var(--sakura
 .card-identity { display: flex; gap: 9px; align-items: center; min-width: 0; }
 .plugin-mark { width: 34px; height: 34px; border-radius: 9px; display: inline-grid; place-items: center; flex: 0 0 auto; background: #e9f3fa; color: #568cac; }
 .plugin-mark .sakura-icon { width: 19px; height: 19px; }
-.plugin-mark.pink { color: #b97996; background: #f8edf2; }
-.plugin-mark.gold { color: #ac8b4e; background: #fbf4e4; }
-.plugin-mark.green { color: #578c80; background: #eaf5f0; }
-.plugin-mark.violet { color: #8b7cad; background: #f1edf8; }
 .card-name { font-size: 14px; margin: 0; overflow-wrap: anywhere; }
 .card-open { font: inherit; color: var(--sakura-text); text-align: left; padding: 0; border: 0; background: none; }
 .card-open:hover:not(:disabled) { color: var(--sakura-primary-hover); background: none; }
 .card-author { color: var(--sakura-muted-text); font-size: 10px; margin-top: 3px; }
-.example-label { margin-left: 6px; font-size: 9px; color: var(--sakura-muted-text); border: 1px solid var(--hairline); padding: 0 4px; border-radius: 3px; }
 .card-description { font-size: 12px; line-height: 1.5; color: var(--sakura-secondary-text); margin: 8px 0; }
 .card-meta { display: flex; gap: 7px; align-items: center; flex-wrap: wrap; font-size: 10px; color: var(--sakura-muted-text); margin-bottom: 0; }
 .category-tag { padding: 2px 6px; border-radius: 4px; background: var(--tint-faint); color: var(--sakura-secondary-text); }

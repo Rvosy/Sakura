@@ -758,10 +758,6 @@ class _ToolsHostService:
         for registration_id in list(self._registrations):
             self._unregister(registration_id)
 
-    @property
-    def count(self) -> int:
-        return len(self._registrations)
-
 
 @dataclass
 class _ContextRegistration:
@@ -1100,11 +1096,6 @@ class _ModelSlotsHostService:
         )
         _application_state(result)
         return result
-
-    @property
-    def count(self) -> int:
-        with self._lock:
-            return len(self._registrations)
 
     def clear(self) -> None:
         with self._lock:
@@ -1800,11 +1791,6 @@ class _SettingsHostService:
             self._ui_registrations.clear()
             self._collection_registrations.clear()
 
-    @property
-    def count(self) -> int:
-        with self._lock:
-            return len(self._registrations)
-
 
 class _SettingsSurfaceV0HostService:
     def __init__(self, settings: _SettingsHostService) -> None:
@@ -2167,18 +2153,6 @@ class PluginHostServices:
         callback = getattr(service, "revoke_scope", None)
         if callable(callback):
             callback(plugin_id)
-
-    @property
-    def tool_count(self) -> int:
-        return self._tools.count
-
-    @property
-    def settings_count(self) -> int:
-        return self._settings.count
-
-    @property
-    def model_slot_count(self) -> int:
-        return self._model_slots.count
 
     @property
     def artifact_count(self) -> int:

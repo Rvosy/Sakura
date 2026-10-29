@@ -315,7 +315,9 @@ function createAccountPanel(context, initial, apply) {
             void invoke("openLogin").catch(error => { if (ticket === revision) report(error); });
           }
           terminal = ["failed", "completed", "cancelled"].includes(value.state);
-          if (value.state === "failed") throw new Error(value.message, { cause: value });
+          if (value.state === "failed" && (operation === "login" || operation === "sync_models")) {
+            report(new Error(value.message, { cause: value }));
+          }
           loggedIn = operation === "login" && value.state === "completed";
           if (terminal) break;
         }

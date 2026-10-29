@@ -66,7 +66,7 @@ _HOST_EXPORTS = {
     HOST_SETTINGS_SURFACE_V0_SERVICE: ("register", "unregister"),
     HOST_SETTINGS_COLLECTION_V0_SERVICE: ("register", "unregister"),
     HOST_COMPOSER_TOOLS_V0_SERVICE: ("register", "unregister"),
-    HOST_TIMELINE_SERVICE: ("latest_cursor", "get_entry", "read_recent", "read_since", "read_turn_page"),
+    HOST_TIMELINE_SERVICE: ("latest_cursor", "get_entry", "read_recent", "read_since", "read_range", "read_turn_page"),
 }
 
 _HOST_EVENT_NAMES = {

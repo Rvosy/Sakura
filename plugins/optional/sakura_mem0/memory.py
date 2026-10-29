@@ -145,7 +145,7 @@ class MemoryStore:
 
     def __init__(
         self, base_dir: Path | None = None, scope_id: str = DEFAULT_MEMORY_SCOPE,
-        *, resource_registry=None, memory_dir: Path | None = None, memory_cache_dir: Path | None = None,
+        *, memory_dir: Path | None = None, memory_cache_dir: Path | None = None,
     ) -> None:
         self.base_dir = Path(base_dir or ".").resolve()
         paths = StoragePaths(self.base_dir)
@@ -698,17 +698,6 @@ class MemoryStore:
 
     def is_ready(self) -> bool:
         return not self._closed
-
-    def load_diagnostic(self) -> dict:
-        return {"stage": "sqlite", "status": "ready" if self.is_ready() else "stopped"}
-
-    def scoped(self, scope_id: str):
-        if scope_id != self.scope_id:
-            raise ValueError("角色已变化，需要重新打开记忆存储。")
-        return self
-
-    def summary(self, limit: int = DEFAULT_MEMORY_LIMIT) -> str:
-        return "\n".join(item["content"] for item in self.list_memories(limit=limit))
 
     def close(self) -> None:
         if self._closed:

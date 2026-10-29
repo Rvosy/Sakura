@@ -29,7 +29,7 @@ try:
     from .memory_curator import MemoryCurationState, MemoryCurator
     from .support import (
         OperationCancelled,
-        ResourceRegistry,
+        ThreadGroupResource,
         StoragePaths,
         interaction_context,
         log_event,
@@ -52,7 +52,7 @@ except ImportError:
     from memory_curator import MemoryCurationState, MemoryCurator
     from support import (
         OperationCancelled,
-        ResourceRegistry,
+        ThreadGroupResource,
         StoragePaths,
         interaction_context,
         log_event,
@@ -100,7 +100,6 @@ class MemoryBoundary:
         app_root: Path,
         character_id: str,
         *,
-        system_prompt: str = "",
         memory_store: MemoryStore | None = None,
         memory_dir: Path | None = None,
         memory_cache_dir: Path | None = None,
@@ -111,7 +110,6 @@ class MemoryBoundary:
     ) -> None:
         self._app_root = Path(app_root)
         self._character_id = _required_text(character_id, "character_id", 128)
-        self._system_prompt = system_prompt.strip()
         self._lock = threading.RLock()
         self._write_lock = threading.RLock()
         self._closed = False
@@ -129,19 +127,13 @@ class MemoryBoundary:
         self._model_catalog_getter = model_catalog_getter or (lambda: [])
         self._model_resolver = model_resolver or (lambda selection: selection)
         self._model_client_factory = model_client_factory
-        self._resources = ResourceRegistry()
-        self._curation_threads = self._resources.track_thread_group(
-            cancel=self._curation_cancel.set,
-            label="runtime_v2_memory_curation",
-            shutdown_order=1100,
-        )
+        self._curation_threads = ThreadGroupResource()
         paths = StoragePaths(self._app_root)
         self._memory_dir = Path(memory_dir or paths.memory_dir)
         self._memory_cache_dir = Path(memory_cache_dir or paths.memory_cache_dir)
         self._store = memory_store or MemoryStore(
             base_dir=self._app_root,
             scope_id=self._character_id,
-            resource_registry=self._resources,
             memory_dir=self._memory_dir,
             memory_cache_dir=self._memory_cache_dir,
         )
@@ -163,9 +155,6 @@ class MemoryBoundary:
     def character_id(self) -> str:
         return self._character_id
 
-    def __bool__(self) -> bool:
-        return True
-
     def search_memory(
         self,
         arguments: dict[str, object],
@@ -183,30 +172,10 @@ class MemoryBoundary:
     def profile_memories(self) -> list[dict]:
         return [_project_memory(item, self._character_id) for item in self._store.profile_memories()]
 
-    def summary(self) -> str:
-        return ""
-
     def status(self) -> dict[str, str]:
         if self._closed or not self._store.is_ready():
             return {"status": "stopped", "message": "记忆存储已关闭。"}
         return {"status": "ready", "message": ""}
-
-    def prompt_dependency_snapshot(self) -> dict[str, object]:
-        """Expose only stable, body-free startup diagnostics for prompt logging."""
-
-        snapshot: dict[str, object] = dict(self.status())
-        diagnostic_getter = getattr(self._store, "load_diagnostic", None)
-        diagnostic = diagnostic_getter() if callable(diagnostic_getter) else {}
-        if isinstance(diagnostic, Mapping):
-            for source, target in (
-                ("stage", "stage"),
-                ("category", "category"),
-                ("errorType", "error_type"),
-            ):
-                value = diagnostic.get(source)
-                if isinstance(value, str) and value.strip():
-                    snapshot[target] = value.strip()
-        return snapshot
 
     def list_memories(self, *, limit: int | None = None) -> list[dict[str, Any]]:
         try:
@@ -765,11 +734,7 @@ class MemoryBoundary:
                         severity="debug",
                     )
                     client = self._model_client_factory(selection)
-                    curator = MemoryCurator(
-                        client,
-                        self._store.scoped(self._character_id),
-                        system_prompt=self._system_prompt,
-                    )
+                    curator = MemoryCurator(client, self._store)
 
                     def check_cancelled() -> None:
                         if self._curation_cancel.is_set():
@@ -808,13 +773,8 @@ class MemoryBoundary:
                 if getattr(exc, "code", "") in {"SERVICE_BINDING_EXPIRED", "GENERATION_INVALIDATED"}:
                     return
                 self._curation_result = {**counts, "error": str(exc)}
-                # Keep completed page cursors and any successful writes. A later
-                # event retries the failed page; source IDs protect partial writes.
+                # 保留已完成批次的游标和记录，下次从失败的批次继续。
                 with interaction_context(operation_id):
-                    diagnostic_getter = getattr(self._store, "load_diagnostic", None)
-                    diagnostic = (
-                        diagnostic_getter() if callable(diagnostic_getter) else {}
-                    )
                     reason_code = str(getattr(exc, "code", "") or "CURATION_FAILED")
                     log_event(
                         "Memory",
@@ -823,10 +783,6 @@ class MemoryBoundary:
                             "error_type": type(exc).__name__,
                             "error": str(exc),
                             "reason_code": reason_code,
-                            "category": str(diagnostic.get("category") or "curation_failed"),
-                            "runtime_error_type": str(
-                                diagnostic.get("errorType") or "UnknownError"
-                            ),
                         },
                         event="memory.curation.failed",
                         severity="error",
@@ -873,7 +829,7 @@ class MemoryBoundary:
         self._curation_cancel.set()
         self._text_import_cancel.set()
         self._model_task_cancel.set()
-        self._resources.stop_all(timeout_ms=10_000)
+        self._curation_threads.stop(timeout_ms=10_000)
         self._store.close()
         append_memory_initialization_diagnostic(
             self._app_root,

@@ -31,7 +31,7 @@ from sakura_assistant.llm.api_client import (
     is_vision_unsupported_error,
     messages_contain_image,
 )
-from sakura_assistant.llm.chat_reply import ChatReply, parse_chat_reply, parse_chat_reply_result, sanitize_reply_tones
+from sakura_assistant.llm.chat_reply import ChatReply, ChatReplyParseResult, parse_chat_reply, parse_chat_reply_result, sanitize_reply_tones
 from sakura_assistant.llm.reply_schema import reply_response_format
 from sakura_cancellation import CancelChecker, OperationCancelled, check_cancelled
 from sakura_assistant.diagnostics import (
@@ -326,13 +326,13 @@ class AgentRuntime:
         working_messages: list[ChatMessage],
         raw_content: str,
         *,
+        parsed: ChatReplyParseResult,
         context_request: ContextRequest | None = None,
         trace_call: TraceCall | None = None,
         cancel_checker: CancelChecker | None = None,
     ) -> ChatReply:
         """最终回复结构不合格时，只重试一次格式修复，避免坏 JSON 进入 UI。"""
         check_cancelled(cancel_checker)
-        parsed = parse_chat_reply_result(raw_content)
         retry_reason = parsed.reason if parsed.needs_retry else ""
         if not parsed.needs_retry and _reply_has_display_translation(parsed.reply):
             return parsed.reply
@@ -514,13 +514,14 @@ class AgentRuntime:
             visual_observation = extract_visual_observation_summary(raw_content)
         original = parse_chat_reply_result(raw_content)
         reply = self._parse_final_reply_with_retry(
-                system_prompt,
-                working_messages,
-                raw_content,
-                context_request=context_request,
-                trace_call=trace_call,
-                cancel_checker=cancel_checker,
-            )
+            system_prompt,
+            working_messages,
+            raw_content,
+            parsed=original,
+            context_request=context_request,
+            trace_call=trace_call,
+            cancel_checker=cancel_checker,
+        )
         sanitized = sanitize_reply_tones(reply, self.reply_tones)
         changes: list[str] = []
         if original.needs_retry and _reply_trace_mapping(original.reply) != _reply_trace_mapping(reply):

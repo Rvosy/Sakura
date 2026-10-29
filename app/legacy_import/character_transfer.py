@@ -88,10 +88,7 @@ def prepare_packages(source: Path, target: Path, converted: Path, mapping: dict[
 
 def public_packages(entries, targets, scopes, mapping):
     source_ids = set(entries) | set(scopes)
-    if set(mapping) - source_ids or any(
-        not isinstance(k, str) or not isinstance(v, str) or not k or not v
-        for k, v in mapping.items()
-    ):
+    if set(mapping) - source_ids:
         raise LegacyImportError("LEGACY_DATA_MAPPING_INVALID", "inspect")
     records = []
     available = set(targets) | {role for role, entry in entries.items() if entry.get("staged")}

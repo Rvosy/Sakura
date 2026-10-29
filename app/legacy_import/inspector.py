@@ -94,10 +94,6 @@ def inspect_installation(source: Path, target: Path) -> LegacyInspection:
                 )
                 if label in overwrite
             )
-            if role_plan.get("blocked") is True:
-                blockers.append(
-                    {"code": "LEGACY_DATA_SCOPE_CONFLICT", "stage": "inspect"}
-                )
         except LegacyImportError as exc:
             blockers.append({"code": exc.code, "stage": "inspect"})
 
@@ -178,12 +174,6 @@ def inspect_installation(source: Path, target: Path) -> LegacyInspection:
         blockers=tuple(blockers),
         warnings=tuple(warnings),
     )
-
-
-def detect_legacy_version(source: Path) -> str:
-    """Return the recognized 0.9.x version without applying platform policy."""
-
-    return _detect_version(Path(source))
 
 
 def legacy_source_is_active(source: Path) -> bool:

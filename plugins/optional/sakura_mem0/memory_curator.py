@@ -94,7 +94,7 @@ update 还必须带 id。没有值得保留的内容返回 {"operations":[]}。�
 
 
 class MemoryCurator:
-    def __init__(self, api_client: Any, memory_store: MemoryStore, *, system_prompt: str = "") -> None:
+    def __init__(self, api_client: Any, memory_store: MemoryStore) -> None:
         self.api_client = api_client
         self.memory_store = memory_store
 

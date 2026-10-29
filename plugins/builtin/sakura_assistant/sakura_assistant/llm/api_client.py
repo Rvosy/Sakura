@@ -15,7 +15,6 @@ from sakura_cancellation import CancelChecker, OperationCancelled, check_cancell
 from sakura_assistant.diagnostics import submit_telemetry_model_call
 from sakura_assistant.llm.chat_reply import (
     ChatReply,
-    parse_chat_reply,
     parse_chat_reply_result,
     sanitize_reply_tones,
 )
@@ -83,10 +82,7 @@ class ChatCompletionTurn:
     tool_calls: list[NativeToolCall]
     message: dict[str, Any]
     runtime_context_role: str = "system"
-    runtime_context_placement: str = "tail_system"
     usage: dict[str, Any] = field(default_factory=dict)
-    raw_content: str = ""
-    parse_status: str = "unparsed"
     trace_call: TraceCall | None = None
 
 
@@ -211,7 +207,7 @@ class AssistantModelClient:
         runtime_context: str = "",
         trace_metadata: PromptTraceMetadata | None = None,
     ) -> ChatReply:
-        segmented_reply_instruction = _build_segmented_reply_instruction(reply_tones, reply_visual)
+        segmented_reply_instruction = build_segmented_reply_instruction(reply_tones, reply_visual)
         temperature, extra_params = self.resolve_dialogue_params()
         content = self.complete_raw(
             f"{system_prompt.strip()}\n\n{segmented_reply_instruction}",
@@ -268,10 +264,10 @@ class AssistantModelClient:
         **chat_params: Any,
     ) -> str:
         """返回模型原始文本，供 Agent Runtime 解析工具调用 JSON。"""
-        self._ensure_chat_config("缺少 API Key。请在设置中完成 API 配置。")
+        self._ensure_chat_config()
         check_cancelled(cancel_checker)
         runtime_context_role = self._runtime_context_role
-        payload, prompt_provenance, runtime_context_placement = _prepare_chat_completion_payload(
+        payload, prompt_provenance = _prepare_chat_completion_payload(
             model=self.settings.model,
             system_prompt=system_prompt,
             messages=_messages_with_runtime_context(
@@ -282,7 +278,6 @@ class AssistantModelClient:
             ),
             temperature=temperature,
             chat_params=chat_params,
-            trace_metadata=trace_metadata,
         )
         log_event(
             "API",
@@ -309,7 +304,7 @@ class AssistantModelClient:
             ):
                 self._runtime_context_role = "user"
                 self._trace_local.pending_fallback = "runtime_context_role"
-                payload, prompt_provenance, runtime_context_placement = _prepare_chat_completion_payload(
+                payload, prompt_provenance = _prepare_chat_completion_payload(
                     model=self.settings.model,
                     system_prompt=system_prompt,
                     messages=_messages_with_runtime_context(
@@ -320,7 +315,6 @@ class AssistantModelClient:
                     ),
                     temperature=temperature,
                     chat_params=chat_params,
-                    trace_metadata=trace_metadata,
                 )
                 log_event(
                     "API",
@@ -392,7 +386,7 @@ class AssistantModelClient:
         **chat_params: Any,
     ) -> ChatCompletionTurn:
         """调用 OpenAI 原生 tools/tool_calls 协议并返回 assistant 消息。"""
-        self._ensure_chat_config("缺少 API Key。请在设置中完成 API 配置。")
+        self._ensure_chat_config()
         check_cancelled(cancel_checker)
 
         if tools:
@@ -405,13 +399,12 @@ class AssistantModelClient:
             runtime_context_role,
             runtime_items=prompt_metadata_with_context(trace_metadata),
         )
-        payload, prompt_provenance, runtime_context_placement = _prepare_chat_completion_payload(
+        payload, prompt_provenance = _prepare_chat_completion_payload(
             model=self.settings.model,
             system_prompt=system_prompt,
             messages=request_messages,
             temperature=temperature,
             chat_params=chat_params,
-            trace_metadata=trace_metadata,
         )
         log_event(
             "API",
@@ -440,7 +433,7 @@ class AssistantModelClient:
                 self._runtime_context_role = "user"
                 self._trace_local.pending_fallback = "runtime_context_role"
                 runtime_context_role = "user"
-                payload, prompt_provenance, runtime_context_placement = _prepare_chat_completion_payload(
+                payload, prompt_provenance = _prepare_chat_completion_payload(
                     model=self.settings.model,
                     system_prompt=system_prompt,
                     messages=_messages_with_runtime_context(
@@ -451,7 +444,6 @@ class AssistantModelClient:
                     ),
                     temperature=temperature,
                     chat_params=chat_params,
-                    trace_metadata=trace_metadata,
                 )
                 log_event(
                     "API",
@@ -485,10 +477,8 @@ class AssistantModelClient:
                 parsed_tool_calls=(raw_tool_calls if isinstance(raw_tool_calls, list) else ()),
             )
         tool_calls = _parse_native_tool_calls(raw_message.get("tool_calls"))
-        pseudo_tool_calls = False
         if not tool_calls:
             tool_calls = _parse_pseudo_tool_calls_from_content(content)
-            pseudo_tool_calls = bool(tool_calls)
         normalized_message = _normalize_assistant_message(raw_message, content, tool_calls)
         parse_status = (
             "empty"
@@ -524,10 +514,7 @@ class AssistantModelClient:
             tool_calls=tool_calls,
             message=normalized_message,
             runtime_context_role=runtime_context_role,
-            runtime_context_placement=runtime_context_placement,
             usage=usage,
-            raw_content=str(content or ""),
-            parse_status=parse_status,
             trace_call=trace_call,
         )
 
@@ -573,7 +560,7 @@ class AssistantModelClient:
             latency_ms=int((time.perf_counter() - started) * 1000), outcome="success", error_code=None)
         return response
 
-    def _ensure_chat_config(self, _message):
+    def _ensure_chat_config(self):
         if not self.settings.model:
             raise ApiConfigError("请先选择模型。")
 
@@ -655,32 +642,6 @@ def _model_request(payload):
             "stream": bool(payload.get("stream", False))}
 
 
-def _build_segmented_reply_instruction(
-    reply_tones: list[str] | None,
-    reply_visual: Mapping[str, Any] | None = None,
-) -> str:
-    return build_segmented_reply_instruction(reply_tones, reply_visual)
-
-
-def _build_chat_completion_payload(
-    *,
-    model: str,
-    system_prompt: str,
-    messages: list[ChatMessage],
-    temperature: float,
-    chat_params: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    """构建 OpenAI 兼容请求体，并丢弃已知非标准参数。"""
-    payload, _provenance, _placement = _prepare_chat_completion_payload(
-        model=model,
-        system_prompt=system_prompt,
-        messages=messages,
-        temperature=temperature,
-        chat_params=chat_params,
-    )
-    return payload
-
-
 def _prepare_chat_completion_payload(
     *,
     model: str,
@@ -688,17 +649,14 @@ def _prepare_chat_completion_payload(
     messages: list[ChatMessage],
     temperature: float,
     chat_params: dict[str, Any] | None = None,
-    trace_metadata: PromptTraceMetadata | None = None,
-) -> tuple[dict[str, Any], list[MessageProvenance | None], str]:
+) -> tuple[dict[str, Any], list[MessageProvenance | None]]:
     """Build the exact Provider payload and its parallel, Python-only provenance."""
-    _ = trace_metadata
     # 当 messages 中包含 role:tool 且尾部为 system 运行时上下文时，
     # 将尾部 system 消息合并到主 system prompt，避免干扰代理的
     # tool_call_id -> functionResponse.name 翻译。
     _system_prompt = system_prompt
     _messages = list(messages)
     appended_runtime_items: tuple[dict[str, Any], ...] = ()
-    runtime_context_placement = "none"
     tail_provenance = message_provenance(_messages[-1]) if _messages else None
     if _has_tool_messages(_messages) and _messages and _messages[-1].get("role") == "system":
         tail_content = _messages[-1].get("content", "")
@@ -706,12 +664,7 @@ def _prepare_chat_completion_payload(
             _system_prompt = f"{_system_prompt.strip()}\n\n{tail_content.strip()}"
         if tail_provenance is not None and tail_provenance.kind == "runtime_context":
             appended_runtime_items = tail_provenance.runtime_items
-            runtime_context_placement = "merged_system"
         _messages = _messages[:-1]
-    elif tail_provenance is not None and tail_provenance.kind == "runtime_context":
-        runtime_context_placement = (
-            "tail_user" if _messages[-1].get("role") == "user" else "tail_system"
-        )
     clean_messages = [strip_message_provenance(message) for message in _messages]
     provenance: list[MessageProvenance | None] = [
         MessageProvenance("system_prompt", runtime_items=appended_runtime_items)
@@ -730,7 +683,7 @@ def _prepare_chat_completion_payload(
     payload["temperature"] = temperature
     payload.update(_filter_supported_chat_params(chat_params or {}))
     _ensure_json_keyword_for_json_object_response(payload)
-    return payload, provenance, runtime_context_placement
+    return payload, provenance
 
 
 def _messages_with_runtime_context(
