@@ -1,9 +1,10 @@
 /* 插件市场使用主程序主题；规则限定在市场和详情弹窗内。 */
 #market-tabs { --tab-count: 2; margin-right: auto; flex-shrink: 0; height: 38px; }
 #market-tabs .plugin-role-tab { min-height: 32px; padding-block: 5px; }
-.plugin-update-summary { display: inline-flex; align-items: center; gap: 5px; flex-shrink: 0; color: var(--sakura-secondary-text); font-size: 12px; white-space: nowrap; }
-.plugin-update-summary[hidden] { display: none; }
-.plugin-update-summary .sakura-icon { width: 15px; height: 15px; color: var(--sakura-primary); }
+.plugin-update-action { display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0; min-height: 32px; min-width: 0; padding: 6px 10px; font-size: 12px; white-space: nowrap; border-color: var(--hairline); background: var(--surface-raised); box-shadow: none; }
+.plugin-update-action .sakura-icon { width: 15px; height: 15px; }
+#refresh[aria-busy="true"] .sakura-icon { animation: plugin-update-spin 1s linear infinite; }
+@keyframes plugin-update-spin { to { transform: rotate(360deg); } }
 #page-plugins[data-market-visible="true"] { grid-template-rows: minmax(0, 1fr); }
 #market-surface { min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
 @scope (#market-surface, #detail-dialog, #market-submit-dialog) {
@@ -156,7 +157,7 @@ dialog.download-sources-dialog { box-sizing: border-box; width: min(660px, calc(
 .download-source-actions button:first-child { margin-right: auto; }
 
 /* Compact marketplace controls. */
-#pluginInstallMenuButton { display: inline-grid; place-items: center; flex-shrink: 0; min-width: 32px; min-height: 32px; width: 32px; height: 32px; padding: 0; border-color: var(--hairline); background: var(--surface-raised); box-shadow: none; }
+#pluginInstallMenuButton { display: inline-grid; place-items: center; flex-shrink: 0; min-width: 32px; min-height: 32px; width: 32px; height: 32px; padding: 0; border-color: transparent; background: transparent; box-shadow: none; }
 #pluginInstallMenuButton .sakura-icon { width: 16px; height: 16px; }
 #pluginInstallMenuButton:hover, #pluginInstallMenuButton[aria-expanded="true"] { border-color: var(--sakura-primary); background: var(--tint-soft); color: var(--sakura-primary); }
 .plugin-menu-label { padding: 7px 10px 4px; color: var(--sakura-muted-text); font-size: 11px; }
@@ -184,6 +185,6 @@ body:has(#page-plugins:not([data-market-visible="true"])) #pluginInstallMenu .ma
   to { opacity: 1; transform: translateY(0); }
 }
 @media (prefers-reduced-motion: reduce) {
-  #pluginInstallMenu { animation: none; }
+  #pluginInstallMenu, #refresh[aria-busy="true"] .sakura-icon { animation: none; }
   .market-filter-panel, .market-filter-trigger .sakura-icon { transition: none; }
 }

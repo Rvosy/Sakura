@@ -67,6 +67,77 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             super().do_GET()
 
 
+def check_bulk_upgrade(page, failure):
+    page.evaluate("""async () => {
+      fixture.market.dispose();
+      const {createPluginMarketplace} = await import('/desktop/frontend/settings/plugin-marketplace.js');
+      fixture.jobs=[];fixture.checks=[];fixture.notifications=[];
+      fixture.plugins=['alpha','beta','incompatible','bundled','current','new'].map(id=>({
+        id,name:id,description:'',versions:[{number:'2.0.0',compatible:id!=='incompatible'}],
+        latestVersion:'2.0.0',recommendedVersion:id==='incompatible'?undefined:'2.0.0'
+      }));
+      fixture.local=fixture.plugins.filter(p=>p.id!=='new').map(p=>({pluginId:p.id,
+        version:p.id==='current'?'2.0.0':'1.0.0',source:p.id==='bundled'?'bundled':'user',enabled:p.id==='alpha'}));
+      fixture.market=createPluginMarketplace({document,showError:fixture.showError,
+        notify:message=>fixture.notifications.push(message),
+        host:{installedPlugins:()=>fixture.local,async refreshCurrent(){}},
+        source:{canUpdate:true,
+          load:()=>new Promise((resolve,reject)=>fixture.checks.push({resolve,reject})),
+          install:(plugin,{signal})=>new Promise((resolve,reject)=>fixture.jobs.push({id:plugin.id,signal,resolve,reject}))
+            .then(result=>{fixture.local.find(p=>p.pluginId===plugin.id).version=plugin.recommendedVersion;return result;})
+        }});
+      fixture.market.setView('installed',{load:false});
+    }""")
+    check = page.get_by_role('button', name='检查更新', exact=True)
+    check.click()
+    expect(page.locator('#refresh')).to_be_disabled()
+    page.evaluate("fixture.checks[0].resolve({state:'ready',plugins:fixture.plugins})")
+    expect(check).to_be_enabled()
+    upgrade = page.get_by_role('button', name='全部升级（2）', exact=True)
+    expect(upgrade).to_be_enabled()
+    upgrade.click()
+    expect(page.locator('#plugin-upgrade-all')).to_be_disabled()
+    expect(check).to_be_disabled()
+    page.evaluate("document.getElementById('plugin-upgrade-all').click()")
+    assert page.evaluate('fixture.jobs.map(job=>job.id)') == ['alpha']
+    page.evaluate("fixture.jobs[0].reject(Error('registry unavailable: tcp 10061'))")
+    page.wait_for_function('fixture.jobs.length === 2')
+    assert page.evaluate('fixture.jobs.map(job=>job.id)') == ['alpha', 'beta']
+    expect(failure).not_to_be_visible()
+    page.evaluate('fixture.jobs[1].resolve()')
+    expect(failure).to_be_visible()
+    expect(failure.locator('pre')).to_contain_text('alpha')
+    expect(failure.locator('pre')).to_contain_text('registry unavailable: tcp 10061')
+    assert page.evaluate("fixture.local.find(p=>p.pluginId==='beta').version") == '2.0.0'
+    assert page.evaluate("fixture.local.find(p=>p.pluginId==='alpha').version") == '1.0.0'
+    failure.get_by_role('button', name='关闭', exact=True).click()
+    page.get_by_role('button', name='全部升级（1）', exact=True).click()
+    page.wait_for_function('fixture.jobs.length === 3')
+    assert page.evaluate('fixture.jobs[2].id') == 'alpha'
+    page.evaluate("fixture.jobs[2].resolve({warning:{message:'旧文件清理未完成',detail:'old directory is locked'}})")
+    expect(failure).to_be_visible()
+    expect(failure.locator('.sakura-error-message')).to_contain_text('已升级 1 个插件')
+    expect(failure.locator('pre')).to_contain_text('old directory is locked')
+    expect(page.locator('#plugin-upgrade-all')).to_be_disabled()
+    assert page.evaluate("fixture.local.find(p=>p.pluginId==='alpha').version") == '2.0.0'
+    failure.get_by_role('button', name='关闭', exact=True).click()
+    check.click()
+    page.evaluate("fixture.checks[1].reject(Error('network offline'))")
+    expect(failure).to_be_visible()
+    expect(failure.locator('pre')).to_contain_text('network offline')
+    failure.get_by_role('button', name='关闭', exact=True).click()
+    expect(check).to_be_enabled()
+    page.evaluate("fixture.local[0].version='1.0.0';fixture.local[1].version='1.0.0';fixture.market.sync()")
+    upgrade.click()
+    page.wait_for_function('fixture.jobs.length === 4')
+    notices = page.evaluate('fixture.notifications.length')
+    page.evaluate('fixture.market.dispose()')
+    assert page.evaluate('fixture.jobs[3].signal.aborted')
+    page.evaluate('async () => {fixture.jobs[3].resolve();await new Promise(requestAnimationFrame);}')
+    assert page.evaluate('fixture.jobs.length') == 4
+    assert page.evaluate('fixture.notifications.length') == notices
+
+
 def run():
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), functools.partial(Handler, directory=str(ROOT)))
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -240,7 +311,7 @@ def run():
             expect(dialog.locator('[data-install]')).to_be_disabled()
             expect(dialog.locator('[data-install]')).to_have_text('更新至 0.2.7')
             expect(dialog.locator('.compat-note')).to_contain_text('需要 Sakura 9.0.0')
-            expect(page.locator('.plugin-update-summary')).to_contain_text('1 个可用更新')
+            expect(page.locator('#plugin-upgrade-all')).to_be_disabled()
             expect(page.locator('.market-card')).to_contain_text('0.2.6 → 0.2.7')
             for width in [803, 360]:
                 page.set_viewport_size({"width": width, "height": 640})
@@ -398,9 +469,10 @@ def run():
             assert page.evaluate('window.injected === undefined')
             failure.get_by_role('button', name='关闭', exact=True).click()
             expect(page.locator('[data-catalog-error]')).to_be_focused()
+            check_bulk_upgrade(page, failure)
             assert not errors, errors
             browser.close()
-            print('PASS: marketplace management, update guards, disclosure refresh, safe notes and responsive dialog')
+            print('PASS: marketplace management, bulk upgrades, update checks, disclosure refresh, safe notes and responsive dialog')
     finally:
         server.shutdown()
         server.server_close()

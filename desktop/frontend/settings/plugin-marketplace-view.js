@@ -17,7 +17,7 @@ export const marketplaceMarkup = `
 </section>
   <div id="market-filter-panel" class="market-filter-panel" popover="auto" aria-label="浏览筛选"><label class="compatibility"><input id="compatible" type="checkbox" checked><span>仅看兼容</span></label><label class="compatibility"><input id="hide-installed" type="checkbox"><span>隐藏已安装（有更新的除外）</span></label><label class="market-sort"><span>排序</span><select id="sort" aria-label="插件排序"><option value="default">默认顺序</option><option value="updated">最近更新</option><option value="name">名称</option></select></label></div>
   <button id="market-sources" class="market-menu-action" type="button" role="menuitem">下载源…</button>
-  <button id="refresh" class="market-menu-action" type="button" role="menuitem">刷新目录</button>
+  <button id="refresh" class="plugin-update-action secondary-button" type="button"><span class="sakura-icon icon-refresh-cw" aria-hidden="true"></span><span>检查更新</span></button>
   <dialog id="detail-dialog" class="market-drawer" aria-labelledby="detail-title"><div id="detail"></div></dialog>
   <dialog id="market-submit-dialog" class="market-drawer market-submit-dialog" aria-labelledby="market-submit-title" aria-describedby="market-submit-description">
     <div class="drawer-top"><h2 id="market-submit-title">上传插件</h2><button class="icon-button" type="button" data-close-submit aria-label="关闭"><span class="sakura-icon icon-x" aria-hidden="true"></span></button></div>

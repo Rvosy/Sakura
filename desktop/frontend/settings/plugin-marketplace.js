@@ -17,7 +17,7 @@ export function createPluginMarketplace({ document, host, notify, showError = ({
   template.innerHTML = marketplaceMarkup;
   page.append(template.content.querySelector("#market-surface"));
   document.body.append(template.content);
-  $("pluginInstallMenu").append($("market-sources"), $("refresh"));
+  $("pluginInstallMenu").append($("market-sources"));
   const filterPanel = $("market-filter-panel");
   const submitDialog = $("market-submit-dialog");
   function closeFilters() {
@@ -28,12 +28,14 @@ export function createPluginMarketplace({ document, host, notify, showError = ({
   tabs.id = "market-tabs"; tabs.className = "plugin-role-tabs";
   tabs.setAttribute("role", "tablist"); tabs.setAttribute("aria-label", "插件页面");
   tabs.innerHTML = '<button class="plugin-role-tab" id="installed-tab" role="tab" aria-selected="true" aria-controls="pluginList" data-view="installed">已安装</button><button class="plugin-role-tab" id="market-tab" role="tab" aria-selected="false" aria-controls="market-surface" tabindex="-1" data-view="market">市场</button>';
-  const updateSummary = document.createElement("span");
-  updateSummary.className = "plugin-update-summary";
-  updateSummary.setAttribute("role", "status");
-  $("pluginPageActions").prepend(tabs, updateSummary);
+  const upgradeAllButton = document.createElement("button");
+  upgradeAllButton.id = "plugin-upgrade-all";
+  upgradeAllButton.type = "button";
+  upgradeAllButton.className = "plugin-update-action secondary-button";
+  $("pluginPageActions").prepend(tabs, upgradeAllButton, $("refresh"));
   let plugins = [], view = "installed", category = "全部", selected = null;
   let catalogState = "unconfigured", updatedAt = "", disposed = false, sourceName = "", catalogError = "", refreshing = false;
+  let batch = null;
   const tasks = new Map(), documents = new Map(), listeners = [];
   const documentKey = p => { const version = recommended(p) || p.versions.find(v => v.package && !v.yanked); return JSON.stringify([p.id, p.repository, version?.number, version?.commit]); };
   const mark = p => `<span class="plugin-mark ${["blue", "pink", "gold", "green", "violet"].includes(p.color) ? p.color : "blue"}">${icon(p.icon || "puzzle")}</span>`;
@@ -45,8 +47,10 @@ export function createPluginMarketplace({ document, host, notify, showError = ({
   function syncInstalled() {
     syncInstalledPlugins(plugins, host.installedPlugins());
     const updates = availableUpdates(plugins);
-    updateSummary.hidden = !updates.length;
-    updateSummary.innerHTML = `${icon("circle-arrow-up")}<span>${updates.length} 个可用更新</span>`;
+    const count = plugins.filter(p => updating(p) && canInstall(p, source)).length;
+    upgradeAllButton.disabled = Boolean(batch) || !count || [...tasks.values()].some(task => task.state === "running");
+    upgradeAllButton.setAttribute("aria-busy", String(Boolean(batch)));
+    upgradeAllButton.innerHTML = `${icon("circle-arrow-up")}<span>${batch ? `升级中（${batch.done}/${batch.total}）` : `全部升级${count ? `（${count}）` : ""}`}</span>`;
     host.setUpdates?.(updates, openDetail);
   }
   function actionButton(p) {
@@ -94,7 +98,6 @@ export function createPluginMarketplace({ document, host, notify, showError = ({
       tab.tabIndex = active ? 0 : -1;
     });
     $("content").setAttribute("aria-labelledby", "market-tab");
-    $("refresh").hidden = false;
     $("categories").innerHTML = categories.map(c => `<button aria-pressed="${category === c}" data-category="${c}">${c}</button>`).join("");
     const cached = view === "market" && catalogState === "cached" && catalogError;
     $("notice").hidden = !cached;
@@ -113,7 +116,10 @@ export function createPluginMarketplace({ document, host, notify, showError = ({
     $("market-filter").disabled = unavailable;
     $("market-filter").querySelector(".market-filter-label").textContent = !$("compatible").checked || $("hide-installed").checked || $("sort").value !== "default" ? "筛选 · 已调整" : "筛选";
     $("sort").disabled = unavailable;
-    $("refresh").disabled = refreshing || ["loading", "restoring"].includes(catalogState) || !source;
+    const checking = refreshing || ["loading", "restoring"].includes(catalogState);
+    $("refresh").disabled = checking || Boolean(batch) || !source;
+    $("refresh").setAttribute("aria-busy", String(checking));
+    $("refresh").querySelector("span:last-child").textContent = checking ? "检查中…" : "检查更新";
     $("search").disabled = unavailable;
     $("compatible").disabled = unavailable;
     $("hide-installed").disabled = unavailable;
@@ -249,12 +255,13 @@ export function createPluginMarketplace({ document, host, notify, showError = ({
     render(); refreshDetail();
     if ($("detail-dialog").open) void loadDocument(plugins.find(p => p.id === selected));
   });
-  async function startTask(id) {
+  async function startTask(id, { quiet = false } = {}) {
     const p = plugins.find(p => p.id === id);
     const installed = tasks.get(id)?.installed;
     if ((!installed && !canInstall(p, source)) || tasks.get(id)?.state === "running") return;
     const abort = new AbortController();
     const task = { state: "running", progress: installed ? 100 : 0, phase: installed ? "installing" : "downloading", abort, installed, update: Boolean(p.installed), reinstall: Boolean(p.installed && p.installed === recommended(p)?.number), replace: Boolean(p.installed && p.installed !== recommended(p)?.number && !updating(p)) };
+    let outcome;
     tasks.set(id, task); render(); refreshDetail();
     try {
       let result;
@@ -269,17 +276,61 @@ export function createPluginMarketplace({ document, host, notify, showError = ({
       await host.refreshCurrent();
       if (disposed) return;
       tasks.delete(id);
-      if (result?.warning) showError({ title: result.warning.message, error: result.warning.detail });
-      else notify(task.reinstall ? "已重新安装" : task.replace ? "已替换" : task.update ? "已更新" : "已安装", "success");
+      outcome = { status: "success", warning: result?.warning };
+      if (!quiet) {
+        if (result?.warning) showError({ title: result.warning.message, error: result.warning.detail });
+        else notify(task.reinstall ? "已重新安装" : task.replace ? "已替换" : task.update ? "已更新" : "已安装", "success");
+      }
     } catch (error) {
       if (disposed || tasks.get(id) !== task) return;
-      if (abort.signal.aborted && task.phase !== "installing") { tasks.delete(id); notify("已取消安装"); }
+      if (abort.signal.aborted && task.phase !== "installing") {
+        tasks.delete(id); outcome = { status: "cancelled" };
+        if (!quiet) notify("已取消安装");
+      }
       else {
         task.state = "failed"; task.error = error;
-        showError({ title: task.installed ? "插件列表刷新失败" : "插件安装失败", error });
+        const title = task.installed ? "插件列表刷新失败" : "插件安装失败";
+        outcome = { status: "failed", title, error };
+        if (!quiet) showError({ title, error });
       }
     }
     if (!disposed) { render(); refreshDetail(); }
+    return outcome;
+  }
+  async function upgradeAll() {
+    const pending = plugins.filter(p => updating(p) && canInstall(p, source));
+    batch = { done: 0, total: pending.length };
+    const issues = [];
+    let succeeded = 0, failed = 0, cancelled = 0;
+    render();
+    for (const plugin of pending) {
+      if (disposed) return;
+      const result = updating(plugins.find(p => p.id === plugin.id)) ? await startTask(plugin.id, { quiet: true }) : null;
+      if (disposed) return;
+      if (result?.status === "success") {
+        succeeded++;
+        if (result.warning) issues.push({ message: `${plugin.name}：${result.warning.message}`, cause: result.warning.detail });
+      } else if (result?.status === "failed") {
+        failed++;
+        issues.push({ message: `${plugin.name}：${result.title}`, cause: result.error });
+      } else if (result?.status === "cancelled") cancelled++;
+      batch.done++;
+      render();
+    }
+    batch = null;
+    render();
+    const message = `已升级 ${succeeded} 个插件${failed ? `，${failed} 个未完成` : ""}${cancelled ? `，${cancelled} 个已取消` : ""}`;
+    if (issues.length) showError({ title: failed ? "部分插件升级未完成" : "插件升级完成，有提示需要查看", message, error: { errors: issues } });
+    else notify(message, "success");
+  }
+  async function checkUpdates() {
+    await loader.load();
+    if (disposed) return;
+    if (catalogError) showError({ title: "检查更新失败", error: catalogError });
+    else if (catalogState === "ready") {
+      const count = availableUpdates(plugins).length;
+      notify(count ? `发现 ${count} 个插件有更新` : "插件已是最新版本", "success");
+    }
   }
   function cancelTask() {
     const task = tasks.get(selected);
@@ -289,7 +340,7 @@ export function createPluginMarketplace({ document, host, notify, showError = ({
   }
   function clearFilters() { category = "全部"; $("search").value = ""; $("compatible").checked = true; $("hide-installed").checked = false; $("sort").value = "default"; render(); }
   function refreshVisibleMarket() {
-    if (disposed || !source || !page.classList.contains("is-active") || document.hidden
+    if (disposed || batch || !source || !page.classList.contains("is-active") || document.hidden
       || refreshing || ["loading", "restoring"].includes(catalogState)) return;
     void loader.load();
   }
@@ -377,7 +428,9 @@ export function createPluginMarketplace({ document, host, notify, showError = ({
   });
   listen($("search"), "input", render); listen($("compatible"), "change", render);
   listen($("hide-installed"), "change", render);
-  listen($("sort"), "change", render); listen($("refresh"), "click", () => void loader.load());
+  listen($("sort"), "change", render);
+  listen($("refresh"), "click", () => void checkUpdates());
+  listen(upgradeAllButton, "click", () => void upgradeAll());
   if (openSources) listen($("market-sources"), "click", () => void openSources());
   else $("market-sources").hidden = true;
   listen(filterPanel, "beforetoggle", event => {
@@ -406,7 +459,7 @@ export function createPluginMarketplace({ document, host, notify, showError = ({
       listeners.forEach(remove => remove()); closeFilters(); closeSelects($("market-surface"));
       filterPanel.remove(); $("market-sources").remove(); $("refresh").remove();
       submitDialog.close(); submitDialog.remove();
-      $("detail-dialog").close(); $("detail-dialog").remove(); $("market-surface").remove(); tabs.remove(); updateSummary.remove();
+      $("detail-dialog").close(); $("detail-dialog").remove(); $("market-surface").remove(); tabs.remove(); upgradeAllButton.remove();
     },
   };
 }
