@@ -40,6 +40,10 @@ class RuntimeFailure(RuntimeError):
             message = 'CUDA 未找到可用的 NVIDIA 显卡。'
         elif self.device_unavailable:
             message = 'NVIDIA 驱动无法运行当前 CUDA 环境，请更新显卡驱动。'
+        elif report.get('error_type') == 'CompileException' and 'cannot open source file' in reason:
+            message = (f'CUDA 编译器无法读取头文件：{reason}\n'
+                       '安装路径过长也会出现此错误。请将“运行环境目录”设为短路径（例如 D:\\SakuraTTS），'
+                       '再点击“迁移运行环境”；若文件确实缺失，请重新下载并安装整合包。')
         else:
             message = f'{backend.upper()} 运行失败：{reason}'
         self.reason = message

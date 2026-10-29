@@ -132,7 +132,7 @@ def test_unicode_new_default_install_checks_ascii_location_and_keeps_custom_loca
     (json.dumps({'passed': False, 'error_type': 'CUDARuntimeError',
                  'error': 'cudaErrorInsufficientDriver: insufficient driver'}), True, '驱动'),
     (json.dumps({'passed': False, 'error_type': 'CompileException',
-                 'error': 'cannot open source file cuda/std/header.h'}), False, 'cuda/std/header.h'),
+                 'error': 'cannot open source file "cuda/std/__cccl/is_non_narrowing_convertible.h"'}), False, '迁移运行环境'),
     ('RuntimeError: This preview requires an ASCII installation path', False, '迁移运行环境'),
 ])
 def test_probe_preserves_failure_and_only_allows_device_fallback(tmp_path, output, fallback, message):
@@ -144,6 +144,8 @@ def test_probe_preserves_failure_and_only_allows_device_fallback(tmp_path, outpu
     assert caught.value.device_unavailable == fallback
     assert message in str(caught.value)
     assert output in caught.value.diagnostics['stderr']
+    if 'cannot open source file' in output:
+        assert json.loads(output)['error'] in str(caught.value)
 
 
 @pytest.mark.skipif(os.name != 'nt', reason='Windows CUDA compiler paths')
