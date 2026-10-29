@@ -850,14 +850,18 @@ class _HostRegistrationProxy:
         return self._context._remote_call(self._service_key, "collect", [registration_id, dict(request)])
 
     def execute(self, registration_id: str, name: str, arguments: Mapping[str, Any],
+                invocation: Mapping[str, Any] | None = None,
                 *, timeout_seconds: float | None = None) -> object:
+        args = [registration_id, name, dict(arguments)]
+        if invocation is not None:
+            args.append(dict(invocation))
         if timeout_seconds is not None:
             return self._context._remote_request("service.call", {
                 "serviceKey": self._service_key, "method": "execute",
-                "args": [registration_id, name, dict(arguments)], "timeoutSeconds": timeout_seconds,
+                "args": args, "timeoutSeconds": timeout_seconds,
             })
         return self._context._remote_call(
-            self._service_key, "execute", [registration_id, name, dict(arguments)]
+            self._service_key, "execute", args
         )
 
     def register(
@@ -1389,12 +1393,14 @@ class _SettingsCollectionProxy:
         create: Callable[..., object] | None = None,
         update: Callable[..., object] | None = None,
         delete: Callable[..., object] | None = None,
+        transfer: Callable[..., object] | None = None,
     ) -> Callable[[], None]:
         callbacks = {
             "query": query,
             "create": create,
             "update": update,
             "delete": delete,
+            "transfer": transfer,
         }
         if (
             not isinstance(section_id, str)

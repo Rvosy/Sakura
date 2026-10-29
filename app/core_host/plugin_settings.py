@@ -38,6 +38,7 @@ PLUGIN_SETTINGS_REQUEST_NAMES = frozenset(
         "plugins.collection.create",
         "plugins.collection.update",
         "plugins.collection.delete",
+        "plugins.collection.transfer",
     }
 )
 _PLUGIN_STATES = frozenset(
@@ -570,6 +571,7 @@ class PluginSettingsBoundary:
             "create": {"pluginId", "sectionId", "collectionId", "values"},
             "update": {"pluginId", "sectionId", "collectionId", "itemId", "values"},
             "delete": {"pluginId", "sectionId", "collectionId", "itemId"},
+            "transfer": {"pluginId", "sectionId", "collectionId", "action", "path", "format", "expectedCharacterId"},
         }.get(operation)
         if expected is None or set(payload) != expected:
             raise PluginSettingsError("INVALID_REQUEST", "插件 Collection 请求格式无效。")
@@ -584,6 +586,10 @@ class PluginSettingsBoundary:
             for key, value in payload.items()
             if key not in {"pluginId", "sectionId", "collectionId"}
         }
+        if operation == "transfer":
+            arguments["identityPath"] = str(self._user_root / "data" / "import-identities.sqlite3")
+            log_event("Memory", "正在处理记忆文件", {"plugin_id": plugin_id, "action": arguments["action"]},
+                      event="memory.transfer.started")
         try:
             result = getattr(application, "settings_collection")(
                 operation,
@@ -594,12 +600,19 @@ class PluginSettingsBoundary:
             )
         except Exception as error:
             code = str(getattr(error, "code", "SETTINGS_COLLECTION_FAILED"))
-            raise PluginSettingsError(code, "插件 Collection 操作失败。") from error
+            if operation == "transfer":
+                log_event("Memory", "记忆文件处理失败", {"plugin_id": plugin_id, "action": arguments["action"],
+                          **exception_diagnostics(error, reason_code=code, stage=arguments["action"])},
+                          event="memory.transfer.failed", severity="error")
+            raise PluginSettingsError(code, str(error)) from error
         if not isinstance(result, Mapping):
             raise PluginSettingsError(
                 "SETTINGS_COLLECTION_RESULT_INVALID",
                 "插件 Collection 响应无效。",
             )
+        if operation == "transfer":
+            log_event("Memory", "记忆文件处理完成", {"plugin_id": plugin_id, "action": arguments["action"], **result},
+                      event="memory.transfer.completed")
         return dict(result)
 
     def _application(self) -> object | None:

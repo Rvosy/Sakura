@@ -8,6 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from pydantic import ValidationError
 
 from app.storage.timeline import NewTimelineEntry, TimelineKind, TimelineStore
 from app.core_host.plugin_host_services import _TimelineHostService
@@ -282,7 +283,7 @@ def test_independent_profile_facts_keep_their_sentence_without_temporary_request
 
 def test_incomplete_candidate_does_not_mark_source_as_processed(store):
     human = entry()
-    with pytest.raises(ValueError, match="结构无效"):
+    with pytest.raises(ValidationError):
         MemoryCurator(Client([{"op": "add", "layer": "semantic"}]), store).curate_entries([human], cursor="next")
     assert store.unprocessed_entries([human]) == [human]
     assert store.get_state("curation", default={}) == {}
@@ -476,6 +477,49 @@ def test_failed_model_and_cancelled_generation_do_not_advance_cursor(store):
     with pytest.raises(OperationCancelled):
         MemoryCurator(Client([add_operation(entry())]), store).curate_entries([entry()], cursor="bad", cancel_checker=cancelled)
     assert store.list_memories(limit=None) == []
+
+
+def test_curation_corrects_invalid_structure_using_the_original_evidence(store):
+    human = entry(content="我不喝咖啡。")
+    requests = []
+
+    class CorrectingClient:
+        def complete(self, request, **kwargs):
+            from copy import deepcopy
+            requests.append(deepcopy(request))
+            content = "{}" if len(requests) == 1 else json.dumps({"operations": [add_operation(human)]})
+            return {"message": {"content": content}, "finishReason": "stop"}
+
+    result = MemoryCurator(CorrectingClient(), store).curate_entries([human], cursor="done")
+    assert result.created == 1
+    assert requests[0]["responseFormat"]["type"] == "json_schema"
+    assert requests[1]["messages"][:2] == requests[0]["messages"]
+    assert "operations" in requests[1]["messages"][-1]["content"]
+    assert len(store.list_memories()) == 1
+    assert store.get_state("curation")["curation_cursor"] == "done"
+
+
+@pytest.mark.parametrize("finish,refusal,code", [
+    ("length", None, "MODEL_OUTPUT_TRUNCATED"),
+    ("stop", "服务拒绝返回结果", "MODEL_OUTPUT_REFUSED"),
+])
+def test_incomplete_model_response_is_not_repaired_or_committed(store, finish, refusal, code):
+    from sakura_model import ModelError
+    calls = []
+
+    class IncompleteClient:
+        def complete(self, request, **kwargs):
+            calls.append(request)
+            return {"message": {"content": '{"operations": [', "refusal": refusal}, "finishReason": finish}
+
+    human = entry()
+    with pytest.raises(ModelError) as error:
+        MemoryCurator(IncompleteClient(), store).curate_entries([human], cursor="bad")
+    assert error.value.code == code
+    assert len(calls) == 1
+    assert store.unprocessed_entries([human]) == [human]
+    assert store.get_state("curation", default={}) == {}
+    assert not store.list_memories()
 
 
 def test_old_history_cannot_overwrite_new_fact_and_deleted_source_stays_deleted(store):

@@ -107,17 +107,17 @@ def run():
         with tempfile.TemporaryDirectory(prefix='sakura-memory-') as directory, sync_playwright() as playwright:
             release_text_model = threading.Event()
             class TextModel:
-                def complete_raw(self, _prompt, messages, **_options):
+                def complete(self, request, **_options):
                     assert release_text_model.wait(3)
-                    document = json.loads(messages[0]['content'])['messages'][0]
-                    return json.dumps({'operations': [
+                    document = json.loads(request['messages'][1]['content'])['messages'][0]
+                    return {'message': {'content': json.dumps({'operations': [
                         {'op': 'add', 'subject': '用户', 'subject_kind': 'person', 'predicate': '职业',
                          'content': '做软件开发', 'layer': 'core_profile',
                          'evidence': [{'entry_id': document['entry_id'], 'quote': '我是软件开发者。'}]},
                         {'op': 'add', 'subject': '小雨', 'subject_kind': 'person', 'predicate': '兴趣',
                          'content': '喜欢园艺', 'layer': 'semantic',
                          'evidence': [{'entry_id': document['entry_id'], 'quote': '小雨喜欢园艺。'}]},
-                    ]}, ensure_ascii=False)
+                    ]}, ensure_ascii=False)}, 'finishReason': 'stop'}
 
                 def close(self):
                     pass

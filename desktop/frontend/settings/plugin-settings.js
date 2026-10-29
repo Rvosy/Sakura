@@ -1,4 +1,5 @@
 import { createSettingsUI, sectionDestination } from "./settings-ui.js";
+import { createDataTransferMenu } from "../core/data-transfer.js";
 import { createSettingsForm } from "./settings-form.js";
 import { createPluginModule } from "./plugin-module.js";
 import { createRecordTable } from "./record-table.js";
@@ -25,6 +26,7 @@ export function createPluginSettingsFeature({
   removeOverlayAfterExit,
   showPage,
   isCharacterTransitioning,
+  currentCharacterId = () => "",
   hasPendingCharacterSelection,
   onModelCatalogChanged = () => {},
   onNavigatePlugin = () => {},
@@ -1240,6 +1242,17 @@ export function createPluginSettingsFeature({
       }
       refreshDirty();
     }
+  }
+
+  function collectionTransferMenu(plugin, section, collection) {
+    const state = pluginCollectionRuntimeState(plugin, section, collection);
+    const key = pluginCollectionKey(plugin, section, collection);
+    return createDataTransferMenu({ document, invoke, characterId: currentCharacterId,
+      isCurrent: () => pluginCollectionState.get(key) === state && !collectionInteractionBlocked(collection),
+      transfer: request => runtimePluginController.collection({ operation: "transfer",
+        pluginId: plugin.plugin_id, sectionId: section.section_id, collectionId: collection.collection_id, ...request }),
+      onImported: () => queryPluginCollection(plugin, section, collection),
+    });
   }
 
   function renderPluginCollection(plugin, section, collection) {
@@ -2967,6 +2980,7 @@ export function createPluginSettingsFeature({
             can_create: collection.canCreate,
             can_update: collection.canUpdate,
             can_delete: collection.canDelete,
+            can_transfer: collection.canTransfer,
             delete_confirmation: collection.deleteConfirmation,
           })),
         })),

@@ -43,8 +43,10 @@ fn validate_collection_request(
     {
         return Err("PLUGIN_COLLECTION_REQUEST_INVALID".to_string());
     }
-    let valid =
-        matches!(operation, "query" | "create" | "update" | "delete") && payload.is_object();
+    let valid = matches!(
+        operation,
+        "query" | "create" | "update" | "delete" | "transfer"
+    ) && payload.is_object();
     if valid {
         Ok(())
     } else {
@@ -384,6 +386,7 @@ pub(crate) async fn settings_plugins_collection(
         "create" => "plugins.collection.create",
         "update" => "plugins.collection.update",
         "delete" => "plugins.collection.delete",
+        "transfer" => "plugins.collection.transfer",
         _ => return Err("PLUGIN_COLLECTION_REQUEST_INVALID".to_string()),
     };
     let response = dispatch_settings_request(
