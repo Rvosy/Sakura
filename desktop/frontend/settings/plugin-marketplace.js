@@ -28,7 +28,7 @@ export function createPluginMarketplace({ document, host, notify, showError = ({
   tabs.id = "market-tabs"; tabs.className = "plugin-role-tabs";
   tabs.setAttribute("role", "tablist"); tabs.setAttribute("aria-label", "插件页面");
   tabs.innerHTML = '<button class="plugin-role-tab" id="installed-tab" role="tab" aria-selected="true" aria-controls="pluginList" data-view="installed">已安装</button><button class="plugin-role-tab" id="market-tab" role="tab" aria-selected="false" aria-controls="market-surface" tabindex="-1" data-view="market">市场</button>';
-  page.querySelector(".plugin-page-heading > div").after(tabs);
+  $("pluginPageActions").prepend(tabs);
   let plugins = [], view = "installed", category = "全部", selected = null;
   let catalogState = "unconfigured", updatedAt = "", disposed = false, sourceName = "", catalogError = "", refreshing = false;
   const tasks = new Map(), documents = new Map(), listeners = [];

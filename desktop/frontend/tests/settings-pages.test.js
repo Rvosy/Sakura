@@ -28,8 +28,11 @@ test("namespaced pages share exported regions, append navigation and keep one pr
   const input = owner.querySelector("input"); input.value = "page draft"; await input.fire("input");
   await ui.openSettings();
   const dialog = ui.feature.dialogElement();
-  assert.equal(dialog.querySelectorAll("[data-plugin-section]").length, 1);
-  assert.equal(dialog.querySelector("[data-plugin-section]").dataset.pluginSection, "engine");
+  const privateFields = dialog.querySelectorAll('[data-plugin-field="label"]');
+  assert.equal(privateFields.length, 1);
+  privateFields[0].value = "engine draft";
+  await privateFields[0].fire("input");
+  assert.equal(input.value, "page draft");
   await dialog.querySelector(".plugin-dialog-close").fire("click");
   assert.equal(input.value, "page draft");
   assert.equal(ui.feature.isDirty(), true);

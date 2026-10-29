@@ -7,10 +7,11 @@
     <link rel="stylesheet" href="./styles.css" />
     <script type="module" src="../core/tooltip.js"></script>
   </head>
-  <body data-icon-motion="click">
+  <body class="settings-window" data-icon-motion="click">
     <main class="settings-shell">
       <aside class="nav-card" aria-label="设置分类" data-submission-lock>
-        <div class="nav-brand">
+        <div class="nav-brand" data-window-drag>
+          <img class="nav-brand-icon" src="../assets/sakura-icon.png" alt="" draggable="false" />
           <span class="nav-brand-text">Sakura</span>
         </div>
         <nav class="nav-list">
@@ -78,9 +79,37 @@
       </aside>
 
       <section class="detail-card">
-        <header class="page-head">
-          <h1 id="pageTitle" class="page-title">角色与布局</h1>
-          <p id="pageSubtitle" class="page-subtitle" hidden></p>
+        <header class="page-head" data-window-drag>
+          <div class="page-heading-content">
+            <h1 id="pageTitle" class="page-title">角色与布局</h1>
+            <p id="pageSubtitle" class="page-subtitle" hidden></p>
+          </div>
+          <div id="pluginPageActions" data-submission-lock>
+            <span id="pluginTotal" hidden></span>
+            <div id="pluginInstallMenuRoot" class="plugin-install-menu">
+              <button id="pluginInstallMenuButton" aria-label="更多插件操作" class="secondary-button plugin-install-menu__trigger" type="button" aria-haspopup="menu" aria-expanded="false">
+                <span>更多</span>
+                <span class="sakura-icon icon-chevron-down" aria-hidden="true"></span>
+              </button>
+              <div id="pluginInstallMenu" class="plugin-install-menu__panel" role="menu" hidden>
+                <div class="plugin-menu-label">从本地安装</div>
+                <button id="pluginInstallZipButton" type="button" role="menuitem">从 ZIP 安装…</button>
+                <button id="pluginInstallFolderButton" type="button" role="menuitem">从文件夹安装…</button>
+              </div>
+            </div>
+          </div>
+          <div id="windowControls" class="window-controls" aria-label="窗口控制" hidden>
+            <button id="windowMinimize" type="button" aria-label="最小化" data-tooltip="最小化">
+              <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 8h10" /></svg>
+            </button>
+            <button id="windowMaximize" type="button" aria-label="最大化" data-tooltip="最大化">
+              <svg class="window-maximize-icon" viewBox="0 0 16 16" aria-hidden="true"><rect x="3.5" y="3.5" width="9" height="9" rx=".5" /></svg>
+              <svg class="window-restore-icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M5.5 5.5v-3h8v8h-3" /><rect x="2.5" y="5.5" width="8" height="8" rx=".5" /></svg>
+            </button>
+            <button id="windowClose" type="button" aria-label="关闭窗口" data-tooltip="关闭窗口">
+              <svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4 4 8 8M12 4l-8 8" /></svg>
+            </button>
+          </div>
         </header>
 
         <div class="page-scroll" data-submission-lock>
@@ -237,19 +266,6 @@
         </section>
 
         <section id="page-plugins" class="settings-page admin-page">
-          <div class="plugin-page-heading"><div><h2>插件 <span id="pluginTotal" class="plugin-count" hidden></span></h2></div>
-            <div id="pluginInstallMenuRoot" class="plugin-install-menu">
-              <button id="pluginInstallMenuButton" aria-label="更多插件操作" class="secondary-button plugin-install-menu__trigger" type="button" aria-haspopup="menu" aria-expanded="false">
-                <span>更多</span>
-                <span class="sakura-icon icon-chevron-down" aria-hidden="true"></span>
-              </button>
-              <div id="pluginInstallMenu" class="plugin-install-menu__panel" role="menu" hidden>
-                <div class="plugin-menu-label">从本地安装</div>
-                <button id="pluginInstallZipButton" type="button" role="menuitem">从 ZIP 安装…</button>
-                <button id="pluginInstallFolderButton" type="button" role="menuitem">从文件夹安装…</button>
-              </div>
-            </div>
-          </div>
           <div class="admin-toolbar plugin-toolbar">
             <div id="pluginRoleTabs" class="plugin-role-tabs" role="tablist" aria-label="插件类型"></div>
             <input id="pluginSearch" class="admin-search" type="search" aria-label="搜索插件" placeholder="搜索名称、作者、ID 或描述…" />

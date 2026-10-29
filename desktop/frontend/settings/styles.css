@@ -150,6 +150,23 @@ html.is-theme-view-transition::view-transition-new(root) {
   box-shadow: none;
 }
 
+.settings-window {
+  --settings-shell-gap: 0px;
+  --settings-shell-inset: 0px;
+  --settings-nav-width: clamp(184px, calc(81.143px + 11.429vw), 200px);
+  --settings-titlebar-height: 56px;
+}
+
+.settings-window .settings-shell { animation: none; }
+
+.settings-window .nav-card,
+.settings-window .detail-card {
+  border: 0;
+  border-radius: 0;
+}
+
+.settings-window .detail-card { background: var(--sakura-page-bg); }
+
 /* ---------- 侧边导航 ---------- */
 
 .nav-card {
@@ -180,6 +197,11 @@ html.is-theme-view-transition::view-transition-new(root) {
   letter-spacing: 0.08em;
   color: var(--sakura-text);
 }
+
+.settings-window .nav-card { gap: 0; padding: 0; border-right: 1px solid var(--hairline); }
+.settings-window .nav-brand { justify-content: flex-start; gap: 9px; min-height: var(--settings-titlebar-height); flex-shrink: 0; padding: 0 20px; }
+.settings-window .nav-list { padding: 12px 12px 18px; }
+.nav-brand-icon { width: 24px; height: 24px; object-fit: contain; flex-shrink: 0; }
 
 .nav-list {
   display: flex;
@@ -318,6 +340,23 @@ html.is-theme-view-transition::view-transition-new(root) {
     4px;
   border-bottom: 1px solid var(--hairline);
 }
+
+.settings-window .page-head { position: relative; z-index: 4; display: flex; align-items: center; gap: 14px; min-height: var(--settings-titlebar-height); padding: 0 12px 0 var(--settings-content-gutter); background: var(--surface-soft); }
+.page-heading-content { flex: 1; min-width: 0; }
+.page-heading-content .page-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.has-custom-titlebar .page-head { padding-right: 0; }
+.window-controls { display: flex; align-self: stretch; flex-shrink: 0; }
+.window-controls > button { display: grid; place-items: center; width: 44px; min-width: 0; min-height: 0; padding: 0; border: 0; border-radius: 0; background: transparent; color: var(--sakura-secondary-text); box-shadow: none; }
+.window-controls > button:focus-visible { outline-offset: -3px; }
+.window-controls > button:hover:not(:disabled) { background: var(--tint-soft); color: var(--sakura-text); transform: none; box-shadow: none; }
+.window-controls > #windowClose:hover { background: #c43a52; color: #fff; }
+.window-controls svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.3; pointer-events: none; }
+.window-restore-icon, #windowMaximize[data-maximized="true"] .window-maximize-icon { display: none; }
+#windowMaximize[data-maximized="true"] .window-restore-icon { display: block; }
+#pluginPageActions { display: none; min-width: 0; flex: 1; align-items: center; gap: 12px; }
+#pluginPageActions .plugin-install-menu { margin-left: auto; }
+body:has(#page-plugins.is-active) #pluginPageActions { display: flex; }
+body:has(#page-plugins.is-active) .page-heading-content { flex: 0 1 auto; }
 
 .onboarding-head {
   display: grid;
@@ -585,8 +624,7 @@ body.is-first-run-guide-active .settings-page.is-active > * {
   }
 }
 
-.page-title,
-.plugin-page-heading h2 {
+.page-title {
   margin: 0;
   font-size: 22px;
   font-weight: var(--font-weight-bold);
@@ -4824,13 +4862,8 @@ input.is-invalid:hover,
 }
 
 /* 插件管理：沿用主题与动效 token，列表、详情和弹窗均展示真实贡献。 */
-body:has(#page-plugins.is-active) .page-head { display: none; }
-#page-plugins { grid-template-rows: auto auto minmax(0, 1fr); gap: 14px; }
-#page-plugins > .plugin-page-heading { position: relative; z-index: 3; display: flex; align-items: center; justify-content: space-between; gap: 20px; }
+#page-plugins { grid-template-rows: auto minmax(0, 1fr); gap: 14px; }
 #page-plugins > .plugin-toolbar { z-index: 2; flex-wrap: wrap; }
-.plugin-page-heading h2 { display: flex; align-items: center; gap: 10px; }
-.plugin-page-heading p { margin: 6px 0 0; color: var(--sakura-muted-text); font-size: 12px; }
-.plugin-count { padding: 2px 8px; border-radius: 12px; background: var(--tint-faint); color: var(--sakura-primary); font-size: 12px; }
 .plugin-toolbar .admin-search { flex: 1 1 160px; min-width: 120px; width: auto; padding: 10px 13px; border: 1px solid var(--hairline); border-radius: var(--radius-sm); background: var(--surface-raised); color: var(--sakura-text); font: inherit; font-size: 12px; }
 .plugin-role-tabs { display: flex; flex-wrap: wrap; gap: 3px; padding: 3px; background: var(--tint-faint); border-radius: var(--radius-sm); }
 .plugin-role-tab { min-width: 0; padding: 7px 10px; border: 1px solid transparent; background: transparent; color: var(--sakura-muted-text); font-size: 11px; white-space: nowrap; }

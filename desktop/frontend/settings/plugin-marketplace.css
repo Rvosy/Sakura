@@ -1,7 +1,7 @@
 /* 插件市场使用主程序主题；规则限定在市场和详情弹窗内。 */
 #market-tabs { margin-right: auto; flex-shrink: 0; height: 38px; }
 #market-tabs .plugin-role-tab { min-height: 32px; padding-block: 5px; }
-#page-plugins[data-market-visible="true"] { grid-template-rows: auto minmax(0, 1fr); }
+#page-plugins[data-market-visible="true"] { grid-template-rows: minmax(0, 1fr); }
 #market-surface { min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
 @scope (#market-surface, #detail-dialog, #market-submit-dialog) {
 :scope { color: var(--sakura-text); }
@@ -157,7 +157,7 @@ dialog.download-sources-dialog { box-sizing: border-box; width: min(660px, calc(
 .plugin-menu-label { padding: 7px 10px 4px; color: var(--sakura-muted-text); font-size: 11px; }
 #pluginInstallMenu .market-menu-action { border: 0; box-shadow: none; transform: none; }
 #pluginInstallMenu #market-sources { border-top: 1px solid var(--sakura-border); border-radius: 0; margin-top: 6px; padding-top: 12px; }
-#page-plugins:not([data-market-visible="true"]) #pluginInstallMenu .market-menu-action { display: none; }
+body:has(#page-plugins:not([data-market-visible="true"])) #pluginInstallMenu .market-menu-action { display: none; }
 #market-surface .market-filter-trigger { flex-shrink: 0; padding: 8px 12px; min-height: 36px; border-color: transparent; background: transparent; box-shadow: none; transform: none; }
 .market-filter-panel { position: fixed; inset: auto; margin: 0; width: 240px; padding: 16px; box-sizing: border-box; overflow: visible; background: var(--surface-raised); color: var(--sakura-text); border: 1px solid var(--sakura-border); border-radius: 10px; box-shadow: var(--shadow-pop); font-size: 12px; }
 .market-filter-panel::backdrop { background: transparent; }

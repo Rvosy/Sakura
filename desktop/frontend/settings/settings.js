@@ -21,6 +21,7 @@ import {
 import { FALLBACK_THEME_TOKENS } from "../core/theme.js";
 import { installDevtoolsShortcutGuard } from "../core/devtools-guard.js";
 import { isRuntimeCancellation } from "../core/runtime-diagnostics.js";
+import { installSettingsWindowControls } from "./window-controls.js";
 
 installDevtoolsShortcutGuard();
 installClickIconMotion(document);
@@ -41,6 +42,13 @@ function invoke(command, args) {
 }
 const rootSettingsClient = createRootSettingsClient({ invoke });
 const settingsCloseFlowPromise = import("./close-flow.js");
+const windowControls = installSettingsWindowControls({
+  document,
+  appWindow: window.__TAURI__.window.getCurrentWindow(),
+  useCustomTitlebar: window.navigator.userAgent.includes("Windows"),
+  onClose: requestCancelClose,
+  onError: setError,
+});
 const runtimeFontsReadyPromise = import("../core/font-loader.js")
   .then(({ waitForRuntimeFonts }) => waitForRuntimeFonts({ families: ["sc"] }))
   .catch(() => {
@@ -1746,6 +1754,7 @@ detailCard?.addEventListener("input", (event) => {
 
 window.addEventListener("beforeunload", () => {
   beginSettingsWindowClose();
+  windowControls.dispose();
   pageScrollResize.disconnect();
   errorDialog.dispose();
   runtimeAppearanceController?.dispose();
@@ -1774,6 +1783,7 @@ async function initializeRuntimeSettingsSection(initialize) {
 
 async function startSettingsFrontend() {
   await runtimeDiagnosticsReady;
+  await windowControls.ready;
   let windowRevealed = false;
   const reveal = async () => {
     if (windowRevealed || settingsWindowClosing) return;
