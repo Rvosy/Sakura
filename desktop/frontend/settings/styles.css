@@ -362,19 +362,20 @@ html.is-theme-view-transition::view-transition-new(root) {
 }
 
 .settings-window .page-head { position: relative; z-index: 4; display: flex; align-items: center; gap: 14px; min-height: var(--settings-titlebar-height); padding: 0 12px 0 var(--settings-content-gutter); background: var(--surface-soft); }
-.page-heading-content { flex: 1; min-width: 0; }
+.page-heading-content { display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0; }
+.page-heading-icon { display: inline-flex; flex-shrink: 0; color: var(--sakura-secondary-text); }
+.page-heading-icon :is(.sakura-icon, svg) { width: 20px; height: 20px; }
 .page-heading-content .page-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .has-custom-titlebar .page-head { padding-right: 0; }
-.window-controls { display: flex; align-self: stretch; flex-shrink: 0; }
-.window-controls > button { display: grid; place-items: center; width: 44px; min-width: 0; min-height: 0; padding: 0; border: 0; border-radius: 0; background: transparent; color: var(--sakura-secondary-text); box-shadow: none; }
-.window-controls > button:focus-visible { outline-offset: -3px; }
+.window-controls { display: flex; align-items: center; flex-shrink: 0; gap: 4px; padding-right: 8px; }
+.window-controls > button { display: grid; place-items: center; width: 28px; height: 28px; min-width: 0; min-height: 0; padding: 0; border: 0; border-radius: 6px; background: transparent; color: var(--sakura-secondary-text); box-shadow: none; }
+.window-controls > button:focus-visible { outline-offset: 2px; }
 .window-controls > button:hover:not(:disabled) { background: var(--tint-soft); color: var(--sakura-text); transform: none; box-shadow: none; }
-.window-controls > #windowClose:hover { background: #c43a52; color: #fff; }
-.window-controls svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.3; pointer-events: none; }
+.window-controls > #windowClose:hover { background: color-mix(in srgb, #c43a52 15%, var(--surface-raised)); color: #c43a52; }
+.window-controls svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.3; pointer-events: none; }
 .window-restore-icon, #windowMaximize[data-maximized="true"] .window-maximize-icon { display: none; }
 #windowMaximize[data-maximized="true"] .window-restore-icon { display: block; }
 #pluginPageActions { display: none; min-width: 0; flex: 1; align-items: center; gap: 12px; }
-#pluginPageActions .plugin-install-menu { margin-left: auto; }
 body:has(#page-plugins.is-active) #pluginPageActions { display: flex; }
 body:has(#page-plugins.is-active) .page-heading-content { flex: 0 1 auto; }
 
@@ -1501,6 +1502,7 @@ textarea {
 
 input[type="number"]:hover:not(:disabled),
 input[type="text"]:hover:not(:disabled),
+input[type="search"]:hover:not(:disabled),
 input[type="password"]:hover:not(:disabled),
 select:hover:not(:disabled),
 textarea:hover:not(:disabled) {
@@ -1509,6 +1511,7 @@ textarea:hover:not(:disabled) {
 
 input[type="number"]:focus,
 input[type="text"]:focus,
+input[type="search"]:focus,
 input[type="password"]:focus,
 select:focus,
 textarea:focus {
@@ -2276,14 +2279,6 @@ input[type="checkbox"]:disabled + span {
   min-width: 0;
 }
 
-/* Page-entry motion gives every grid child its own stacking context. Keep the
- * plugin toolbar above the later workbench so its install menu can cross that
- * grid-row boundary without being painted underneath the detail panels. */
-#page-plugins > .admin-toolbar {
-  position: relative;
-  z-index: 1;
-}
-
 .plugin-install-menu {
   position: relative;
   flex: 0 0 auto;
@@ -2296,19 +2291,10 @@ input[type="checkbox"]:disabled + span {
   gap: 7px;
 }
 
-/* Keep the header action inside the page's clipped scroll boundary. */
 .plugin-install-menu__trigger:hover:not(:disabled),
 .plugin-install-menu__trigger:active:not(:disabled) {
   transform: none;
   box-shadow: none;
-}
-
-.plugin-install-menu__trigger .sakura-icon {
-  transition: transform var(--motion-base) var(--ease);
-}
-
-.plugin-install-menu.is-open .plugin-install-menu__trigger .sakura-icon {
-  transform: rotate(180deg);
 }
 
 .plugin-install-menu__panel {
@@ -4890,10 +4876,18 @@ input.is-invalid:hover,
 /* 插件管理：沿用主题与动效 token，列表、详情和弹窗均展示真实贡献。 */
 #page-plugins { grid-template-rows: auto minmax(0, 1fr); gap: 14px; }
 #page-plugins > .plugin-toolbar { z-index: 2; flex-wrap: wrap; }
-.plugin-toolbar .admin-search { flex: 1 1 160px; min-width: 120px; width: auto; padding: 10px 13px; border: 1px solid var(--hairline); border-radius: var(--radius-sm); background: var(--surface-raised); color: var(--sakura-text); font: inherit; font-size: 12px; }
+.plugin-toolbar .admin-search { flex: 1 1 160px; min-width: 120px; width: auto; padding: 10px 13px; border: 1px solid var(--hairline); border-radius: var(--radius-sm); background: var(--surface-raised); color: var(--sakura-text); font: inherit; font-size: 12px; transition: border-color var(--motion-base) var(--ease); }
 .plugin-role-tabs { display: flex; flex-wrap: wrap; gap: 3px; padding: 3px; background: var(--tint-faint); border-radius: var(--radius-sm); }
 .plugin-role-tab { min-width: 0; padding: 7px 10px; border: 1px solid transparent; background: transparent; color: var(--sakura-muted-text); font-size: 11px; white-space: nowrap; }
 .plugin-role-tab[aria-selected="true"] { background: var(--surface-raised); border-color: var(--hairline); color: var(--sakura-primary); }
+.plugin-role-tab:hover:not(:disabled) { transform: none; box-shadow: none; }
+#pluginRoleTabs { position: relative; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0; }
+#pluginRoleTabs::before { content: ""; position: absolute; top: 3px; bottom: 3px; left: 3px; width: calc((100% - 6px) / 4); border: 1px solid var(--hairline); border-radius: 7px; background: var(--surface-raised); transform: translateX(calc(var(--active-tab, 0) * 100%)); transition: transform var(--motion-medium) var(--ease); pointer-events: none; }
+#pluginRoleTabs .plugin-role-tab { position: relative; background: transparent; border-color: transparent; }
+#pluginRoleTabs .plugin-role-tab:hover { color: var(--sakura-primary); }
+@media (prefers-reduced-motion: reduce) {
+  #pluginRoleTabs::before { transition: none; }
+}
 #page-plugins .plugin-workbench { grid-template-columns: minmax(280px, 1.05fr) minmax(0, 1.3fr); gap: 14px; }
 .plugin-list-shell { display: flex; flex-direction: column; min-height: 0; border: 1px solid var(--hairline); border-radius: var(--radius-md); background: var(--surface-soft); overflow: hidden; }
 #pluginList { flex: 1; border: 0; border-radius: 0; background: transparent; padding: 10px 10px 12px; gap: 16px; }

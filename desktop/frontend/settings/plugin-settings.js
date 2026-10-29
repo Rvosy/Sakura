@@ -491,7 +491,6 @@ export function createPluginSettingsFeature({
     const nextOpen = Boolean(open && !fields.pluginInstallMenuButton.disabled);
     fields.pluginInstallMenu.hidden = !nextOpen;
     fields.pluginInstallMenuButton.setAttribute("aria-expanded", String(nextOpen));
-    fields.pluginInstallMenuRoot.classList.toggle("is-open", nextOpen);
     if (nextOpen && focusItem) {
       pluginInstallMenuItems()[0]?.focus();
     } else if (!nextOpen && restoreFocus && !fields.pluginInstallMenuButton.disabled) {
@@ -598,6 +597,7 @@ export function createPluginSettingsFeature({
     fields.pluginRoleTabs.textContent = '';
     fields.pluginTotal.textContent = String(all.length);
     const roles = { all: '全部', ...pluginPresentation.pluginKinds };
+    fields.pluginRoleTabs.style.setProperty('--active-tab', Object.keys(roles).indexOf(pluginState.role));
     Object.entries(roles).forEach(([key, label]) => {
       const count = key === 'all' ? all.length : all.filter((plugin) => pluginPresentation.pluginMetadata(plugin).kind === key).length;
       const tab = pluginNode('button', 'plugin-role-tab', `${label} ${count}`);
@@ -674,7 +674,6 @@ export function createPluginSettingsFeature({
           select.setAttribute('aria-label', `查看 ${plugin.name || plugin.plugin_id || plugin.id}`);
           const main = pluginNode('span', 'plugin-card-main');
           const title = pluginNode('strong', 'plugin-card-title', plugin.name || plugin.plugin_id || plugin.id);
-          title.dataset.tooltip = title.textContent;
           main.append(title);
           if (plugin.reason_code === 'PLUGIN_ID_CONFLICT') main.append(pluginNode('span', 'card-desc', `v${plugin.version} · ${plugin.directory_name}`));
           if (plugin.description) main.append(pluginNode('span', 'card-desc', plugin.description));
@@ -689,7 +688,6 @@ export function createPluginSettingsFeature({
             const button = pluginNode('button', 'plugin-update-button', '查看更新');
             button.type = 'button'; button.prepend(createIcon(document, 'circle-arrow-up'));
             button.setAttribute('aria-label', `查看 ${plugin.name || plugin.plugin_id} 的更新`);
-            button.dataset.tooltip = `${update.currentVersion} → ${update.version}`;
             button.addEventListener('click', () => openUpdate(update.id));
             footer.append(button);
           }
@@ -1598,9 +1596,6 @@ export function createPluginSettingsFeature({
         }
         const control = pluginSettingControl(plugin, section, field);
         if (!pluginFieldEditable(field)) control.dataset.pluginLiveField = field.key;
-        if (field.type !== "boolean" && field.description) {
-          control.dataset.tooltip = field.description;
-        }
         if (field.type === "resource") {
           row.append(control);
         } else {
@@ -2367,7 +2362,6 @@ export function createPluginSettingsFeature({
           if (!value) continue;
           const detail = document.createElement("span");
           detail.textContent = column.type === "string" ? value : `${eventTime ? "记录于" : column.label} ${value}`;
-          detail.title = eventTime ? "记录时间" : column.label;
           meta.append(detail);
         }
         const structured = collection.fields.some(field => field.key === "subject");
@@ -2392,7 +2386,6 @@ export function createPluginSettingsFeature({
         edit.className = "memory-card-edit";
         edit.append(createIcon(document, "pencil"), "编辑");
         edit.setAttribute("aria-label", "编辑记忆");
-        edit.title = "编辑记忆";
         edit.addEventListener("click", (event) => {
           event.stopPropagation();
           openMemoryCollectionEditor(plugin, section, collection, item);

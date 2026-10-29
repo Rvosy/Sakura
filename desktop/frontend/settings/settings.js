@@ -116,6 +116,7 @@ const fields = {
   pageScroll: document.querySelector(".page-scroll"),
   footer: document.querySelector("footer"),
   pageTitle: document.getElementById("pageTitle"),
+  pageIcon: document.getElementById("pageIcon"),
   pageSubtitle: document.getElementById("pageSubtitle"),
   navItems: Array.from(document.querySelectorAll(".nav-item[data-page]")),
   pages: {
@@ -786,6 +787,7 @@ function showPage(page) {
     item.classList.toggle("is-active", active);
     if (active) {
       item.setAttribute("aria-current", "page");
+      fields.pageIcon.replaceChildren(item.querySelector(".nav-item-icon").cloneNode(true));
     } else {
       item.removeAttribute("aria-current");
     }
@@ -1076,7 +1078,7 @@ function renderThemeControls() {
     swatchButton.type = "button";
     swatchButton.className = "theme-color-swatch";
     swatchButton.dataset.themeSwatch = id;
-    swatchButton.dataset.tooltip = "调整颜色";
+    swatchButton.setAttribute("aria-label", `调整${label}`);
     swatchButton.addEventListener("click", () => openThemeColorPopover(id, swatchButton));
 
     const textInput = document.createElement("input");

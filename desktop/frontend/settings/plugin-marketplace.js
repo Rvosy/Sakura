@@ -28,7 +28,10 @@ export function createPluginMarketplace({ document, host, notify, showError = ({
   tabs.id = "market-tabs"; tabs.className = "plugin-role-tabs";
   tabs.setAttribute("role", "tablist"); tabs.setAttribute("aria-label", "插件页面");
   tabs.innerHTML = '<button class="plugin-role-tab" id="installed-tab" role="tab" aria-selected="true" aria-controls="pluginList" data-view="installed">已安装</button><button class="plugin-role-tab" id="market-tab" role="tab" aria-selected="false" aria-controls="market-surface" tabindex="-1" data-view="market">市场</button>';
-  $("pluginPageActions").prepend(tabs);
+  const updateSummary = document.createElement("span");
+  updateSummary.className = "plugin-update-summary";
+  updateSummary.setAttribute("role", "status");
+  $("pluginPageActions").prepend(tabs, updateSummary);
   let plugins = [], view = "installed", category = "全部", selected = null;
   let catalogState = "unconfigured", updatedAt = "", disposed = false, sourceName = "", catalogError = "", refreshing = false;
   const tasks = new Map(), documents = new Map(), listeners = [];
@@ -42,7 +45,8 @@ export function createPluginMarketplace({ document, host, notify, showError = ({
   function syncInstalled() {
     syncInstalledPlugins(plugins, host.installedPlugins());
     const updates = availableUpdates(plugins);
-    $("installed-tab").textContent = updates.length ? `已安装 · ${updates.length} 个有更新` : "已安装";
+    updateSummary.hidden = !updates.length;
+    updateSummary.innerHTML = `${icon("circle-arrow-up")}<span>${updates.length} 个可用更新</span>`;
     host.setUpdates?.(updates, openDetail);
   }
   function actionButton(p) {
@@ -304,7 +308,6 @@ export function createPluginMarketplace({ document, host, notify, showError = ({
     }
     const button = event.target.closest("button");
     if (!button) return;
-    if (button.dataset.view) setView(button.dataset.view);
     if (button.dataset.category) {
       category = button.dataset.category; render();
       [...$("categories").children].find(b => b.dataset.category === category)?.focus();
@@ -334,6 +337,10 @@ export function createPluginMarketplace({ document, host, notify, showError = ({
     if (button.hasAttribute("data-reconnect")) void loader.load();
   }
   listen(page, "click", handleClick); listen($("detail-dialog"), "click", handleClick);
+  listen(tabs, "click", event => {
+    const tab = event.target.closest("[data-view]");
+    if (tab) setView(tab.dataset.view);
+  });
   listen($("market-submit"), "click", () => {
     closeFilters(); closeSelects(); submitDialog.showModal();
   });
@@ -359,6 +366,8 @@ export function createPluginMarketplace({ document, host, notify, showError = ({
     if (view === "market" && event.key === "/" && !event.ctrlKey && !event.metaKey && !$("detail-dialog").open && !["INPUT", "SELECT", "TEXTAREA"].includes(event.target.tagName) && !event.target.isContentEditable) {
       event.preventDefault(); $("search").focus();
     }
+  });
+  listen(tabs, "keydown", event => {
     if (event.target.matches("[data-view]") && ["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) {
       event.preventDefault();
       setView(event.key === "Home" ? "installed" : event.key === "End" ? "market" : view === "market" ? "installed" : "market");
@@ -396,7 +405,7 @@ export function createPluginMarketplace({ document, host, notify, showError = ({
       listeners.forEach(remove => remove()); closeFilters(); closeSelects($("market-surface"));
       filterPanel.remove(); $("market-sources").remove(); $("refresh").remove();
       submitDialog.close(); submitDialog.remove();
-      $("detail-dialog").close(); $("detail-dialog").remove(); $("market-surface").remove(); tabs.remove();
+      $("detail-dialog").close(); $("detail-dialog").remove(); $("market-surface").remove(); tabs.remove(); updateSummary.remove();
     },
   };
 }

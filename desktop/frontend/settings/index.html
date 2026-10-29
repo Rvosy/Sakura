@@ -13,7 +13,7 @@
         <div class="nav-brand" data-window-drag>
           <img class="nav-brand-icon" src="../assets/sakura-icon.png" alt="" draggable="false" />
           <span class="nav-brand-text">Sakura</span>
-          <button id="sidebarToggle" class="nav-toggle" type="button" aria-label="收起侧栏" aria-expanded="true" aria-controls="settingsNavigation" data-tooltip="收起侧栏">
+          <button id="sidebarToggle" class="nav-toggle" type="button" aria-label="收起侧栏" aria-expanded="true" aria-controls="settingsNavigation">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m11 17-5-5 5-5m7 10-5-5 5-5" /></svg>
           </button>
         </div>
@@ -85,15 +85,16 @@
       <section class="detail-card">
         <header class="page-head" data-window-drag>
           <div class="page-heading-content">
+            <span id="pageIcon" class="page-heading-icon" aria-hidden="true"><span class="sakura-icon icon-user-round"></span></span>
             <h1 id="pageTitle" class="page-title">角色与布局</h1>
             <p id="pageSubtitle" class="page-subtitle" hidden></p>
           </div>
           <div id="pluginPageActions" data-submission-lock>
             <span id="pluginTotal" hidden></span>
             <div id="pluginInstallMenuRoot" class="plugin-install-menu">
-              <button id="pluginInstallMenuButton" aria-label="更多插件操作" class="secondary-button plugin-install-menu__trigger" type="button" aria-haspopup="menu" aria-expanded="false">
+              <button id="pluginInstallMenuButton" aria-label="更多插件操作" class="secondary-button plugin-install-menu__trigger" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="pluginInstallMenu">
+                <span class="sakura-icon icon-ellipsis" aria-hidden="true"></span>
                 <span>更多</span>
-                <span class="sakura-icon icon-chevron-down" aria-hidden="true"></span>
               </button>
               <div id="pluginInstallMenu" class="plugin-install-menu__panel" role="menu" hidden>
                 <div class="plugin-menu-label">从本地安装</div>
@@ -103,14 +104,14 @@
             </div>
           </div>
           <div id="windowControls" class="window-controls" aria-label="窗口控制" hidden>
-            <button id="windowMinimize" type="button" aria-label="最小化" data-tooltip="最小化">
+            <button id="windowMinimize" type="button" aria-label="最小化">
               <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 8h10" /></svg>
             </button>
-            <button id="windowMaximize" type="button" aria-label="最大化" data-tooltip="最大化">
+            <button id="windowMaximize" type="button" aria-label="最大化">
               <svg class="window-maximize-icon" viewBox="0 0 16 16" aria-hidden="true"><rect x="3.5" y="3.5" width="9" height="9" rx=".5" /></svg>
               <svg class="window-restore-icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M5.5 5.5v-3h8v8h-3" /><rect x="2.5" y="5.5" width="8" height="8" rx=".5" /></svg>
             </button>
-            <button id="windowClose" type="button" aria-label="关闭窗口" data-tooltip="关闭窗口">
+            <button id="windowClose" type="button" aria-label="关闭窗口">
               <svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4 4 8 8M12 4l-8 8" /></svg>
             </button>
           </div>
@@ -272,7 +273,7 @@
         <section id="page-plugins" class="settings-page admin-page">
           <div class="admin-toolbar plugin-toolbar">
             <div id="pluginRoleTabs" class="plugin-role-tabs" role="tablist" aria-label="插件类型"></div>
-            <input id="pluginSearch" class="admin-search" type="search" aria-label="搜索插件" placeholder="搜索名称、作者、ID 或描述…" />
+            <input id="pluginSearch" class="admin-search" type="search" aria-label="搜索插件" placeholder="搜索名称、作者、ID 或描述…" autocomplete="off" spellcheck="false" />
           </div>
           <div class="admin-workbench plugin-workbench">
             <section class="plugin-list-shell" aria-label="插件列表"><div id="pluginList" class="admin-list"></div></section>
@@ -311,7 +312,7 @@
                 </label>
                 <div class="voice-engine-controls">
                   <select id="ttsProvider"></select>
-                  <button id="ttsPluginSettings" type="button" class="voice-engine-settings" aria-label="打开角色语音插件设置" data-tooltip="插件设置" disabled><span class="sakura-icon icon-settings" aria-hidden="true"></span></button>
+                  <button id="ttsPluginSettings" type="button" class="voice-engine-settings" aria-label="打开角色语音插件设置" disabled><span class="sakura-icon icon-settings" aria-hidden="true"></span></button>
                 </div>
               </div>
             </fieldset>
@@ -325,7 +326,7 @@
               </label>
               <div class="voice-engine-controls">
                 <select id="asrProvider"></select>
-                <button id="asrPluginSettings" type="button" class="voice-engine-settings" aria-label="打开语音输入插件设置" data-tooltip="插件设置" disabled><span class="sakura-icon icon-settings" aria-hidden="true"></span></button>
+                <button id="asrPluginSettings" type="button" class="voice-engine-settings" aria-label="打开语音输入插件设置" disabled><span class="sakura-icon icon-settings" aria-hidden="true"></span></button>
               </div>
             </div>
             <p id="asrLocation" class="setting-desc"></p>
@@ -372,7 +373,7 @@
             </div>
             <div class="setting-row">
               <div class="inline-actions">
-                <button id="themeAiButton" class="secondary-button" type="button" data-tooltip="参考角色默认立绘生成配色">AI 生成配色</button>
+                <button id="themeAiButton" class="secondary-button" type="button">AI 生成配色</button>
                 <button id="resetThemeButton" class="secondary-button" type="button">恢复默认配色</button>
               </div>
             </div>
@@ -484,7 +485,7 @@
                 <span class="setting-title">数据目录</span>
                 <code id="storageUserRoot" class="path-value"></code>
               </div>
-              <button id="storageOpenUserRoot" type="button" class="secondary-button" data-tooltip="包含配置、聊天记录、角色和插件">打开数据目录</button>
+              <button id="storageOpenUserRoot" type="button" class="secondary-button">打开数据目录</button>
             </div>
             <div class="setting-row">
               <div class="setting-row-text">

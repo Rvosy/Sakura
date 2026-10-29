@@ -1,6 +1,9 @@
 /* 插件市场使用主程序主题；规则限定在市场和详情弹窗内。 */
 #market-tabs { margin-right: auto; flex-shrink: 0; height: 38px; }
 #market-tabs .plugin-role-tab { min-height: 32px; padding-block: 5px; }
+.plugin-update-summary { display: inline-flex; align-items: center; gap: 5px; flex-shrink: 0; color: var(--sakura-secondary-text); font-size: 12px; white-space: nowrap; }
+.plugin-update-summary[hidden] { display: none; }
+.plugin-update-summary .sakura-icon { width: 15px; height: 15px; color: var(--sakura-primary); }
 #page-plugins[data-market-visible="true"] { grid-template-rows: minmax(0, 1fr); }
 #market-surface { min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
 @scope (#market-surface, #detail-dialog, #market-submit-dialog) {
@@ -153,7 +156,9 @@ dialog.download-sources-dialog { box-sizing: border-box; width: min(660px, calc(
 .download-source-actions button:first-child { margin-right: auto; }
 
 /* Compact marketplace controls. */
-#pluginInstallMenuButton { min-width: 64px; width: auto; padding: 7px 9px; font-size: 12px; line-height: 1.5; border-color: transparent; background: transparent; box-shadow: none; }
+#pluginInstallMenuButton { min-width: 0; min-height: 32px; width: auto; padding: 6px 10px; font-size: 12px; line-height: 1.5; border-color: var(--hairline); background: var(--surface-raised); box-shadow: none; }
+#pluginInstallMenuButton .sakura-icon { width: 16px; height: 16px; }
+#pluginInstallMenuButton:hover, #pluginInstallMenuButton[aria-expanded="true"] { border-color: var(--sakura-primary); background: var(--tint-soft); color: var(--sakura-primary); }
 .plugin-menu-label { padding: 7px 10px 4px; color: var(--sakura-muted-text); font-size: 11px; }
 #pluginInstallMenu .market-menu-action { border: 0; box-shadow: none; transform: none; }
 #pluginInstallMenu #market-sources { border-top: 1px solid var(--sakura-border); border-radius: 0; margin-top: 6px; padding-top: 12px; }

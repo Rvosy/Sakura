@@ -13,8 +13,8 @@ ROOT = Path(__file__).resolve().parents[3]
 HTML = """<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="stylesheet" href="/desktop/frontend/settings/styles.css"></head>
-<body><section id="page-plugins" class="is-active">
-<div id="pluginPageActions"></div><div id="pluginInstallMenu"></div>
+<body><header><div id="pluginPageActions"></div><div id="pluginInstallMenu"></div></header>
+<section id="page-plugins" class="is-active">
 <div class="plugin-toolbar"></div><div class="plugin-workbench"></div></section>
 <script type="module">
 import { createPluginMarketplace } from '/desktop/frontend/settings/plugin-marketplace.js';
@@ -45,7 +45,6 @@ fixture.source = { canUpdate:true, async load(){return {state:'ready',plugins:fi
   }
 };
 fixture.market = createPluginMarketplace({document, host, notify(){},showError:fixture.showError,source:fixture.source});
-fixture.market.setView('market',{load:false});
 await fixture.market.refresh();
 </script></body></html>"""
 
@@ -79,6 +78,21 @@ def run():
             errors = []
             page.on("pageerror", lambda error: errors.append(str(error)))
             page.goto(f"http://127.0.0.1:{server.server_port}/marketplace-test")
+            installed = page.get_by_role('tab', name='已安装', exact=True)
+            market = page.get_by_role('tab', name='市场', exact=True)
+            market.click()
+            expect(page.locator('#market-surface')).to_be_visible()
+            expect(market).to_have_attribute('aria-selected', 'true')
+            installed.click()
+            expect(page.locator('#market-surface')).not_to_be_visible()
+            installed.press('ArrowRight')
+            expect(market).to_be_focused()
+            expect(page.locator('#market-surface')).to_be_visible()
+            market.press('Home')
+            expect(installed).to_be_focused()
+            expect(page.locator('#market-surface')).not_to_be_visible()
+            installed.press('End')
+            expect(market).to_be_focused()
             upload = page.get_by_role('button', name='上传插件', exact=True)
             expect(upload).to_be_visible()
             upload.click()
@@ -226,7 +240,7 @@ def run():
             expect(dialog.locator('[data-install]')).to_be_disabled()
             expect(dialog.locator('[data-install]')).to_have_text('更新至 0.2.7')
             expect(dialog.locator('.compat-note')).to_contain_text('需要 Sakura 9.0.0')
-            expect(page.locator('#installed-tab')).to_contain_text('1 个有更新')
+            expect(page.locator('.plugin-update-summary')).to_contain_text('1 个可用更新')
             expect(page.locator('.market-card')).to_contain_text('0.2.6 → 0.2.7')
             for width in [803, 360]:
                 page.set_viewport_size({"width": width, "height": 640})
