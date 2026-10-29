@@ -163,6 +163,7 @@ html.is-theme-view-transition::view-transition-new(root) {
 .nav-brand {
   display: flex;
   align-items: center;
+  justify-content: center;
   padding: 4px 8px 10px;
 }
 
@@ -2626,6 +2627,22 @@ input[type="checkbox"]:disabled + span {
   margin: 0;
   color: var(--sakura-text);
   font-size: 17px;
+}
+
+.connection-editor .admin-detail > h2,
+.connection-editor .provider-account-title {
+  font-size: 20px;
+  font-weight: var(--font-weight-semibold);
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.connection-editor .admin-detail > h2 {
+  margin-bottom: 8px;
+}
+
+.connection-editor .provider-account-title {
+  margin-bottom: 4px;
 }
 
 .detail-desc {
