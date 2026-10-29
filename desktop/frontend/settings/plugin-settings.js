@@ -1247,7 +1247,7 @@ export function createPluginSettingsFeature({
   function collectionTransferMenu(plugin, section, collection) {
     const state = pluginCollectionRuntimeState(plugin, section, collection);
     const key = pluginCollectionKey(plugin, section, collection);
-    return createDataTransferMenu({ document, invoke, characterId: currentCharacterId,
+    return createDataTransferMenu({ document, invoke, kind: "memory", characterId: currentCharacterId,
       isCurrent: () => pluginCollectionState.get(key) === state && !collectionInteractionBlocked(collection),
       transfer: request => runtimePluginController.collection({ operation: "transfer",
         pluginId: plugin.plugin_id, sectionId: section.section_id, collectionId: collection.collection_id, ...request }),

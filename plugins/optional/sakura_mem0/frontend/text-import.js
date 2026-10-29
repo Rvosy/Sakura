@@ -4,8 +4,8 @@ export function mount({ document, window, action, signal, isCurrent, draft, crea
   const node = (tag, className = "", text = "") => {
     const item = document.createElement(tag); item.className = className; item.textContent = text; return item;
   };
-  const style = node("style");
-  style.textContent = `
+  const style = new document.defaultView.CSSStyleSheet();
+  style.replaceSync(`
     .memory-text-import { display:grid; gap:16px; min-width:0; }
     .memory-text-import p { margin:0; color:var(--text-secondary); line-height:1.6; }
     .memory-text-import label { display:grid; gap:7px; font-size:13px; min-width:0; }
@@ -24,7 +24,8 @@ export function mount({ document, window, action, signal, isCurrent, draft, crea
     .memory-text-import__status { font-size:13px; white-space:pre-wrap; overflow-wrap:anywhere; }
     .memory-text-import [hidden] { display:none !important; }
     @media (max-width:800px) { .memory-text-import__fields { grid-template-columns:1fr; } }
-  `;
+  `);
+  document.adoptedStyleSheets = [...document.adoptedStyleSheets, style];
   const description = node("p", "", "粘贴笔记、旧记忆正文或聊天片段。使用记忆整理模型提取，核对并勾选后保存。Sakura JSON 备份请使用下方的导入功能。");
   const sourceLabel = node("label", "", "要提取的文本");
   const source = node("textarea"); source.value = draft.text || "";
@@ -39,7 +40,7 @@ export function mount({ document, window, action, signal, isCurrent, draft, crea
   const footer = node("div", "memory-text-import__actions");
   const save = node("button", "", "保存所选记忆"); save.type = "button";
   const count = node("span", "setting-desc"); footer.append(save, count);
-  element.append(style, description, sourceLabel, controls, status, candidates, footer);
+  element.append(description, sourceLabel, controls, status, candidates, footer);
   let revision = 0;
   let saving = false;
   const active = () => !signal.aborted && isCurrent();
@@ -154,5 +155,8 @@ export function mount({ document, window, action, signal, isCurrent, draft, crea
     }
   });
   renderCandidates(); sync();
-  return { element, cancel, dispose() { void cancel(); } };
+  return { element, cancel, dispose() {
+    void cancel();
+    document.adoptedStyleSheets = document.adoptedStyleSheets.filter(sheet => sheet !== style);
+  } };
 }

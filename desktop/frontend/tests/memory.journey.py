@@ -32,6 +32,7 @@ window.feature = createPluginSettingsFeature({document, window, invoke: window.n
   onDirty() {}, onError(error) { if (error) window.errors.push(String(error)); }, notify() {},
   confirmAction: async () => true, enhanceSelect, refreshSelect, closeSelects, focusSelect,
   replayMotion() {}, removeOverlayAfterExit: async e => e.remove(), showPage,
+  currentCharacterId: () => 'sakura',
   isCharacterTransitioning: () => false, hasPendingCharacterSelection: () => false });
 feature.initialize(await window.nativeInvoke('settings_plugins_get'));
 showPage('memory'); document.body.dataset.ready = 'true';
@@ -39,6 +40,10 @@ showPage('memory'); document.body.dataset.ready = 'true';
 
 
 class Handler(http.server.SimpleHTTPRequestHandler):
+    def end_headers(self):
+        self.send_header('Content-Security-Policy', "default-src 'self'; script-src 'self' blob:; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self'")
+        super().end_headers()
+
     def log_message(self, *_args):
         pass
 
@@ -144,6 +149,7 @@ def run():
                 page = browser.new_page(viewport={'width': 1100, 'height': 820}, reduced_motion='reduce')
                 errors = []
                 page.on('pageerror', lambda error: errors.append(str(error)))
+                page.add_init_script("window.policyViolations = []; document.addEventListener('securitypolicyviolation', event => window.policyViolations.push(event.violatedDirective));")
                 page.expose_binding('nativeInvoke', settings_bridge(runtime))
                 page.route('**/settings/settings.js', lambda route: route.fulfill(content_type='text/javascript', body=SCRIPT))
                 page.goto(f'http://127.0.0.1:{server.server_port}/desktop/frontend/settings/')
@@ -152,6 +158,12 @@ def run():
                 page.screenshot(animations='disabled', path=str(output / 'profile.png'))
                 page.locator('.memory-record-card').filter(has_text='饮食偏好').get_by_role('button').click()
                 dialog = page.get_by_role('dialog')
+                dialog.locator('summary').click()
+                dialog.locator('.memory-dialog-field').filter(has=page.locator('#memory-field-target_kind')).scroll_into_view_if_needed()
+                assert dialog.locator('#memory-field-target_kind').evaluate("el => { const field = el.closest('label').getBoundingClientRect(); const actions = document.querySelector('.memory-dialog-actions').getBoundingClientRect(); return field.bottom <= actions.top; }")
+                expect(dialog.get_by_role('button', name='保存修改')).to_be_in_viewport()
+                page.screenshot(animations='disabled', path=str(output / 'editor-expanded.png'))
+                dialog.locator('summary').click()
                 page.screenshot(animations='disabled', path=str(output / 'editor.png'))
                 dialog.get_by_role('textbox', name='内容', exact=False).fill('我喜欢喝绿茶，不喝咖啡。')
                 dialog.get_by_role('button', name='保存修改').click()
@@ -191,6 +203,7 @@ def run():
                     print(errors, page.evaluate('window.errors'))
                     raise
                 text_import.get_by_role('textbox', name='要提取的文本').fill('我是软件开发者。小雨喜欢园艺。')
+                assert text_import.get_by_role('textbox', name='要提取的文本').evaluate('(el) => el.getBoundingClientRect().width >= el.closest(".memory-text-import").getBoundingClientRect().width * 0.9')
                 page.get_by_role('tab', name='个人画像', exact=True).click()
                 page.get_by_role('button', name='高级设置', exact=True).click()
                 expect(text_import.get_by_role('textbox', name='要提取的文本')).to_have_value('我是软件开发者。小雨喜欢园艺。')
@@ -210,6 +223,16 @@ def run():
                 text_import.get_by_role('button', name='保存所选记忆', exact=True).click()
                 expect(text_import.get_by_role('status')).to_have_text('已保存 1 条记忆。')
                 page.screenshot(animations='disabled', path=str(output / 'advanced.png'))
+                page.get_by_role('button', name='记忆更多操作', exact=True).click()
+                menu = page.get_by_role('menu', name='记忆操作', exact=True)
+                expect(menu).to_be_visible()
+                expect(menu).to_be_in_viewport(ratio=1)
+                page.screenshot(animations='disabled', path=str(output / 'memory-transfer-menu.png'))
+                menu.get_by_role('menuitem', name='导出记忆…', exact=True).click()
+                expect(page.get_by_role('heading', name='导出记忆', exact=True)).to_be_visible()
+                expect(page.get_by_role('button', name='选择保存位置')).to_be_visible()
+                expect(page.locator('.date-range-trigger')).to_have_count(0)
+                page.get_by_role('dialog').get_by_role('button', name='关闭', exact=True).click()
                 page.get_by_role('tab', name='个人画像', exact=True).click()
                 expect(page.locator('.memory-record-card').filter(has_text='职业')).to_contain_text('我做桌面软件开发。')
                 imported = store.search_memory({'predicate': '职业', 'subject': '用户'})['memories']
@@ -219,6 +242,7 @@ def run():
                 page.screenshot(animations='disabled', path=str(output / 'profile-narrow.png'))
                 assert page.locator('.page-scroll').evaluate('(el) => el.scrollWidth <= el.clientWidth')
                 assert errors == [], errors
+                assert page.evaluate('window.policyViolations') == []
                 assert page.evaluate('window.errors') == []
                 browser.close()
             finally:
