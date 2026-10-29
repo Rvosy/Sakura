@@ -163,10 +163,10 @@ class VectorIndex:
                 self.collection, query=vector, limit=limit, with_payload=True,
                 query_filter=Filter(must=[FieldCondition(key="scope", match=MatchValue(value=scope))]),
             )
+            self.error = ""
             return [{"id": point.payload["memory_id"], "revision": point.payload["revision"],
                      "score": float(point.score)} for point in result.points]
         except Exception as exc:
-            self.status = "failed"
             self.error = str(exc)
             log_event("Memory", "向量检索失败，使用关键词结果", {"error": str(exc)},
                       event="memory.index.search_failed", severity="warning")

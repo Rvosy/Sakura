@@ -24,13 +24,18 @@ def draft_plugin():
     return plugin
 
 
-def test_save_changes_only_submitted_search_settings():
-    values = {"provider": "tavily", "tavily_api_key": "saved-key", "tavily_depth": "advanced"}
+@pytest.mark.parametrize("saved_key,saved_depth", [
+    ("saved-key", "advanced"),
+    ("invalid\nkey", "advanced"),
+    ("saved-key", "invalid-depth"),
+])
+def test_save_changes_only_submitted_search_settings(saved_key, saved_depth):
+    values = {"provider": "tavily", "tavily_api_key": saved_key, "tavily_depth": saved_depth}
     plugin = WebPlugin()
     plugin.context = SimpleNamespace(config=SimpleNamespace(
         get=lambda: dict(values), update=lambda patch: values.update(patch) or "applied"))
     assert plugin.save({"provider": "bing"}) == "applied"
-    assert values == {"provider": "bing", "tavily_api_key": "saved-key", "tavily_depth": "advanced"}
+    assert values == {"provider": "bing", "tavily_api_key": saved_key, "tavily_depth": saved_depth}
     plugin.context.config.update = lambda _patch: "error"
     assert plugin.save({"provider": "tavily"}) == "error"
 

@@ -76,6 +76,22 @@ def test_history_roundtrip_merge_and_text(tmp_path):
     assert original.payload["text"] in text and "こんにちは" in text and "译文：你好" in text
 
 
+def test_history_text_export_includes_activity_details_once(tmp_path):
+    store, exporter = history(tmp_path)
+    details = "已完成资料检索\n找到三篇相关资料"
+    store.append(NewTimelineEntry(
+        "activity", "activity", "sakura", TimelineKind.SYSTEM, "host", "2026-10-20T08:00:00+08:00",
+        {"text": "资料检索完成", "eventType": "activity", "activity": {
+            "sourcePluginId": "sakura.web", "recordId": "search-1", "details": details, "actionLabel": "查看结果"}},
+    ))
+    file = tmp_path / "history.txt"
+    exporter._transfer({"action": "export", "path": str(file), "format": "txt",
+                        "expectedCharacterId": "sakura", "expectedGenerationId": "gen"})
+    text = file.read_text(encoding="utf-8")
+    assert "资料检索完成" in text
+    assert text.count(details) == 1
+
+
 def test_history_invalid_batch_keeps_existing_and_conflicts_keep_local(tmp_path):
     store, _ = history(tmp_path)
     store.append(entry("existing", "2026-01-01T00:00:00Z"))

@@ -243,7 +243,9 @@ class MemoryBoundary:
                                    character_id=self._character_id, identity_path=request.get("identityPath"))
             records = archive["records"]
             for item in records:
-                _required_text(item["content"], "content", MAX_MEMORY_CONTENT)
+                deleted = item.get("deleted", item.get("metadata", {}).get("deleted", False))
+                validate_content = _text if deleted else _required_text
+                validate_content(item["content"], "content", MAX_MEMORY_CONTENT)
                 if item["layer"] not in MEMORY_LAYERS:
                     raise ValueError("记忆分类无效。")
             additions, counts = plan_merge(records, existing)
@@ -696,7 +698,6 @@ class MemoryBoundary:
                     backfill,
                 )
                 next_cursor = intervals[-1][1]
-                self._curation_state.mark_timeline_synced(next_cursor)
                 entries, pending = _curation_evidence_turns(
                     [entry for page, _cursor in intervals for entry in page]
                 )

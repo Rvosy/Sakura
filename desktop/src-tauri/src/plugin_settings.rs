@@ -30,30 +30,6 @@ fn validate_enabled_request(install_id: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn validate_collection_request(
-    operation: &str,
-    plugin_id: &str,
-    section_id: &str,
-    collection_id: &str,
-    payload: &Value,
-) -> Result<(), String> {
-    if ![plugin_id, section_id, collection_id]
-        .iter()
-        .all(|value| valid_identifier_text(value, 64))
-    {
-        return Err("PLUGIN_COLLECTION_REQUEST_INVALID".to_string());
-    }
-    let valid = matches!(
-        operation,
-        "query" | "create" | "update" | "delete" | "transfer"
-    ) && payload.is_object();
-    if valid {
-        Ok(())
-    } else {
-        Err("PLUGIN_COLLECTION_REQUEST_INVALID".to_string())
-    }
-}
-
 // Core owns plugin display semantics. The Shell checks the transport shape and
 // identities used by commands; it does not reinterpret labels, fields or values.
 fn valid_install_id(value: Option<&Value>) -> bool {
@@ -365,15 +341,12 @@ pub(crate) async fn settings_plugins_collection(
     lifecycle: State<'_, ShellLifecycleState>,
 ) -> Result<Value, String> {
     product_shell::validate_settings_window(&window)?;
-    validate_collection_request(
-        &operation,
-        &plugin_id,
-        &section_id,
-        &collection_id,
-        &payload,
-    )?;
-    let handle = settings_core_handle(&lifecycle)?;
-    assert_settings_identity(&shell, &handle, window_generation, &core_generation_id)?;
+    if ![&plugin_id, &section_id, &collection_id]
+        .iter()
+        .all(|value| valid_identifier_text(value, 64))
+    {
+        return Err("PLUGIN_COLLECTION_REQUEST_INVALID".to_string());
+    }
     let mut request_payload = payload
         .as_object()
         .cloned()
@@ -389,6 +362,8 @@ pub(crate) async fn settings_plugins_collection(
         "transfer" => "plugins.collection.transfer",
         _ => return Err("PLUGIN_COLLECTION_REQUEST_INVALID".to_string()),
     };
+    let handle = settings_core_handle(&lifecycle)?;
+    assert_settings_identity(&shell, &handle, window_generation, &core_generation_id)?;
     let response = dispatch_settings_request(
         handle.clone(),
         None,

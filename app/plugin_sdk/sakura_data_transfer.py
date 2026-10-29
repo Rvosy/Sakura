@@ -134,8 +134,6 @@ def render_text(kind, character_id, records):
                 lines.append(payload["text"])
                 if payload.get("activity", {}).get("details"):
                     lines.append(payload["activity"]["details"])
-                if payload.get("activity", {}).get("details"):
-                    lines.append(payload["activity"]["details"])
         else:
             if item.get("metadata", {}).get("deleted"):
                 continue

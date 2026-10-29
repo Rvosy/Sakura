@@ -104,17 +104,16 @@ def sanitize_reply_tones(reply: ChatReply, allowed_tones: list[str] | None) -> C
 def _build_segment(text: str, tone: str, translation: str, portrait: str, control: dict | None = None) -> tuple[ChatSegment, bool]:
     tone = tone or DEFAULT_TONE
     # 只在 ja 明显是中文、zh 明显是日文时交换，避免误判“ 大丈夫 ”这类日语汉字句。
-    if text and translation and _looks_chinese(text) and _looks_japanese(translation):
+    if _looks_chinese(text) and _looks_japanese(translation):
         text, translation = translation, text
         return ChatSegment(text, tone, translation, portrait, control=control), False
 
-    if text and _has_obvious_chinese(text):
-        fallback_translation = translation or text
+    if _has_obvious_chinese(text):
         return (
             ChatSegment(
                 SAFE_LANGUAGE_FALLBACK_TEXT,
                 tone,
-                fallback_translation,
+                translation,
                 portrait,
                 suppress_tts=True,
                 control=control,

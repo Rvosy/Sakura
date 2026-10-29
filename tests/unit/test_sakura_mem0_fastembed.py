@@ -100,6 +100,21 @@ def test_rebuild_catches_edits_committed_during_embedding(indexed, monkeypatch):
     assert not indexed.index_rows()
 
 
+def test_temporary_vector_search_failure_can_recover_on_next_query(indexed, monkeypatch):
+    item = indexed.create_memory({"content": "咖啡不加糖"})["memory"]
+    await_state(indexed, "ready")
+    query_points = indexed._index.client.query_points
+
+    def unavailable(*args, **kwargs):
+        raise RuntimeError("暂时无法读取向量索引")
+
+    monkeypatch.setattr(indexed._index.client, "query_points", unavailable)
+    assert indexed._index.search("咖啡", "Sakura", 5) == []
+    assert indexed.search_memory({"query": "咖啡"})["memories"][0]["id"] == item["id"]
+    monkeypatch.setattr(indexed._index.client, "query_points", query_points)
+    assert indexed._index.search("咖啡", "Sakura", 5)[0]["id"] == item["id"]
+
+
 def test_reopen_reuses_index_and_deleted_records_do_not_return(indexed, tmp_path):
     item = indexed.create_memory({"content": "咖啡不加糖"})["memory"]
     await_state(indexed, "ready")

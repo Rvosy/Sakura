@@ -445,6 +445,41 @@ def test_human_edit_during_model_request_is_preserved_without_blocking(store):
     assert results[0].ignored == 1
 
 
+def test_exported_legacy_deletion_without_text_can_be_restored(tmp_path):
+    from contextlib import closing
+
+    source = tmp_path / "source"
+    directory = source / "data/memory"
+    directory.mkdir(parents=True)
+    with closing(sqlite3.connect(directory / "mem0_history.db")) as db, db:
+        db.execute("CREATE TABLE history (memory_id TEXT, user_id TEXT, new_memory TEXT, event TEXT, created_at TEXT)")
+        db.executemany("INSERT INTO history VALUES (?,?,?,?,?)", [
+            ("kept", "sakura", "喜欢绿茶", "ADD", "2026-10-01"),
+            ("removed", "sakura", None, "DELETE", "2026-10-02"),
+        ])
+    archive = tmp_path / "memory.json"
+    request = {"expectedCharacterId": "sakura", "path": str(archive)}
+    exporter = MemoryBoundary(source, "sakura")
+    try:
+        assert exporter.transfer({**request, "action": "export", "format": "json"})["exported"] == 2
+    finally:
+        exporter.close()
+
+    importer = MemoryBoundary(tmp_path / "target", "sakura")
+    try:
+        assert importer.transfer({**request, "action": "preview"})["added"] == 2
+        assert importer.transfer({**request, "action": "import"})["added"] == 2
+        assert [item["id"] for item in importer.list_memories()] == ["kept"]
+        removed = importer.memory_store.get("removed", include_deleted=True)
+        assert removed["deleted"] and removed["content"] == ""
+        assert removed["created_at"] == "2026-10-02"
+        importer.memory_store.restore_records([{"id": "removed", "content": "旧内容"}])
+        assert importer.memory_store.get("removed") is None
+        assert importer.transfer({**request, "action": "import"})["identical"] == 2
+    finally:
+        importer.close()
+
+
 def test_curation_batch_rollback_keeps_cursor_and_fts_consistent(store, monkeypatch):
     human = entry(content="喜欢咖啡")
     another = entry("u2", "喜欢茶")

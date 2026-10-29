@@ -50,9 +50,6 @@ from app.legacy_import.transaction import (
 from app.storage.timeline import MAX_SEGMENTS, NewTimelineEntry, TimelineKind, TimelineStore
 
 
-_REAL_PREPARE_MEMORY_MODEL = legacy_importer._prepare_memory_model
-
-
 @pytest.fixture(autouse=True)
 def _isolated_preview_directory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     import tempfile
@@ -62,17 +59,6 @@ def _isolated_preview_directory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
     monkeypatch.setattr(tempfile, "tempdir", str(directory))
     monkeypatch.setenv("TMP", str(directory))
     monkeypatch.setenv("TEMP", str(directory))
-
-
-@pytest.fixture(autouse=True)
-def _disable_real_memory_model_download(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Ordinary importer tests must never turn into network tests."""
-
-    monkeypatch.setattr(
-        legacy_importer,
-        "_prepare_memory_model",
-        lambda *_args, **_kwargs: (0, 0),
-    )
 
 
 def test_cli_machine_protocol_is_ascii_safe_on_windows_code_pages(
@@ -527,83 +513,6 @@ def _tree_state(root: Path) -> dict[str, tuple[int, int, bytes]]:
             path.read_bytes(),
         )
     return state
-
-
-def _install_fake_memory_model_runtime(
-    monkeypatch: pytest.MonkeyPatch,
-) -> tuple[object, list[str]]:
-    import plugins.optional.sakura_mem0.memory as memory_runtime
-
-    calls: list[str] = []
-
-    def snapshot_for(cache_dir: Path) -> Path:
-        return (
-            Path(cache_dir)
-            / memory_runtime.DEFAULT_EMBEDDING_MODEL_CACHE_NAME
-            / "snapshots"
-            / memory_runtime.DEFAULT_EMBEDDING_ARTIFACT_REVISION
-        )
-
-    def fake_snapshot(
-        _model_name: str,
-        _base_dir: Path | None = None,
-        *,
-        cache_dir: Path | None = None,
-    ) -> Path | None:
-        assert cache_dir is not None
-        snapshot = snapshot_for(cache_dir)
-        return snapshot if (snapshot / "model.onnx").is_file() else None
-
-    def fake_cached(
-        model_name: str,
-        base_dir: Path | None = None,
-        *,
-        cache_dir: Path | None = None,
-    ) -> bool:
-        return fake_snapshot(model_name, base_dir, cache_dir=cache_dir) is not None
-
-    def fake_validate(snapshot: Path) -> None:
-        assert all(
-            (snapshot / name).is_file()
-            for name in memory_runtime.DEFAULT_EMBEDDING_MODEL_REQUIRED_FILES
-        )
-
-    def write_model(cache_dir: Path) -> Path:
-        snapshot = snapshot_for(cache_dir)
-        snapshot.mkdir(parents=True, exist_ok=True)
-        for index, name in enumerate(
-            memory_runtime.DEFAULT_EMBEDDING_MODEL_REQUIRED_FILES,
-            start=1,
-        ):
-            (snapshot / name).write_bytes((name + str(index)).encode("utf-8"))
-        return snapshot.parents[1]
-
-    def fake_download(
-        _base_dir: Path | None = None,
-        *,
-        cache_dir: Path | None = None,
-        progress: object = None,
-        cancel: object = None,
-    ) -> object:
-        assert cache_dir is not None
-        assert cancel is not None and not cancel.is_set()
-        calls.append("memory-model-download")
-        if callable(progress):
-            progress("connecting", 5)
-            progress("downloading", 50)
-            progress("completed", 100)
-        model_dir = write_model(cache_dir)
-        return SimpleNamespace(model_dir=model_dir)
-
-    monkeypatch.setattr(memory_runtime, "_embedding_model_snapshot", fake_snapshot)
-    monkeypatch.setattr(memory_runtime, "_embedding_model_cached", fake_cached)
-    monkeypatch.setattr(
-        memory_runtime,
-        "_validate_fastembed_snapshot_artifacts",
-        fake_validate,
-    )
-    monkeypatch.setattr(memory_runtime, "download_embedding_model", fake_download)
-    return SimpleNamespace(write_model=write_model), calls
 
 
 def test_partial_legacy_source_without_config_imports_surviving_history(
@@ -1108,6 +1017,38 @@ def test_import_replaces_initialized_screen_settings_and_can_roll_back(
     assert source_system.read_bytes() == source_original
 
 
+@pytest.mark.parametrize("cache_location", ["target", "source", "missing"])
+def test_memory_model_preparation_reuses_available_cache(tmp_path, monkeypatch, cache_location):
+    from plugins.optional.sakura_mem0 import model_assets as memory_runtime
+
+    monkeypatch.delenv("FASTEMBED_CACHE_PATH", raising=False)
+    source, target, payload = (tmp_path / name for name in ("source", "target", "payload"))
+    if cache_location != "missing":
+        root = target if cache_location == "target" else source
+        snapshot = (root / "data/cache/memory" / memory_runtime.DEFAULT_EMBEDDING_MODEL_CACHE_NAME
+                    / "snapshots" / memory_runtime.DEFAULT_EMBEDDING_ARTIFACT_REVISION)
+        snapshot.mkdir(parents=True)
+        for name in memory_runtime.DEFAULT_EMBEDDING_MODEL_REQUIRED_FILES:
+            (snapshot / name).write_bytes(name.encode("utf-8"))
+        before = _tree_state(root)
+
+    files, size = legacy_importer._prepare_memory_model(
+        source, target, payload, lambda: False, progress=lambda *_args: None, import_id="reuse-model",
+    )
+
+    if cache_location == "missing":
+        assert (files, size) == (0, 0)
+    else:
+        assert files == len(memory_runtime.DEFAULT_EMBEDDING_MODEL_REQUIRED_FILES)
+        assert size == sum(len(name.encode("utf-8")) for name in memory_runtime.DEFAULT_EMBEDDING_MODEL_REQUIRED_FILES)
+        assert _tree_state(root) == before
+        if cache_location == "source":
+            for original in snapshot.iterdir():
+                assert (payload / original.relative_to(source)).read_bytes() == original.read_bytes()
+        else:
+            assert not payload.exists()
+
+
 @pytest.mark.skipif(__import__("platform").system() != "Windows", reason="v1 supports Windows imports")
 @pytest.mark.parametrize("failure", ["invalid-yaml", "screen-write"])
 def test_skipped_configuration_preserves_initialized_screen_settings(
@@ -1175,17 +1116,11 @@ def test_memory_model_preparation_failure_preserves_imported_memory(
     target.mkdir()
     existing = target / "existing.txt"
     existing.write_text("keep", encoding="utf-8")
-    _install_fake_memory_model_runtime(monkeypatch)
 
-    def fail_download(*_args: object, **_kwargs: object) -> object:
-        raise RuntimeError("private downloader detail")
+    def fail_snapshot(*_args: object, **_kwargs: object) -> object:
+        raise PermissionError("model cache is unreadable")
 
-    monkeypatch.setattr(memory_runtime, "download_embedding_model", fail_download)
-    monkeypatch.setattr(
-        legacy_importer,
-        "_prepare_memory_model",
-        _REAL_PREPARE_MEMORY_MODEL,
-    )
+    monkeypatch.setattr(memory_runtime, "_embedding_model_snapshot", fail_snapshot)
 
     report, pending = run_legacy_import(
         source,

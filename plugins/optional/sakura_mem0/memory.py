@@ -650,8 +650,7 @@ class MemoryStore:
                                  [(self.scope_id, entry.entry_id) for entry in entries])
             if cursor:
                 state = self.get_state(state_key, default={})
-                state.update({"curation_cursor": cursor, "timeline_sync_cursor": cursor,
-                              "pending_turns": 0, "backfill_completed": True})
+                state.update({"curation_cursor": cursor, "pending_turns": 0})
                 self._set_state(state_key, state)
         self._index.schedule()
         return counts

@@ -1457,6 +1457,8 @@ export function createPluginSettingsFeature({
     const container = document.createElement("div");
     container.className = "plugin-settings";
     container.components = [];
+    const updates = [];
+    container.update = () => updates.forEach(update => update());
     if (!sections.length) {
       return container;
     }
@@ -1499,7 +1501,6 @@ export function createPluginSettingsFeature({
           const actions = component.element.querySelector(".plugin-setting-actions");
           if (actions) block.append(actions);
         }
-        const update = component.update;
         let panel;
         if (tabbed) {
           if (!recordTabs.parentElement) container.append(recordTabs);
@@ -1522,7 +1523,7 @@ export function createPluginSettingsFeature({
           });
           recordTabs.append(tab);
         }
-        component.update = () => {
+        const update = () => {
           const values = pluginSectionValues(plugin.id, section.section_id);
           const available = !section.presentation.visibleField || Boolean(values[section.presentation.visibleField]);
           if (panel) {
@@ -1533,9 +1534,10 @@ export function createPluginSettingsFeature({
             selectRecordSection(visible.some(entry => entry.section.section_id === selectedRecordSection)
               ? selectedRecordSection : visible[0]?.section.section_id);
           } else block.hidden = !available;
-          update?.();
+          component.update?.();
         };
-        component.update();
+        updates.push(update);
+        update();
         container.append(block); return;
       }
       const block = document.createElement("section");
@@ -3188,7 +3190,7 @@ export function createPluginSettingsFeature({
       notify('插件状态已变化，请重新打开设置。', 'info');
       return;
     }
-    editor.general.components?.forEach(component => component.update?.());
+    editor.general.update();
     const draftHint = editor.dialog.querySelector(".plugin-draft-hint");
     if (draftHint) draftHint.hidden = !pluginSettingsSections(plugin).some(section =>
       !sectionDestination(section) && (!section.presentation?.visibleField || pluginSectionValues(plugin.id, section.section_id)[section.presentation.visibleField])
@@ -3295,7 +3297,8 @@ export function createPluginSettingsFeature({
     document.body.append(dialog);
 
     general.querySelectorAll('select').forEach(enhanceSelect);
-    general.components?.forEach(component => { component.update?.(); component.mounted?.(); });
+    general.update();
+    general.components.forEach(component => component.mounted?.());
     close.addEventListener('click', () => void editor.close()); cancel.addEventListener('click', () => void editor.close());
     dialog.addEventListener('cancel', (event) => { event.preventDefault(); void editor.close(); });
     form.addEventListener('submit', (event) => {
