@@ -87,6 +87,15 @@ function pluginStatus({ state = "", reasonCode = "", unavailable = [] } = {}) {
   if (reasonCode === "PLUGIN_DISABLED" || state === "disabled") {
     return result("已停用");
   }
+  if (state === "stopping") {
+    return result("正在停止");
+  }
+  if (state === "waiting" || reasonCode === "NOT_STARTED") {
+    return result("等待启动");
+  }
+  if (state === "starting" || reasonCode === "PLUGIN_STARTING") {
+    return result("正在启动");
+  }
   if (reasonCode === "PLUGIN_APPLICATION_NOT_READY") {
     return result("正在启动");
   }
@@ -285,7 +294,8 @@ export function projectPluginActivity(plugin = {}) {
   if (["starting", "waiting", "stopping"].includes(outerState)) {
     return Object.freeze({
       state: "working",
-      label: { starting: "正在启动", waiting: "等待启动", stopping: "正在停止" }[outerState],
+      label: outerState === "starting" && outerReason === "NOT_STARTED" ? "等待启动"
+        : { starting: "正在启动", waiting: "等待启动", stopping: "正在停止" }[outerState],
       message: "",
       hasRunningResource: false,
       isTransient: true,

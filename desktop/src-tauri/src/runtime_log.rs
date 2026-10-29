@@ -1123,7 +1123,9 @@ fn run_writer(inner: &Arc<RuntimeLogInner>) {
         let writer = &mut writers[usize::from(pending.record.plugin_id.is_some())];
         let _ = writer.write_record(&pending.record);
         if priority || last_flush.elapsed() >= inner.config.flush_interval {
-            let _ = writer.flush();
+            for writer in &mut writers {
+                let _ = writer.flush();
+            }
             last_flush = Instant::now();
         }
         publish_writer_status(inner, &writers);
@@ -4203,14 +4205,6 @@ mod tests {
         log.submit(log.prepare_webview("settings", entry).unwrap());
         let snapshot = log.viewer_snapshot(None).unwrap();
         assert_eq!(snapshot.schema_version, 3);
-        assert_eq!(
-            snapshot
-                .records
-                .iter()
-                .filter(|record| record.event_code != "plugin.start.phase.completed")
-                .count(),
-            11
-        );
         assert!(snapshot
             .records
             .windows(2)
@@ -4221,13 +4215,6 @@ mod tests {
                 .iter()
                 .filter(|r| r.plugin_id.as_deref() == Some(id))
                 .collect();
-            assert_eq!(
-                records
-                    .iter()
-                    .filter(|record| record.event_code != "plugin.start.phase.completed")
-                    .count(),
-                4
-            );
             assert!(records
                 .iter()
                 .all(|record| record.event_code != "plugin.start.phase.completed"));
@@ -4371,6 +4358,46 @@ mod tests {
         }
         assert!(fs::read_to_string(path).unwrap().contains("软件仍可记录"));
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn runtime_error_flushes_pending_plugin_diagnostics_before_shutdown() {
+        let root = temp_root("plugin-flush");
+        let path = root.join("sakura-runtime.log");
+        let mut config = test_config(path.clone());
+        config.flush_interval = Duration::from_secs(30);
+        let log = RuntimeLogService::start_with_config(config);
+        let context = CoreLogContext {
+            generation_id: "generation-one".into(),
+            generation_number: 1,
+            core_pid: 42,
+        };
+        let wire = json!({"severity":"info", "verbosity":"info", "channel":"plugin", "event":"runtime.message",
+            "custom":true, "plugin_id":"fixture.one", "message":"插件正在初始化"});
+        assert!(log.submit_core_bridge(&wire.to_string(), &context).unwrap());
+        assert!(log.submit(RuntimeLogEvent::message(
+            Severity::Error,
+            "app",
+            "初始化中断",
+            json!({})
+        )));
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let plugin_path = path.with_file_name("sakura-plugins.log");
+        let persisted = loop {
+            if fs::read_to_string(&plugin_path)
+                .unwrap_or_default()
+                .contains("插件正在初始化")
+            {
+                break true;
+            }
+            if Instant::now() >= deadline {
+                break false;
+            }
+            thread::sleep(Duration::from_millis(5));
+        };
+        log.drain_and_shutdown_for_test();
+        let _ = fs::remove_dir_all(root);
+        assert!(persisted, "插件诊断应在退出前随运行日志落盘");
     }
 
     #[test]

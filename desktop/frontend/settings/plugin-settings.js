@@ -448,12 +448,7 @@ export function createPluginSettingsFeature({
     });
   }
 
-  function pluginStatusIsStarting(plugin) {
-    return plugin?.reason_code === "PLUGIN_APPLICATION_NOT_READY";
-  }
-
   function pluginHasExceptionalStatus(plugin) {
-    if (pluginStatusIsStarting(plugin)) return false;
     const status = pluginStatusCopy(plugin);
     return Boolean(status.message || status.diagnostic);
   }

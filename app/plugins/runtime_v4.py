@@ -1431,6 +1431,7 @@ class PluginRuntimeManager:
 
     def _start_one_impl(self, record: _RuntimeRecord, diagnostics: dict[str, object], *, only_unstarted: bool = False) -> bool | None:
         from app.core.diagnostics import exception_diagnostics
+        from app.core.runtime_log import log_message
 
         spec = record.spec
         assert spec.plugin_root is not None
@@ -1463,6 +1464,9 @@ class PluginRuntimeManager:
                 record.reason_code = "MISSING_SERVICE"
                 return False
         stage = "prepare"
+        log_message("info", "开始启动插件", component="plugin",
+            plugin_id=spec.plugin_id, plugin_name=spec.name,
+            fields={"event": "plugin.start.started", "stage": stage})
         try:
             if self._before_start is not None:
                 self._before_start(spec)
