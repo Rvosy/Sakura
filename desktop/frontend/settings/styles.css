@@ -914,20 +914,21 @@ body.is-first-run-guide-active .settings-page.is-active > * {
   height: 14px;
 }
 
-.semantic-status.is-working {
-  --status-ink: var(--sakura-primary-hover);
+.semantic-status.is-ready {
+  --status-ink: color-mix(in srgb, #278655 80%, var(--sakura-text));
 }
 
 .semantic-status.is-working > .sakura-icon {
   animation: lucide-refresh 1s linear infinite;
 }
 
+.semantic-status.is-working,
 .semantic-status.is-warning {
-  --status-ink: color-mix(in srgb, #a36d16 65%, var(--sakura-text));
+  --status-ink: color-mix(in srgb, #b66b14 80%, var(--sakura-text));
 }
 
 .semantic-status.is-error {
-  --status-ink: color-mix(in srgb, #c43a52 65%, var(--sakura-text));
+  --status-ink: color-mix(in srgb, #c43a52 80%, var(--sakura-text));
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -2366,7 +2367,7 @@ input[type="checkbox"]:disabled + span {
   grid-template-columns: minmax(0, 1fr);
   gap: 0;
   padding: 0;
-  cursor: default;
+  cursor: pointer;
 }
 
 .memory-card:hover,
@@ -4841,7 +4842,8 @@ body:has(#page-plugins.is-active) .page-head { display: none; }
 #pluginList .plugin-card-main { padding: 0; gap: 6px; }
 .plugin-card-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; line-height: 1.45; }
 .plugin-card-footer { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 0 12px 11px 47px; }
-.plugin-update-button { display: inline-flex; align-items: center; gap: 5px; margin-left: auto; min-height: 26px; padding: 3px 8px; border: 1px solid var(--hairline); border-radius: 5px; background: var(--surface-raised); color: var(--sakura-primary-hover); font-size: 11px; line-height: 1.5; white-space: nowrap; }
+.plugin-card-footer .semantic-status { min-height: 20px; margin-left: auto; padding: 0; border: 0; background: transparent; }
+.plugin-update-button { display: inline-flex; align-items: center; gap: 5px; min-height: 26px; padding: 3px 8px; border: 1px solid var(--hairline); border-radius: 5px; background: var(--surface-raised); color: var(--sakura-primary-hover); font-size: 11px; line-height: 1.5; white-space: nowrap; }
 .plugin-update-button .sakura-icon { width: 14px; height: 14px; }
 #pluginList .card-desc { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; font-size: 11px; line-height: 1.65; }
 .plugin-avatar { display: inline-flex; justify-content: center; align-items: center; width: 34px; height: 34px; color: var(--sakura-primary); flex-shrink: 0; }

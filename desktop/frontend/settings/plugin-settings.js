@@ -666,6 +666,9 @@ export function createPluginSettingsFeature({
         if (!card || card.dataset.signature !== signature) {
           card = pluginNode('article', `plugin-card${selected ? ' is-selected' : ''}`);
           card.dataset.pluginInstallId = plugin.id; card.dataset.signature = signature;
+          card.addEventListener('click', event => {
+            if (!event.target.closest('button')) selectManagedPlugin(plugin.id);
+          });
           const select = pluginNode('button', 'plugin-card-select');
           select.type = 'button'; select.setAttribute('aria-pressed', String(selected));
           select.setAttribute('aria-label', `查看 ${plugin.name || plugin.plugin_id || plugin.id}`);
@@ -681,9 +684,7 @@ export function createPluginSettingsFeature({
           const live = renderSemanticStatus(activity);
           live.id = `plugin-live-${plugin.id}`;
           select.setAttribute('aria-describedby', live.id);
-          live.dataset.tooltip = [activity.label, activity.message].filter(Boolean).join('：');
           live.setAttribute('aria-label', `运行状态：${activity.label}`);
-          footer.append(live);
           if (update) {
             const button = pluginNode('button', 'plugin-update-button', '查看更新');
             button.type = 'button'; button.prepend(createIcon(document, 'circle-arrow-up'));
@@ -692,6 +693,7 @@ export function createPluginSettingsFeature({
             button.addEventListener('click', () => openUpdate(update.id));
             footer.append(button);
           }
+          footer.append(live);
           card.append(select, footer);
         }
         cards.append(card);
@@ -3145,7 +3147,7 @@ export function createPluginSettingsFeature({
     }
     return {
       state,
-      label: activity.label || status.label,
+      label: state === 'ready' ? '正常' : activity.label || status.label,
       message: activity.message || status.message,
       diagnostic: status.diagnostic,
     };

@@ -14,6 +14,28 @@ function catalog() {
   return data;
 }
 
+test("plugin card status and empty areas select the plugin without changing its configuration", async () => {
+  const ui = featureFixture(async () => assert.fail("selecting a plugin must not write settings"));
+  const data = catalog();
+  const runtimeStatus = { state: "ready", label: "运行正常", message: "" };
+  data.plugins[2].sections = [{ sectionId: "runtime", title: "运行状态", reasonCode: "READY",
+    fields: [field("status", { type: "status", placement: "section_header", value: runtimeStatus })],
+    values: { status: runtimeStatus }, actions: [], collections: [] }];
+  ui.feature.initialize(data);
+  const card = index => ui.document.querySelector(`.plugin-card[data-plugin-install-id="${installId(index)}"]`);
+  const detail = ui.document.getElementById("pluginDetail");
+  assert.equal(card(1).querySelector('.semantic-status').textContent,
+    card(3).querySelector('.semantic-status').textContent);
+  await card(1).fire("click", { target: card(1).querySelector('.semantic-status') });
+  assert.equal(detail.dataset.pluginId, installId(1));
+  await card(3).fire("click");
+  assert.equal(detail.dataset.pluginId, installId(3));
+  await card(1).querySelector('.plugin-card-select').fire("click");
+  assert.equal(detail.dataset.pluginId, installId(1));
+  assert.equal(ui.feature.isDirty(), false);
+  ui.feature.dispose();
+});
+
 test("system components begin collapsed and category navigation reveals them", async () => {
   const ui = featureFixture(async () => assert.fail("catalog navigation must not write"));
   const { document } = ui;
