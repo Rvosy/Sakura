@@ -111,9 +111,8 @@ function createAccountPanel(context, initial, apply) {
   });
   codeRow.append(loginCode, copy);
   codeSection.append(node("p", "detail-desc", "复制代码，在浏览器中完成登录。"), codeRow, open);
-  actions.append(login, logout, retry, remove);
-  // 进度和登录代码出现在操作区下方，按钮在状态切换时保持原位。
-  panel.append(heading, nameRow, accountLabel, hint, actions, status, codeSection);
+  actions.append(login, retry, logout, remove);
+  panel.append(heading, nameRow, accountLabel, hint, status, codeSection, actions);
 
   function render() {
     const loggedIn = state.account.loggedIn;
