@@ -157,7 +157,7 @@ html.is-theme-view-transition::view-transition-new(root) {
   --settings-titlebar-height: 56px;
 }
 
-.settings-window .settings-shell { animation: none; }
+.settings-window .settings-shell { animation: none; transition: grid-template-columns var(--motion-medium) var(--ease); }
 
 .settings-window .nav-card,
 .settings-window .detail-card {
@@ -199,25 +199,29 @@ html.is-theme-view-transition::view-transition-new(root) {
 }
 
 .settings-window .nav-card { min-width: 0; gap: 0; padding: 0; border-right: 1px solid var(--hairline); }
-.settings-window .nav-brand { justify-content: flex-start; gap: 9px; min-height: var(--settings-titlebar-height); flex-shrink: 0; padding: 0 12px 0 20px; overflow: hidden; }
-.settings-window .nav-brand-text { flex: 1; min-width: 0; }
-.settings-window .nav-list { flex: 1; padding: 12px 12px 18px; }
+.settings-window .nav-brand { position: relative; justify-content: flex-start; gap: 9px; min-height: var(--settings-titlebar-height); flex-shrink: 0; padding: 0 48px 0 20px; overflow: hidden; }
+.settings-window .nav-brand-text { flex: 1; min-width: 0; white-space: nowrap; }
+.settings-window .nav-brand-icon,
+.settings-window .nav-brand-text,
+.settings-window .nav-item-label { transition: opacity var(--motion-fast) var(--ease); }
+.settings-window .nav-list { flex: 1; padding: 12px 10px 18px; }
+.settings-window .nav-item { min-width: 0; padding-inline: 16px; }
+.settings-window .nav-group-label { max-height: 24px; overflow: hidden; white-space: nowrap; transition: max-height var(--motion-medium) var(--ease), padding var(--motion-medium) var(--ease), opacity var(--motion-fast) var(--ease); }
 .nav-brand-icon { width: 24px; height: 24px; object-fit: contain; flex-shrink: 0; }
-.nav-toggle { display: grid; place-items: center; flex: none; width: 28px; height: 28px; min-width: 0; min-height: 0; padding: 0; border: 0; border-radius: 6px; background: transparent; color: var(--sakura-secondary-text); box-shadow: none; }
+.nav-toggle { position: absolute; right: 12px; top: calc((var(--settings-titlebar-height) - 28px) / 2); display: grid; place-items: center; width: 28px; height: 28px; min-width: 0; min-height: 0; padding: 0; border: 0; border-radius: 6px; background: transparent; color: var(--sakura-secondary-text); box-shadow: none; transition: right var(--motion-medium) var(--ease), background-color var(--motion-base) var(--ease); }
 .nav-toggle:hover:not(:disabled) { background: var(--tint-soft); color: var(--sakura-text); transform: none; box-shadow: none; }
 .nav-toggle svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round; }
-.nav-footer { flex: none; min-height: 48px; padding: 14px 22px; color: var(--sakura-muted-text); font-size: 12px; line-height: 20px; overflow-wrap: anywhere; }
+.nav-footer { flex: none; min-height: 48px; padding: 14px 20px; overflow: hidden; color: var(--sakura-muted-text); font-size: 12px; line-height: 20px; white-space: nowrap; }
 .settings-window.is-sidebar-collapsed { --settings-nav-width: 72px; }
-.is-sidebar-collapsed .nav-brand { justify-content: center; padding: 0; }
 .is-sidebar-collapsed .nav-brand-icon,
-.is-sidebar-collapsed .nav-brand-text { display: none; }
+.is-sidebar-collapsed .nav-brand-text,
+.is-sidebar-collapsed .nav-item-label { opacity: 0; }
+.is-sidebar-collapsed .nav-toggle { right: calc(50% - 14px); }
 .is-sidebar-collapsed .nav-toggle svg { transform: rotate(180deg); }
 .settings-window.is-sidebar-collapsed .nav-list { padding: 12px 10px 18px; scrollbar-gutter: auto; scrollbar-width: none; }
 .is-sidebar-collapsed .nav-list::-webkit-scrollbar { display: none; }
-.is-sidebar-collapsed .nav-item { justify-content: center; min-width: 0; gap: 0; padding: 0; }
-.is-sidebar-collapsed .nav-item-label,
-.is-sidebar-collapsed .nav-group-label { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
-.is-sidebar-collapsed .nav-footer { padding-inline: 8px; text-align: center; font-size: 11px; }
+.is-sidebar-collapsed .nav-item { gap: 0; }
+.settings-window.is-sidebar-collapsed .nav-group-label { max-height: 0; padding-block: 0; opacity: 0; }
 
 .nav-list {
   display: flex;
@@ -4742,6 +4746,12 @@ input.is-invalid:hover,
 
 @media (prefers-reduced-motion: reduce) {
   :root { --motion-page: 0s; }
+  .settings-window .settings-shell,
+  .settings-window .nav-toggle,
+  .settings-window .nav-brand-icon,
+  .settings-window .nav-brand-text,
+  .settings-window .nav-item-label,
+  .settings-window .nav-group-label { transition: none; }
 }
 
 @keyframes overlay-in {

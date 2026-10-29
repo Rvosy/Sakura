@@ -23,6 +23,7 @@ export function installTooltips(doc = document) {
   function hide() {
     win.clearTimeout(timer);
     observer.disconnect();
+    layoutObserver.disconnect();
     describe(false);
     if (tip.matches(":popover-open")) tip.hidePopover();
     tip.hidden = true;
@@ -56,6 +57,7 @@ export function installTooltips(doc = document) {
   }
 
   const observer = new win.MutationObserver(refresh);
+  const layoutObserver = new win.ResizeObserver(refresh);
   function show(target, delay = 400) {
     win.clearTimeout(timer);
     if (anchor === target && !tip.hidden) return;
@@ -63,6 +65,7 @@ export function installTooltips(doc = document) {
     anchor = target;
     observer.observe(doc.body, { subtree: true, childList: true, attributes: true,
       attributeFilter: ["data-tooltip", "data-tooltip-side", "hidden", "class"] });
+    layoutObserver.observe(target.parentElement);
     timer = win.setTimeout(() => {
       refresh();
       if (!anchor) return;
