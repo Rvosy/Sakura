@@ -1,7 +1,7 @@
 /* 插件市场使用主程序主题；规则限定在市场和详情弹窗内。 */
 #market-tabs { --tab-count: 2; margin-right: auto; flex-shrink: 0; height: 38px; }
 #market-tabs .plugin-role-tab { min-height: 32px; padding-block: 5px; }
-.plugin-update-action { display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0; min-height: 32px; min-width: 0; padding: 6px 10px; font-size: 12px; white-space: nowrap; border-color: var(--hairline); background: var(--surface-raised); box-shadow: none; }
+#pluginPageActions .plugin-update-action { display: inline-flex; align-items: center; justify-content: center; gap: 6px; flex-shrink: 0; min-height: 32px; min-width: 0; padding: 6px 10px; font-size: 12px; white-space: nowrap; border-color: var(--hairline); background: var(--surface-raised); box-shadow: none; }
 .plugin-update-action .sakura-icon { width: 15px; height: 15px; }
 #refresh[aria-busy="true"] .sakura-icon { animation: plugin-update-spin 1s linear infinite; }
 @keyframes plugin-update-spin { to { transform: rotate(360deg); } }

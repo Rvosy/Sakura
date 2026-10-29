@@ -48,6 +48,7 @@ export function createPluginMarketplace({ document, host, notify, showError = ({
     syncInstalledPlugins(plugins, host.installedPlugins());
     const updates = availableUpdates(plugins);
     const count = plugins.filter(p => updating(p) && canInstall(p, source)).length;
+    upgradeAllButton.hidden = !count && !batch;
     upgradeAllButton.disabled = Boolean(batch) || !count || [...tasks.values()].some(task => task.state === "running");
     upgradeAllButton.setAttribute("aria-busy", String(Boolean(batch)));
     upgradeAllButton.innerHTML = `${icon("circle-arrow-up")}<span>${batch ? `升级中（${batch.done}/${batch.total}）` : `全部升级${count ? `（${count}）` : ""}`}</span>`;

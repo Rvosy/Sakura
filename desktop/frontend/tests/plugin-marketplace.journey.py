@@ -118,7 +118,7 @@ def check_bulk_upgrade(page, failure):
     expect(failure).to_be_visible()
     expect(failure.locator('.sakura-error-message')).to_contain_text('已升级 1 个插件')
     expect(failure.locator('pre')).to_contain_text('old directory is locked')
-    expect(page.locator('#plugin-upgrade-all')).to_be_disabled()
+    expect(page.locator('#plugin-upgrade-all')).not_to_be_visible()
     assert page.evaluate("fixture.local.find(p=>p.pluginId==='alpha').version") == '2.0.0'
     failure.get_by_role('button', name='关闭', exact=True).click()
     check.click()
@@ -311,7 +311,7 @@ def run():
             expect(dialog.locator('[data-install]')).to_be_disabled()
             expect(dialog.locator('[data-install]')).to_have_text('更新至 0.2.7')
             expect(dialog.locator('.compat-note')).to_contain_text('需要 Sakura 9.0.0')
-            expect(page.locator('#plugin-upgrade-all')).to_be_disabled()
+            expect(page.locator('#plugin-upgrade-all')).not_to_be_visible()
             expect(page.locator('.market-card')).to_contain_text('0.2.6 → 0.2.7')
             for width in [803, 360]:
                 page.set_viewport_size({"width": width, "height": 640})
