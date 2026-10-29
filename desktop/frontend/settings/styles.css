@@ -157,7 +157,7 @@ html.is-theme-view-transition::view-transition-new(root) {
   --settings-titlebar-height: 56px;
 }
 
-.settings-window .settings-shell { animation: none; transition: grid-template-columns var(--motion-base) var(--ease); }
+.settings-window .settings-shell { animation: none; }
 
 .settings-window .nav-card,
 .settings-window .detail-card {
@@ -4742,7 +4742,6 @@ input.is-invalid:hover,
 
 @media (prefers-reduced-motion: reduce) {
   :root { --motion-page: 0s; }
-  .settings-window .settings-shell { transition: none; }
 }
 
 @keyframes overlay-in {
