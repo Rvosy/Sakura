@@ -40,6 +40,14 @@ def local_target():
             ('Darwin', 'arm64'): 'macos-arm64'}.get((platform.system(), platform.machine().lower()))
 
 
+def cuda_storage(directory):
+    # NVRTC 不能读取中文路径中的头文件；同盘迁移复用系统重命名，不复制整合包。
+    parent = next((path for path in directory.parents if str(path).isascii()), None)
+    if parent is None:
+        raise ValueError('CUDA 运行环境需要 ASCII 路径。请在运行环境目录中选择本地目录，例如 D:\\SakuraTTS。')
+    return Path(tempfile.mkdtemp(prefix='sakura-tts-', dir=parent))
+
+
 def online_package():
     target = local_target()
     if target is None:
@@ -247,6 +255,7 @@ class BundleStore:
                 value = {**value, 'directory': pending['destination']}
                 if 'storageDirectory' in pending:
                     value['storageDirectory'] = pending['storageDirectory']
+                    value.pop('defaultStorage', None)
                 if pending.get('defaultStorage'):
                     value['defaultStorage'] = True
                 try:
@@ -262,36 +271,46 @@ class BundleStore:
         root = (self.storage_directory / value['directory']).resolve()
         if not root.is_relative_to(self.storage_directory.resolve()):
             raise ValueError('运行环境目录无效。')
-        if self.storage_directory == self.directory and (self.default_storage != self.directory or Path(value['directory']).parts[0] == 'versions'):
-            root = self._shorten_current(root, value)
-        current = inspect_bundle(root)
+        root, release = inspect_bundle(root)
+        needs_ascii = (os.name == 'nt' and 'cuda' in release.get('backends', [release['backend']]) and not str(root).isascii()
+                       and 'storageDirectory' not in value)
+        if needs_ascii or (self.storage_directory == self.directory and (
+                self.default_storage != self.directory or Path(value['directory']).parts[0] == 'versions')):
+            root = self._shorten_current(root, value, needs_ascii=needs_ascii)
         self.release_id = value.get('releaseId')
-        return current
+        return root, release
 
     def _write_record(self, value):
         temporary = self.directory / 'current.json.tmp'
         temporary.write_text(json.dumps(value), encoding='utf-8')
         os.replace(temporary, self.directory / 'current.json')
 
-    def _shorten_current(self, root, record):
+    def _shorten_current(self, root, record, *, needs_ascii=False):
         try:
-            self.default_storage.mkdir(parents=True, exist_ok=True)
-            destination = Path(tempfile.mkdtemp(prefix='v-', dir=self.default_storage))
+            if needs_ascii:
+                storage = cuda_storage(self.default_storage)
+            else:
+                storage = self.default_storage
+                storage.mkdir(parents=True, exist_ok=True)
+            destination = Path(tempfile.mkdtemp(prefix='v-', dir=storage))
             destination.rmdir()
-            relative = destination.relative_to(self.default_storage).as_posix()
+            relative = destination.relative_to(storage).as_posix()
             updated = {**record, 'directory': relative}
             pending = {'current': record, 'destination': relative}
-            if self.default_storage != self.directory:
+            if storage != self.default_storage:
+                updated.pop('defaultStorage', None)
+                updated['storageDirectory'] = pending['storageDirectory'] = str(storage)
+            elif self.default_storage != self.directory:
                 updated['defaultStorage'] = pending['defaultStorage'] = True
             relocation = self.directory / 'relocation.json'
             temporary = relocation.with_suffix('.tmp')
             temporary.write_text(json.dumps(pending), encoding='utf-8')
             os.replace(temporary, relocation)
-            self.log('info', '正在缩短 SakuraTTS 安装目录', event='tts.bundle.relocating',
+            self.log('info', '正在调整 SakuraTTS 安装目录', event='tts.bundle.relocating',
                      source=str(root), destination=str(destination))
             # 移动后立即沿用实际目录，记录写入失败不影响本次使用。
             root = root.rename(destination)
-            self.storage_directory = self.default_storage
+            self.storage_directory = storage
             self._write_record(updated)
         except OSError as error:
             self.log('warning', '安装目录调整未完成，继续读取现有环境',
@@ -532,6 +551,11 @@ class BundleStore:
                 shutil.rmtree(previous_candidate)
             if package and (release.get('source_commit') != package['sourceCommit'] or release.get('source_dirty', True)):
                 raise ValueError('整合包源码版本与下载索引不一致。')
+            if (os.name == 'nt' and 'cuda' in release.get('backends', [release['backend']]) and not str(root).isascii()
+                    and storage == self.default_storage):
+                storage = cuda_storage(storage)
+                candidate = root.rename(storage / root.name)
+                root = candidate
             self.message = '正在检查运行环境'
             self.log('info', '正在检查 SakuraTTS 运行环境', event='tts.bundle.checking')
             self.probe(root, release, self.cancel_event)

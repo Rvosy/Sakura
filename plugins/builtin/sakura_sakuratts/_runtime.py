@@ -17,9 +17,34 @@ from sakura_process import terminate_process_tree
 try:
     from ._bundle import Cancelled
     from ._diagnostics import nvidia_device, operation
+    from ._storage import runtime_directory
 except ImportError:
     from _bundle import Cancelled
     from _diagnostics import nvidia_device, operation
+    from _storage import runtime_directory
+
+
+class RuntimeFailure(RuntimeError):
+    def __init__(self, output, backend, log):
+        # 运行检查输出 JSON；启动器在检查开始前失败时输出原始异常。
+        try:
+            report = json.loads(output[output.index('{'):])
+        except ValueError:
+            report = {}
+        reason = report.get('error') or (output.strip().splitlines() or ['进程未输出错误详情'])[-1]
+        self.device_unavailable = report.get('error_type') == 'CUDARuntimeError' and any(
+            code in reason for code in ('cudaErrorNoDevice', 'cudaErrorInsufficientDriver', 'cudaErrorSystemDriverMismatch'))
+        if 'ASCII' in reason:
+            message = 'CUDA 无法读取当前目录中的运行文件。请将“运行环境目录”设为不含中文等非 ASCII 字符的路径，再点击“迁移运行环境”。'
+        elif 'cudaErrorNoDevice' in reason:
+            message = 'CUDA 未找到可用的 NVIDIA 显卡。'
+        elif self.device_unavailable:
+            message = 'NVIDIA 驱动无法运行当前 CUDA 环境，请更新显卡驱动。'
+        else:
+            message = f'{backend.upper()} 运行失败：{reason}'
+        self.reason = message
+        super().__init__(f'{message}\n运行日志：{log}')
+        self.diagnostics = {'diagnostic': str(self), 'stderr': output}
 
 
 def process_path(path):
@@ -60,7 +85,7 @@ def probe(root, release, cancel, backend=None, cache=None):
                 if cancel.wait(.1):
                     raise Cancelled()
             if process.returncode:
-                raise RuntimeError(log.read_text(encoding='utf-8', errors='replace'))
+                raise RuntimeFailure(log.read_text(encoding='utf-8', errors='replace'), backend, log)
         finally:
             terminate_process_tree(process, timeout=5)
 
@@ -124,6 +149,8 @@ class Runtime:
         profile = config['cudaProfile'] if backend == 'cuda' else None
         with self.lock:
             self.stop()
+        if os.name == 'nt' and not str(self.directory).isascii() and str(root).isascii():
+            self.directory = runtime_directory(self.directory.parent, root.parent / 'runtime-data', self.emit)
         self.backend, self.profile = '', None
         self.selection_reason = ''
         if backend == 'auto':
@@ -132,10 +159,13 @@ class Runtime:
                 try:
                     probe(root, release, cancel, 'cuda', self.directory / 'cache')
                     backend = 'cuda'
-                except RuntimeError as error:
+                except RuntimeFailure as error:
+                    if not error.device_unavailable:
+                        raise
                     backend = 'cpu'
-                    self.selection_reason = 'NVIDIA 检查未通过，使用 CPU。'
-                    self.emit('warning', self.selection_reason, stage='backend_check', diagnostic=str(error))
+                    self.selection_reason = f'自动选择了 CPU。{error.reason}'
+                    self.emit('warning', self.selection_reason, stage='backend_check', backend=backend,
+                              **error.diagnostics)
         if backend not in release['backends']:
             raise ValueError('此整合包不支持所选推理后端。')
         with self.lock:
@@ -170,7 +200,7 @@ class Runtime:
                 if cancel.is_set():
                     raise Cancelled()
                 if process.poll() is not None:
-                    raise RuntimeError(self.log.read_text(encoding='utf-8', errors='replace'))
+                    raise RuntimeFailure(self.log.read_text(encoding='utf-8', errors='replace'), backend, self.log)
                 try:
                     self.request('/health', timeout=1)
                     self.emit('info', 'SakuraTTS 服务已就绪', event='tts.engine.ready', backend=backend,

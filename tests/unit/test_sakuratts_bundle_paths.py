@@ -63,6 +63,152 @@ def write_bundle(root):
     return release
 
 
+def enable_cuda(root):
+    marker = root / 'runtime/portable.json'
+    value = json.loads(marker.read_text(encoding='utf-8'))
+    value['release']['backends'] = ['cpu', 'cuda']
+    marker.write_text(json.dumps(value), encoding='utf-8')
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='Windows CUDA compiler paths')
+@pytest.mark.parametrize('failure', [None, 'rename', 'pointer'])
+def test_unicode_default_install_moves_to_ascii_and_recovers(tmp_path, monkeypatch, failure):
+    directory = tmp_path / '中文/Sakura/plugin/bundles'
+    directory.mkdir(parents=True)
+    storage = tmp_path / '中文/Sakura/tts/sakura'
+    old = storage / 'v-existing'
+    write_bundle(old)
+    enable_cuda(old)
+    record = {'directory': old.name, 'defaultStorage': True, 'releaseId': 'preview-1'}
+    (directory / 'current.json').write_text(json.dumps(record), encoding='utf-8')
+    with monkeypatch.context() as patch:
+        if failure == 'rename':
+            rename = Path.rename
+            def fail(path, target):
+                if path == old:
+                    raise PermissionError('bundle busy')
+                return rename(path, target)
+            patch.setattr(Path, 'rename', fail)
+        elif failure == 'pointer':
+            patch.setattr(_bundle.BundleStore, '_write_record', lambda *_: (_ for _ in ()).throw(OSError('record busy')))
+        store = store_at(directory, default_storage=storage)
+        assert store.current() is not None, store.error
+        assert str(store.current()[0]).isascii() == (failure != 'rename')
+        assert (store.current()[0] / 'launcher.py').read_text() == 'launcher fixture'
+    reopened = store_at(directory, default_storage=storage)
+    assert str(reopened.current()[0]).isascii()
+    assert reopened.current()[0].is_relative_to(tmp_path)
+    assert reopened.release_id == 'preview-1'
+    assert not old.exists()
+    assert store_at(directory, default_storage=storage).current() == reopened.current()
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='Windows CUDA compiler paths')
+def test_unicode_new_default_install_checks_ascii_location_and_keeps_custom_location(tmp_path):
+    source = tmp_path / 'package'
+    write_bundle(source)
+    enable_cuda(source)
+    archive = tmp_path / 'bundle.zip'
+    with zipfile.ZipFile(archive, 'w') as zipped:
+        for file in source.rglob('*'):
+            if file.is_file():
+                zipped.write(file, file.relative_to(source))
+    checked = []
+    directory, storage = tmp_path / '中文/plugin', tmp_path / '中文/tts/sakura'
+    store = store_at(directory, lambda root, *_: checked.append(root), default_storage=storage)
+    store.start({'bundlePath': str(archive), 'bundleDirectory': str(storage)})
+    finish(store)
+    assert store.state == 'succeeded', store.error
+    assert str(checked[0]).isascii()
+    assert store_at(directory, default_storage=storage).current() == store.current()
+    custom = tmp_path / '用户指定/v-custom'
+    release = write_bundle(custom)
+    enable_cuda(custom)
+    store._activate(custom, release, storage=custom.parent)
+    assert store_at(directory, default_storage=storage).current()[0] == custom
+
+
+@pytest.mark.parametrize(('output', 'fallback', 'message'), [
+    (json.dumps({'passed': False, 'error_type': 'CUDARuntimeError',
+                 'error': 'cudaErrorInsufficientDriver: insufficient driver'}), True, '驱动'),
+    (json.dumps({'passed': False, 'error_type': 'CompileException',
+                 'error': 'cannot open source file cuda/std/header.h'}), False, 'cuda/std/header.h'),
+    ('RuntimeError: This preview requires an ASCII installation path', False, '迁移运行环境'),
+])
+def test_probe_preserves_failure_and_only_allows_device_fallback(tmp_path, output, fallback, message):
+    root = tmp_path / 'engine'
+    root.mkdir()
+    (root / 'launcher.py').write_text(f'print({output!r})\nraise SystemExit(1)\n', encoding='utf-8')
+    with pytest.raises(_runtime.RuntimeFailure) as caught:
+        _runtime.probe(root, {'python_executable': sys.executable, 'backend': 'cuda'}, threading.Event())
+    assert caught.value.device_unavailable == fallback
+    assert message in str(caught.value)
+    assert output in caught.value.diagnostics['stderr']
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='Windows CUDA compiler paths')
+def test_cuda_start_migrates_unicode_cache_before_check(tmp_path, monkeypatch):
+    from plugins.builtin.sakura_sakuratts.plugin import configuration
+    source = tmp_path / '中文/runtime-data'
+    model = source / 'cache/models/voice.bin'
+    model.parent.mkdir(parents=True)
+    model.write_bytes(b'existing converted model')
+    root = tmp_path / 'ascii/v-1'
+    root.mkdir(parents=True)
+    runtime = _runtime.Runtime(source)
+    runtime.device_checked = True
+    def probe(_root, _release, _cancel, backend, cache):
+        assert backend == 'cuda'
+        assert str(cache).isascii()
+        assert (cache / 'models/voice.bin').read_bytes() == b'existing converted model'
+    monkeypatch.setattr(_runtime, 'probe', probe)
+    monkeypatch.setattr(_runtime.subprocess, 'Popen', lambda *_args, **_kw: SimpleNamespace(poll=lambda: None))
+    monkeypatch.setattr(_runtime, 'terminate_process_tree', lambda *_args, **_kw: None)
+    monkeypatch.setattr(runtime, 'request', lambda *_args, **_kw: {})
+    try:
+        runtime.start((root, {'backend': 'cpu', 'backends': ['cpu', 'cuda']}),
+                      configuration({'idleSeconds': 0}), {'gpt': 'voice.ckpt', 'sovits': 'voice.pth'}, threading.Event())
+        assert runtime.backend == 'cuda'
+        assert not source.exists()
+        assert (runtime.directory / 'cache/models/voice.bin').read_bytes() == b'existing converted model'
+    finally:
+        runtime.stop()
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='Windows CUDA compiler paths')
+def test_provider_reopens_migrated_cache_without_recreating_unicode_cache(tmp_path):
+    from plugins.builtin.sakura_sakuratts.plugin import Provider
+    plugin = tmp_path / '中文/plugin'
+    storage = tmp_path / '中文/tts/sakura'
+    root = storage / 'v-original'
+    write_bundle(root)
+    enable_cuda(root)
+    bundles = plugin / 'bundles'
+    bundles.mkdir(parents=True)
+    (bundles / 'current.json').write_text(json.dumps({'directory': root.name, 'defaultStorage': True}))
+    cache = storage / 'runtime-data/cache/voice.bin'
+    cache.parent.mkdir(parents=True)
+    cache.write_bytes(b'converted model')
+    logger = SimpleNamespace(**{level: lambda *_args, **_kw: None for level in ('info', 'warning', 'error')})
+    services = {'sakura.host.logging': logger, 'sakura.host.storage': SimpleNamespace(resolve=lambda *_: storage)}
+    context = SimpleNamespace(get=services.get, data_path=lambda _: plugin,
+                              config=SimpleNamespace(get=lambda: {}))
+    first = Provider(context)
+    try:
+        directory = first.runtime.directory
+        assert str(directory).isascii()
+        assert (directory / 'cache/voice.bin').read_bytes() == b'converted model'
+    finally:
+        first.close()
+    second = Provider(context)
+    try:
+        assert second.runtime.directory == directory
+        assert (directory / 'cache/voice.bin').read_bytes() == b'converted model'
+        assert not (storage / 'runtime-data').exists()
+    finally:
+        second.close()
+
+
 def legacy_install(tmp_path):
     directory = tmp_path / 'Sakura Desktop Pet/data/plugins/sakura.tts.sakuratts/bundles'
     root = directory / 'versions/54e64b773ac8450bafa984a82ce0ca29/SakuraTTS-windows-x64'

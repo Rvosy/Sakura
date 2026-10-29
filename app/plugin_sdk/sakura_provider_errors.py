@@ -126,6 +126,7 @@ def provider_exception_diagnostics(error: BaseException, *, secrets: Iterable[st
     pending = [error]
     rpc_wrappers_only = True
     has_group = False
+    diagnostic = None
     while pending and len(chain) < 16:
         current = pending.pop()
         if id(current) in seen:
@@ -144,6 +145,9 @@ def provider_exception_diagnostics(error: BaseException, *, secrets: Iterable[st
             )
         else:
             message = sanitize_provider_diagnostic(str(current), secrets=secrets)
+        # 外层异常可能包含 HTTP 响应正文，不能被底层的通用状态覆盖。
+        if diagnostic is None and not rpc_wrappers_only:
+            diagnostic = message
         summary = f"{type(current).__name__}: {message}"
         chain.append(summary)
         stacks.append(summary + "\n" + "".join(traceback.format_tb(current.__traceback__, limit=-32)))
@@ -154,7 +158,7 @@ def provider_exception_diagnostics(error: BaseException, *, secrets: Iterable[st
         if cause is not None:
             pending.append(cause)
     diagnostics = {
-        "diagnostic": message,
+        "diagnostic": diagnostic if diagnostic is not None else message,
         "error_type": type(error).__name__,
         "cause_type": type(root).__name__,
         "exception_chain": sanitize_provider_diagnostic(("\nException: " if has_group else "\nCaused by: ").join(chain), secrets=secrets),
