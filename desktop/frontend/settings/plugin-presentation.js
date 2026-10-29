@@ -82,7 +82,7 @@ function pluginStatus({ state = "", reasonCode = "", unavailable = [] } = {}) {
     return result("需要更新", "模型接口已更新，请安装这个插件的兼容版本。", reasonCode);
   }
   if (NORMAL_REASONS.has(reasonCode) || state === "active") {
-    return result("运行正常");
+    return result("已就绪");
   }
   if (reasonCode === "PLUGIN_DISABLED" || state === "disabled") {
     return result("已停用");
