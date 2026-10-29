@@ -2,7 +2,7 @@ export const marketplaceMarkup = `
 <section id="market-surface" class="market-page" hidden>
       <div class="market-tools">
         <label class="market-search"><span class="sakura-icon icon-search" aria-hidden="true"></span><input id="search" type="search" placeholder="搜索名称、作者或功能" aria-label="搜索插件" autocomplete="off"><kbd>/</kbd></label>
-        <button id="market-filter" class="market-filter-trigger secondary-button" type="button" aria-expanded="false" aria-controls="market-filter-panel" popovertarget="market-filter-panel">筛选</button>
+        <button id="market-filter" class="market-filter-trigger secondary-button" type="button" aria-expanded="false" aria-controls="market-filter-panel" popovertarget="market-filter-panel"><span class="market-filter-label">筛选</span><span class="sakura-icon icon-chevron-down" aria-hidden="true"></span></button>
         <button id="market-submit" class="market-submit-button primary-button" type="button" aria-haspopup="dialog" aria-controls="market-submit-dialog"><span class="sakura-icon icon-circle-arrow-up" aria-hidden="true"></span>上传插件</button>
       </div>
       <div class="market-filters">

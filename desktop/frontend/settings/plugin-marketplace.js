@@ -111,7 +111,7 @@ export function createPluginMarketplace({ document, host, notify, showError = ({
     $("market-surface").querySelector(".market-foot").hidden = unavailable;
     $("result-count").textContent = unavailable ? "目录未加载" : `${matches.length} 个${view === "installed" ? "已安装插件" : "插件"}`;
     $("market-filter").disabled = unavailable;
-    $("market-filter").textContent = !$("compatible").checked || $("hide-installed").checked || $("sort").value !== "default" ? "筛选 · 已调整" : "筛选";
+    $("market-filter").querySelector(".market-filter-label").textContent = !$("compatible").checked || $("hide-installed").checked || $("sort").value !== "default" ? "筛选 · 已调整" : "筛选";
     $("sort").disabled = unavailable;
     $("refresh").disabled = refreshing || ["loading", "restoring"].includes(catalogState) || !source;
     $("search").disabled = unavailable;

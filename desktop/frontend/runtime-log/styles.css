@@ -111,12 +111,13 @@ h1 {
 .custom-select.is-open .custom-select__caret { transform: rotate(180deg); }
 .custom-select__trigger:hover, .custom-select.is-open .custom-select__trigger { border-color: var(--primary); }
 .custom-select__menu {
-  display: none; position: fixed; z-index: 2200; max-height: 260px; overflow-y: auto; scrollbar-gutter: stable;
+  display: none; position: fixed; z-index: 2200; max-height: 260px; overflow-y: auto;
   padding: 5px; border: 1px solid var(--border); border-radius: 9px;
-  background: var(--input-background); color: var(--text); scrollbar-width: thin;
+  background: var(--input-background); color: var(--text); scrollbar-width: none;
   box-shadow: 0 5px 18px color-mix(in srgb, var(--text) 12%, transparent);
 }
 .custom-select__menu[popover] { margin: 0; inset: auto; }
+.custom-select__menu::-webkit-scrollbar { display: none; }
 .custom-select__menu.is-open { display: block; }
 .custom-select__option {
   padding: 7px 10px; border-radius: 6px; font-size: 12px; cursor: pointer;

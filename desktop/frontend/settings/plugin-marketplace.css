@@ -156,15 +156,22 @@ dialog.download-sources-dialog { box-sizing: border-box; width: min(660px, calc(
 .download-source-actions button:first-child { margin-right: auto; }
 
 /* Compact marketplace controls. */
-#pluginInstallMenuButton { min-width: 0; min-height: 32px; width: auto; padding: 6px 10px; font-size: 12px; line-height: 1.5; border-color: var(--hairline); background: var(--surface-raised); box-shadow: none; }
+#pluginInstallMenuButton { display: inline-grid; place-items: center; flex-shrink: 0; min-width: 32px; min-height: 32px; width: 32px; height: 32px; padding: 0; border-color: var(--hairline); background: var(--surface-raised); box-shadow: none; }
 #pluginInstallMenuButton .sakura-icon { width: 16px; height: 16px; }
 #pluginInstallMenuButton:hover, #pluginInstallMenuButton[aria-expanded="true"] { border-color: var(--sakura-primary); background: var(--tint-soft); color: var(--sakura-primary); }
 .plugin-menu-label { padding: 7px 10px 4px; color: var(--sakura-muted-text); font-size: 11px; }
 #pluginInstallMenu .market-menu-action { border: 0; box-shadow: none; transform: none; }
 #pluginInstallMenu #market-sources { border-top: 1px solid var(--sakura-border); border-radius: 0; margin-top: 6px; padding-top: 12px; }
 body:has(#page-plugins:not([data-market-visible="true"])) #pluginInstallMenu .market-menu-action { display: none; }
-#market-surface .market-filter-trigger { flex-shrink: 0; padding: 8px 12px; min-height: 36px; border-color: transparent; background: transparent; box-shadow: none; transform: none; }
-.market-filter-panel { position: fixed; inset: auto; margin: 0; width: 240px; padding: 16px; box-sizing: border-box; overflow: visible; background: var(--surface-raised); color: var(--sakura-text); border: 1px solid var(--sakura-border); border-radius: 10px; box-shadow: var(--shadow-pop); font-size: 12px; }
+#market-surface .market-filter-trigger { flex-shrink: 0; gap: 8px; padding: 8px 12px; min-height: 36px; border-color: var(--sakura-border); background: var(--surface-raised); box-shadow: none; transform: none; }
+#market-surface .market-filter-trigger:hover:not(:disabled), #market-surface .market-filter-trigger[aria-expanded="true"] { border-color: var(--sakura-primary); background: var(--tint-soft); color: var(--sakura-primary); }
+.market-filter-trigger .sakura-icon { width: 14px; height: 14px; transition: transform var(--motion-base) var(--ease); }
+.market-filter-trigger[aria-expanded="true"] .sakura-icon { transform: rotate(180deg); }
+.market-filter-panel { position: fixed; inset: auto; margin: 0; width: 240px; padding: 16px; box-sizing: border-box; overflow: visible; background: var(--surface-raised); color: var(--sakura-text); border: 1px solid var(--sakura-border); border-radius: 10px; box-shadow: var(--shadow-pop); font-size: 12px; opacity: 0; transform: translateY(-4px); transition: opacity var(--motion-base) var(--ease), transform var(--motion-base) var(--ease), display var(--motion-base) allow-discrete, overlay var(--motion-base) allow-discrete; }
+.market-filter-panel:popover-open { opacity: 1; transform: translateY(0); }
+@starting-style {
+  .market-filter-panel:popover-open { opacity: 0; transform: translateY(-4px); }
+}
 .market-filter-panel::backdrop { background: transparent; }
 .market-filter-panel .compatibility { display: flex; gap: 8px; align-items: center; margin-bottom: 16px; }
 .market-filter-panel .compatibility input { width: 15px; height: 15px; margin: 0; }
@@ -178,4 +185,5 @@ body:has(#page-plugins:not([data-market-visible="true"])) #pluginInstallMenu .ma
 }
 @media (prefers-reduced-motion: reduce) {
   #pluginInstallMenu { animation: none; }
+  .market-filter-panel, .market-filter-trigger .sakura-icon { transition: none; }
 }
