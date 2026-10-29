@@ -520,6 +520,8 @@ def test_precision_reaches_engine_and_switching_profile_restarts_service(tmp_pat
 
 @pytest.mark.parametrize('failure', [RuntimeFailure(json.dumps({'error': 'cudaErrorInsufficientDriver',
                                     'error_type': 'CUDARuntimeError'}), 'cuda', 'check.log'),
+                                      RuntimeFailure(json.dumps({'error': 'cannot open source file "cuda/std/__cccl/is_non_narrowing_convertible.h"',
+                                      'error_type': 'CompileException'}), 'cuda', 'check.log'),
                                     RuntimeError('missing compiler header'), TimeoutError('check timed out'),
                                     OSError('cannot execute check')])
 def test_auto_backend_rechecks_on_restart_and_preserves_check_errors(tmp_path, monkeypatch, failure):
@@ -552,8 +554,9 @@ def test_auto_backend_rechecks_on_restart_and_preserves_check_errors(tmp_path, m
             assert len(checks) == len(launches) == 1
             runtime.stop()
         else:
-            with pytest.raises(type(failure), match=str(failure)):
+            with pytest.raises(type(failure)) as caught:
                 runtime.start(bundle, config, voice, cancel)
+            assert caught.value is failure
             assert launches == []
         runtime.start(bundle, config, voice, cancel)
         assert runtime.backend == 'cuda'
