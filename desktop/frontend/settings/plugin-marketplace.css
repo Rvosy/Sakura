@@ -12,7 +12,7 @@
 .market-submit-button { display: inline-flex; align-items: center; gap: 7px; flex-shrink: 0; padding: 9px 14px; font-size: 12px; }
 .market-submit-button .sakura-icon { width: 16px; height: 16px; }
 .market-search { display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0; background: var(--surface-raised); border: 1px solid var(--hairline); border-radius: 9px; padding: 0 13px; }
-.market-search:focus-within { border-color: var(--sakura-primary); box-shadow: 0 0 0 3px var(--ring); }
+.market-search:focus-within { border-color: var(--sakura-primary); box-shadow: none; }
 .market-search .sakura-icon { width: 16px; color: var(--sakura-muted-text); }
 .market-search input { border: 0; background: transparent; height: 39px; width: 100%; min-width: 0; font: inherit; font-size: 12px; color: var(--sakura-text); outline: none; }
 .market-search input:focus-visible { outline: none; box-shadow: none; }
@@ -128,7 +128,7 @@ kbd { border: 1px solid var(--hairline); border-radius: 3px; color: var(--sakura
 .task-state { font-size: 12px; margin-bottom: 12px; line-height: 1.8; }
 .task-state .resource-progress { margin-top: 8px; }
 .task-error { color: #aa5b62; }
-button:not(.custom-select__trigger):focus-visible, a:focus-visible, summary:focus-visible, input[type="checkbox"]:focus-visible { outline: 2px solid var(--sakura-primary); outline-offset: 3px; }
+button:not(.custom-select__trigger):focus-visible, a:focus-visible, summary:focus-visible, input[type="checkbox"]:focus-visible { outline: none; }
 @media (max-width: 440px) { .drawer-scroll { padding: 16px 20px 20px; } .drawer-bottom { padding: 16px 20px; } }
 @media (max-width: 440px) { .market-tools { flex-wrap: wrap; } .market-search { flex-basis: 100%; } .market-submit-button { margin-left: auto; } }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; } }

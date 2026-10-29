@@ -280,7 +280,7 @@
 }
 
 .portrait-default-control input:focus-visible {
-  box-shadow: 0 0 0 3px var(--portrait-radio-focus-ring);
+  box-shadow: none;
 }
 
 .portrait-default-control:has(input:checked) {

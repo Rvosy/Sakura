@@ -1404,7 +1404,7 @@ input[type="checkbox"]:checked:hover:not(:disabled) {
 
 input[type="checkbox"]:focus-visible {
   outline: none;
-  box-shadow: 0 0 0 3px var(--ring);
+  box-shadow: none;
 }
 
 input[type="checkbox"]:disabled {
@@ -1472,7 +1472,7 @@ select:focus,
 textarea:focus {
   outline: none;
   border-color: var(--sakura-primary);
-  box-shadow: 0 0 0 3px var(--ring);
+  box-shadow: none;
 }
 
 input[type="number"]:disabled,
@@ -1547,7 +1547,7 @@ textarea:disabled {
 .custom-select__trigger:focus-visible {
   outline: none;
   border-color: var(--sakura-primary);
-  box-shadow: 0 0 0 3px var(--ring);
+  box-shadow: none;
 }
 
 .custom-select__trigger:disabled {
@@ -1762,7 +1762,7 @@ input[type="range"].layout-slider {
 
 input[type="range"].layout-slider:focus {
   outline: none;
-  box-shadow: 0 0 0 3px var(--ring);
+  box-shadow: none;
 }
 
 input[type="range"].layout-slider::-webkit-slider-thumb {
@@ -2430,8 +2430,7 @@ input[type="checkbox"]:disabled + span {
 }
 
 .plugin-card-main:focus-visible {
-  outline: 2px solid var(--sakura-primary);
-  outline-offset: -3px;
+  outline: none;
 }
 
 .plugin-card-heading {
@@ -2561,7 +2560,7 @@ input[type="checkbox"]:disabled + span {
 }
 
 .plugin-enable-switch input:focus-visible + .plugin-enable-switch__track {
-  box-shadow: 0 0 0 3px var(--ring);
+  box-shadow: none;
 }
 
 .plugin-enable-switch input:disabled {
@@ -3085,7 +3084,7 @@ body[data-settings-host="runtime-v2"] .nav-item:disabled {
 .export-kind-option:focus-visible {
   outline: none;
   border-color: var(--sakura-primary);
-  box-shadow: 0 0 0 3px var(--ring);
+  box-shadow: none;
 }
 
 .export-kind-option:disabled {
@@ -3207,7 +3206,6 @@ button {
 
 button:hover:not(:disabled) {
   border-color: var(--sakura-primary);
-  color: var(--sakura-primary);
   transform: translateY(-1px);
   box-shadow: var(--shadow-pop);
 }
@@ -3569,7 +3567,7 @@ button:active:not(:disabled) {
 .memory-search-input:focus {
   outline: none;
   border-color: var(--sakura-primary);
-  box-shadow: 0 0 0 3px var(--ring);
+  box-shadow: none;
 }
 
 .memory-archive-toolbar > .custom-select,
@@ -3668,7 +3666,7 @@ button:active:not(:disabled) {
 .memory-record-card:focus-visible {
   outline: none;
   border-color: var(--sakura-primary);
-  box-shadow: 0 0 0 3px var(--ring);
+  box-shadow: none;
 }
 
 .memory-record-main {
@@ -3940,7 +3938,7 @@ button:active:not(:disabled) {
 .memory-dialog-field textarea:focus {
   outline: none;
   border-color: var(--sakura-primary);
-  box-shadow: 0 0 0 3px var(--ring);
+  box-shadow: none;
 }
 
 .memory-dialog-field textarea {
@@ -4083,7 +4081,7 @@ button:active:not(:disabled) {
 button:focus-visible,
 .nav-item:focus-visible {
   outline: none;
-  box-shadow: 0 0 0 3px var(--ring);
+  box-shadow: none;
 }
 
 /* 保存键在有未保存改动时点亮一个小圆点。 */
@@ -4218,8 +4216,7 @@ button:focus-visible,
   box-shadow: none;
 }
 .voice-engine-settings:focus-visible {
-  outline: 2px solid var(--sakura-primary);
-  outline-offset: 2px;
+  outline: none;
 }
 
 /* 数字输入 + 单位后缀。 */
@@ -4513,8 +4510,7 @@ input.is-invalid:hover,
 .setting-help-button .sakura-icon { width: 18px; height: 18px; }
 
 .setting-help-button:focus-visible {
-  outline: 2px solid var(--sakura-primary);
-  outline-offset: 2px;
+  outline: none;
 }
 
 /* 插件管理：沿用主题与动效 token，列表、详情和弹窗均展示真实贡献。 */
@@ -4629,7 +4625,7 @@ body:has(#page-plugins.is-active) footer { border-top: 0; }
 .plugin-configure .sakura-icon { width: 14px; height: 14px; }
 .resource-actions button:has(.sakura-icon) { display: inline-flex; align-items: center; gap: 7px; }
 .resource-actions .sakura-icon { width: 14px; height: 14px; }
-.plugin-settings-dialog .plugin-resource-card:focus-visible { outline: 2px solid var(--sakura-primary); outline-offset: 3px; }
+.plugin-settings-dialog .plugin-resource-card:focus-visible { outline: none; }
 .provider-probe-error {
   margin-top: 12px;
   font-size: 12px;

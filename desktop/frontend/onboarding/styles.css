@@ -56,8 +56,7 @@ button {
 }
 
 button:focus-visible {
-  outline: 3px solid color-mix(in srgb, var(--sakura-primary) 36%, transparent);
-  outline-offset: 3px;
+  outline: none;
 }
 
 .onboarding-shell {
