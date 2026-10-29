@@ -22,9 +22,11 @@ import { FALLBACK_THEME_TOKENS } from "../core/theme.js";
 import { installDevtoolsShortcutGuard } from "../core/devtools-guard.js";
 import { isRuntimeCancellation } from "../core/runtime-diagnostics.js";
 import { installSettingsWindowControls } from "./window-controls.js";
+import { installSettingsSidebar } from "./sidebar.js";
 
 installDevtoolsShortcutGuard();
 installClickIconMotion(document);
+const sidebar = installSettingsSidebar({ document, storage: window.localStorage });
 
 const nativeInvoke = window.__TAURI__.core.invoke;
 let runtimeDiagnostics = null;
@@ -101,6 +103,7 @@ const fields = {
   telemetryCopyButton: document.getElementById("telemetryCopyButton"),
   telemetryRegenerateButton: document.getElementById("telemetryRegenerateButton"),
   aboutVersion: document.getElementById("aboutVersion"),
+  sidebarVersion: document.getElementById("sidebarVersion"),
   aboutWebsiteButton: document.getElementById("aboutWebsiteButton"),
   aboutRepositoryButton: document.getElementById("aboutRepositoryButton"),
   aboutChangelogButton: document.getElementById("aboutChangelogButton"),
@@ -910,6 +913,7 @@ function applyUpdateSnapshot(snapshot) {
 
 function applyAboutSnapshot(snapshot) {
   fields.aboutVersion.textContent = `版本 v${snapshot.version}`;
+  fields.sidebarVersion.textContent = `v${snapshot.version}`;
 }
 
 async function refreshAboutSettings() {
@@ -1755,6 +1759,7 @@ detailCard?.addEventListener("input", (event) => {
 window.addEventListener("beforeunload", () => {
   beginSettingsWindowClose();
   windowControls.dispose();
+  sidebar.dispose();
   pageScrollResize.disconnect();
   errorDialog.dispose();
   runtimeAppearanceController?.dispose();

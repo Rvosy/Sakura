@@ -35,9 +35,12 @@ export function installTooltips(doc = document) {
     const width = tip.offsetWidth;
     const height = tip.offsetHeight;
     const inset = 8;
-    const left = Math.max(inset, Math.min(rect.left + (rect.width - width) / 2, win.innerWidth - width - inset));
+    const rightSide = anchor.dataset.tooltipSide === "right";
+    const preferredLeft = rightSide ? rect.right + inset : rect.left + (rect.width - width) / 2;
+    const left = Math.max(inset, Math.min(preferredLeft, win.innerWidth - width - inset));
     const above = rect.top - height - inset;
-    const top = above >= inset ? above : Math.min(rect.bottom + inset, win.innerHeight - height - inset);
+    const preferredTop = rightSide ? rect.top + (rect.height - height) / 2 : above >= inset ? above : rect.bottom + inset;
+    const top = Math.min(preferredTop, win.innerHeight - height - inset);
     tip.style.left = `${left}px`;
     tip.style.top = `${Math.max(inset, top)}px`;
   }
@@ -59,7 +62,7 @@ export function installTooltips(doc = document) {
     hide();
     anchor = target;
     observer.observe(doc.body, { subtree: true, childList: true, attributes: true,
-      attributeFilter: ["data-tooltip", "hidden", "class"] });
+      attributeFilter: ["data-tooltip", "data-tooltip-side", "hidden", "class"] });
     timer = win.setTimeout(() => {
       refresh();
       if (!anchor) return;

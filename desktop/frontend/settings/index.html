@@ -13,8 +13,11 @@
         <div class="nav-brand" data-window-drag>
           <img class="nav-brand-icon" src="../assets/sakura-icon.png" alt="" draggable="false" />
           <span class="nav-brand-text">Sakura</span>
+          <button id="sidebarToggle" class="nav-toggle" type="button" aria-label="收起侧栏" aria-expanded="true" aria-controls="settingsNavigation" data-tooltip="收起侧栏">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m11 17-5-5 5-5m7 10-5-5 5-5" /></svg>
+          </button>
         </div>
-        <nav class="nav-list">
+        <nav id="settingsNavigation" class="nav-list">
           <div class="nav-group" role="group" aria-labelledby="navgrp-character">
             <p class="nav-group-label" id="navgrp-character">角色</p>
             <button class="nav-item is-active" type="button" data-page="character" aria-current="page">
@@ -76,6 +79,7 @@
             </button>
           </div>
         </nav>
+        <div class="nav-footer"><span id="sidebarVersion"></span></div>
       </aside>
 
       <section class="detail-card">
