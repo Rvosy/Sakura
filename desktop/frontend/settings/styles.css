@@ -4877,16 +4877,13 @@ input.is-invalid:hover,
 #page-plugins { grid-template-rows: auto minmax(0, 1fr); gap: 14px; }
 #page-plugins > .plugin-toolbar { z-index: 2; flex-wrap: wrap; }
 .plugin-toolbar .admin-search { flex: 1 1 160px; min-width: 120px; width: auto; padding: 10px 13px; border: 1px solid var(--hairline); border-radius: var(--radius-sm); background: var(--surface-raised); color: var(--sakura-text); font: inherit; font-size: 12px; transition: border-color var(--motion-base) var(--ease); }
-.plugin-role-tabs { display: flex; flex-wrap: wrap; gap: 3px; padding: 3px; background: var(--tint-faint); border-radius: var(--radius-sm); }
-.plugin-role-tab { min-width: 0; padding: 7px 10px; border: 1px solid transparent; background: transparent; color: var(--sakura-muted-text); font-size: 11px; white-space: nowrap; }
-.plugin-role-tab[aria-selected="true"] { background: var(--surface-raised); border-color: var(--hairline); color: var(--sakura-primary); }
-.plugin-role-tab:hover:not(:disabled) { transform: none; box-shadow: none; }
-#pluginRoleTabs { position: relative; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0; }
-#pluginRoleTabs::before { content: ""; position: absolute; top: 3px; bottom: 3px; left: 3px; width: calc((100% - 6px) / 4); border: 1px solid var(--hairline); border-radius: 7px; background: var(--surface-raised); transform: translateX(calc(var(--active-tab, 0) * 100%)); transition: transform var(--motion-medium) var(--ease); pointer-events: none; }
-#pluginRoleTabs .plugin-role-tab { position: relative; background: transparent; border-color: transparent; }
-#pluginRoleTabs .plugin-role-tab:hover { color: var(--sakura-primary); }
+.plugin-role-tabs { --tab-count: 4; position: relative; display: grid; grid-template-columns: repeat(var(--tab-count), minmax(0, 1fr)); gap: 0; padding: 3px; background: var(--tint-faint); border-radius: var(--radius-sm); }
+.plugin-role-tabs::before { content: ""; position: absolute; top: 3px; bottom: 3px; left: 3px; width: calc((100% - 6px) / var(--tab-count)); border: 1px solid var(--hairline); border-radius: 7px; background: var(--surface-raised); transform: translateX(calc(var(--active-tab, 0) * 100%)); transition: transform var(--motion-medium) var(--ease); pointer-events: none; }
+.plugin-role-tab { position: relative; min-width: 0; padding: 7px 10px; border: 1px solid transparent; background: transparent; color: var(--sakura-muted-text); font-size: 11px; white-space: nowrap; }
+.plugin-role-tab[aria-selected="true"] { color: var(--sakura-primary); }
+.plugin-role-tab:hover:not(:disabled) { border-color: transparent; color: var(--sakura-primary); transform: none; box-shadow: none; }
 @media (prefers-reduced-motion: reduce) {
-  #pluginRoleTabs::before { transition: none; }
+  .plugin-role-tabs::before { transition: none; }
 }
 #page-plugins .plugin-workbench { grid-template-columns: minmax(280px, 1.05fr) minmax(0, 1.3fr); gap: 14px; }
 .plugin-list-shell { display: flex; flex-direction: column; min-height: 0; border: 1px solid var(--hairline); border-radius: var(--radius-md); background: var(--surface-soft); overflow: hidden; }

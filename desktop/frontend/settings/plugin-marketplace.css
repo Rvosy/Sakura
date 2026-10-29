@@ -1,5 +1,5 @@
 /* 插件市场使用主程序主题；规则限定在市场和详情弹窗内。 */
-#market-tabs { margin-right: auto; flex-shrink: 0; height: 38px; }
+#market-tabs { --tab-count: 2; margin-right: auto; flex-shrink: 0; height: 38px; }
 #market-tabs .plugin-role-tab { min-height: 32px; padding-block: 5px; }
 .plugin-update-summary { display: inline-flex; align-items: center; gap: 5px; flex-shrink: 0; color: var(--sakura-secondary-text); font-size: 12px; white-space: nowrap; }
 .plugin-update-summary[hidden] { display: none; }

@@ -82,6 +82,7 @@ export function createPluginMarketplace({ document, host, notify, showError = ({
     const focusTarget = focusAction && { id: focusAction.dataset.id, action: focusAction.dataset.action };
     syncInstalled();
     const market = view === "market";
+    tabs.style.setProperty("--active-tab", market ? 1 : 0);
     $("market-surface").hidden = !market;
     if ($("pluginTotal")) $("pluginTotal").hidden = true;
     $("page-plugins").dataset.marketVisible = String(market);
