@@ -1314,3 +1314,30 @@ def test_missing_lock_dependency_does_not_leave_open_import_files(tmp_path, monk
         legacy_incremental._qdrant_client(tmp_path / "qdrant")
     assert "pywintypes" in str(failure.value)
     assert all(stream.closed for stream in opened)
+
+
+@pytest.mark.parametrize("mapping", [{"A": "B", "B": "C"}, {"A": "B", "B": "A"}])
+def test_multi_role_import_preserves_each_original_memory_owner(tmp_path, mapping):
+    from plugins.optional.sakura_mem0.memory import MemoryStore
+    source, target = _source(tmp_path), tmp_path / "target"
+    for role in mapping:
+        _role_package(source, role)
+        store = MemoryStore(source, role)
+        store.create_memory({"id": f"fact-{role}", "content": f"{role} 喜欢喝茶", "evidence": [
+            {"entry_id": f"human-{role}", "turn_id": f"turn-{role}", "role": "user",
+             "quote": f"{role} 喜欢喝茶", "created_at": "2026-10-01"}]})
+        store.close()
+    for role in set(mapping.values()):
+        _role_package(target, role)
+    plan = inspect_character_data_import(source, target, role_mapping=mapping)
+    _, pending = run_character_data_import(source, target, plan_token=plan["planToken"], overwrite_conflicts=False)
+    finalize_commit(pending)
+    for original, destination in mapping.items():
+        store = MemoryStore(target, destination)
+        try:
+            fact, = store.list_memories(limit=None)
+            assert fact["id"] == f"fact-{original}"
+            assert fact["content"] == f"{original} 喜欢喝茶"
+            assert fact["evidence"][0]["entry_id"] == f"human-{original}"
+        finally:
+            store.close()

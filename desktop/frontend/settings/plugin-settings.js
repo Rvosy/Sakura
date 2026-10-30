@@ -76,6 +76,7 @@ export function createPluginSettingsFeature({
   let availableUpdates = [], openUpdate = () => {};
   const pluginModules = new Map();
   let disposed = false;
+  let collectionSession = 0;
   const modelServices = () => [...pluginModules.keys()].flatMap(module => module.contributions()?.modelServices || []);
   const modelServicePresets = () => [...pluginModules.keys()].flatMap(module => module.contributions()?.modelServicePresets || []);
   const pendingApplication = new Map();
@@ -1233,13 +1234,19 @@ export function createPluginSettingsFeature({
   }
 
   function collectionTransferMenu(plugin, section, collection) {
-    const state = pluginCollectionRuntimeState(plugin, section, collection);
-    const key = pluginCollectionKey(plugin, section, collection);
+    const identity = () => `${collectionSession}:${runtimePluginController.snapshot()?.coreGenerationId}:${currentCharacterId()}`;
     return createDataTransferMenu({ document, invoke, kind: "memory", characterId: currentCharacterId,
-      isCurrent: () => pluginCollectionState.get(key) === state && !collectionInteractionBlocked(collection),
+      identityKey: identity,
+      isCurrent: () => !disposed && !collectionInteractionBlocked(collection),
       transfer: request => runtimePluginController.collection({ operation: "transfer",
         pluginId: plugin.plugin_id, sectionId: section.section_id, collectionId: collection.collection_id, ...request }),
-      onImported: () => queryPluginCollection(plugin, section, collection),
+      onImported: () => {
+        for (const sibling of section.collections || []) {
+          const state = pluginCollectionState.get(pluginCollectionKey(plugin, section, sibling));
+          if (state) { state.loaded = false; state.error = ""; state.queryRevision++; }
+        }
+        renderMemorySurface();
+      },
     });
   }
 
@@ -3351,6 +3358,7 @@ export function createPluginSettingsFeature({
     collectionDraftCount,
     characterCollectionDraftCount: () => collectionDraftCount("character"),
     invalidateCollectionRequests() {
+      collectionSession++;
       // A role session can change without a Core generation or settings change.
       // Rebind the rendered callbacks and pending replies while retaining drafts.
       const snapshot = runtimePluginController.snapshot();
@@ -3380,6 +3388,7 @@ export function createPluginSettingsFeature({
       if (page === "providers" || page === "model") { renderModelSurfaces(); schedulePluginActivityRefresh(); }
     },
     clearCharacterState() {
+      collectionSession++;
       memoryListScroll = 0;
       memorySettingsComponents.forEach(component => component.dispose?.());
       memorySettingsComponents = [];

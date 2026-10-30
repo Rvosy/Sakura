@@ -18,6 +18,11 @@ class ReplySegment(BaseModel):
     portrait: str = ""
     control: dict[str, Any] | None = None
 
+    @field_validator("tone", "portrait", mode="before")
+    @classmethod
+    def optional_text(cls, value, info):
+        return cls.model_fields[info.field_name].default if value is None else value
+
     @field_validator("control", mode="before")
     @classmethod
     def optional_control(cls, value):

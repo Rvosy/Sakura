@@ -218,13 +218,13 @@ def _prompt_context(request):
     )
 
 
-def test_install_manage_recall_disable_and_restart_memory_through_real_core(tmp_path: Path):
+def test_install_manage_recall_disable_and_restart_memory_through_real_core(tmp_path: Path, assistant_dependencies: Path):
     archive = tmp_path / "fact_memory.sakplugin.zip"
     build(REPO_ROOT / "plugins/optional/fact_memory", archive)
     with _provider() as (port, requests):
         user = _configure_app_root(tmp_path, port)
         distribution = tmp_path / "distribution"
-        _install_official_mem0(distribution, user)
+        _install_official_mem0(distribution, user, assistant_dependencies)
         roots = RuntimeRoots(distribution, user)
         desired = PluginDesiredStateStore(user)
         desired.set("sakura.memory.mem0", False)

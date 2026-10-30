@@ -13,7 +13,7 @@ from pydantic import ValidationError
 from app.storage.timeline import NewTimelineEntry, TimelineKind, TimelineStore
 from app.core_host.plugin_host_services import _TimelineHostService
 from plugins.optional.sakura_mem0.memory import MemoryStore
-from plugins.optional.sakura_mem0.memory_curator import MemoryCurator
+from plugins.optional.sakura_mem0.memory_curator import MemoryCurator, MemoryCurationError
 from plugins.optional.sakura_mem0.memory_recall import MemoryRecallService
 from plugins.optional.sakura_mem0.domain_types import ContextRequest, ContextMessage, ChatHistoryEntry
 from plugins.optional.sakura_mem0.boundary import MemoryBoundary
@@ -89,14 +89,19 @@ def test_entity_attributes_and_relations_are_searchable_editable_and_transferabl
         reopened.close()
 
 
-def test_curation_keeps_full_user_fact_even_when_summary_and_quote_drop_negation(store):
-    human = entry(content="我不喜欢咖啡，喝了会睡不着。")
-    proposed = add_operation(human, content="用户喜欢咖啡", layer="semantic",
-                             subject="用户", subject_kind="person", predicate="饮食偏好")
-    proposed["evidence"][0]["quote"] = "喜欢咖啡"
-    result = MemoryCurator(Client([proposed]), store).curate_entries([human])
-    assert result.created == 1
-    assert store.search_memory({"subject": "用户", "predicate": "饮食偏好"})["memories"][0]["content"] == human.content
+def test_invalid_evidence_keeps_sources_pending_until_successful_curation(store):
+    human = entry(content="我喝咖啡时不加糖。")
+    client = Client([add_operation(human, evidence=[{"entry_id": "u1", "quote": "咖啡不加糖"}])])
+    with pytest.raises(MemoryCurationError):
+        MemoryCurator(client, store).curate_entries([human], cursor="next")
+    assert store.unprocessed_entries([human]) == [human]
+    assert store.get_state("curation", default={}) == {}
+    assert store.list_memories() == []
+    client.operations = [add_operation(human)]
+    assert MemoryCurator(client, store).curate_entries([human], cursor="next").created == 1
+    assert store.unprocessed_entries([human]) == []
+    assert store.get_state("curation")["curation_cursor"] == "next"
+
 
 
 def test_curation_writes_relationship_with_user_evidence(store):
@@ -238,47 +243,52 @@ def test_profile_injection_and_current_query_do_not_carry_previous_topic(store, 
     boundary.close()
 
 
-def test_curation_requires_per_item_evidence_and_preserves_negation(store):
+def test_curation_rejects_batch_without_reliable_sources(store):
     human = entry()
-    assistant = entry("a1", "我仍会轻柔提醒，并非严格禁止", "assistant")
-    client = Client([
-        add_operation(human, layer="procedural", content="可以轻柔提醒睡觉"),
-        add_operation(assistant, content="用户希望继续提醒睡觉"),
-        {**add_operation(human), "evidence": [{"entry_id": "missing", "quote": "不存在"}]},
-    ])
-    result = MemoryCurator(client, store).curate_entries([human, assistant], cursor="cursor1")
-    memories = store.list_memories(limit=None)
-    assert result.created == 1 and result.ignored == 2
-    assert memories[0]["content"] == "用户原话：以后不用提醒我要睡觉了"
-    assert memories[0]["metadata"]["source_entry_ids"] == ["u1"]
-    assert memories[0]["evidence"][0]["quote"] == human.content
-    assert store.get_state("curation")["curation_cursor"] == "cursor1"
-    assert client.requests[0][1]["messages"][0]["entry_id"] == "u1"
-    MemoryCurator(Client([]), store).curate_entries([human, assistant], cursor="cursor2")
-    assert len(store.list_memories(limit=None)) == 1
+    assistant = entry("a1", "用户希望继续提醒睡觉", "assistant")
+    for invalid in (add_operation(assistant),
+                    {**add_operation(human), "evidence": [{"entry_id": "missing", "quote": "不存在"}]}):
+        with pytest.raises(MemoryCurationError):
+            MemoryCurator(Client([add_operation(human), invalid]), store).curate_entries([human, assistant], cursor="next")
+        assert store.list_memories() == []
+        assert store.unprocessed_entries([human, assistant]) == [human, assistant]
+    result = MemoryCurator(Client([]), store).curate_entries([human, assistant], cursor="next")
+    assert result.processed_entries == 2
+    assert store.unprocessed_entries([human, assistant]) == []
 
 
 def test_observation_cannot_overwrite_user_fact_but_can_record_activity(store):
     old = store.create_memory({"content": "用户不希望收到睡觉提醒", "layer": "procedural", "occurred_at": "2026-01-01T00:00:00Z"})["memory"]
     observed = entry("o1", "屏幕显示用户正在玩五子棋", "observation")
-    operations = [add_operation(observed, op="update", id=old["id"], layer="procedural", content="用户喜欢睡觉提醒"),
-                  add_operation(observed, layer="episodic")]
-    result = MemoryCurator(Client(operations), store).curate_entries([observed])
+    with pytest.raises(MemoryCurationError):
+        MemoryCurator(Client([add_operation(observed, op="update", id=old["id"], layer="procedural",
+            content="用户喜欢睡觉提醒")]), store).curate_entries([observed])
     assert store.get(old["id"])["content"] == old["content"]
-    assert result.created == 1 and result.ignored == 1
+    result = MemoryCurator(Client([add_operation(observed, layer="episodic")]), store).curate_entries([observed])
+    assert result.created == 1
 
 
-def test_independent_profile_facts_keep_their_sentence_without_temporary_requests(store):
-    human = entry(content="我不喜欢咖啡。我的工作是软件开发。明天帮我查一下天气。")
+def test_updating_one_profile_fact_does_not_leave_old_preference_in_other_facts(store, tmp_path):
+    human = entry(content="我叫小明，住北京，不喜欢咖啡。")
     client = Client([
-        add_operation(human, layer="core_profile", predicate="饮食偏好", content="喜欢咖啡",
-                      evidence=[{"entry_id": "u1", "quote": "喜欢咖啡"}]),
-        add_operation(human, layer="core_profile", predicate="职业", content="软件开发",
-                      evidence=[{"entry_id": "u1", "quote": "软件开发"}]),
+        add_operation(human, layer="core_profile", predicate="称呼", content="用户叫小明"),
+        add_operation(human, layer="core_profile", predicate="饮食偏好", content="用户不喜欢咖啡"),
     ])
     MemoryCurator(client, store).curate_entries([human])
-    facts = {item["predicate"]: item["content"] for item in store.profile_memories()}
-    assert facts == {"饮食偏好": "用户原话：我不喜欢咖啡。", "职业": "用户原话：我的工作是软件开发。"}
+    facts = {item["predicate"]: item for item in store.profile_memories()}
+    assert facts["称呼"]["content"] == "用户叫小明"
+    assert facts["称呼"]["evidence"][0]["quote"] == human.content
+    changed = entry("u2", "我现在开始喜欢咖啡了", date="2026-10-02T12:00:00+00:00")
+    MemoryCurator(Client([add_operation(changed, op="update", id=facts["饮食偏好"]["id"],
+        layer="core_profile", predicate="饮食偏好", content="用户喜欢咖啡")]), store).curate_entries([changed])
+    boundary = MemoryBoundary(tmp_path, "sakura", memory_store=store)
+    try:
+        context = MemoryRecallService(boundary).recall(ContextRequest(current_input="你好", character_id="sakura"))
+        assert "不喜欢咖啡" not in "\n".join(fragment.content for fragment in context.fragments)
+        assert {item["content"] for item in store.profile_memories()} == {"用户叫小明", "用户喜欢咖啡"}
+    finally:
+        boundary.close()
+
 
 
 def test_incomplete_candidate_does_not_mark_source_as_processed(store):
@@ -289,14 +299,6 @@ def test_incomplete_candidate_does_not_mark_source_as_processed(store):
     assert store.get_state("curation", default={}) == {}
     assert not store.list_memories()
 
-
-def test_repeated_short_quote_keeps_the_change_in_preference(store):
-    human = entry(content="我以前喜欢咖啡。但是现在不喜欢咖啡。")
-    client = Client([add_operation(human, layer="core_profile", content="用户现在不喜欢咖啡",
-                                  evidence=[{"entry_id": "u1", "quote": "喜欢咖啡"}])])
-    MemoryCurator(client, store).curate_entries([human])
-    content = store.profile_memories()[0]["content"]
-    assert "以前喜欢咖啡" in content and "现在不喜欢咖啡" in content
 
 
 def _wait_text_import(boundary, request):
@@ -578,7 +580,7 @@ def test_original_human_evidence_can_correct_a_later_unsupported_legacy_summary(
                            "content": "仍会轻柔提醒，并非严格禁止", "created_at": "2026-06-25T00:00:00+08:00"}])
     result = MemoryCurator(Client([add_operation(human, op="update", id="old", layer="procedural")]), store).curate_entries([human])
     assert result.updated == 1
-    assert store.get("old")["content"] == "用户原话：以后不用提醒我要睡觉了"
+    assert store.get("old")["content"] == human.content
     assert store.get("old")["evidence"][0]["quote"] == human.content
 
 
@@ -765,3 +767,70 @@ def test_cancel_backfill_does_not_commit_a_late_model_result(tmp_path):
     finally:
         resume.set()
         boundary.close()
+
+
+@pytest.mark.parametrize("count", [115, 116])
+def test_profile_budget_survives_many_facts_and_search_failure(store, tmp_path, monkeypatch, count):
+    for index in range(count):
+        store.create_memory({"content": f"画像 {index}", "layer": "core_profile"})
+    boundary = MemoryBoundary(tmp_path, "sakura", memory_store=store)
+    request = ContextRequest(current_input="你好", character_id="sakura")
+    try:
+        result = MemoryRecallService(boundary).recall(request)
+        assert result.status == "ready" and len(result.fragments) == count
+        def fail(*args, **kwargs):
+            raise sqlite3.OperationalError("search unavailable")
+        monkeypatch.setattr(boundary, "search_memory", fail)
+        result = MemoryRecallService(boundary).recall(request)
+        assert result.status == "degraded" and len(result.fragments) == count
+    finally:
+        boundary.close()
+
+
+@pytest.mark.parametrize("mapping", [{"A": "B", "B": "C"}, {"A": "B", "B": "A"}])
+def test_scope_remapping_moves_records_and_associated_history_once(tmp_path, mapping):
+    for scope in mapping:
+        memory = MemoryStore(tmp_path, scope)
+        human = entry(scope, content=f"{scope} 喝咖啡不加糖")
+        MemoryCurator(Client([add_operation(human, layer="core_profile")]), memory).curate_entries([human], cursor=scope)
+        fact, = memory.profile_memories()
+        memory.update_memory({"id": fact["id"], "content": f"{scope} 改喝茶"})
+        memory.set_core_profile(f"{scope} 的档案")
+        memory.create_memory({"id": "same-id", "content": f"{scope} 已删除的事实"})
+        memory.forget_memory({"id": "same-id"})
+        memory.close()
+    memory = MemoryStore(tmp_path)
+    try:
+        assert memory.remap_scopes(mapping) == 6
+        for source, target in mapping.items():
+            memory.scope_id = target
+            facts = memory.list_memories(limit=None)
+            assert {item["content"] for item in facts} == {f"{source} 改喝茶", f"{source} 的档案"}
+            fact = next(item for item in facts if item["evidence"])
+            assert fact["evidence"][0]["entry_id"] == source
+            assert memory.get(f"core_profile:{target}")["content"] == f"{source} 的档案"
+            assert memory.get("same-id", include_deleted=True)["content"] == f"{source} 已删除的事实"
+            assert memory.unprocessed_entries([entry(source)]) == []
+            assert memory.unprocessed_entries([entry('B' if source == 'A' else 'A')])
+            revisions = memory._db.execute("SELECT document FROM revisions WHERE scope=? AND id=?", (target, fact["id"])).fetchall()
+            assert [json.loads(row[0])["content"] for row in revisions] == [f"{source} 喝咖啡不加糖"]
+    finally:
+        memory.close()
+
+
+@pytest.mark.parametrize("keep_conflicts", [False, True])
+def test_scope_remapping_preserves_conflicting_records(tmp_path, keep_conflicts):
+    memory = MemoryStore(tmp_path, "A")
+    try:
+        memory.create_memory({"id": "same", "content": "A 的事实"})
+        memory.import_records([{"id": "same", "scope": "B", "content": "B 的事实"}])
+        if keep_conflicts:
+            assert memory.remap_scopes({"A": "B"}, keep_conflicts=True) == 0
+        else:
+            with pytest.raises(ValueError, match="重复记忆"):
+                memory.remap_scopes({"A": "B"})
+        assert {(item["scope"], item["content"]) for item in memory.all_records()} == {
+            ("A", "A 的事实"), ("B", "B 的事实")}
+        assert memory.search_memory({"query": "事实"})["memories"][0]["content"] == "A 的事实"
+    finally:
+        memory.close()

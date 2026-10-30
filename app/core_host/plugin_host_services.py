@@ -627,12 +627,14 @@ class _ToolsHostService:
         consume_result: Callable[..., object] | None = None,
         hooks: HookHostService | None = None,
         timeline: _TimelineHostService | None = None,
+        assistant_identity: Callable[[], dict[str, str]] | None = None,
     ) -> None:
         self._tool_registry = tool_registry
         self._invoke_callback = invoke_callback
         self._consume_result = consume_result or (lambda value, **_kwargs: value)
         self._hooks = hooks
         self._timeline = timeline
+        self._assistant_identity = assistant_identity or (lambda: {})
         self._registrations: dict[str, _ToolRegistration] = {}
 
     def call(self, method: str, args: Sequence[Any]) -> object:
@@ -649,7 +651,10 @@ class _ToolsHostService:
                 raise HostServiceError("TOOL_REGISTRATION_EXPIRED")
             # Execute the captured object; a concurrent same-name replacement cannot be substituted.
             invocation = {}
-            if len(args) == 4 and args[3] and HOST_CALLER.get() == "sakura.assistant.default":
+            identity = self._assistant_identity()
+            if (len(args) == 4 and args[3] and identity
+                    and HOST_CALLER.get() == identity["providerId"]
+                    and HOST_CALLER_SCOPE.get() == identity["scopeId"]):
                 requested = args[3]
                 if self._timeline is not None and requested.get("humanEntryId"):
                     entry = self._timeline.call("get_entry", [{"entryId": requested["humanEntryId"]}])["entry"]
@@ -1985,6 +1990,7 @@ class PluginHostServices:
         model_resolver: Callable[[Mapping[str, Any]], dict[str, object]] | None = None,
         active_model_resolver: Callable[[], dict[str, object]] | None = None,
         commit_plugin_scope: Callable[..., Any] | None = None,
+        assistant_identity: Callable[[], dict[str, str]] | None = None,
     ) -> None:
         self._artifacts = _ArtifactsHostService(artifact_store, commit_plugin_scope)
         self.hooks = HookHostService(invoke_callback, self._artifacts, commit_plugin_scope)
@@ -1997,6 +2003,7 @@ class PluginHostServices:
             self._artifacts.consume_tool_result,
             hooks=self.hooks,
             timeline=self._timeline,
+            assistant_identity=assistant_identity,
         )
         self._context = _ContextHostService(
             invoke_callback,

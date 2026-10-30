@@ -455,3 +455,25 @@ def test_provider_diagnostic_keeps_urls_paths_newlines_and_long_error_tail():
     assert "\nupstream request req-42" in result
     assert "user:password" not in result and "private-token" not in result
     assert "private-conversation" not in public_provider_http_message(RuntimeError('API HTTP 502: {"choices":[{"content":"private-conversation"}]}'), 502)
+
+
+@pytest.mark.parametrize("with_tools", [False, True])
+@pytest.mark.parametrize("base_url", ["https://api.deepseek.com/v1", "https://compatible.invalid/v1"])
+def test_schema_chat_uses_supported_format_when_provider_has_no_schema_mode(monkeypatch, with_tools, base_url):
+    calls = []
+    def handler(request):
+        body = json.loads(request.content)
+        calls.append(body)
+        if body.get("response_format", {}).get("type") == "json_schema":
+            return httpx.Response(400, json={"error": {"message": "This response_format type is unavailable now"}})
+        return httpx.Response(200, json={"choices": [{"message": {"content": '{"segments": []}'}}]})
+    mock_http(monkeypatch, handler)
+    request = {**REQUEST, "responseFormat": {"type": "json_schema", "json_schema": {
+        "name": "reply", "schema": {"type": "object"}}}}
+    if with_tools:
+        request["tools"] = [{"name": "search", "parameters": {"type": "object"}}]
+    result = run(settings={**SETTINGS, "base_url": base_url}, request=request)
+    assert result["message"]["content"] == '{"segments": []}'
+    assert calls[-1].get("response_format") == (None if with_tools else {"type": "json_object"})
+    assert len(calls) == (1 if "api.deepseek.com" in base_url else 2)
+    assert request["responseFormat"]["type"] == "json_schema"

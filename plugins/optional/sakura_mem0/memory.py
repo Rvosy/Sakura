@@ -409,34 +409,53 @@ class MemoryStore:
     def remap_scopes(self, mapping: dict[str, str], *, keep_conflicts: bool = False) -> int:
         """角色别名重新关联时保留记录 ID、证据和修改历史。"""
         count = 0
+        mapping = {source: target for source, target in mapping.items() if source != target}
         with self.transaction():
-            for source, target in mapping.items():
-                for row in self._db.execute("SELECT * FROM memories WHERE scope=?", (source,)).fetchall():
-                    old_id = row["id"]
-                    new_id = f"core_profile:{target}" if old_id == f"core_profile:{source}" else old_id
-                    if self._db.execute("SELECT 1 FROM memories WHERE scope=? AND id=?", (target, new_id)).fetchone():
-                        if keep_conflicts:
-                            continue
-                        raise ValueError("角色映射后有重复记忆，请先处理冲突。")
-                    record = self._record(row)
-                    record.update(scope=target, id=new_id)
-                    record["metadata"]["scope"] = target
-                    self._write_knowledge(record, point_id=row["point_id"])
-                    for table in ("entity_attrs", "entity_relations"):
-                        self._db.execute(f"DELETE FROM {table} WHERE scope=? AND id=?", (source, old_id))
-                    self._db.execute("UPDATE memory_fts SET scope=?,id=? WHERE scope=? AND id=?",
-                                     (target, new_id, source, old_id))
-                    self._db.execute("UPDATE evidence SET scope=?,memory_id=? WHERE scope=? AND memory_id=?",
-                                     (target, new_id, source, old_id))
-                    self._db.execute(
-                        "UPDATE revisions SET scope=?,id=?,document=json_set(document,'$.scope',?,'$.id',?,'$.metadata.scope',?) "
-                        "WHERE scope=? AND id=?", (target, new_id, target, new_id, target, source, old_id),
-                    )
-                    count += 1
-                self._db.execute("INSERT OR IGNORE INTO processed_entries SELECT ?,entry_id FROM processed_entries WHERE scope=?",
-                                 (target, source))
-                self._db.execute("DELETE FROM processed_entries WHERE scope=?", (source,))
+            snapshots = {source: [(self._record(row), row["point_id"]) for row in self._db.execute(
+                "SELECT * FROM memories WHERE scope=?", (source,)).fetchall()] for source in mapping}
+            temporary = {source: f"remap:{uuid.uuid4()}" for source in mapping}
+            # 所有来源先移出原 scope，链式映射和互换都只处理原始记录。
+            for source, staging in temporary.items():
+                for table in ("entity_attrs", "entity_relations", "memory_fts", "evidence", "revisions", "processed_entries"):
+                    self._db.execute(f"UPDATE {table} SET scope=? WHERE scope=?", (staging, source))
                 self._db.execute("DELETE FROM state WHERE scope=? AND key IN ('curation','backfill')", (source,))
+            moves = []
+            retained = []
+            occupied = {(row["scope"], row["id"]) for row in self._db.execute("SELECT scope,id FROM memories")}
+            for source, target in mapping.items():
+                for record, point_id in snapshots[source]:
+                    old_id = record["id"]
+                    new_id = f"core_profile:{target}" if old_id == f"core_profile:{source}" else old_id
+                    if (target, new_id) in occupied:
+                        if not keep_conflicts:
+                            raise ValueError("角色映射后有重复记忆，请先处理冲突。")
+                        retained.append((source, source, old_id, record, point_id))
+                    else:
+                        moves.append((source, target, new_id, record, point_id))
+                        occupied.add((target, new_id))
+                        count += 1
+            for source, target, new_id, record, point_id in [*moves, *retained]:
+                if target == source and (target, new_id) in occupied:
+                    raise ValueError("角色映射后有重复记忆，请先处理冲突。")
+                staging, old_id = temporary[source], record["id"]
+                record.update(scope=target, id=new_id)
+                record["metadata"]["scope"] = target
+                self._write_knowledge(record, point_id=point_id)
+                for table in ("entity_attrs", "entity_relations"):
+                    self._db.execute(f"DELETE FROM {table} WHERE scope=? AND id=?", (staging, old_id))
+                self._db.execute("UPDATE memory_fts SET scope=?,id=? WHERE scope=? AND id=?",
+                                 (target, new_id, staging, old_id))
+                self._db.execute("UPDATE evidence SET scope=?,memory_id=? WHERE scope=? AND memory_id=?",
+                                 (target, new_id, staging, old_id))
+                self._db.execute(
+                    "UPDATE revisions SET scope=?,id=?,document=json_set(document,'$.scope',?,'$.id',?,'$.metadata.scope',?) "
+                    "WHERE scope=? AND id=?", (target, new_id, target, new_id, target, staging, old_id),
+                )
+            for source, target in mapping.items():
+                staging = temporary[source]
+                self._db.execute("INSERT OR IGNORE INTO processed_entries SELECT ?,entry_id FROM processed_entries WHERE scope=?",
+                                 (target, staging))
+                self._db.execute("DELETE FROM processed_entries WHERE scope=?", (staging,))
         return count
 
     def create_memory(self, arguments: dict, *, wait: bool = True, allow_sensitive: bool = False) -> dict:

@@ -36,7 +36,7 @@ def _unsupported(error, parameter):
         return False
     if parameter == "temperature" and "only 1 is allowed" in text:
         return True
-    return any(marker in text for marker in ("unsupported", "not support", "does not support", "only support", "only the default", "default value", "not allowed", "cannot be", "not configurable"))
+    return any(marker in text for marker in ("unsupported", "unavailable", "not support", "does not support", "only support", "only the default", "default value", "not allowed", "cannot be", "not configurable"))
 
 
 def _message(value):
@@ -116,6 +116,11 @@ def execute(settings, request, *, cancel_checker, progress, operation="generate"
             payload["tool_choice"] = request["toolChoice"]
     else:
         payload = {"model": settings["model"], "messages": [{"role": "user", "content": "Reply with only OK."}]}
+    if urlparse(base_url).hostname == "api.deepseek.com" and payload.get("response_format", {}).get("type") == "json_schema":
+        if payload.get("tools"):
+            payload.pop("response_format")
+        else:
+            payload["response_format"] = {"type": "json_object"}
     diagnostics = {}
 
     def decode_response(response):
@@ -221,8 +226,7 @@ def execute(settings, request, *, cancel_checker, progress, operation="generate"
                         if parameter is None or request.get("stream") or attempt == 4:
                             raise
                         # 带工具时不降到 JSON mode，避免兼容服务把工具调用写进正文。
-                        if (parameter == "response_format" and payload[parameter].get("type") == "json_schema" and not payload.get("tools")
-                                and "json_schema" in error.response.text.lower()):
+                        if (parameter == "response_format" and payload[parameter].get("type") == "json_schema" and not payload.get("tools")):
                             payload[parameter] = {"type": "json_object"}
                         else:
                             payload.pop(parameter)

@@ -7,10 +7,12 @@ try:
     from .support import log_event
     from .domain_types import ContextFragment, ContextRequest
     from .memory import memory_text
+    from .boundary import MAX_MEMORY_RESULTS
 except ImportError:
     from support import log_event
     from domain_types import ContextFragment, ContextRequest
     from memory import memory_text
+    from boundary import MAX_MEMORY_RESULTS
 
 
 @dataclass(frozen=True)
@@ -41,19 +43,21 @@ class MemoryRecallService:
                 selected.append((item, "档案与约定"))
                 used += len(item["content"])
             profile_ids = {item["id"] for item, _ in selected}
-            response = self.memory.search_memory({
-                "query": query, "limit": self.limit + len(profile_ids), "automatic": True,
-                "excluded_turn_id": request.current_turn_id,
-            }, wait=False) if query else {"memories": [], "status": "ready"}
+            try:
+                response = self.memory.search_memory({
+                    "query": query, "limit": min(MAX_MEMORY_RESULTS, self.limit + len(profile_ids)), "automatic": True,
+                    "excluded_turn_id": request.current_turn_id,
+                }, wait=False) if query else {"memories": [], "status": "ready"}
+            except Exception as exc:
+                log_event("Memory", "相关记忆检索失败，保留本轮画像", {"error": str(exc)},
+                          event="memory.recall.search_failed", severity="warning")
+                response = {"memories": [], "status": "degraded"}
             recalled = [item for item in response["memories"] if item["id"] not in profile_ids][:self.limit]
             selected.extend((item, "相关记忆") for item in recalled)
             fragments = []
             for memory, label in selected:
                 evidence = memory.get("evidence", [])
-                quotes = "；".join(dict.fromkeys(source["quote"] for source in evidence if source["role"] == "user"))
                 content = f"{label}（发生时间：{memory.get('occurredAt', '')}，状态：{memory.get('state', 'active')}）：{memory_text(memory)}"
-                if quotes and quotes not in memory["content"]:
-                    content += f"\n用户原话依据：{quotes}"
                 fragments.append(ContextFragment(
                     fragment_id=f"memory.{memory['id']}", source="memory", content=content,
                     priority=85 if label == "档案与约定" else 65,

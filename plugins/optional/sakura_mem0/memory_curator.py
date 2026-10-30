@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -182,7 +181,8 @@ subject 写关于谁或什么，用户本人统一写“用户”；predicate �
                     cancel_checker=cancel_checker,
                 )
                 operations, ignored = _prepare_operations(proposed, chunk, existing)
-                counts["ignored"] += ignored
+                if ignored:
+                    raise MemoryCurationError(f"有 {ignored} 条候选无法核对依据，本批消息未标记为已处理，请重新整理。")
             check_cancelled(cancel_checker)
             committed = self.memory_store.commit_curation(
                 operations, chunk, cursor=cursor if index == len(chunks) - 1 else "",
@@ -231,14 +231,8 @@ def _prepare_operations(proposed: list[dict], entries: list[ChatHistoryEntry], e
             if not review_document and (item["layer"] in {"core_profile", "semantic", "procedural"} or previous and
                     previous["layer"] in {"core_profile", "semantic", "procedural"}) and not human:
                 raise ValueError("用户事实缺少用户依据")
-            # 引用保留所在原句，既不丢掉否定和条件，也不把无关请求带进画像。
-            if not review_document and (item["layer"] in {"core_profile", "procedural", "semantic"} or item.get("target")):
-                if not human:
-                    raise ValueError("人物事实和关系缺少用户依据")
-                content = "；".join(dict.fromkeys(_quote_sentence(messages[source["entry_id"]].content, source["quote"])
-                                                for source in human))
-                if item["layer"] in {"core_profile", "procedural"}:
-                    content = "用户原话：" + content
+            if not review_document and item.get("target") and not human:
+                raise ValueError("人物事实和关系缺少用户依据")
             if looks_like_sensitive_memory(content):
                 raise ValueError("内容包含凭据")
             operation = {"content": content, "layer": item["layer"], "state": state,
@@ -258,16 +252,6 @@ def _prepare_operations(proposed: list[dict], entries: list[ChatHistoryEntry], e
             log_event("Memory", "跳过没有可靠依据的整理结果", {"reason": str(exc)},
                       event="memory.curation.skipped", severity="debug")
     return accepted, ignored
-
-
-def _quote_sentence(content: str, quote: str) -> str:
-    boundaries = [match.end() for match in re.finditer(r"[。！？!?\n]|\.(?=\s|$)", content)]
-    sentences = []
-    for match in re.finditer(re.escape(quote), content):
-        left = max((position for position in boundaries if position <= match.start()), default=0)
-        right = next((position for position in boundaries if position >= match.end()), len(content))
-        sentences.append(content[left:right].strip())
-    return "；".join(dict.fromkeys(sentences))
 
 
 def _chunk_entries_for_curation(entries: list[ChatHistoryEntry]) -> list[list[ChatHistoryEntry]]:

@@ -15,11 +15,13 @@ sys.path[:0] = [str(ROOT), str(ROOT / "app/plugin_sdk")]
 from playwright.sync_api import expect, sync_playwright
 from app.core_host.plugin_host_services import _SettingsHostService
 from plugins.optional.sakura_mem0.plugin import SakuraMem0Runtime, PLUGIN_ID
+from sakura_data_transfer import write_archive
 
 SCRIPT = r"""
 import { createPluginSettingsFeature } from './plugin-settings.js';
 import { enhanceSelect, refreshSelect, closeSelects, focusSelect } from './select-control.js';
 window.errors = [];
+window.currentRole = "sakura";
 function showPage(id) {
   document.querySelectorAll('.settings-page').forEach(p => {
     p.classList.toggle('is-active', p.id === 'page-' + id); p.hidden = p.id !== 'page-' + id;
@@ -32,7 +34,7 @@ window.feature = createPluginSettingsFeature({document, window, invoke: window.n
   onDirty() {}, onError(error) { if (error) window.errors.push(String(error)); }, notify() {},
   confirmAction: async () => true, enhanceSelect, refreshSelect, closeSelects, focusSelect,
   replayMotion() {}, removeOverlayAfterExit: async e => e.remove(), showPage,
-  currentCharacterId: () => 'sakura',
+  currentCharacterId: () => window.currentRole,
   isCharacterTransitioning: () => false, hasPendingCharacterSelection: () => false });
 feature.initialize(await window.nativeInvoke('settings_plugins_get'));
 showPage('memory'); document.body.dataset.ready = 'true';
@@ -48,7 +50,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         pass
 
 
-def settings_bridge(runtime):
+def settings_bridge(runtime, transfer_path):
     callbacks = {}
 
     def handle(callback):
@@ -84,6 +86,8 @@ def settings_bridge(runtime):
         })
 
     def invoke(_source, command, params=None):
+        if command == 'data_transfer_choose':
+            return str(transfer_path)
         if command == 'settings_plugins_get':
             return {'schemaVersion': 1, 'state': 'ready', 'reasonCode': 'READY', 'windowGeneration': 1,
                     'coreGenerationId': 'memory-journey', 'characterId': 'sakura', 'plugins': [{
@@ -150,7 +154,8 @@ def run():
                 errors = []
                 page.on('pageerror', lambda error: errors.append(str(error)))
                 page.add_init_script("window.policyViolations = []; document.addEventListener('securitypolicyviolation', event => window.policyViolations.push(event.violatedDirective));")
-                page.expose_binding('nativeInvoke', settings_bridge(runtime))
+                transfer_path = Path(directory) / 'memory.json'
+                page.expose_binding('nativeInvoke', settings_bridge(runtime, transfer_path))
                 page.route('**/settings/settings.js', lambda route: route.fulfill(content_type='text/javascript', body=SCRIPT))
                 page.goto(f'http://127.0.0.1:{server.server_port}/desktop/frontend/settings/')
                 page.wait_for_selector('body[data-ready="true"]')
@@ -238,6 +243,54 @@ def run():
                 imported = store.search_memory({'predicate': '职业', 'subject': '用户'})['memories']
                 assert len(imported) == 1 and imported[0]['evidence'][0]['role'] == 'document'
                 assert not store.search_memory({'predicate': '兴趣', 'subject': '小雨'})['memories']
+                for refresh_snapshot in (False, True):
+                    new_fact = {**store.export_records()[0], 'id': f'imported-{refresh_snapshot}',
+                                'subject': '用户', 'subject_kind': 'person', 'target': '', 'target_kind': '',
+                                'layer': 'core_profile', 'predicate': '居住地', 'content': f'住在杭州 {refresh_snapshot}'}
+                    write_archive(transfer_path, kind='memory', provider=PLUGIN_ID, character_id='sakura', records=[new_fact])
+                    page.get_by_role('button', name='高级设置', exact=True).click()
+                    page.get_by_role('button', name='记忆更多操作', exact=True).click()
+                    page.get_by_role('menuitem', name='导入记忆…', exact=True).click()
+                    transfer_dialog = page.locator('.data-transfer-dialog')
+                    transfer_dialog.get_by_role('button', name='选择文件', exact=True).click()
+                    expect(transfer_dialog.get_by_role('button', name='确认导入', exact=True)).to_be_visible()
+                    if refresh_snapshot:
+                        page.evaluate("""async () => {
+                            const snapshot = await nativeInvoke('settings_plugins_get');
+                            snapshot.plugins[0].description = '更新运行状态';
+                            feature.initialize(snapshot, {preserveDraft: true});
+                        }""")
+                    transfer_dialog.get_by_role('button', name='确认导入', exact=True).click()
+                    expect(transfer_dialog.get_by_role('status')).to_have_text('已导入 1 条记录。')
+                    transfer_dialog.get_by_role('button', name='关闭', exact=True).click()
+                    page.get_by_role('tab', name='个人画像', exact=True).click()
+                    expect(page.locator('.memory-record-card').filter(has_text=f'住在杭州 {refresh_snapshot}')).to_have_count(1)
+
+                for transition in ('role', 'session', 'core'):
+                    page.get_by_role('button', name='高级设置', exact=True).click()
+                    page.get_by_role('button', name='记忆更多操作', exact=True).click()
+                    page.get_by_role('menuitem', name='导入记忆…', exact=True).click()
+                    transfer_dialog = page.locator('.data-transfer-dialog')
+                    transfer_dialog.get_by_role('button', name='选择文件', exact=True).click()
+                    expect(transfer_dialog.get_by_role('button', name='确认导入', exact=True)).to_be_visible()
+                    page.evaluate("""async transition => {
+                        if (transition === 'role') window.currentRole = 'other';
+                        if (transition === 'session') feature.invalidateCollectionRequests();
+                        if (transition === 'core') {
+                            const snapshot = await nativeInvoke('settings_plugins_get');
+                            snapshot.coreGenerationId = 'restarted';
+                            feature.initialize(snapshot, {preserveDraft: true});
+                        }
+                    }""", transition)
+                    transfer_dialog.get_by_role('button', name='确认导入', exact=True).click()
+                    expect(transfer_dialog.get_by_role('status')).to_contain_text('角色已变化')
+                    transfer_dialog.get_by_role('button', name='关闭', exact=True).click()
+                    page.evaluate("""async () => {
+                        window.currentRole = 'sakura';
+                        feature.initialize(await nativeInvoke('settings_plugins_get'), {preserveDraft: true});
+                    }""")
+                    page.get_by_role('tab', name='个人画像', exact=True).click()
+
                 page.set_viewport_size({'width': 760, 'height': 680})
                 page.screenshot(animations='disabled', path=str(output / 'profile-narrow.png'))
                 assert page.locator('.page-scroll').evaluate('(el) => el.scrollWidth <= el.clientWidth')

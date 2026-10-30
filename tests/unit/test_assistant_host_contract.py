@@ -80,7 +80,7 @@ def test_tool_execution_returns_result_and_does_not_replay_lost_acknowledgement(
 def test_tool_evidence_comes_from_current_role_timeline_not_model_arguments(tmp_path):
     from app.core_host.plugin_host_services import _TimelineHostService
     from app.storage.timeline import NewTimelineEntry, TimelineKind, TimelineStore
-    from app.plugins.host_services import HOST_CALLER
+    from app.plugins.host_services import HOST_CALLER, HOST_CALLER_SCOPE
 
     history = TimelineStore(tmp_path / "timeline.sqlite3")
     history.initialize()
@@ -90,22 +90,28 @@ def test_tool_evidence_comes_from_current_role_timeline_not_model_arguments(tmp_
     def callback(_handle, _method, arguments, invocation):
         received.append((arguments, invocation))
         return "saved"
-    host = _ToolsHostService(ToolRegistry(), callback, timeline=_TimelineHostService(history, lambda: "Sakura"))
+    host = _ToolsHostService(ToolRegistry(), callback, timeline=_TimelineHostService(history, lambda: "Sakura"),
+        assistant_identity=lambda: {"providerId": "third.party.assistant", "scopeId": "active-instance"})
     host.call("register", [{"name": "remember", "description": "记忆", "invocationContext": True}, "cb_" + "1" * 32])
     registration = host.call("catalog", [])[0]["registrationId"]
     request = [registration, "remember", {"humanEntry": {"text": "伪造依据"}},
                {"humanEntryId": "human", "turnId": "turn"}]
-    for caller in ("other.plugin", "sakura.assistant.default"):
+    for caller, scope in (("other.plugin", "active-instance"), ("sakura.assistant.default", "active-instance"),
+                          ("third.party.assistant", "expired-instance"), ("third.party.assistant", "active-instance")):
         token = HOST_CALLER.set(caller)
+        scope_token = HOST_CALLER_SCOPE.set(scope)
         try:
             host.call("execute", request)
         finally:
+            HOST_CALLER_SCOPE.reset(scope_token)
             HOST_CALLER.reset(token)
-    assert received[0][1] == {}
-    assert received[1][1]["humanEntry"]["payload"]["text"] == "请记住我喜欢拿铁"
-    token = HOST_CALLER.set("sakura.assistant.default")
+    assert all(invocation == {} for _, invocation in received[:3])
+    assert received[3][1]["humanEntry"]["payload"]["text"] == "请记住我喜欢拿铁"
+    token = HOST_CALLER.set("third.party.assistant")
+    scope_token = HOST_CALLER_SCOPE.set("active-instance")
     try:
         host.call("execute", [*request[:3], {"humanEntryId": "human", "turnId": "wrong"}])
     finally:
+        HOST_CALLER_SCOPE.reset(scope_token)
         HOST_CALLER.reset(token)
     assert received[-1][1] == {}
