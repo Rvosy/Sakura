@@ -3344,15 +3344,50 @@ button:active:not(:disabled) {
   min-width: 0;
 }
 
-.plugin-dialog-body .plugin-status-row {
-  padding: 16px 18px;
-  border-radius: 12px;
+.plugin-dialog-body .form-row.plugin-status-row {
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 16px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-md);
   background: var(--surface-soft);
-  gap: 10px;
+  gap: 10px 16px;
+}
+
+.plugin-dialog-body .plugin-status-row > label {
+  font-size: 13px;
+  font-weight: var(--font-weight-medium);
+}
+
+.plugin-dialog-body .plugin-status-control {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
 }
 
 .plugin-dialog-body .plugin-status-row .semantic-status {
-  font-size: 16px;
+  min-height: 20px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font-size: 13px;
+}
+
+.plugin-dialog-body .plugin-status-row .settings-error-details {
+  min-height: 30px;
+  padding: 4px 10px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-sm);
+  color: var(--sakura-secondary-text);
+  font-size: 12px;
+  text-decoration: none;
+}
+
+.plugin-dialog-body .plugin-status-row > .hint {
+  flex-basis: 100%;
 }
 
 .plugin-status-message {
