@@ -523,6 +523,13 @@ class AssistantModelClient:
     ):
         # Protocol compatibility belongs to the selected model provider. Assistant
         # records one semantic call, including provider-reported attempts.
+        from sakura_usage import category_for_purpose
+        self._trace_local.usage_category = category_for_purpose(trace_metadata.purpose if trace_metadata else "agent_step")
+        if self._trace_local.usage_category == "conversation" and any(
+            isinstance(message.get("content"), list) and any(part.get("type") == "image_url" for part in message["content"] if isinstance(part, dict))
+            for message in payload.get("messages", [])
+        ):
+            self._trace_local.usage_category = "vision"
         self._trace_local.request_diagnostic = {}
         pending = getattr(self._trace_local, "pending_fallback", None)
         self._trace_local.pending_fallback = None
@@ -600,7 +607,8 @@ class AssistantModelClient:
     def _send_request(self, payload, *, cancel_checker=None):
         request = _model_request(payload)
         try:
-            response = self._model_client.complete(request, cancel_checker=cancel_checker)
+            response = self._model_client.complete(request, cancel_checker=cancel_checker,
+                                                   usage_category=self._trace_local.usage_category)
         except ModelError as error:
             raise ApiRequestError(str(error)) from error
         diagnostic = dict(response.get("diagnostics") or {})

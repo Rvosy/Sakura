@@ -12,7 +12,7 @@ from app.core.diagnostics import exception_diagnostics
 from app.core.runtime_log import log_event
 from app.plugin_sdk.sakura_cancellation import check_cancelled
 from app.plugin_sdk.sakura_hooks import HOOK_POINTS, HookError
-from app.plugins.host_services import HOST_CALLER, HOST_CALLER_SCOPE
+from app.plugins.host_services import HOST_CALLER, HOST_CALLER_SCOPE, HOST_CALLER_LOG_METADATA
 
 
 @dataclass
@@ -25,12 +25,13 @@ class _Hook:
 
 
 class HookHostService:
-    def __init__(self, invoke_callback, artifacts, commit_scope):
+    def __init__(self, invoke_callback, artifacts, commit_scope, *, usage_store=None):
         self._invoke_callback = invoke_callback
         self._artifacts = artifacts
         self._commit_scope = commit_scope
         self._lock = threading.RLock()
         self._registrations = {}
+        self._usage_store = usage_store
 
     def call(self, method, args):
         if method == "describe" and not args:
@@ -72,7 +73,7 @@ class HookHostService:
             def check():
                 self._commit_scope(*owner, lambda: None)
 
-            value = self.run(name, data, {**metadata, "callerId": owner[0]}, cancel_checker=check)
+            value = self.run(name, data, {**metadata, "callerId": owner[0], "callerName": HOST_CALLER_LOG_METADATA.get()[0]}, cancel_checker=check)
             return self._pack_for_scope(value, owner)
         raise HookError("HOST_METHOD_INVALID", "钩子服务方法无效。")
 
@@ -105,6 +106,13 @@ class HookHostService:
 
     def run(self, name, data, metadata=None, *, cancel_checker=None):
         check_cancelled(cancel_checker)
+        if name == "model.after_response" and self._usage_store is not None:
+            try:
+                self._usage_store.record_response(data["response"], metadata)
+            except Exception as error:
+                log_event("Usage", "模型用量保存失败", exception_diagnostics(error,
+                    reason_code="USAGE_WRITE_FAILED", stage="model.after_response"),
+                    event="usage.write.failed", severity="warning")
         with self._lock:
             handlers = sorted(((key, item) for key, item in self._registrations.items() if item.name == name),
                               key=lambda row: row[1].order)

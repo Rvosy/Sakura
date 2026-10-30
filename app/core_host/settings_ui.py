@@ -5,7 +5,7 @@ import math
 import re
 
 
-HOST_PAGES = frozenset({"character", "appearance", "providers", "model", "voice", "memory", "interaction", "tools", "plugins", "system", "about"})
+HOST_PAGES = frozenset({"character", "appearance", "providers", "model", "voice", "memory", "interaction", "tools", "plugins", "system", "statistics", "about"})
 GROUPS = frozenset({"character", "ai", "behavior", "system"})
 _ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 

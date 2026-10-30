@@ -1,6 +1,10 @@
 {
   "schema_version": 1,
   "profiles": {
+    "usage-statistics": {
+      "description": "验证本地用量累计、历史日志补入、对话计数和设置统计页",
+      "cases": ["usage-statistics-python", "usage-statistics-frontend", "usage-statistics-browser"]
+    },
     "memory": {
       "description": "验证记忆读写、双路检索、证据整理、历史导入和插件运行",
       "cases": ["runtime-v2-memory-tests"]
@@ -200,6 +204,25 @@
     }
   },
   "cases": [
+    {
+      "id": "usage-statistics-python",
+      "description": "验证用量口径、历史去重、持久化和对话计数",
+      "argv": ["{python}", "-m", "pytest", "-q", "tests/unit/test_usage_statistics.py", "tests/integration/test_core_host_real_chat_integration.py::test_real_core_local_provider_completed_projection_and_history"],
+      "timeout_seconds": 60
+    },
+    {
+      "id": "usage-statistics-frontend",
+      "description": "验证趋势日期补齐、未知用量和按月汇总",
+      "argv": ["node", "--test", "desktop/frontend/tests/usage-statistics.test.js"],
+      "timeout_seconds": 60
+    },
+    {
+      "id": "usage-statistics-browser",
+      "description": "用真实统计查询验证设置导航、范围切换和图表交互",
+      "argv": ["{python}", "desktop/frontend/tests/usage-statistics.journey.py"],
+      "timeout_seconds": 120,
+      "env": {"PYTHONIOENCODING": "utf-8", "PYTHONDONTWRITEBYTECODE": "1"}
+    },
     {
       "id": "remote-telemetry-python-tests",
       "description": "验证 Provider usage、Context 指标、Core 错误栈和 Privacy Sentinel",

@@ -931,7 +931,8 @@ class _HooksProxy(_HostRegistrationProxy):
     def run(self, hook, data, metadata=None):
         from sakura_hooks import pack_hook_value, unpack_hook_value
 
-        if not self.catalog(hook):
+        # 模型响应还用于宿主用量记录，没有插件处理器时也要送达。
+        if hook != "model.after_response" and not self.catalog(hook):
             return data
         artifacts = self._context.get("sakura.host.artifacts")
         envelope = pack_hook_value(data, artifacts)

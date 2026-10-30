@@ -51,10 +51,12 @@ def decode_model_result(result, artifacts, provider_identity, operation_id):
 class ModelClient:
     """Pins one provider instance; an uncertain begin acknowledgement is never replayed."""
 
-    def __init__(self, context, reference, *, expected_identity=None):
+    def __init__(self, context, reference, *, expected_identity=None, usage_category="other", usage_label=None):
         if not reference or not all(reference.get(key) for key in ("serviceKey", "profileId", "modelId")):
             raise ModelError("MODEL_REFERENCE_INVALID", "请先配置模型服务。")
         self.reference = dict(reference)
+        self._usage_category = usage_category
+        self._usage_label = usage_label
         self._service = context.bind(reference["serviceKey"])
         if expected_identity is not None and self._service.identity != dict(expected_identity):
             raise ModelError("SERVICE_BINDING_EXPIRED", "模型服务已重新加载，请重新建立对话会话。")
@@ -70,7 +72,7 @@ class ModelClient:
     def identity(self):
         return self._service.identity
 
-    def complete(self, request, *, cancel_checker=None, progress_callback=None):
+    def complete(self, request, *, cancel_checker=None, progress_callback=None, usage_category=None, usage_label=None):
         operation_id = uuid.uuid4().hex
         with self._lock:
             if self._closed:
@@ -85,7 +87,8 @@ class ModelClient:
                     raise OperationCancelled()
         try:
             check()
-            hook_context = {"operationId": operation_id, "model": dict(self.reference)}
+            hook_context = {"operationId": operation_id, "model": dict(self.reference),
+                            "usageCategory": usage_category or self._usage_category, "usageLabel": usage_label or self._usage_label}
             request = self._hooks.run("model.before_request", {"request": request}, hook_context)["request"]
             check()
             descriptor = {"operationId": operation_id, "profileId": self.reference["profileId"], "modelId": self.reference["modelId"]}

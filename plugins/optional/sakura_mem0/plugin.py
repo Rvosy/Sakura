@@ -935,7 +935,7 @@ def _default_runtime(context: object) -> SakuraMem0Runtime | None:
         memory_cache_dir=Path(storage.resolve("cache", "memory")),
         model_catalog_getter=model_slots.catalog,
         model_resolver=model_slots.resolve,
-        model_client_factory=lambda ref: ModelClient(context, ref),
+        model_client_factory=lambda ref: ModelClient(context, ref, usage_category="memory_curation"),
     )
 
 

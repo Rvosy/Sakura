@@ -19,7 +19,7 @@ from app.core.runtime_log import log_event, log_message
 from app.core.diagnostics import exception_diagnostics
 from . import settings_ui
 from .plugin_hooks import HookHostService
-from app.plugins.host_services import HOST_CALLER, HOST_CALLER_LOG_METADATA, HOST_CALLER_SCOPE, HOST_LOGGING_SERVICE
+from app.plugins.host_services import HOST_CALLER, HOST_CALLER_LOG_METADATA, HOST_CALLER_SCOPE, HOST_LOGGING_SERVICE, HOST_USAGE_SERVICE
 from app.plugin_sdk.sakura_context import ContextFragment, ContextRequest
 from app.plugins.models import ContextProviderContribution
 
@@ -120,6 +120,23 @@ class _LoggingHostService:
                 component=channel, plugin_id=plugin_id, plugin_name=plugin_name or None)
         # Core owns downstream loss accounting; the SDK counts transport loss only.
         return {"accepted": True}
+
+
+class _UsageHostService:
+    def __init__(self, store):
+        self.store = store
+
+    def call(self, method, args):
+        from app.plugin_sdk.sakura_usage import CATEGORIES
+        if method == "describe" and not args:
+            return {"categories": [{"id": key, "label": label} for key, label in CATEGORIES.items()]}
+        if method != "record" or len(args) != 1:
+            raise HostServiceError("HOST_METHOD_INVALID")
+        plugin_id = HOST_CALLER.get()
+        if plugin_id is None:
+            raise HostServiceError("USAGE_CALLER_REQUIRED")
+        return self.store.record(_mapping(args[0], "USAGE_RECORD_INVALID"),
+                                 plugin_id=plugin_id, plugin_name=HOST_CALLER_LOG_METADATA.get()[0])
 
 
 class _TimelineHostService:
@@ -1993,7 +2010,10 @@ class PluginHostServices:
         assistant_identity: Callable[[], dict[str, str]] | None = None,
     ) -> None:
         self._artifacts = _ArtifactsHostService(artifact_store, commit_plugin_scope)
-        self.hooks = HookHostService(invoke_callback, self._artifacts, commit_plugin_scope)
+        from app.storage.usage import UsageStore
+        usage_store = UsageStore(storage_root) if storage_root is not None else None
+        self.hooks = HookHostService(invoke_callback, self._artifacts, commit_plugin_scope,
+                                     usage_store=usage_store)
         self._diagnostics = _DiagnosticsHostService()
         self._character = _CharacterHostService(character_store)
         self._timeline = _TimelineHostService(timeline_store, current_character_id, artifact_store)
@@ -2039,6 +2059,7 @@ class PluginHostServices:
         }
         if self._storage is not None:
             self._services[HOST_STORAGE_SERVICE] = self._storage
+            self._services[HOST_USAGE_SERVICE] = _UsageHostService(usage_store)
 
     @property
     def available_keys(self) -> tuple[str, ...]:

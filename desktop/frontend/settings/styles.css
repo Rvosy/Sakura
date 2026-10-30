@@ -15,6 +15,7 @@
 @import url("../core/tooltip.css");
 @import url("../core/error-dialog.css");
 @import url("./record-table.css");
+@import url("./usage-statistics.css");
 
 :root {
   --sakura-primary: #4b9ac4;

@@ -29,6 +29,7 @@ from app.plugins.host_services import (
     HOST_HOOKS_SERVICE,
     HOST_DIAGNOSTICS_SERVICE,
     HOST_LOGGING_SERVICE,
+    HOST_USAGE_SERVICE,
     HOST_MODEL_SLOTS_SERVICE,
     HOST_CONVERSATION_SERVICE,
     HOST_SPEECH_SERVICE,
@@ -53,6 +54,7 @@ from app.storage.timeline import TimelineStore
 
 
 _HOST_EXPORTS = {
+    HOST_USAGE_SERVICE: ("describe", "record"),
     HOST_LOGGING_SERVICE: ("emit",),
     HOST_ARTIFACTS_SERVICE: ("allocate", "commit", "release", "resolve", "release_received", "deliver", "release_delivered"),
     HOST_DIAGNOSTICS_SERVICE: ("emit",),

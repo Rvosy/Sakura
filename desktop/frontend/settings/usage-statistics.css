@@ -1,0 +1,54 @@
+#page-statistics { font-variant-numeric: tabular-nums; grid-template-columns: minmax(0, 1fr); gap: 0; }
+.usage-toolbar, .usage-toolbar-right, .usage-section-heading, .usage-chart-controls { display: flex; align-items: center; gap: 14px; }
+.usage-toolbar, .usage-section-heading { justify-content: space-between; flex-wrap: wrap; }
+.usage-toolbar { margin-bottom: 20px; }
+.usage-toolbar-right { margin-left: auto; }
+.usage-toolbar .data-transfer-range { margin: 0; }
+.usage-toolbar .date-range-trigger { display: flex; align-items: center; gap: 10px; min-height: 36px; padding: 8px 12px; font-size: 13px; font-weight: 400; }
+.usage-toolbar .date-range-trigger > span:not(.sakura-icon) { color: var(--sakura-secondary-text); }
+.usage-toolbar .date-range-trigger .sakura-icon { width: 16px; height: 16px; }
+.usage-status { color: var(--sakura-muted-text); font-size: 11px; }
+.usage-refresh.secondary-button { min-width: 34px; min-height: 34px; padding: 8px; background: transparent; border-color: transparent; }
+.usage-refresh[aria-busy="true"] .sakura-icon { animation: usage-spin .9s linear infinite; }
+.usage-overview { display: grid; grid-template-columns: 1.5fr 1fr 1fr; gap: 14px; }
+.usage-card { min-width: 0; padding: 18px 20px; border-radius: 12px; background: var(--surface-soft); border: 1px solid color-mix(in srgb, var(--sakura-border) 34%, transparent); box-shadow: 0 2px 8px color-mix(in srgb, var(--sakura-text) 3%, transparent); }
+.usage-label { font-size: 13px; color: var(--sakura-secondary-text); }
+.usage-value { font-size: clamp(25px, 2.8vw, 34px); font-weight: 650; line-height: 1.35; margin: 9px 0 8px; overflow-wrap: anywhere; }
+.usage-card-tokens .usage-value { color: var(--sakura-primary); }
+.usage-note { color: var(--sakura-muted-text); font-size: 12px; line-height: 1.6; }
+.usage-breakdown { display: flex; flex-wrap: wrap; gap: 8px 24px; margin: 17px 2px 32px; font-size: 12px; color: var(--sakura-secondary-text); }
+.usage-trend, .usage-detail { min-width: 0; padding: 0; margin-bottom: 26px; }
+.usage-section-heading h3 { font-size: 14px; font-weight: 600; margin: 0; }
+.usage-tabs.plugin-role-tabs { height: 34px; padding: 3px; flex-shrink: 0; background: var(--tint-faint); }
+.usage-tabs .plugin-role-tab { min-width: 0; min-height: 28px; padding: 4px 12px; font-size: 12px; }
+.usage-tabs .plugin-role-tab:hover:not(:disabled) { transform: none; }
+.usage-chart-frame { position: relative; margin-top: 6px; }
+.usage-chart { height: 300px; width: 100%; }
+.usage-chart-empty { position: absolute; inset: 40% 0 auto; text-align: center; pointer-events: none; font-size: 12px; color: var(--sakura-muted-text); }
+.usage-tooltip { min-width: 145px; font-variant-numeric: tabular-nums; }
+.usage-tooltip strong { display: block; margin-bottom: 10px; font-weight: 500; }
+.usage-tooltip > div { display: flex; justify-content: space-between; gap: 32px; margin: 6px 0; }
+.usage-tooltip b { font-weight: 500; }
+.usage-table-scroll { overflow-x: auto; margin-top: 14px; }
+.usage-table { width: 100%; border-collapse: collapse; font-size: 12px; white-space: nowrap; }
+.usage-table th, .usage-table td { padding: 12px 10px; text-align: right; border: 0; }
+.usage-table th { font-weight: 400; color: var(--sakura-muted-text); font-size: 11px; }
+.usage-table th:first-child, .usage-table td:first-child { text-align: left; padding-left: 2px; width: 30%; max-width: 240px; white-space: normal; overflow-wrap: anywhere; }
+.usage-table tbody tr:hover { background: var(--tint-faint); }
+.usage-row-name { display: block; margin-bottom: 8px; }
+.usage-share { display: block; width: 80%; height: 3px; border-radius: 3px; overflow: hidden; }
+.usage-share > span { display: block; height: 100%; background: var(--sakura-primary); border-radius: inherit; opacity: .5; transition: width .38s ease-out; }
+.usage-table .usage-empty { text-align: center; color: var(--sakura-muted-text); padding: 30px; }
+@keyframes usage-spin { to { transform: rotate(360deg); } }
+@media (max-width: 900px) {
+  .usage-overview { grid-template-columns: 1.4fr 1fr 1fr; gap: 14px; }
+  .usage-card { padding: 16px 14px; }
+  .usage-value { font-size: 25px; }
+  .usage-toolbar { gap: 8px; }
+  .usage-tabs .plugin-role-tab { padding-inline: 9px; }
+  .usage-chart-controls { gap: 8px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .usage-refresh .sakura-icon { animation: none; }
+  .usage-share > span { transition: none; }
+}

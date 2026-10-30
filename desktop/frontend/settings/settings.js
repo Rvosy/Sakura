@@ -23,6 +23,7 @@ import { installDevtoolsShortcutGuard } from "../core/devtools-guard.js";
 import { isRuntimeCancellation } from "../core/runtime-diagnostics.js";
 import { installSettingsWindowControls } from "./window-controls.js";
 import { installSettingsSidebar } from "./sidebar.js";
+import { createUsageStatistics } from "./usage-statistics.js";
 
 installDevtoolsShortcutGuard();
 installClickIconMotion(document);
@@ -43,6 +44,7 @@ function invoke(command, args) {
   ));
 }
 const rootSettingsClient = createRootSettingsClient({ invoke });
+const usageStatistics = createUsageStatistics({ document, invoke });
 const settingsCloseFlowPromise = import("./close-flow.js");
 const windowControls = installSettingsWindowControls({
   document,
@@ -129,6 +131,7 @@ const fields = {
     tools: document.getElementById("page-tools"),
     plugins: document.getElementById("page-plugins"),
     system: document.getElementById("page-system"),
+    statistics: document.getElementById("page-statistics"),
     "open-help": document.getElementById("page-open-help"),
     about: document.getElementById("page-about"),
     memory: document.getElementById("page-memory"),
@@ -752,6 +755,7 @@ const pageMeta = {
   tools: { title: "工具" },
   plugins: { title: "插件" },
   system: { title: "系统" },
+  statistics: { title: "使用统计" },
   about: { title: "关于" },
   memory: { title: "记忆" },
   "open-help": { title: "应用打开遇到问题？" },
@@ -803,6 +807,7 @@ function showPage(page) {
     if (pageChanged) replayMotion(fields.pageHead, "is-switching");
   }
   runtimeProviderFeature?.onPageChanged(page);
+  usageStatistics.onPageChanged(page);
   runtimePluginController?.onPageChanged(page);
   runtimePluginMarketplace?.onPageChanged(page);
   runtimeAsrController?.onPageChanged(page);
@@ -1756,6 +1761,7 @@ window.addEventListener("beforeunload", () => {
   beginSettingsWindowClose();
   windowControls.dispose();
   sidebar.dispose();
+  usageStatistics.dispose();
   pageScrollResize.disconnect();
   errorDialog.dispose();
   runtimeAppearanceController?.dispose();

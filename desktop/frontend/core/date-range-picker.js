@@ -23,8 +23,9 @@ export function presetDateRange(days, today = new Date()) {
 }
 
 export function createDateRangePicker({ document, id, onChange, loadRange, loadDates, isCurrent,
-  singleDate = false, getInitialDate }) {
+  singleDate = false, getInitialDate, initialDays = 1, anchored = false }) {
   const win = document.defaultView;
+  const usePopover = singleDate || anchored;
   const element = document.createElement("div");
   element.className = singleDate ? "data-transfer-menu" : "data-transfer-range";
   const trigger = document.createElement("button");
@@ -38,17 +39,18 @@ export function createDateRangePicker({ document, id, onChange, loadRange, loadD
   if (singleDate) {
     trigger.title = "跳转到日期";
     trigger.setAttribute("aria-label", trigger.title);
-  } else trigger.append("日期范围", label, createIcon(document, "chevron-down"));
-  const panel = document.createElement(singleDate ? "div" : "dialog");
+  } else trigger.append(...(anchored ? [] : ["日期范围"]), label, createIcon(document, "chevron-down"));
+  const panel = document.createElement(usePopover ? "div" : "dialog");
   panel.id = `${id}-dates`;
   panel.className = singleDate ? "date-range-panel date-single-panel" : "date-range-panel";
-  if (singleDate) {
+  if (anchored) panel.classList.add("date-range-popover");
+  if (usePopover) {
     panel.setAttribute("popover", "auto");
     panel.setAttribute("role", "dialog");
-    panel.setAttribute("aria-label", "跳转到日期");
+    if (singleDate) panel.setAttribute("aria-label", "跳转到日期");
     trigger.popoverTargetElement = panel;
   }
-  else panel.setAttribute("aria-labelledby", `${id}-dates-title`);
+  if (!singleDate) panel.setAttribute("aria-labelledby", `${id}-dates-title`);
   panel.tabIndex = -1;
   trigger.setAttribute("aria-controls", panel.id);
   const calendar = `<div class="date-range-calendar">
@@ -76,21 +78,44 @@ export function createDateRangePicker({ document, id, onChange, loadRange, loadD
   const inputs = {};
   const error = panel.querySelector(".date-range-error");
   const grid = panel.querySelector(".date-range-days");
-  let applied = presetDateRange(1);
+  let applied = presetDateRange(initialDays);
   let selectedDate;
   let activeField = "startDate";
   let month;
   let monthAnimation;
-  let preset = 1;
+  let preset = initialDays;
   let draftPreset = 1;
   let revision = 0;
-  const isOpen = () => singleDate ? panel.matches(":popover-open") : panel.open;
-  const closePanel = () => singleDate ? panel.hidePopover() : panel.close();
+  const isOpen = () => usePopover ? panel.matches(":popover-open") : panel.open;
+  const closePanel = () => usePopover ? panel.hidePopover() : panel.close();
+
+  function updateLabel() {
+    if (singleDate) return;
+    if (anchored) {
+      const year = String(new Date().getFullYear());
+      const includeYear = !applied.startDate.startsWith(year) || !applied.endDate.startsWith(year);
+      const short = value => {
+        const [y, m, d] = value.split("-");
+        return `${includeYear ? y + "年" : ""}${Number(m)}月${Number(d)}日`;
+      };
+      label.textContent = preset === 0 ? "全部记录" : preset === 1 ? "今天" : preset ? `近 ${preset} 天`
+        : applied.startDate === applied.endDate ? short(applied.startDate) : `${short(applied.startDate)} – ${short(applied.endDate)}`;
+      trigger.setAttribute("aria-label", `日期范围：${label.textContent}`);
+    } else label.textContent = preset === 1 ? "当天" : preset === 0 ? "全部记录"
+      : `${applied.startDate.replaceAll("-", "/")} 至 ${applied.endDate.replaceAll("-", "/")}`;
+  }
+  updateLabel();
 
   function positionPanel() {
     const bounds = trigger.getBoundingClientRect();
-    panel.style.left = `${Math.max(8, Math.min(bounds.right - panel.offsetWidth, win.innerWidth - panel.offsetWidth - 8))}px`;
-    panel.style.top = `${Math.max(8, Math.min(bounds.bottom + 8, win.innerHeight - panel.offsetHeight - 8))}px`;
+    const left = anchored ? bounds.left : bounds.right - panel.offsetWidth;
+    const top = bounds.bottom + 8 + panel.offsetHeight <= win.innerHeight - 8
+      ? bounds.bottom + 8 : Math.max(8, bounds.top - panel.offsetHeight - 8);
+    panel.style.left = `${Math.max(8, Math.min(left, win.innerWidth - panel.offsetWidth - 8))}px`;
+    panel.style.top = `${top}px`;
+  }
+  function reposition(event) {
+    if (!panel.contains(event.target)) positionPanel();
   }
 
   for (const field of panel.querySelectorAll("[data-field]")) {
@@ -231,8 +256,7 @@ export function createDateRangePicker({ document, id, onChange, loadRange, loadD
   function apply(value, days) {
     applied = value;
     preset = days;
-    if (!singleDate) label.textContent = days === 1 ? "当天" : days === 0 ? "全部记录"
-      : `${value.startDate.replaceAll("-", "/")} 至 ${value.endDate.replaceAll("-", "/")}`;
+    updateLabel();
     onChange();
     closePanel();
   }
@@ -251,7 +275,7 @@ export function createDateRangePicker({ document, id, onChange, loadRange, loadD
       error.textContent = "";
       try {
         const range = days === 0 ? await loadRange() : presetDateRange(days);
-        if (!panel.open || !isCurrent() || revision !== currentRevision) return;
+        if (!isOpen() || !isCurrent() || revision !== currentRevision) return;
         const empty = days === 0 && !range.startDate;
         const value = empty ? presetDateRange(1) : range;
         draftPreset = days;
@@ -262,7 +286,7 @@ export function createDateRangePicker({ document, id, onChange, loadRange, loadD
         renderMonth();
         error.textContent = empty ? "当前角色暂无记录。" : "";
       } catch (failure) {
-        if (panel.open && isCurrent() && revision === currentRevision) error.textContent = String(failure?.message || failure);
+        if (isOpen() && isCurrent() && revision === currentRevision) error.textContent = String(failure?.message || failure);
       } finally {
         button.removeAttribute("aria-busy");
         if (revision === currentRevision) panel.querySelector("[data-apply]").disabled = false;
@@ -276,13 +300,13 @@ export function createDateRangePicker({ document, id, onChange, loadRange, loadD
       renderMonth(undefined, offset);
     });
   }
-  if (singleDate) {
+  if (usePopover) {
     panel.addEventListener("beforetoggle", event => {
       if (event.newState === "closed") onClose();
     });
-    win.addEventListener("resize", () => { if (isOpen()) positionPanel(); });
-  } else {
-    panel.querySelector("[data-cancel]").addEventListener("click", () => panel.close());
+  }
+  if (!singleDate) {
+    panel.querySelector("[data-cancel]").addEventListener("click", closePanel);
     panel.querySelector("[data-apply]").addEventListener("click", () => {
       const startDate = inputs.startDate.value;
       const endDate = inputs.endDate.value;
@@ -297,13 +321,15 @@ export function createDateRangePicker({ document, id, onChange, loadRange, loadD
   function onClose() {
     revision++;
     monthAnimation?.cancel();
+    win.removeEventListener("resize", positionPanel);
+    win.removeEventListener("scroll", reposition, true);
     trigger.setAttribute("aria-expanded", "false");
-    if (isCurrent() && (!singleDate || panel.contains(document.activeElement))) trigger.focus({ preventScroll: true });
+    if (isCurrent() && (!usePopover || panel.contains(document.activeElement))) trigger.focus({ preventScroll: true });
   }
-  if (!singleDate) panel.addEventListener("close", onClose);
+  if (!usePopover) panel.addEventListener("close", onClose);
   trigger.addEventListener("click", event => {
     // 此处负责初始化并切换弹层，取消按钮默认的第二次切换。
-    if (singleDate) event.preventDefault();
+    if (usePopover) event.preventDefault();
     if (isOpen()) {
       closePanel();
       return;
@@ -322,10 +348,12 @@ export function createDateRangePicker({ document, id, onChange, loadRange, loadD
     const start = parseDate(initialDate);
     month = localDate(start.getFullYear(), start.getMonth(), 1);
     renderMonth();
-    if (singleDate) {
+    if (usePopover) {
       panel.showPopover();
       positionPanel();
-      grid.querySelector('[tabindex="0"]').focus({ preventScroll: true });
+      win.addEventListener("resize", positionPanel);
+      win.addEventListener("scroll", reposition, true);
+      (singleDate ? grid.querySelector('[tabindex="0"]') : panel.querySelector("h2")).focus({ preventScroll: true });
     } else panel.showModal();
     trigger.setAttribute("aria-expanded", "true");
     panel.scrollTop = 0;

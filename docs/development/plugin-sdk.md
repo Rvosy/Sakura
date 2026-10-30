@@ -304,6 +304,25 @@ class Plugin:
 
 钩子同步执行，应尽快返回；下载和长期任务使用服务任务接口。回调可以调用其他服务，但不要再次触发自身所在的钩子；确需使用模型时，根据 context.callerId 跳过自身请求。大段数据自动通过 Artifact 传递，插件不必自行拆分。停用、重载或撤销后，旧回调结果不会并入当前处理链；聊天取消后的修改不会提交。
 
+## 用量统计
+
+`ModelClient` 自动把模型返回的用量记入设置页。构造时可传 `usage_category` 和 `usage_label`，单次 `complete` 也可覆盖这两个参数。默认归入 `other`（其他功能）。已有自动记录的调用不要再手动上报。
+
+绕过模型客户端的插件在 Manifest 的 `requires` 中声明 `sakura.host.usage`，再通过 `context.get("sakura.host.usage")` 调用：
+
+| 方法 | 输入与结果 |
+|---|---|
+| `describe()` | 返回 `categories: [{id, label}]`，列出内置分类 |
+| `record(record)` | 写入一次响应用量，返回 `{recorded: true}`；同一插件重复提交相同 `recordId` 返回 false，不重复累计 |
+
+record 使用 `recordId`（必填的稳定调用 ID）、`model`、`category`、`categoryLabel`、`usage` 和可选 ISO 8601 `timestamp`。时间默认取写入时刻，补录历史时应提供带时区的响应时间。插件身份由宿主填写，不接受调用方指定其他来源。
+
+内置分类为 `conversation`（对话）、`memory_curation`（记忆整理）、`vision`（视觉分析）、`proactive`（主动回复）、`background`（后台任务）、`other`（其他功能）和 `uncategorized`（未分类）。自定义分类 ID 使用字母、数字、点、下划线或连字符，以字母或数字开头；通过 `categoryLabel` 提供显示名称。宿主按插件隔离自定义分类，不同插件的同名分类不会合并。内置分类可跨插件汇总。
+
+usage 接受模型返回的 `prompt_tokens/completion_tokens` 或 `input_tokens/output_tokens`，以及 `total_tokens`。总量缺失且输入、输出都存在时才相加。缓存与推理是子项：可传 `cached_input_tokens/reasoning_tokens`，也可保留提供方的 `prompt_tokens_details.cached_tokens/completion_tokens_details.reasoning_tokens` 或 input/output 对应字段；它们不额外累加到总量。缺失字段保持缺失，不能用 0 代替未知值。无用量的响应仍可计入回复次数。
+
+接入示例见[能力接入](plugin-recipes.md#记录用量)，统计口径见[使用统计](../specs/settings.md#使用统计)。
+
 ## 事件、角色与历史
 
 事件是事实通知，可能丢失，重启不会补发。先订阅再读取当前状态，需要完整数据时保存 Timeline cursor 并补读。需要在步骤完成前修改数据时，使用[处理钩子](#处理钩子hooks)。

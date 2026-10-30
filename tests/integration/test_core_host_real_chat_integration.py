@@ -1714,6 +1714,12 @@ def test_real_core_local_provider_completed_projection_and_history(tmp_path: Pat
         }
         expected_page["entries"].sort(key=lambda entry: datetime.fromisoformat(entry["createdAt"]))
         assert history_page["payload"] == expected_page
+        usage = _exchange(process, _request("usage", "usage.statistics.get", {"period": "all"}))
+        assert usage["ok"] is True
+        assert usage["payload"]["summary"]["calls"] == len(_ProviderHandler.requests)
+        assert usage["payload"]["conversation"]["turns"] == 1
+        assert {row["id"] for row in usage["payload"]["categories"]} == {"conversation"}
+        assert {row["id"] for row in usage["payload"]["plugins"]} == {"sakura.assistant.default"}
         shutdown = _exchange(process, _request("shutdown", "system.shutdown", {"appExiting": True}))
         assert shutdown["payload"] == {"accepted": True}
         assert process.wait(timeout=5) == 0
