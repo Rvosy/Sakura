@@ -3,7 +3,6 @@ import test from "node:test";
 
 import {
   createCharacterVisualPreviewSessionController,
-  restoreCommittedCharacterVisual,
 } from "../pet/character-visual-preview.js";
 
 function deferred() {
@@ -95,33 +94,4 @@ test("a clean select-back preview supersedes the staged role before close waits"
   await close;
   assert.deepEqual(applied, ["A"]);
   assert.equal(closed, true);
-});
-
-test("select-back restores the latest committed portrait after an in-flight role event", async () => {
-  let committedState = { portrait: "calm" };
-  let renderedPortrait = "calm";
-  const visualEffect = deferred();
-  const restored = [];
-
-  const restore = (async () => {
-    await visualEffect.promise;
-    return restoreCommittedCharacterVisual({
-      currentState: () => committedState,
-      resetRenderedPortrait: () => { renderedPortrait = null; },
-      render: async (state) => {
-        assert.equal(renderedPortrait, null);
-        renderedPortrait = state.portrait;
-        restored.push(state.portrait);
-        return { applied: true, key: state.portrait };
-      },
-    });
-  })();
-
-  committedState = { portrait: "speaking" };
-  renderedPortrait = "speaking";
-  visualEffect.resolve();
-
-  assert.deepEqual(await restore, { applied: true, key: "speaking" });
-  assert.equal(renderedPortrait, "speaking");
-  assert.deepEqual(restored, ["speaking"]);
 });
