@@ -51,12 +51,10 @@ def _network_call(operation, *args, **kwargs):
         raise _TransientDownloadError(str(error)) from error
 
 
-def load_archive_manifest(
-    path: Path, selector: str = "archive"
-) -> dict[str, object]:
+def load_archive_manifest(path: Path) -> dict[str, object]:
     try:
         document = json.loads(path.read_text(encoding="utf-8"))
-        archive = document[selector]
+        archive = document["archive"]
     except (OSError, json.JSONDecodeError, KeyError, TypeError) as exc:
         raise ArchiveVerificationError(f"invalid runtime manifest: {exc}") from exc
     if not isinstance(archive, dict):
@@ -107,9 +105,8 @@ def verify_archive(archive: dict[str, object], path: Path) -> int:
 def download_and_verify(
     manifest_path: Path,
     output_path: Path,
-    selector: str = "archive",
 ) -> int:
-    archive = load_archive_manifest(manifest_path, selector)
+    archive = load_archive_manifest(manifest_path)
     if output_path.exists():
         return verify_archive(archive, output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -152,16 +149,13 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument(
-        "--selector", choices=("archive", "assistantDependency"), default="archive"
-    )
     return parser.parse_args(argv)
 
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(sys.argv[1:] if argv is None else argv)
     try:
-        size = download_and_verify(args.manifest, args.output, args.selector)
+        size = download_and_verify(args.manifest, args.output)
     except ArchiveVerificationError as exc:
         print(f"runtime archive verification failed: {exc}", file=sys.stderr)
         return 2
