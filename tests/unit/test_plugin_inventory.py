@@ -150,8 +150,6 @@ def test_inventory_duplicate_policy_keeps_only_single_bundled_winner(tmp_path: P
     ("sakura.visual.spine", "sakura_spine"),
 ])
 def test_external_plugin_remains_usable_with_retired_bundled_files(tmp_path, plugin_id, directory):
-    from app.plugins.discovery import PluginDiscovery
-
     retired = _plugin(tmp_path, directory, plugin_id)
     _plugin(tmp_path, "installed", plugin_id, source="user")
     desired = PluginDesiredStateStore(tmp_path)
@@ -165,21 +163,18 @@ def test_external_plugin_remains_usable_with_retired_bundled_files(tmp_path, plu
     assert record.source == "user" and record.runtime_eligible and record.can_uninstall
     assert record.desired_enabled is False
     assert [spec.plugin_id for spec in snapshot.runtime_specs] == [plugin_id]
-    discovered = PluginDiscovery(tmp_path).discover()
-    assert [(spec.plugin_id, spec.source, spec.enabled) for spec in discovered] == [(plugin_id, "user", False)]
+    assert [(spec.plugin_id, spec.source, spec.enabled) for spec in snapshot.runtime_specs] == [(plugin_id, "user", False)]
     assert desired.path.read_bytes() == config
 
 
 def test_broken_retired_manifest_does_not_block_user_plugin(tmp_path):
-    from app.plugins.discovery import PluginDiscovery
-
     old = _plugin(tmp_path, "sakura_mem0", "sakura.memory.mem0")
     (old / "plugin.yaml").write_text("[broken", encoding="utf-8")
     _plugin(tmp_path, "memory", "sakura.memory.mem0", source="user")
     snapshot = PluginInventory(tmp_path).scan()
     assert len(snapshot.records) == 1
     assert snapshot.records[0].runtime_eligible
-    assert [spec.source for spec in PluginDiscovery(tmp_path).discover()] == ["user"]
+    assert [spec.source for spec in snapshot.runtime_specs] == ["user"]
 
 
 @pytest.mark.parametrize("source", ["bundled", "user"])

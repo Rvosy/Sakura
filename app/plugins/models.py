@@ -55,5 +55,4 @@ class PluginSpec:
     requires: tuple[str, ...] = field(default_factory=tuple)
     plugin_root: Path | None = None
     source: str = "manifest"
-    priority_override: bool = False
     visuals: tuple[VisualCapability, ...] = ()
