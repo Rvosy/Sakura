@@ -323,13 +323,6 @@ def _write_character_theme_manifest(
         raise CharacterConfigError(f"角色主题写回失败：{manifest_path}") from exc
 
 
-def _required_dict(data: dict[str, Any], key: str, manifest_path: Path) -> dict[str, Any]:
-    value = data.get(key)
-    if not isinstance(value, dict):
-        raise CharacterConfigError(f"角色清单缺少对象字段 {key}：{manifest_path}")
-    return value
-
-
 def _required_text(data: dict[str, Any], key: str, manifest_path: Path) -> str:
     value = data.get(key)
     if not isinstance(value, str) or not value.strip():
