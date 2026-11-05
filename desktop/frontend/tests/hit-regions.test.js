@@ -3,8 +3,8 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import { computePetLayout, validateLayoutContract } from "../pet/layout.js";
-
 import * as hitRegions from "../pet/hit-regions.js";
+
 const contract = validateLayoutContract(
   JSON.parse(await readFile(new URL("../pet/layout-contract.json", import.meta.url), "utf8")),
 );
@@ -13,7 +13,6 @@ test("interactive controls win over an overlapping portrait drag region", () => 
   const product = hitRegions.computeHitRegions(computePetLayout(contract));
   assert.equal(hitRegions.classifyHitPoint(product, [742, 696]), "interactive");
   assert.equal(hitRegions.classifyHitPoint(product, [242, 836]), "interactive");
-  assert.notEqual(hitRegions.classifyHitPoint(product, [242, 836]), "drag");
   assert.equal(hitRegions.classifyHitPoint(product, [342, 516]), "drag");
   assert.equal(
     hitRegions.shouldStartNativeDrag({ hitKind: "interactive", button: 0, isPrimary: true }),
