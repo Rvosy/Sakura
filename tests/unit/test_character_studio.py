@@ -741,12 +741,17 @@ def test_studio_theme_save_preserves_an_unmanaged_voice_provider(tmp_path: Path)
     opened = service.open_character("sakura")
     assert opened["doc"]["voice"] is None
     doc = opened["doc"]
-    doc["theme"]["accent"] = "#112233"
+    doc["theme"]["primary_color"] = "#445566"
+    doc["theme"]["accent_color"] = "#112233"
     service.save_draft(doc, opened["workspace_id"])
     saved = json.loads(
         (Path(opened["package_dir"]) / "character.json").read_text(encoding="utf-8")
     )
 
+    assert saved["theme"]["primary_color"] == "#445566"
+    assert saved["theme"]["accent_color"] == "#112233"
+    assert saved["theme"]["source"] == "package"
+    assert "ai_enabled" not in saved["theme"]
     assert saved["extensions"] == {key: value for key, value in manifest["extensions"].items() if key != "sakura.tts"}
 
 

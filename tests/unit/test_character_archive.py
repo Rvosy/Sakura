@@ -21,9 +21,8 @@ from app.config.character_archive import (
 from app.config.character_loader import (
     THEME_SOURCE_PACKAGE,
     CharacterRegistry,
-    save_character_theme,
 )
-from app.config.models import DEFAULT_THEME_SETTINGS, ThemeSettings
+from app.config.models import DEFAULT_THEME_SETTINGS
 from app.storage.paths import sanitize_directory_component
 
 
@@ -446,21 +445,6 @@ def test_character_archive_ignores_legacy_theme_source_on_import() -> None:
     assert imported.theme_settings.accent_color == "#445566"
     assert imported.theme_source == THEME_SOURCE_PACKAGE
     assert manifest["theme"]["source"] == THEME_SOURCE_PACKAGE
-
-
-def test_save_character_theme_writes_package_theme_to_manifest() -> None:
-    root = _runtime_root("save_character_theme")
-    profile = _build_voice_less_character(root)
-    settings = ThemeSettings(primary_color="#112233", accent_color="#445566")
-
-    save_character_theme(profile, settings)
-
-    manifest = json.loads((profile.package_dir / "character.json").read_text(encoding="utf-8"))
-    saved_theme = manifest["theme"]
-    assert saved_theme["source"] == THEME_SOURCE_PACKAGE
-    assert saved_theme["primary_color"] == "#112233"
-    assert saved_theme["accent_color"] == "#445566"
-    assert "ai_enabled" not in saved_theme
 
 
 @pytest.mark.parametrize("existing_extensions", [False, True])

@@ -148,12 +148,6 @@ def read_character_archive_identity(path: Path) -> tuple[str, str]:
         raise CharacterArchiveError("不是有效的 Sakura .char ZIP 包。") from exc
 
 
-def read_character_archive_id(path: Path) -> str:
-    """Read ``character.id`` from a .char archive without extracting resources."""
-
-    return read_character_archive_identity(path)[0]
-
-
 def import_character_voice_archive(
     path: Path,
     base_dir: Path,

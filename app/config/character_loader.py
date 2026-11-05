@@ -236,22 +236,6 @@ def character_theme_to_mapping(
     return data
 
 
-def save_character_theme(
-    profile: CharacterProfile,
-    settings: ThemeSettings,
-    *,
-    source: CharacterThemeSource = THEME_SOURCE_PACKAGE,
-) -> None:
-    manifest_path = profile.package_dir / "character.json"
-    try:
-        raw_data = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        raise CharacterConfigError(f"角色清单无法读取：{manifest_path}") from exc
-    if not isinstance(raw_data, dict):
-        raise CharacterConfigError(f"角色清单必须是 JSON 对象：{manifest_path}")
-    _write_character_theme_manifest(manifest_path, raw_data, settings, source=source)
-
-
 def _load_reply_tones(reply_data: Any) -> list[str]:
     if not isinstance(reply_data, dict):
         return [*DEFAULT_TONES]
@@ -304,23 +288,6 @@ def _theme_source_from_text(value: object) -> CharacterThemeSource:
 
 def _default_theme_settings() -> ThemeSettings:
     return DEFAULT_THEME_SETTINGS
-
-
-def _write_character_theme_manifest(
-    manifest_path: Path,
-    raw_data: dict[str, Any],
-    settings: ThemeSettings,
-    *,
-    source: CharacterThemeSource,
-) -> None:
-    raw_data["theme"] = character_theme_to_mapping(settings, source=source)
-    try:
-        manifest_path.write_text(
-            json.dumps(raw_data, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-    except OSError as exc:
-        raise CharacterConfigError(f"角色主题写回失败：{manifest_path}") from exc
 
 
 def _required_text(data: dict[str, Any], key: str, manifest_path: Path) -> str:
