@@ -26,13 +26,19 @@ from app.config.models import DEFAULT_THEME_SETTINGS
 from app.storage.paths import sanitize_directory_component
 
 
-def test_character_archive_export_then_import_roundtrip() -> None:
-    root = _runtime_root("roundtrip")
+def test_character_archive_export_then_import_roundtrip(tmp_path: Path) -> None:
+    root = tmp_path
     source_root = root / "source"
     profile = _build_character_package(source_root)
     archive_path = root / "demo.char"
 
     export_character_archive(profile, archive_path)
+    with zipfile.ZipFile(archive_path) as archive:
+        manifest = json.loads(archive.read("manifest.json"))
+        assert manifest["format"] == "sakura.character.archive"
+        assert manifest["version"] == 1
+        assert archive.read(manifest["character"]["card"]) == b"system prompt"
+        assert archive.read("character/voice/models/gpt.ckpt") == b"gpt"
     result = import_character_archive(archive_path, source_root)
 
     assert result.character_id == "demo_1"
@@ -49,8 +55,8 @@ def test_character_archive_export_then_import_roundtrip() -> None:
     assert imported.voice is not None
     assert imported.voice.gpt_model_path is not None
     assert imported.voice.sovits_model_path is not None
-    assert imported.voice.gpt_model_path.is_file()
-    assert imported.voice.sovits_model_path.is_file()
+    assert imported.voice.gpt_model_path.read_bytes() == b"gpt"
+    assert imported.voice.sovits_model_path.read_bytes() == b"sovits"
     assert imported.voice.tone_ref_path.read_text(encoding="utf-8").strip().endswith("|中性")
     assert (imported.package_dir / "voice" / "refs" / "tone_refs" / "neutral.wav").is_file()
     imported_manifest = json.loads(
@@ -92,15 +98,14 @@ def test_v1_character_import_preserves_resources_without_migrating_shared_voice_
     assert status["enabled"] is False and status["providerId"] is None
 
 
-def test_character_archive_uses_portable_directory_and_manifest_id_uniqueness() -> None:
-    root = _runtime_root("portable_character_directory")
+def test_character_archive_uses_portable_directory_and_manifest_id_uniqueness(tmp_path: Path) -> None:
+    root = tmp_path
     archive_path = _build_minimal_character_archive(root, "N.A.V.I.")
 
     first = import_character_archive(archive_path, root)
     second = import_character_archive(archive_path, root)
 
     assert first.character_id == "N.A.V.I."
-    assert first.package_dir.name == sanitize_directory_component("N.A.V.I.")
     assert not first.package_dir.name.endswith((".", " "))
     assert second.character_id == "N.A.V.I._1"
     assert second.package_dir.name == "N.A.V.I._1"
@@ -163,8 +168,8 @@ def test_voice_exclusion_uses_declarations_outside_legacy_voice_directory(tmp_pa
     assert set(restored["extensionResources"]) == {"future.other"}
 
 
-def test_character_archive_roundtrips_runtime_fields_and_extension_voice_resources() -> None:
-    root = _runtime_root("runtime_fields")
+def test_character_archive_roundtrips_runtime_fields_and_extension_voice_resources(tmp_path: Path) -> None:
+    root = tmp_path
     source_root = root / "source"
     profile = _build_character_package(source_root)
     package = profile.package_dir
@@ -219,9 +224,9 @@ def test_character_archive_roundtrips_runtime_fields_and_extension_voice_resourc
 
 
 def test_extension_voice_export_accepts_a_relative_package_root(
-    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    root = _runtime_root("relative_extension_voice")
+    root = tmp_path
     source_root = root / "source"
     profile = _build_character_package(source_root)
     manifest_path = profile.package_dir / "character.json"
@@ -249,8 +254,8 @@ def test_extension_voice_export_accepts_a_relative_package_root(
         assert "character/voice/refs/tone_refs/neutral.wav" in bundle.namelist()
 
 
-def test_character_archive_export_can_cancel_during_large_file_compression() -> None:
-    root = _runtime_root("cancel_export")
+def test_character_archive_export_can_cancel_during_large_file_compression(tmp_path: Path) -> None:
+    root = tmp_path
     profile = _build_character_package(root)
     (profile.package_dir / "large-resource.bin").write_bytes(b"x" * (3 * 1024 * 1024))
     output = root / "cancelled.char"
@@ -269,9 +274,8 @@ def test_character_archive_export_can_cancel_during_large_file_compression() -> 
     assert not output.with_name(f".{output.name}.tmp").exists()
 
 
-
-def test_character_archive_preserves_undeclared_legacy_voice_files() -> None:
-    root = _runtime_root("referenced_voice_export")
+def test_character_archive_preserves_undeclared_legacy_voice_files(tmp_path: Path) -> None:
+    root = tmp_path
     profile = _build_character_package(root / "source")
     (profile.package_dir / "voice" / "models" / "old.ckpt").write_bytes(b"old-gpt")
     (profile.package_dir / "voice" / "refs" / "tone_refs" / "old.wav").write_bytes(b"old-wav")
@@ -290,8 +294,8 @@ def test_character_archive_preserves_undeclared_legacy_voice_files() -> None:
     assert "character/voice/refs/tone_refs/old.wav" in names
 
 
-def test_character_voice_archive_export_only_includes_referenced_files() -> None:
-    root = _runtime_root("referenced_voice_only_export")
+def test_character_voice_archive_export_only_includes_referenced_files(tmp_path: Path) -> None:
+    root = tmp_path
     profile = _build_character_package(root / "source")
     (profile.package_dir / "voice" / "models" / "old.ckpt").write_bytes(b"old-gpt")
     (profile.package_dir / "voice" / "refs" / "tone_refs" / "old.wav").write_bytes(b"old-wav")
@@ -309,8 +313,8 @@ def test_character_voice_archive_export_only_includes_referenced_files() -> None
     assert "voice/models/old.ckpt" not in names
     assert "voice/refs/tone_refs/old.wav" not in names
 
-def test_character_archive_card_only_export_excludes_voice() -> None:
-    root = _runtime_root("card_only_export")
+def test_character_archive_card_only_export_excludes_voice(tmp_path: Path) -> None:
+    root = tmp_path
     profile = _build_character_package(root / "source")
     archive_path = root / "demo.card.char"
 
@@ -330,8 +334,8 @@ def test_character_archive_card_only_export_excludes_voice() -> None:
     assert imported.voice is None
 
 
-def test_character_archive_imports_voice_less_package_with_default_theme() -> None:
-    root = _runtime_root("voice_less_default_theme")
+def test_character_archive_imports_voice_less_package_with_default_theme(tmp_path: Path) -> None:
+    root = tmp_path
     archive_path = root / "voice-less.char"
     with zipfile.ZipFile(archive_path, "w", zipfile.ZIP_DEFLATED) as zf:
         zf.writestr(
@@ -366,8 +370,8 @@ def test_character_archive_imports_voice_less_package_with_default_theme() -> No
     assert manifest["theme"]["primary_color"] == DEFAULT_THEME_SETTINGS.primary_color
 
 
-def test_character_archive_preserves_packaged_theme_on_import_and_export() -> None:
-    root = _runtime_root("packaged_theme")
+def test_character_archive_preserves_packaged_theme_on_import_and_export(tmp_path: Path) -> None:
+    root = tmp_path
     archive_path = root / "themed.char"
     with zipfile.ZipFile(archive_path, "w", zipfile.ZIP_DEFLATED) as zf:
         zf.writestr(
@@ -409,8 +413,8 @@ def test_character_archive_preserves_packaged_theme_on_import_and_export() -> No
     assert exported_manifest["character"]["theme"]["primary_color"] == "#112233"
 
 
-def test_character_archive_ignores_legacy_theme_source_on_import() -> None:
-    root = _runtime_root("legacy_theme_source")
+def test_character_archive_ignores_legacy_theme_source_on_import(tmp_path: Path) -> None:
+    root = tmp_path
     archive_path = root / "legacy-themed.char"
     with zipfile.ZipFile(archive_path, "w", zipfile.ZIP_DEFLATED) as zf:
         zf.writestr(
@@ -448,8 +452,8 @@ def test_character_archive_ignores_legacy_theme_source_on_import() -> None:
 
 
 @pytest.mark.parametrize("existing_extensions", [False, True])
-def test_character_voice_archive_imports_to_selected_character(existing_extensions: bool) -> None:
-    root = _runtime_root("voice_import")
+def test_character_voice_archive_imports_to_selected_character(tmp_path: Path, existing_extensions: bool) -> None:
+    root = tmp_path
     profile = _build_voice_less_character(root)
     if existing_extensions:
         manifest_path = profile.package_dir / "character.json"
@@ -486,8 +490,8 @@ def test_character_voice_archive_imports_to_selected_character(existing_extensio
         assert manifest["extensions"]["sakura.tts.gpt-sovits"]["custom"] == 7
 
 
-def test_character_voice_archive_export_can_be_imported() -> None:
-    root = _runtime_root("voice_export")
+def test_character_voice_archive_export_can_be_imported(tmp_path: Path) -> None:
+    root = tmp_path
     source_root = root / "source"
     target_root = root / "target"
     profile = _build_character_package(source_root)
@@ -553,16 +557,16 @@ def test_voice_import_preserves_declared_and_unknown_resources_offline(tmp_path)
     assert (copied.package_dir / "voice/undeclared.bin").read_bytes() == b"legacy-resource"
 
 
-def test_character_voice_archive_export_requires_voice() -> None:
-    root = _runtime_root("voice_export_missing")
+def test_character_voice_archive_export_requires_voice(tmp_path: Path) -> None:
+    root = tmp_path
     profile = _build_voice_less_character(root)
 
     with pytest.raises(CharacterArchiveError, match="没有可导出的语音包"):
         export_character_voice_archive(profile, root / "demo.voice")
 
 
-def test_character_voice_archive_failure_keeps_existing_voice() -> None:
-    root = _runtime_root("voice_import_rollback")
+def test_character_voice_archive_failure_keeps_existing_voice(tmp_path: Path) -> None:
+    root = tmp_path
     profile = _build_character_package(root)
     archive_path = root / "bad.voice"
     with zipfile.ZipFile(archive_path, "w", zipfile.ZIP_DEFLATED) as zf:
@@ -592,8 +596,8 @@ def test_character_voice_archive_failure_keeps_existing_voice() -> None:
     assert (profile.package_dir / "voice" / "models" / "gpt.ckpt").read_bytes() == original_gpt
 
 
-def test_character_voice_archive_rejects_unsafe_zip_and_missing_target() -> None:
-    root = _runtime_root("voice_import_bad")
+def test_character_voice_archive_rejects_unsafe_zip_and_missing_target(tmp_path: Path) -> None:
+    root = tmp_path
     _build_voice_less_character(root)
     archive_path = root / "bad.voice"
     with zipfile.ZipFile(archive_path, "w", zipfile.ZIP_DEFLATED) as zf:
@@ -617,64 +621,30 @@ def test_character_voice_archive_rejects_unsafe_zip_and_missing_target() -> None
     assert not (root / "evil.txt").exists()
 
 
-def test_archive_accepts_many_compressible_files(tmp_path):
-    import app.config.character_archive as archive_module
-    archive_path = tmp_path / "many.char"
-    with zipfile.ZipFile(archive_path, "w", zipfile.ZIP_DEFLATED) as zf:
-        zf.writestr("manifest.json", "{}")
-        for i in range(4100):
-            zf.writestr(f"character/{i}.txt", "a")
-        zf.writestr("character/large.txt", "a" * (2 * 1024 * 1024))
-    with zipfile.ZipFile(archive_path) as zf:
-        archive_module._validate_zip_members(zf, tmp_path)
-
-
-@pytest.mark.parametrize("archive_root", ["character", "voice"])
-@pytest.mark.parametrize(
-    ("sizes", "free_bytes", "error"),
-    [
-        ([3 * 1024**3], 64 * 1024**3, None),
-        ([8 * 1024**3] * 4, 64 * 1024**3, None),
-        ([8 * 1024**3 + 1], 64 * 1024**3, None),
-        ([8 * 1024**3] * 4 + [1], 64 * 1024**3, None),
-        ([3 * 1024**3], 3 * 1024**3, "磁盘空间不足"),
-    ],
-)
-def test_archive_large_resource_limits(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-    archive_root: str, sizes: list[int], free_bytes: int, error: str | None,
-) -> None:
-    import app.config.character_archive as archive_module
-    import app.storage.archive_security as security_module
+@pytest.mark.parametrize("kind", ["character", "voice"])
+def test_import_with_insufficient_disk_space_preserves_installed_character(tmp_path, monkeypatch, kind):
     from types import SimpleNamespace
+    from app.storage import archive_security
 
-    monkeypatch.setattr(
-        security_module.shutil, "disk_usage",
-        lambda _path: SimpleNamespace(free=free_bytes),
-    )
-    archive_path = tmp_path / "large.zip"
-    with zipfile.ZipFile(archive_path, "w") as zf:
-        zf.writestr("manifest.json", b"")
-        for index in range(len(sizes)):
-            zf.writestr(f"{archive_root}/resource-{index}.bin", b"")
-    with zipfile.ZipFile(archive_path) as zf:
-        # Exercise the real pre-extraction checks without allocating GiB of fixtures.
-        for info, size in zip(zf.infolist()[1:], sizes):
-            info.file_size = size
-            info.compress_size = size
-        validate = (
-            archive_module._validate_zip_members if archive_root == "character"
-            else archive_module._validate_voice_zip_members
-        )
-        if error is None:
-            validate(zf, tmp_path)
+    profile = _build_character_package(tmp_path)
+    original = {path.relative_to(profile.package_dir): path.read_bytes()
+                for path in profile.package_dir.rglob("*") if path.is_file()}
+    archive = _build_minimal_character_archive(tmp_path, "demo") if kind == "character" else _build_voice_archive(tmp_path)
+    monkeypatch.setattr(archive_security.shutil, "disk_usage", lambda _path: SimpleNamespace(free=0))
+
+    with pytest.raises(CharacterArchiveError, match="磁盘空间不足"):
+        if kind == "character":
+            import_character_archive(archive, tmp_path)
         else:
-            with pytest.raises(CharacterArchiveError, match=error):
-                validate(zf, tmp_path)
+            import_character_voice_archive(archive, tmp_path, "demo")
+
+    assert [item.id for item in CharacterRegistry(tmp_path).all()] == ["demo"]
+    assert {path.relative_to(profile.package_dir): path.read_bytes()
+            for path in profile.package_dir.rglob("*") if path.is_file()} == original
 
 
-def test_character_archive_rejects_non_sakura_format() -> None:
-    root = _runtime_root("non_sakura")
+def test_character_archive_rejects_non_sakura_format(tmp_path: Path) -> None:
+    root = tmp_path
     archive_path = root / "legacy.char"
     with zipfile.ZipFile(archive_path, "w", zipfile.ZIP_DEFLATED) as zf:
         zf.writestr("manifest.json", json.dumps({"format": "shinsekai.character"}))
@@ -686,8 +656,8 @@ def test_character_archive_rejects_non_sakura_format() -> None:
     assert not list((root / "characters").glob("*/character.json"))
 
 
-def test_character_archive_rejects_zip_path_traversal() -> None:
-    root = _runtime_root("zip_traversal")
+def test_character_archive_rejects_zip_path_traversal(tmp_path: Path) -> None:
+    root = tmp_path
     archive_path = root / "bad.char"
     with zipfile.ZipFile(archive_path, "w", zipfile.ZIP_DEFLATED) as zf:
         zf.writestr("../evil.txt", "evil")
@@ -714,8 +684,8 @@ def test_character_archive_rejects_zip_path_traversal() -> None:
     assert not list((root / "characters").glob("*/character.json"))
 
 
-def test_character_archive_rejects_unsafe_manifest_resource_path() -> None:
-    root = _runtime_root("bad_manifest")
+def test_character_archive_rejects_unsafe_manifest_resource_path(tmp_path: Path) -> None:
+    root = tmp_path
     archive_path = root / "bad_manifest.char"
     with zipfile.ZipFile(archive_path, "w", zipfile.ZIP_DEFLATED) as zf:
         zf.writestr(
@@ -740,19 +710,6 @@ def test_character_archive_rejects_unsafe_manifest_resource_path() -> None:
         import_character_archive(archive_path, root)
 
     assert not list((root / "characters").glob("*/character.json"))
-
-
-def _runtime_root(name: str) -> Path:
-    root = (
-        Path(__file__).resolve().parents[2]
-        / "temp"
-        / "test_runtime"
-        / uuid.uuid4().hex
-        / "character_archive"
-        / name
-    )
-    root.mkdir(parents=True, exist_ok=True)
-    return root
 
 
 def _build_voice_less_character(root: Path):

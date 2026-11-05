@@ -8,109 +8,115 @@ from pathlib import Path
 import pytest
 
 from app.config.yaml_config import load_yaml_mapping, save_yaml_mapping
-import app.storage.atomic as atomic_module
+from app.storage import atomic
 from app.storage.atomic import atomic_write_text, rename_with_retry, replace_with_retry
 
 
-class _RetryableWinOSError(OSError):
+class _WindowsLockError(OSError):
     def __init__(self, winerror: int) -> None:
         super().__init__(f"winerror {winerror}")
         self.winerror = winerror
 
 
-def _no_tmp_leftovers(directory: Path) -> bool:
-    return not any(p.suffix == ".tmp" for p in directory.iterdir())
+def test_create_and_overwrite_unicode_file_without_backup(tmp_path):
+    target = tmp_path / "nested/config.yaml"
+    atomic_write_text(target, "角色: 桜\nメッセージ: こんにちは")
+    assert target.read_text(encoding="utf-8") == "角色: 桜\nメッセージ: こんにちは"
+
+    atomic_write_text(target, "角色: 新角色")
+    assert target.read_text(encoding="utf-8") == "角色: 新角色"
+    assert list(target.parent.iterdir()) == [target]
 
 
-class TestAtomicWriteText:
-    def test_backup_keeps_previous_version(self, tmp_path: Path) -> None:
-        target = tmp_path / "config.yaml"
-        atomic_write_text(target, "v1", backup=True)
-        # 首次写入没有旧版本，不应产生 .bak
-        assert not (tmp_path / "config.yaml.bak").exists()
-        atomic_write_text(target, "v2", backup=True)
-        assert target.read_text(encoding="utf-8") == "v2"
-        assert (tmp_path / "config.yaml.bak").read_text(encoding="utf-8") == "v1"
-        atomic_write_text(target, "v3", backup=True)
-        assert (tmp_path / "config.yaml.bak").read_text(encoding="utf-8") == "v2"
-
-    def test_failure_preserves_original_and_cleans_tmp(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        target = tmp_path / "config.yaml"
-        atomic_write_text(target, "original")
-
-        def broken_replace(src: str, dst: str) -> None:
-            raise OSError("simulated crash before replace")
-
-        monkeypatch.setattr(os, "replace", broken_replace)
-        with pytest.raises(OSError, match="simulated crash"):
-            atomic_write_text(target, "new content")
-        monkeypatch.undo()
-
-        # 旧文件保持原样，临时文件不残留
-        assert target.read_text(encoding="utf-8") == "original"
-        assert _no_tmp_leftovers(tmp_path)
+def test_backup_keeps_previous_version(tmp_path):
+    target = tmp_path / "config.yaml"
+    backup = tmp_path / "config.yaml.bak"
+    atomic_write_text(target, "v1", backup=True)
+    assert not backup.exists()
+    atomic_write_text(target, "v2", backup=True)
+    assert target.read_text() == "v2"
+    assert backup.read_text() == "v1"
+    atomic_write_text(target, "v3", backup=True)
+    assert target.read_text() == "v3"
+    assert backup.read_text() == "v2"
 
 
-class TestRetryHelpers:
-    def test_rename_with_retry_retries_transient_windows_lock(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        source = tmp_path / "source.txt"
-        target = tmp_path / "target.txt"
-        source.write_text("ok", encoding="utf-8")
-        original_rename = Path.rename
-        calls = 0
+def test_failed_commit_preserves_original_and_cleans_temporary_file(tmp_path, monkeypatch):
+    target = tmp_path / "config.yaml"
+    target.write_text("original", encoding="utf-8")
 
-        def flaky_rename(self: Path, target_path: Path) -> Path:
-            nonlocal calls
-            calls += 1
-            if calls < 3:
-                raise _RetryableWinOSError(32)
-            return original_rename(self, target_path)
+    def fail_replace(*_args):
+        raise OSError("simulated crash before replace")
 
-        monkeypatch.setattr(atomic_module.time, "sleep", lambda _seconds: None)
-        monkeypatch.setattr(Path, "rename", flaky_rename)
+    monkeypatch.setattr(os, "replace", fail_replace)
+    with pytest.raises(OSError, match="simulated crash"):
+        atomic_write_text(target, "new content")
+    assert target.read_text() == "original"
+    assert list(tmp_path.iterdir()) == [target]
 
-        rename_with_retry(source, target)
 
-        assert target.read_text(encoding="utf-8") == "ok"
+def test_rename_retries_transient_windows_lock(tmp_path, monkeypatch):
+    source, target = tmp_path / "source.txt", tmp_path / "target.txt"
+    source.write_text("ok", encoding="utf-8")
+    rename = Path.rename
+    attempts = 0
 
-    def test_replace_with_retry_retries_transient_windows_lock(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        source = tmp_path / "source.txt"
-        target = tmp_path / "target.txt"
-        source.write_text("new", encoding="utf-8")
-        target.write_text("old", encoding="utf-8")
-        original_replace = os.replace
-        calls = 0
+    def locked_then_rename(path, destination):
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            raise _WindowsLockError(32)
+        return rename(path, destination)
 
-        def flaky_replace(source_path: Path, target_path: Path) -> None:
-            nonlocal calls
-            calls += 1
-            if calls < 2:
-                raise _RetryableWinOSError(5)
-            original_replace(source_path, target_path)
+    monkeypatch.setattr(atomic.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(Path, "rename", locked_then_rename)
+    rename_with_retry(source, target)
+    assert target.read_text() == "ok"
+    assert not source.exists()
 
-        monkeypatch.setattr(atomic_module.time, "sleep", lambda _seconds: None)
-        monkeypatch.setattr(os, "replace", flaky_replace)
 
+def test_replace_retries_transient_windows_lock(tmp_path, monkeypatch):
+    source, target = tmp_path / "source.txt", tmp_path / "target.txt"
+    source.write_text("new", encoding="utf-8")
+    target.write_text("old", encoding="utf-8")
+    replace = os.replace
+    attempts = 0
+
+    def locked_then_replace(source_path, target_path):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise _WindowsLockError(5)
+        replace(source_path, target_path)
+
+    monkeypatch.setattr(atomic.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(os, "replace", locked_then_replace)
+    replace_with_retry(source, target)
+    assert target.read_text() == "new"
+    assert not source.exists()
+
+
+def test_replace_preserves_non_retryable_error_and_files(tmp_path, monkeypatch):
+    source, target = tmp_path / "source.txt", tmp_path / "target.txt"
+    source.write_text("new", encoding="utf-8")
+    target.write_text("old", encoding="utf-8")
+    attempts = []
+
+    def fail_replace(*_args):
+        attempts.append(True)
+        raise OSError("not retryable")
+
+    monkeypatch.setattr(os, "replace", fail_replace)
+    with pytest.raises(OSError, match="not retryable"):
         replace_with_retry(source, target)
+    assert len(attempts) == 1
+    assert target.read_text() == "old"
+    assert source.read_text() == "new"
 
-        assert target.read_text(encoding="utf-8") == "new"
-        assert not source.exists()
 
-
-class TestSaveYamlMappingAtomic:
-    def test_roundtrip_and_backup(self, tmp_path: Path) -> None:
-        target = tmp_path / "api.yaml"
-        save_yaml_mapping(target, {"llm": {"model": "m1"}})
-        save_yaml_mapping(target, {"llm": {"model": "m2"}})
-        assert load_yaml_mapping(target) == {"llm": {"model": "m2"}}
-        backup = tmp_path / "api.yaml.bak"
-        assert backup.exists()
-        assert load_yaml_mapping(backup) == {"llm": {"model": "m1"}}
+def test_yaml_save_roundtrip_and_backup(tmp_path):
+    target = tmp_path / "api.yaml"
+    save_yaml_mapping(target, {"llm": {"model": "m1"}})
+    save_yaml_mapping(target, {"llm": {"model": "m2"}})
+    assert load_yaml_mapping(target) == {"llm": {"model": "m2"}}
+    assert load_yaml_mapping(tmp_path / "api.yaml.bak") == {"llm": {"model": "m1"}}
