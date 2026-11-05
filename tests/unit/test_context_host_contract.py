@@ -1,19 +1,18 @@
 from __future__ import annotations
 
+from dataclasses import asdict
+from types import SimpleNamespace
+
 import pytest
 
 from app.core_host.plugin_host_services import HostServiceError, _ContextHostService
 from sakura_assistant.agent.context_orchestrator import ContextContributionError, ContextOrchestrator
-from app.plugin_sdk.sakura_context import ContextRequest
+from app.plugin_sdk.sakura_context import ContextFragment, ContextRequest
 from app.plugins.host_services import HOST_CALLER
 
 
 def _register(payload: object, **descriptor: object):
-    service = _ContextHostService(
-        lambda *_args: payload,
-        lambda request: {"current_input": request.current_input},
-        lambda _providers: None,
-    )
+    service = _ContextHostService(lambda *_args: payload)
     token = HOST_CALLER.set("example.actual-owner")
     try:
         registration = service.call("register", [
@@ -21,7 +20,20 @@ def _register(payload: object, **descriptor: object):
         ])
     finally:
         HOST_CALLER.reset(token)
-    return service, registration, service.providers()[0]
+    catalog = service.call("catalog", [])[0]
+
+    def collect(request):
+        return tuple(ContextFragment(**item) for item in service.call(
+            "collect", [catalog["registrationId"], asdict(request)],
+        ))
+
+    provider = SimpleNamespace(
+        provider_id=catalog["providerId"], description=catalog["description"],
+        order=catalog["order"], enabled=catalog["enabled"], scope=catalog["scope"],
+        failure_policy=catalog["failurePolicy"], plugin_id=catalog["pluginId"],
+        build_context=collect,
+    )
+    return service, registration, provider
 
 
 def test_context_contract_preserves_content_scope_and_authenticated_owner() -> None:
@@ -44,11 +56,10 @@ def test_context_contract_preserves_content_scope_and_authenticated_owner() -> N
     assert not reference.required
     assert reference.source == "plugin"
     assert service.call("unregister", [registration["registrationId"]]) == {"removed": True}
-    assert service.providers() == []
+    assert service.call("catalog", []) == []
 
 
 def test_retrieval_reason_survives_context_and_trace_projection():
-    from types import SimpleNamespace
     from app.plugin_sdk.sakura_context import ContextSnapshot, ContextFragmentDecision
     from sakura_assistant.agent.trace import prompt_metadata_with_context
 
