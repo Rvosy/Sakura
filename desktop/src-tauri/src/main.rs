@@ -45,12 +45,8 @@ mod update_settings;
 mod visual_resources;
 mod window_geometry;
 mod window_interaction;
-#[cfg(windows)]
+#[cfg(any(windows, test))]
 mod windows_glass_poc;
-#[cfg(windows)]
-mod windows_liquid_glass;
-#[cfg(windows)]
-mod windows_liquid_glass_native;
 use std::sync::{Arc, Mutex, TryLockError};
 
 use platform::{
