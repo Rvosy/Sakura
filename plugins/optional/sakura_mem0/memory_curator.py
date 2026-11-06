@@ -21,7 +21,6 @@ try:
         DEFAULT_MEMORY_CONFIDENCE,
         DEFAULT_MEMORY_IMPORTANCE,
         MEMORY_LAYER_SEMANTIC,
-        MEMORY_LAYERS,
         MemoryStore,
         looks_like_sensitive_memory,
     )
@@ -39,7 +38,6 @@ except ImportError:
         DEFAULT_MEMORY_CONFIDENCE,
         DEFAULT_MEMORY_IMPORTANCE,
         MEMORY_LAYER_SEMANTIC,
-        MEMORY_LAYERS,
         MemoryStore,
         looks_like_sensitive_memory,
     )
@@ -410,16 +408,13 @@ class MemoryCurator:
         write_failure: Exception | None = None
         event_counts: dict[str, int] = {}
         for operation in operations[:MAX_CURATION_OPERATIONS]:
-            if not isinstance(operation, dict):
-                ignored += 1
-                continue
-            action = str(operation.get("op") or operation.get("action") or "").strip().lower()
-            memory_id = str(operation.get("id") or operation.get("memory_id") or "").strip()
-            content = str(operation.get("content") or operation.get("memory") or "").strip()
-            layer = _normalize_operation_layer(operation)
-            category = str(operation.get("category") or "").strip()
-            confidence = _bounded_float(operation.get("confidence"), DEFAULT_MEMORY_CONFIDENCE)
-            importance = _bounded_float(operation.get("importance"), DEFAULT_MEMORY_IMPORTANCE)
+            action = operation["op"]
+            memory_id = operation.get("id", "")
+            content = operation.get("content", "")
+            layer = operation.get("layer", MEMORY_LAYER_SEMANTIC)
+            category = operation.get("category", "")
+            confidence = operation.get("confidence", DEFAULT_MEMORY_CONFIDENCE)
+            importance = operation.get("importance", DEFAULT_MEMORY_IMPORTANCE)
             if action in {"add", "update"}:
                 if confidence < MIN_AUTO_WRITE_CONFIDENCE:
                     log_event(
@@ -439,9 +434,6 @@ class MemoryCurator:
                     continue
             try:
                 if action == "add":
-                    if not content:
-                        ignored += 1
-                        continue
                     if _find_applied_source_candidate(
                         existing,
                         source_entry_ids=source_entry_ids,
@@ -511,11 +503,11 @@ class MemoryCurator:
                     operations_per_layer[layer] = operations_per_layer.get(layer, 0) + 1
                     event_counts["ADD"] = event_counts.get("ADD", 0) + 1
                 elif action == "update":
-                    if memory_id not in existing_ids or not content:
+                    if memory_id not in existing_ids:
                         log_event(
                             "Memory",
                             "跳过无效的记忆更新操作",
-                            {"id": memory_id, "has_content": bool(content)},
+                            {"id": memory_id},
                         )
                         ignored += 1
                         continue
@@ -544,8 +536,6 @@ class MemoryCurator:
                     existing_ids.discard(memory_id)
                     archived += 1
                     event_counts["DELETE"] = event_counts.get("DELETE", 0) + 1
-                else:
-                    ignored += 1
             except Exception as exc:
                 log_event(
                     "Memory",
@@ -726,19 +716,6 @@ def _parse_curation_operations(raw: str) -> list[dict[str, Any]]:
 
     data = _load_json_object(raw)
     return [operation.model_dump() for operation in CurationOutput.model_validate(data).operations]
-
-
-def _normalize_operation_layer(operation: dict[str, Any]) -> str:
-    layer = str(operation.get("layer") or "").strip()
-    return layer if layer in MEMORY_LAYERS else MEMORY_LAYER_SEMANTIC
-
-
-def _bounded_float(value: Any, default: float) -> float:
-    try:
-        number = float(value)
-    except (TypeError, ValueError):
-        return default
-    return min(1.0, max(0.0, number))
 
 
 def _find_existing_memory_for_candidate(
