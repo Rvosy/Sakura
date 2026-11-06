@@ -98,7 +98,9 @@ jobs:
 
       - name: Install Chromium for dashboard tests
         working-directory: services/sakura/dashboard
-        run: npx playwright install --with-deps chromium
+        run: |
+          echo 'https://archive.ubuntu.com/ubuntu/' | sudo tee /etc/apt/apt-mirrors.txt
+          npx playwright install --with-deps chromium
 
       - name: Run dashboard browser tests
         working-directory: services/sakura/dashboard
@@ -189,22 +191,12 @@ jobs:
           DEBIAN_FRONTEND: noninteractive
         run: |
           set -euo pipefail
-          for attempt in 1 2 3; do
-            sudo timeout --signal=TERM --kill-after=10s 45s dpkg --configure -a || true
-            if sudo timeout --signal=TERM --kill-after=10s 45s \
-                apt-get update -o Acquire::Retries=3 && \
-              sudo timeout --signal=TERM --kill-after=10s 75s \
-                apt-get install -y --no-install-recommends -o Acquire::Retries=3 \
-                  build-essential file libssl-dev libasound2-dev libgbm-dev \
-                  libpipewire-0.3-dev libwebkit2gtk-4.1-dev \
-                  libayatana-appindicator3-dev libxdo-dev librsvg2-dev patchelf xvfb; then
-              exit 0
-            fi
-            if [ "$attempt" -lt 3 ]; then
-              sleep $((attempt * 5))
-            fi
-          done
-          exit 1
+          echo 'https://archive.ubuntu.com/ubuntu/' | sudo tee /etc/apt/apt-mirrors.txt
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential file libssl-dev libasound2-dev libgbm-dev \
+            libpipewire-0.3-dev libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev libxdo-dev librsvg2-dev patchelf xvfb
 
       - name: Record fixed toolchain and native environment
         working-directory: desktop
