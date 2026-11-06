@@ -250,7 +250,7 @@ class Runtime:
             if self.observer_stop.wait(1):
                 return
 
-    def request(self, path, data=None, timeout=None):
+    def request(self, path, data=None, timeout=None, *, metrics=None):
         started = time.monotonic()
         request = Request(self.url + path, data=None if data is None else json.dumps(data).encode(),
                           headers={'Content-Type': 'application/json'})
@@ -259,7 +259,7 @@ class Runtime:
                 body = response.read()
                 if path == '/tts':
                     fields = {'backend': self.backend, 'profile': self.profile,
-                              'elapsed_ms': round((time.monotonic() - started) * 1000, 1),
+                              'request_ms': round((time.monotonic() - started) * 1000, 1),
                               'bytes': len(body)}
                     for suffix, key in [('Total-Ms', 'engine_total_ms'), ('Request-Ms', 'inference_ms'),
                                         ('Reference-Ms', 'reference_ms'), ('Frontend-Ms', 'frontend_ms'),
@@ -276,8 +276,13 @@ class Runtime:
                     cache = response.headers.get('X-SakuraTTS-Reference-Cache')
                     if cache in {'memory', 'disk', 'package', 'miss'}:
                         fields['reference_cache'] = cache
+                    status = response.headers.get('X-SakuraTTS-Status')
+                    if status in {'completed', 'stopped_at_limit'}:
+                        fields['synthesis_status'] = status
                     if fields.get('audio_seconds'):
-                        fields['rtf'] = round(fields['elapsed_ms'] / 1000 / fields['audio_seconds'], 3)
+                        fields['rtf'] = round(fields['request_ms'] / 1000 / fields['audio_seconds'], 3)
+                    if metrics is not None:
+                        metrics.update(fields)
                     self.emit('info', 'SakuraTTS 合成耗时', **fields)
                 return body if path == '/tts' else json.loads(body)
         except HTTPError as error:

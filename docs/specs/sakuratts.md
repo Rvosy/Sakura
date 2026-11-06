@@ -96,6 +96,10 @@ CUDA 编译报 `cannot open source file` 不一定是文件缺失。Windows 未�
 
 日志记录启动、排队、预加载、合成和安装的实际阶段。引擎提供阶段耗时时才展示相应数据；旧包只显示可测得的请求耗时。HTTP 失败保留引擎响应原因，不能只留下通用状态名称。
 
+启用远程诊断时，合成性能附在同一条 `tts.operation.finished` 终态事件中，由宿主统一发送。`elapsedMs` 从插件开始执行操作计到产物写入完成，包含服务启动；`queueMs` 记录此前的等待。`requestMs` 从发出合成 HTTP 请求计到完整音频读完，包含引擎唤醒及传输。引擎响应头提供 `engineTotalMs`、`inferenceMs`、`referenceMs`、`frontendMs`、`gptMs`、`sovitsMs` 和最终 `audioSeconds`，缺失或无效的测量不填零。各阶段定义见引擎 [HTTP API](https://github.com/Rvosy/SakuraTTS/blob/main/docs/http-api.md#生命周期与输出)。事件同时记录文本字符数、语言、参考缓存来源及合成停止状态，不增加文本、参考转写或音频内容。
+
+控制台的性能统计只使用操作成功、`synthesisStatus=completed` 且具有正音频时长和请求耗时的记录，失败、取消、达到生成上限和旧包缺失测量仍保留操作统计。RTF 按 `requestMs / (1000 × audioSeconds)` 计算，推理 RTF 使用 `inferenceMs`；含排队与启动的耗时为 `elapsedMs + queueMs`。P50/P95 使用最近秩分位数，加权 RTF 为总请求耗时除以总音频时长。按已有版本、后端、档位和硬件上下文分组，旧记录缺失性能指标时显示未知。这些真实请求的文本、模型与音频长度不同，比较时需结合样本数和音频时长。
+
 完整引擎输出在当前缓存目录的 `server.log`，目录选择见[安装与切换](#整合包安装与切换)；安装检查输出在整合包的 `logs/plugin-check.log`。运行失败提示包含日志位置，诊断保留原始进程输出。HTTP 错误摘要保留引擎返回的具体原因，完整异常链仍包含底层 HTTP 错误。统一日志记录操作结果及诊断入口，不逐条复制普通轮询。
 
 ## 关键业务场景

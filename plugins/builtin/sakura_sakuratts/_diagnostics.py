@@ -36,7 +36,7 @@ def operation(log, stage, *, cancel=None, report_error=True):
     fields = {'event': 'tts.operation.finished', 'stage': stage}
     level = 'info'
     try:
-        yield
+        yield fields
         fields['outcome'] = 'cancelled' if cancel is not None and cancel.is_set() else 'success'
     except Cancelled:
         fields['outcome'] = 'cancelled'

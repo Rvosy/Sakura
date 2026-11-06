@@ -30,6 +30,19 @@ const counts = [
   },
   numCol("averageMs", "平均耗时（ms）"),
 ];
+const performanceContext = [
+  textCol("app_version", "Sakura 版本"),
+  textCol("bundleVersion", "整合包"),
+  textCol("backend", "实际后端"),
+  textCol("profile", "推理模式"),
+  textCol("gpuName", "检测到的显卡"),
+];
+const rtfCol = (key: string, header: string) => ({
+  accessorKey: key,
+  header,
+  cell: ({ row }: { row: { original: Row } }) =>
+    row.original[key] == null ? "—" : Number(row.original[key]).toFixed(3),
+});
 
 export function Tts({ route }: { route: Route }) {
   const [filters, setFilters] = useState<Record<string, string>>({});
@@ -99,6 +112,50 @@ export function Tts({ route }: { route: Route }) {
                   stage: stages[row.stage] || row.stage,
                 }))}
                 columns={[textCol("stage", "阶段"), ...counts]}
+              />
+            </Panel>
+            <Panel
+              title="合成性能"
+              note="仅统计完整成功且有音频时长的样本。请求耗时包含引擎唤醒与音频返回；RTF 为请求秒数除以音频秒数，越低越快。P95 表示 95% 的样本不超过该值。"
+            >
+              <DataTable
+                label="TTS 合成性能"
+                data={data.items.filter(
+                  (row: Row) => row.stage === "synthesis",
+                )}
+                columns={[
+                  ...performanceContext,
+                  numCol("performanceSamples", "性能样本"),
+                  rtfCol("p50Rtf", "RTF P50"),
+                  rtfCol("p95Rtf", "RTF P95"),
+                  numCol("averageAudioSeconds", "平均音频（s）"),
+                  numCol("p50RequestMs", "请求 P50（ms）"),
+                  numCol("p95RequestMs", "请求 P95（ms）"),
+                  numCol("p95EndToEndMs", "含排队与启动 P95（ms）"),
+                ]}
+              />
+            </Panel>
+            <Panel
+              title="合成阶段耗时"
+              note="单位为毫秒，按已测得的完整成功样本计算平均值。推理包含参考准备、文本处理、GPT 与 SoVITS；缺失测量显示为 —。"
+            >
+              <DataTable
+                label="TTS 合成阶段耗时"
+                data={data.items.filter(
+                  (row: Row) => row.stage === "synthesis",
+                )}
+                columns={[
+                  ...performanceContext,
+                  numCol("inferenceSamples", "推理样本"),
+                  numCol("averageGptMs", "GPT"),
+                  numCol("averageSovitsMs", "SoVITS"),
+                  numCol("averageQueueMs", "排队"),
+                  numCol("averageEngineTotalMs", "引擎总耗时"),
+                  numCol("averageInferenceMs", "推理"),
+                  numCol("averageReferenceMs", "参考准备"),
+                  numCol("averageFrontendMs", "文本处理"),
+                  rtfCol("p50InferenceRtf", "推理 RTF P50"),
+                ]}
               />
             </Panel>
             <Panel

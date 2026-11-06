@@ -241,19 +241,20 @@ class Provider:
                     job['failure'] = {'errorCode': 'TTS_BACKGROUND_DEFERRED'}
                     job['state'] = 'failed'
                 return
-            with operation(self.log, 'synthesis', cancel=job['cancel']):
+            queue_ms = round((time.monotonic() - job['queued_at']) * 1000, 1)
+            with operation(self.log, 'synthesis', cancel=job['cancel']) as metrics:
+                metrics.update(queue_ms=queue_ms, text_chars=len(request['text']), language=voice['text_lang'])
                 with self.lock:
                     if job['cancel'].is_set():
                         raise Cancelled()
                     self.active = job
-                queue_ms = round((time.monotonic() - job['queued_at']) * 1000, 1)
                 if not background:
                     self.runtime.start(self.bundle.current(), self.config, voice, job['cancel'])
                 payload = {key: voice[key] for key in ('text_lang', 'ref_audio_path', 'prompt_lang', 'prompt_text')}
                 payload.update(text=request['text'], parallel_infer=False, streaming_mode=False, media_type='wav')
                 self.log('info', 'SakuraTTS 开始合成', backend=self.runtime.backend, text_chars=len(request['text']),
                          reference_audio=Path(voice['ref_audio_path']).name, language=voice['text_lang'], queue_ms=queue_ms)
-                audio = self.runtime.request('/tts', payload)
+                audio = self.runtime.request('/tts', payload, metrics=metrics)
                 with self.lock:
                     if job['cancel'].is_set():
                         raise Cancelled()
