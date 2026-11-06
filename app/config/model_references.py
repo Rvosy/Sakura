@@ -32,9 +32,10 @@ def model_reference(value: object) -> dict[str, str]:
 
 
 def _read(path: Path) -> dict:
-    if not path.exists():
+    try:
+        value = json.loads(path.read_text(encoding="utf-8-sig"))
+    except FileNotFoundError:
         return {}
-    value = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(value, dict):
         raise ValueError("CONFIG_DATA_INVALID")
     return value

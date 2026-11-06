@@ -279,15 +279,18 @@ class Plugin:
 
 
 @pytest.mark.parametrize("retry_port", [8000, 8001])
-def test_unchanged_config_does_not_reload_and_failed_apply_remains_retryable(tmp_path, retry_port):
+@pytest.mark.parametrize("encoding", ["utf-8", "utf-8-sig"])
+def test_unchanged_config_does_not_reload_and_failed_apply_remains_retryable(tmp_path, retry_port, encoding):
     from app.plugins.sakura_plugin_sdk import PluginConfig
     root, data = tmp_path / "plugin", tmp_path / "data"
     root.mkdir()
-    (root / "config.json").write_text('{"port": 8000}', encoding="utf-8")
+    (root / "config.json").write_text('{"port": 8000}', encoding=encoding)
+    data.mkdir()
+    (data / "config.json").write_text('{"custom": "keep"}', encoding=encoding)
     config = PluginConfig("fixture", root, data, lambda cleanup: cleanup)
     # Explicitly pinning a default persists the override without restarting.
     assert config.update({"port": 8000}) == "applied"
-    assert json.loads((data / "config.json").read_text(encoding="utf-8")) == {"port": 8000}
+    assert json.loads((data / "config.json").read_text(encoding="utf-8")) == {"port": 8000, "custom": "keep"}
     calls = []
     def apply(values):
         calls.append(values)
@@ -298,7 +301,8 @@ def test_unchanged_config_does_not_reload_and_failed_apply_remains_retryable(tmp
     assert config.update({"port": 8001}) == "error"
     assert config.update({"port": retry_port}) == "applied"
     assert len(calls) == 2
-    assert config.replace({"port": retry_port}) == "applied"
+    assert config.get()["custom"] == "keep"
+    assert config.replace({"port": retry_port, "custom": "keep"}) == "applied"
     assert len(calls) == 2
     fresh = PluginConfig("fixture", root, data, lambda cleanup: cleanup)
     assert fresh.update({"port": retry_port}) == "applied"
@@ -2165,6 +2169,47 @@ class Plugin:
     assert close_acknowledgements == [None] * 4
     _wait_pids_gone(pids)
     manager.close()
+
+
+def test_generation_close_preserves_logs_from_dependency_not_yet_stopping(tmp_path: Path) -> None:
+    from app.core_host.runtime_logging import CORE_BRIDGE_PREFIX, install_runtime_logging
+
+    roots = _roots(tmp_path)
+    bundled = roots.distribution_root / "plugins" / "builtin"
+    _plugin_source(bundled, "fixture.provider", "fixture.provider.service",
+        requires=("sakura.host.logging",), body='''
+class Plugin:
+    def setup(self, context):
+        logger = context.get("sakura.host.logging")
+        class Service:
+            def finish(self):
+                logger.info("dependency cleanup finished")
+                logger.close()
+        context.provide("fixture.provider.service", Service(), exports=("finish",))
+''')
+    _plugin_source(bundled, "fixture.consumer", "fixture.consumer.service",
+        requires=("fixture.provider.service",), body='''
+class Plugin:
+    def setup(self, context):
+        provider = context.get("fixture.provider.service")
+        context.effect(provider.finish)
+        context.provide("fixture.consumer.service", object(), exports=())
+''')
+    stream = io.BytesIO()
+    bridge = install_runtime_logging(stream)
+    host = PluginApplicationHost(roots, "generation-dependency-logging", ToolRegistry())
+    try:
+        host.start()
+        assert host.wait_until_loaded(timeout=3)
+        assert all(item["state"] == "active" for item in host._manager.snapshot()["plugins"])
+    finally:
+        host.close()
+        bridge.close()
+    records = [json.loads(line.removeprefix(CORE_BRIDGE_PREFIX))
+               for line in stream.getvalue().splitlines() if line.startswith(CORE_BRIDGE_PREFIX)]
+    assert any(record.get("message") == "dependency cleanup finished"
+               and record.get("plugin_id") == "fixture.provider" for record in records), records
+    assert not [record for record in records if record.get("severity") in {"warning", "error"}]
 
 
 def test_generation_close_unregisters_provider_from_live_tts_hub(tmp_path: Path) -> None:

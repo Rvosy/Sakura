@@ -75,22 +75,29 @@ def test_interrupted_handoff_resumes_without_overwriting_saved_destinations(tmp_
     assert ModelReferenceRepository(tmp_path).active()["chat"] == REF
 
 
-def test_existing_plugin_fields_win_and_unrelated_data_survives(tmp_path):
+@pytest.mark.parametrize("encoding", ["utf-8", "utf-8-sig"])
+def test_existing_plugin_fields_win_and_unrelated_data_survives(tmp_path, encoding):
     _legacy(tmp_path)
     module._write(_provider(tmp_path), {"profiles": [], "custom": "keep"})
     module._write(_assistant(tmp_path), {"generation": {"temperature": 1}, "custom": "keep"})
+    for path in (_provider(tmp_path), _assistant(tmp_path)):
+        path.write_text(path.read_text(encoding="utf-8"), encoding=encoding)
     migrate_legacy_model_configuration(tmp_path)
-    assert json.loads(_provider(tmp_path).read_text(encoding="utf-8")) == {"profiles": [], "custom": "keep"}
-    assert json.loads(_assistant(tmp_path).read_text(encoding="utf-8"))["generation"] == {"temperature": 1}
+    assert json.loads(_provider(tmp_path).read_text(encoding="utf-8-sig")) == {"profiles": [], "custom": "keep"}
+    assert json.loads(_assistant(tmp_path).read_text(encoding="utf-8-sig"))["generation"] == {"temperature": 1}
     assert ModelReferenceRepository(tmp_path).load()["chat"] == REF
 
 
-def test_reference_identity_keeps_provider_key_and_optional_vision_inherits_chat(tmp_path):
+@pytest.mark.parametrize("encoding", ["utf-8", "utf-8-sig"])
+def test_reference_identity_keeps_provider_key_and_optional_vision_inherits_chat(tmp_path, encoding):
     repository = ModelReferenceRepository(tmp_path)
     other = {**REF, "serviceKey": "vendor.other"}
     repository.save({"chat": other, "vision_chat": EMPTY_REFERENCE})
+    repository.path.write_text(repository.path.read_text(encoding="utf-8"), encoding=encoding)
     assert repository.active() == {"chat": other, "vision_chat": other}
     assert repository.load()["vision_chat"] == EMPTY_REFERENCE
+    repository.save({"chat": REF, "vision_chat": EMPTY_REFERENCE})
+    assert repository.active() == {"chat": REF, "vision_chat": REF}
 
 
 @pytest.mark.parametrize("value", [{"profileId": "fixture", "modelId": "x"}, {**REF, "apiKey": SECRET}, {**REF, "modelId": 3}, {**REF, "serviceKey": ""}])
