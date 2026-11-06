@@ -1537,6 +1537,7 @@ def run_host(
     from .provider_settings import ProviderSettingsBoundary, SETTINGS_REQUEST_NAMES
     from .storage_settings import STORAGE_SETTINGS_REQUEST_NAMES, StorageSettingsBoundary
     from .usage_statistics import UsageStatisticsBoundary
+    from .theme_generation import THEME_REQUEST_NAMES, ThemeGenerationBoundary
     from .tool_settings import TOOL_SETTINGS_REQUEST_NAMES, ToolSettingsBoundary
     from .tts_boundary import TTSBoundary, TTS_REQUEST_NAMES
     from .asr_boundary import ASRBoundary, ASR_REQUEST_NAMES
@@ -1547,6 +1548,7 @@ def run_host(
     dispatcher: ControlDispatcher | None = None
     router: ConcurrentHostRouter | None = None
     provider_settings: ProviderSettingsBoundary | None = None
+    theme_generation: ThemeGenerationBoundary | None = None
     primary_error: BaseException | None = None
     primary_traceback = None
     try:
@@ -1641,6 +1643,10 @@ def run_host(
             prepare_switch=getattr(dispatcher, "prepare_character_switch", None),
             apply_switch=getattr(dispatcher, "switch_character_session", None),
             plugin_application_provider=getattr(dispatcher, "published_plugin_application", lambda: None),
+        )
+        theme_generation = ThemeGenerationBoundary(
+            config.generation_id, config.generation_credential, config.user_root,
+            application_provider=getattr(dispatcher, "published_plugin_application", lambda: None),
         )
         bind_visual_selector = getattr(dispatcher, "bind_visual_selector", None)
         if callable(bind_visual_selector):
@@ -1815,6 +1821,8 @@ def run_host(
                     return tts_boundary.handle(request)
                 if request.get("name") in CHARACTER_SETTINGS_REQUEST_NAMES:
                     return character_settings.handle(request)
+                if request.get("name") in THEME_REQUEST_NAMES:
+                    return theme_generation.handle(request)
                 if request.get("name") in CHARACTER_STUDIO_REQUEST_NAMES:
                     return character_studio.handle(request)
                 if request.get("name") in STORAGE_SETTINGS_REQUEST_NAMES:
@@ -1826,12 +1834,16 @@ def run_host(
                 return provider_settings.handle(request)
 
             def reserve_send(self, request: dict[str, Any]) -> None:
+                if request.get("name") == "theme.generate":
+                    theme_generation.reserve(request)
                 if request.get("name") == "chat.send":
                     reserve = getattr(chat_boundary, "reserve_send", None)
                     if callable(reserve):
                         reserve(request)
 
             def abandon_send(self, request: dict[str, Any]) -> None:
+                if request.get("name") == "theme.generate":
+                    theme_generation.abandon(request)
                 if request.get("name") == "chat.send":
                     abandon = getattr(chat_boundary, "abandon_send", None)
                     if callable(abandon):
@@ -1857,6 +1869,7 @@ def run_host(
                     *ASR_REQUEST_NAMES,
                     *HOST_DESKTOP_REQUESTS,
                     *CHARACTER_SETTINGS_REQUEST_NAMES,
+                    *THEME_REQUEST_NAMES,
                     *CHARACTER_STUDIO_REQUEST_NAMES,
                     *STORAGE_SETTINGS_REQUEST_NAMES,
                     "usage.statistics.get",
@@ -1872,7 +1885,7 @@ def run_host(
         primary_error = error
         primary_traceback = error.__traceback__
 
-    for owner in (router, dispatcher, writer):
+    for owner in (theme_generation, router, dispatcher, writer):
         if owner is None:
             continue
         try:

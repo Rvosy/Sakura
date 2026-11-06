@@ -1777,6 +1777,8 @@ fn viewer_ipc_request_message(record: &RuntimeLogRecord) -> Option<String> {
         "characters.settings.export" => "导出角色包",
         "characters.settings.delete" | "settings_character_delete" => "删除角色",
         "characters.settings.select" => "切换角色",
+        "theme.generate" | "settings_theme_generate" => "AI 生成配色",
+        "theme.cancel" | "settings_theme_cancel" => "取消配色生成",
         "storage.settings.get" => "读取存储设置",
         "storage.settings.choose_tts_root" => "更改语音数据目录",
         "storage.settings.reset_tts_root" => "恢复默认语音目录",

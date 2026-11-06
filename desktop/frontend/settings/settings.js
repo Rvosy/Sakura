@@ -197,7 +197,7 @@ function prepareRuntimeAppearance(snapshot, themeFields) {
   }
   for (const id of ["portraitScale", "controlPanelWidth", "bubbleHeight", "bubbleAutoExpand",
     "controlPanelOffset", "inputBarOffset", "speechFontSize", "nameFontSize", "inputFontSize",
-    "resetThemeButton", "visualEffectMode"]) {
+    "resetThemeButton", "themeAiButton", "visualEffectMode"]) {
     const control = fields[id];
     control.disabled = false;
     control.removeAttribute("aria-disabled");
@@ -230,15 +230,7 @@ function prepareRuntimeAppearance(snapshot, themeFields) {
     updateSliderOutput(fieldKey);
   }
 
-  for (const control of [
-    fields.themeAiButton,
-    themeEditor.pick,
-  ]) {
-    // Each of these shares a row with a migrated control. Disable only the
-    // unavailable button so the active character/import/theme controls do not
-    // inherit the legacy grey unavailable treatment.
-    disableRuntimeControl(control, { markRow: false });
-  }
+  disableRuntimeControl(themeEditor.pick, { markRow: false });
   enhanceSelect(fields.visualEffectMode);
   refreshSelect(fields.visualEffectMode);
   upgradeSliderControls();
@@ -359,6 +351,7 @@ function setSubmissionBusy(busy) {
 }
 
 async function closeSettingsWindow() {
+  await runtimeAppearanceController?.cancelThemeGeneration();
   await runtimePluginController?.cancelOperations();
   bypassCloseGuard = true;
   beginSettingsWindowClose();
@@ -1405,6 +1398,7 @@ async function saveRuntimeSettings({ keepGlobalCollectionDrafts = false } = {}) 
     throw new Error("请先保存或取消正在编辑的集合记录，再保存设置。");
   }
   if (runtimeAsrController?.isDirty()) await runtimeAsrController.save();
+  await runtimeAppearanceController?.cancelThemeGeneration();
   if (runtimeAppearanceController?.isDirty()) await runtimeAppearanceController.save();
   let result = null;
   if (runtimePluginController?.isDirty()) {
@@ -1802,6 +1796,7 @@ async function startSettingsFrontend() {
       onError: setError,
       prepare: prepareRuntimeAppearance,
       fillTheme: (theme) => setThemeValues(theme, { updateVisualEffect: false }),
+      notify,
       trace: interactionLatencyTrace,
     });
     let appearanceSnapshot;

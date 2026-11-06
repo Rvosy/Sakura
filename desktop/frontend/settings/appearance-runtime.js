@@ -144,6 +144,7 @@ export function createRuntimeAppearanceController({
   onError,
   prepare,
   fillTheme,
+  notify = () => {},
   wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
   trace = NOOP_INTERACTION_TRACE,
 }) {
@@ -185,6 +186,51 @@ export function createRuntimeAppearanceController({
   let layoutGestureRevision = 0;
   let layoutGestureOwner = null;
   let previewTrace = null;
+  let themeOperation = null;
+
+  function finishThemeGeneration() {
+    themeOperation = null;
+    const button = document.getElementById("themeAiButton");
+    button.textContent = "AI 生成配色";
+    button.removeAttribute("aria-busy");
+  }
+
+  async function cancelThemeGeneration() {
+    const operation = themeOperation;
+    if (!operation) return;
+    finishThemeGeneration();
+    try {
+      await invoke("settings_theme_cancel", { operationId: operation.id });
+    } catch (error) {
+      if (!disposed && !rebinding) onError(error, "取消配色生成失败");
+    }
+  }
+
+  async function generateTheme() {
+    if (themeOperation) return cancelThemeGeneration();
+    if (!snapshot || disposed || rebinding) return;
+    const operation = { id: crypto.randomUUID(), presentation: snapshot.presentation };
+    themeOperation = operation;
+    const button = document.getElementById("themeAiButton");
+    button.textContent = "取消生成";
+    button.setAttribute("aria-busy", "true");
+    try {
+      const result = await invoke("settings_theme_generate", {
+        operationId: operation.id, characterId: operation.presentation.characterId,
+      });
+      if (disposed || themeOperation !== operation) return;
+      if (result.generationId !== snapshot.presentation.generationId
+          || result.characterId !== snapshot.presentation.characterId) return;
+      const values = validateAppearanceValues({ ...draft, themeTokens: result.themeTokens }, snapshot.limits);
+      fillTheme(toLegacyTheme(values.themeTokens));
+      changed();
+      notify("AI 配色已生成，可预览并继续调整，点击应用后保存。", "success");
+    } catch (error) {
+      if (!disposed && themeOperation === operation) onError(error, "AI 配色生成失败，当前配色已保留。");
+    } finally {
+      if (themeOperation === operation) finishThemeGeneration();
+    }
+  }
 
   const scalarControls = Object.freeze({
     portraitScalePercent: "portraitScale",
@@ -575,6 +621,7 @@ export function createRuntimeAppearanceController({
   }
 
   function applySnapshot(input, { preserveDraft = false } = {}) {
+    void cancelThemeGeneration();
     const next = validateAppearanceSnapshot(input);
     const previousDraft = draft ? clone(draft) : null;
     const previousBaseline = baseline;
@@ -614,6 +661,7 @@ export function createRuntimeAppearanceController({
     )) return;
     if (rebindPromise) return rebindPromise;
     rebinding = true;
+    void cancelThemeGeneration();
     let restorePreview = false;
     rebindPromise = (async () => {
       previewQueued = false;
@@ -685,10 +733,19 @@ export function createRuntimeAppearanceController({
       });
       control.addEventListener("keyup", finishOwnedLayoutGesture);
     }
-    document.getElementById("themeColors").addEventListener("input", changed);
+    document.getElementById("themeColors").addEventListener("input", () => {
+      void cancelThemeGeneration();
+      changed();
+    });
+    document.getElementById("themeColors").addEventListener("click", event => {
+      if (event.target.closest("[data-theme-swatch]")) void cancelThemeGeneration();
+    });
+    document.getElementById("themeAiButton").addEventListener("click", generateTheme);
+    document.getElementById("characterSelect").addEventListener("change", () => { void cancelThemeGeneration(); });
     document.getElementById("visualEffectMode").addEventListener("change", changed);
     document.getElementById("bubbleAutoExpand").addEventListener("change", changed);
     document.getElementById("resetThemeButton").addEventListener("click", () => {
+      void cancelThemeGeneration();
       if (!snapshot || disposed) return;
       fill({ ...draft, themeTokens: clone(snapshot.presentation.themeTokens) });
       changed();
@@ -727,8 +784,10 @@ export function createRuntimeAppearanceController({
   return Object.freeze({
     initialize,
     rebindIdentity,
+    cancelThemeGeneration,
     isDirty: () => Boolean(baseline && stable(draft) !== stable(baseline)),
     async save() {
+      await cancelThemeGeneration();
       if (rebindPromise) await rebindPromise;
       if (!snapshot) throw new Error("角色外观设置尚未加载");
       await endPortraitScaleGesture();
@@ -754,6 +813,7 @@ export function createRuntimeAppearanceController({
       onDirty();
     },
     async cancelPreview() {
+      await cancelThemeGeneration();
       if (rebindPromise) await rebindPromise;
       await endPortraitScaleGesture();
       await endLayoutGesture();
@@ -772,6 +832,8 @@ export function createRuntimeAppearanceController({
       onDirty();
     },
     dispose() {
+      disposed = true;
+      void cancelThemeGeneration();
       if (portraitScaleGestureBackendActive) {
         portraitScaleGestureActive = false;
         portraitScaleGestureBackendActive = false;
@@ -787,7 +849,6 @@ export function createRuntimeAppearanceController({
           .then(() => invoke("settings_character_appearance_layout_gesture", { active: false }))
           .catch(() => {});
       }
-      disposed = true;
       previewQueued = false;
       portraitScaleFrameQueued = false;
       layoutFrameQueued = false;

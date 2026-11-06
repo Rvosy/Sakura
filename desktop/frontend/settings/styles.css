@@ -3304,6 +3304,24 @@ button:active:not(:disabled) {
   gap: 8px;
 }
 
+.theme-generation-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.theme-generation-row .setting-row-text {
+  flex: 1 1 280px;
+}
+
+.theme-generation-row .setting-desc {
+  white-space: normal;
+}
+
+.theme-generation-row .inline-actions {
+  margin-left: auto;
+}
+
 .compact-button {
   min-width: 72px;
   padding-inline: 12px;

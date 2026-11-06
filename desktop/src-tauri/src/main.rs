@@ -4674,6 +4674,43 @@ fn finish_character_settings_change(
 }
 
 #[tauri::command]
+async fn settings_theme_generate(
+    window: WebviewWindow,
+    operation_id: String,
+    character_id: String,
+    shell: State<'_, product_shell::ProductShellState>,
+    lifecycle: State<'_, ShellLifecycleState>,
+) -> Result<Value, String> {
+    character_settings_payload_request(
+        &window,
+        &shell,
+        &lifecycle,
+        "theme.generate",
+        json!({"operationId": operation_id, "characterId": character_id}),
+    )
+    .await
+    .map(|(result, _)| result)
+}
+
+#[tauri::command]
+async fn settings_theme_cancel(
+    window: WebviewWindow,
+    operation_id: String,
+    shell: State<'_, product_shell::ProductShellState>,
+    lifecycle: State<'_, ShellLifecycleState>,
+) -> Result<Value, String> {
+    character_settings_payload_request(
+        &window,
+        &shell,
+        &lifecycle,
+        "theme.cancel",
+        json!({"operationId": operation_id}),
+    )
+    .await
+    .map(|(result, _)| result)
+}
+
+#[tauri::command]
 async fn settings_character_visuals_get(
     window: WebviewWindow,
     character_id: String,
@@ -7941,6 +7978,8 @@ fn main() {
             legacy_import::settings_legacy_data_import_apply,
             product_shell::reveal_settings_window,
             settings_characters_get,
+            settings_theme_generate,
+            settings_theme_cancel,
             settings_character_visuals_get,
             visual_control_parse,
             settings_character_choose_import,
