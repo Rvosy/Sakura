@@ -32,8 +32,7 @@ def test_tool_catalog_does_not_rebind_an_old_turn_to_a_same_name_replacement(mon
 
 def test_context_catalog_does_not_rebind_an_old_turn_to_a_same_name_replacement():
     calls = []
-    host = _ContextHostService(lambda handle, *_args: calls.append(handle) or [{"content": handle}],
-                               lambda request: {}, lambda _providers: None)
+    host = _ContextHostService(lambda handle, *_args: calls.append(handle) or [{"content": handle}])
     descriptor = {"providerId": "fixture.context", "scope": "turn"}
     old = host.call("register", [descriptor, "cb_" + "1" * 32])["registrationId"]
     host.call("unregister", [old])

@@ -7,7 +7,6 @@ import yaml
 
 from app.config.character_resources import CharacterVisualResource
 from app.core_host.visual_host import VisualHost, VisualHostError
-from app.plugins.discovery import PluginDiscovery
 from app.plugins.installer import LocalPluginInstaller
 from app.plugins.inventory import PluginDesiredStateStore, PluginInventory
 from app.plugins.runtime_v4 import PluginRuntimeError
@@ -43,7 +42,6 @@ def test_disabled_visual_declaration_survives_discovery_and_startup_serializatio
     assert record.visuals[0].resource_type == "example.parameters@1"
     spec = inventory.runtime_specs[0]
     assert spec.to_plugin_spec(tmp_path).visuals == record.visuals
-    assert PluginDiscovery(tmp_path).discover()[0].visuals == record.visuals
     manifest = tmp_path / "plugins/user/visual/plugin.yaml"
     raw = yaml.safe_load(manifest.read_text(encoding="utf-8"))
     raw["visuals"][0]["contract"] = 2
@@ -72,7 +70,6 @@ def test_invalid_optional_declarations_do_not_disable_other_plugin_services(tmp_
     if field == "editor":
         assert record.visuals[0].renderer == "renderer.js"
         assert record.visuals[0].editor is None
-    assert PluginDiscovery(tmp_path).discover()[0].visuals == record.visuals
     assert LocalPluginInstaller(tmp_path)._validated_spec(plugin_root).visuals == record.visuals
 
 

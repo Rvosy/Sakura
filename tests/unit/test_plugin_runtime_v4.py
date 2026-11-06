@@ -1233,15 +1233,7 @@ class Plugin:
 """.strip(),
     )
 
-    class Runtime:
-        def __init__(self) -> None:
-            self.context_providers = []
-
-        def set_context_providers(self, providers) -> None:
-            self.context_providers = list(providers)
-
     registry = ToolRegistry()
-    runtime = Runtime()
     application = PluginApplicationHost(
         roots,
         "generation-v4-application",
@@ -1338,7 +1330,6 @@ class Plugin:
     finally:
         application.close()
     assert registry.get("fixture_v4_echo") is None
-    assert runtime.context_providers == []
 
 
 def test_isolated_plugin_can_stop_owned_process_with_public_sdk(tmp_path: Path) -> None:

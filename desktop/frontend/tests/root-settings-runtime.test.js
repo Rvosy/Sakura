@@ -3,36 +3,10 @@ import test from "node:test";
 
 import {
   createRootSettingsClient,
-  formatSettingsError,
   legacyDataImportPlanHasWork,
   normalizeCharacterSettingsSnapshot,
-  normalizeLegacyDataImportPlan,
   normalizeStorageSettingsSnapshot,
 } from "../settings/root-settings-runtime.js";
-
-test("settings errors retain the context and original message", () => {
-  const message = formatSettingsError("MODEL_SLOT_INCOMPLETE|model.slots|core:chat|模型槽必须同时选择 Provider 和模型。");
-  for (const detail of ["model.slots", "core:chat", "模型槽必须同时选择 Provider 和模型。"]) {
-    assert.ok(message.includes(detail));
-  }
-  assert.equal(
-    formatSettingsError("连接失败：PROVIDER_TIMEOUT|providers.test_connection||供应商请求超时。"),
-    "连接失败：PROVIDER_TIMEOUT|providers.test_connection||供应商请求超时。",
-  );
-  assert.equal(
-    formatSettingsError(
-      "自动检测失败：PROVIDER_ACCESS_FORBIDDEN|providers.list_models||API HTTP 403: Model listing is not allowed (code: access_denied; type: permission_error)",
-    ),
-    "自动检测失败：PROVIDER_ACCESS_FORBIDDEN|providers.list_models||API HTTP 403: Model listing is not allowed (code: access_denied; type: permission_error)",
-  );
-  assert.equal(formatSettingsError("请先选择模型。"), "请先选择模型。");
-});
-
-test("clearing settings feedback does not create an unknown error", () => {
-  assert.equal(formatSettingsError(""), "");
-  assert.equal(formatSettingsError("  \n"), "");
-  assert.ok(formatSettingsError(new Error("connection failed")).includes("connection failed"));
-});
 
 const emptyCharacters = Object.freeze({
   schemaVersion: 1,
@@ -75,7 +49,7 @@ const legacyDataPlan = Object.freeze({
 });
 
 test("quarantine-only legacy plans still require apply", () => {
-  const quarantineOnly = normalizeLegacyDataImportPlan({
+  const quarantineOnly = {
     ...legacyDataPlan,
     characters: [],
     totals: {
@@ -87,7 +61,7 @@ test("quarantine-only legacy plans still require apply", () => {
       memoryConflicts: 0,
       recoverableErrors: 1,
     },
-  });
+  };
   assert.equal(legacyDataImportPlanHasWork(quarantineOnly), true);
   assert.equal(legacyDataImportPlanHasWork({
     ...quarantineOnly,
@@ -130,14 +104,40 @@ test("package-only and orphan reassociation plans have executable work", () => {
 
 test("role mapping is sent for a fresh plan before apply uses its token", async () => {
   const calls = [];
+  const report = { schemaVersion: 1, outcome: "completed", importId: "import-result", plan: legacyDataPlan };
   const client = createRootSettingsClient({ invoke: async (command, args) => {
     calls.push({command,args});
     if (command === "settings_legacy_data_import_choose") return legacyDataPlan;
-    return { schemaVersion:1, outcome:"completed", importId:"import-result", plan:legacyDataPlan };
+    return report;
   }});
   const mapping = { OldRole:"CurrentRole" };
   const plan = await client.legacyRoleDataImportChoose("old-selection", mapping);
-  await client.legacyRoleDataImportApply(plan.selectionId, plan.planToken, false);
+  assert.deepEqual(plan, legacyDataPlan);
+  assert.deepEqual(await client.legacyRoleDataImportApply(plan.selectionId, plan.planToken, false), report);
   assert.deepEqual(calls[0], {command:"settings_legacy_data_import_choose", args:{selectionId:"old-selection",roleMapping:mapping}});
   assert.deepEqual(calls[1].args, {selectionId:plan.selectionId,planToken:plan.planToken,overwriteConflicts:false});
+});
+
+test("settings client preserves host receipts, settings and cancelled selections", async () => {
+  const responses = {
+    settings_character_export: { schemaVersion: 1, outputPath: "/exports/Sakura.char", message: "导出完成" },
+    settings_update_cached_get: null,
+    settings_update_get: { available: true, version: "1.3.6", downloadUrl: "https://example.test/Sakura.zip" },
+    settings_legacy_data_import_choose: null,
+    settings_telemetry_set_enabled: { enabled: false, installationId: null },
+  };
+  const client = createRootSettingsClient({ invoke: async (command) => responses[command] });
+
+  assert.deepEqual(await client.characterExport("/exports/Sakura.char", "Sakura", "full"), responses.settings_character_export);
+  assert.equal(await client.updateCachedGet(), null);
+  assert.deepEqual(await client.updateGet(), responses.settings_update_get);
+  assert.equal(await client.legacyRoleDataImportChoose(), null);
+  assert.deepEqual(await client.telemetrySetEnabled(false), responses.settings_telemetry_set_enabled);
+});
+
+test("settings client preserves native operation errors and their causes", async () => {
+  const failure = new Error("LEGACY_IMPORT_RECOVERY_FAILED", { cause: new Error("original data is locked") });
+  const client = createRootSettingsClient({ invoke: async () => { throw failure; } });
+  await assert.rejects(client.legacyRoleDataImportApply("selection", "plan", false), (error) => error === failure);
+  await assert.rejects(client.telemetrySetEnabled(false), (error) => error === failure);
 });

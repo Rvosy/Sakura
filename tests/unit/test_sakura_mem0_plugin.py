@@ -9,7 +9,7 @@ import pytest
 
 from sakura_assistant.agent.context_orchestrator import ContextOrchestrator
 from sakura_context import ContextFragment, ContextRequest
-from app.plugins.models import ContextProviderContribution
+from sakura_assistant.agent.context_orchestrator import ContextProviderContribution
 from plugins.optional.sakura_mem0.plugin import (
     SakuraMem0Plugin,
     SakuraMem0Runtime,

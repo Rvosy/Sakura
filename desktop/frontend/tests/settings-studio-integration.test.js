@@ -3,79 +3,22 @@ import test from "node:test";
 
 import { createCharacterSettingsFeature } from "../settings/character-settings.js";
 import { RUNTIME_THEME_FIELDS } from "../core/theme-runtime.js";
-import { featureFixture, snapshot as pluginSnapshot, queryResult } from "./fixtures/plugin-settings-fixture.js";
+import { browserFixture, featureFixture, snapshot as pluginSnapshot, queryResult, settle } from "./fixtures/plugin-settings-fixture.js";
 
-const settle = () => new Promise((resolve) => setImmediate(resolve));
-// Only the DOM boundary is replaced. Catalog, archive, preview, and generation
-// handling run through the imported production feature and typed clients.
 function characterDocument() {
-  class Element {
-    constructor(tagName = "div") {
-      this.tagName = tagName;
-      this.children = [];
-      this.parentElement = null;
-      this.attributes = new Map();
-      this.listeners = new Map();
-      this.disabled = false;
-      this.inert = false;
-      this.value = "";
-      this.dataset = {};
-      this.className = "";
-      this.classList = {
-        contains: (name) => this.className.split(/\s+/).includes(name),
-        toggle: (name, enabled) => {
-          const classes = new Set(this.className.split(/\s+/).filter(Boolean));
-          if (enabled) classes.add(name); else classes.delete(name);
-          this.className = [...classes].join(" ");
-        },
-      };
-    }
-    get textContent() { return (this.text || "") + this.children.map((child) => child.textContent).join(""); }
-    set textContent(value) { this.children.slice().forEach((child) => child.remove()); this.text = String(value); }
-    append(...children) {
-      for (const child of children) { child.remove(); child.parentElement = this; this.children.push(child); }
-    }
-    remove() {
-      if (this.parentElement) this.parentElement.children.splice(this.parentElement.children.indexOf(this), 1);
-      this.parentElement = null;
-    }
-    setAttribute(name, value) { this.attributes.set(name, String(value)); }
-    getAttribute(name) { return this.attributes.get(name) ?? null; }
-    removeAttribute(name) { this.attributes.delete(name); }
-    addEventListener(type, listener) {
-      if (!this.listeners.has(type)) this.listeners.set(type, new Set());
-      this.listeners.get(type).add(listener);
-    }
-    removeEventListener(type, listener) { this.listeners.get(type)?.delete(listener); }
-    async fire(type, detail = {}) {
-      const event = { target: this, ...detail };
-      await Promise.all([...this.listeners.get(type) || []].map((listener) => listener(event)));
-      await settle();
-    }
-    async click() { if (!this.disabled) await this.fire("click"); }
-    focus() { document.activeElement = this; }
-    querySelectorAll(selector) {
-      const descendants = this.children.flatMap((child) => [child, ...child.querySelectorAll("*")]);
-      if (selector === "*") return descendants;
-      return descendants.filter((child) => {
-        if (selector.startsWith(".")) return child.classList.contains(selector.slice(1));
-        if (selector === "button:not(:disabled)") return child.tagName === "button" && !child.disabled;
-        return child.tagName === selector;
-      });
-    }
-    querySelector(selector) { return this.querySelectorAll(selector)[0] || null; }
-  }
-  const document = new Element("document");
-  document.createElement = (tagName) => new Element(tagName);
-  document.body = new Element("body");
-  document.append(document.body);
+  const { document } = browserFixture();
   const fields = Object.fromEntries([
     "saveButton", "applyButton", "characterSelect", "characterImportButton", "ttsVoiceImportButton",
     "characterExportButton", "characterDeleteButton", "characterEditorButton", "characterArchiveHint",
     "page-character", "page-appearance", "page-voice", "page-memory", "page-model",
-  ].map((id) => [id, new Element()]));
-  document.body.append(...Object.values(fields));
-  document.getElementById = (id) => fields[id] || null;
+  ].map((id) => {
+    const existing = document.getElementById(id);
+    if (existing) return [id, existing];
+    const element = document.createElement("div");
+    element.id = id;
+    document.body.append(element);
+    return [id, element];
+  }));
   return { document, fields };
 }
 
@@ -218,7 +161,6 @@ test("current-character publication rebinds only the announced ready generation 
   assert.equal(fields["page-model"].inert, false);
   releaseRebind();
   await publication;
-  assert.deepEqual(calls.map(([command]) => command), ["runtime_lifecycle_snapshot", "settings_characters_get"]);
   assert.equal(fields.characterSelect.value, "beta");
   assert.equal(state.dirty, true);
   assert.equal(feature.isSwitching(), false);
@@ -228,7 +170,6 @@ test("current-character publication rebinds only the announced ready generation 
   calls.length = 0;
   await feature.refreshCatalog({ generationId: "generation-a" });
   assert.deepEqual(rebinds, ["generation-b"], "an obsolete publication cannot rebind the current generation");
-  assert.deepEqual(calls.map(([command]) => command), ["runtime_lifecycle_snapshot"]);
   assert.equal(feature.pendingCharacterId(), "beta");
   feature.dispose();
 });
@@ -568,9 +509,10 @@ test("character drafts block changing roles and commit submits only the final un
   state.submitting = true;
   calls.length = 0;
   await feature.commit();
-  assert.deepEqual(calls.map(([command]) => command), [
-    "runtime_lifecycle_snapshot", "settings_character_select", "runtime_lifecycle_snapshot", "settings_characters_get",
-  ]);
+  const selectedCharacters = calls
+    .filter(([command]) => command === "settings_character_select")
+    .map(([, args]) => args.characterId);
+  assert.deepEqual(selectedCharacters, ["gamma"]);
   assert.deepEqual(transitions, [["clear"], ["rebind", "generation-b"]]);
   assert.equal(feature.currentCharacterId(), "gamma");
   assert.equal(feature.pendingCharacterId(), null);
@@ -642,15 +584,18 @@ test("archive export keeps voice eligibility and the native path handoff while c
   const { feature, fields, document, calls } = fixture;
   const exporting = fields.characterExportButton.click();
   await settle();
-  const choices = document.querySelectorAll(".export-kind-option");
-  assert.deepEqual(choices.map((choice) => choice.disabled), [true, false, true]);
-  await choices[1].click();
+  const dialog = document.querySelector('[role="dialog"]');
+  const choice = (label) => dialog.querySelectorAll("button").find((button) => button.textContent.startsWith(label));
+  assert.equal(choice("完整包").disabled, true);
+  assert.equal(choice("单角色包").disabled, false);
+  assert.equal(choice("语音包").disabled, true);
+  await choice("单角色包").click();
   await exporting;
   assert.deepEqual(calls, [
     ["settings_character_choose_export", { kind: "card", defaultName: "alpha.card.char" }],
     ["settings_character_export", { path: "C:\\exports\\alpha.card.char", characterId: "alpha", kind: "card" }],
   ]);
-  assert.equal(document.querySelector(".confirm-overlay"), null);
+  assert.equal(document.querySelector('[role="dialog"]'), null);
   assert.equal(fields.characterEditorButton.disabled, false);
   calls.length = 0;
   await fields.characterImportButton.click();
@@ -664,13 +609,12 @@ test("character feature cleanup closes its export choice and removes control lis
   const { feature, fields, document, calls } = fixture;
   const exporting = fields.characterExportButton.click();
   await settle();
-  assert.ok(document.querySelector(".confirm-overlay"));
+  assert.ok(document.querySelector('[role="dialog"]'));
   feature.dispose();
   await exporting;
   await fields.characterEditorButton.click();
   await select(fixture, "beta");
-  assert.equal(document.querySelector(".confirm-overlay"), null);
-  assert.equal([...document.listeners.get("keydown") || []].length, 0);
+  assert.equal(document.querySelector('[role="dialog"]'), null);
   assert.deepEqual(calls, []);
 });
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import threading
 from contextlib import contextmanager, nullcontext
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
 
 from app.core_host.plugin_artifacts import PluginArtifactStore
@@ -20,7 +20,6 @@ from app.core_host.speech_host import SpeechHostService
 from app.core_host.chat_host import ChatHost, HOST_CHAT_SERVICE
 from app.core_host.visual_control_host import HostVisualService, HOST_VISUAL_SERVICE
 from app.core_host.screen_host import ScreenHost, HOST_SCREEN_SERVICE, migrate_legacy_screen_settings
-from app.plugin_sdk.sakura_context import ContextRequest
 from app.plugins.host_services import (
     HOST_ARTIFACTS_SERVICE,
     HOST_CHARACTER_SERVICE,
@@ -185,8 +184,6 @@ class PluginRuntimeApplication:
             timeline_store=TimelineStore(StoragePaths(roots.user_root).timeline_database()),
             current_character_id=self._current_character_id,
             invoke_callback=self._manager.invoke_callback,
-            encode_context_request=_context_request_mapping,
-            on_context_change=self._host_context_changed,
             storage_root=roots.user_root,
             model_resolver=self._resolve_model,
             active_model_resolver=self.active_models,
@@ -876,15 +873,8 @@ class PluginRuntimeApplication:
         character_id = getattr(getattr(self._session, "character", None), "id", None)
         return character_id if isinstance(character_id, str) and character_id else None
 
-    def _host_context_changed(self, providers):
-        # Each Assistant freezes the public catalog when accepting a turn.
-        return None
-
-    def _model_catalog(self) -> list[dict[str, object]]:
+    def model_catalog(self) -> list[dict[str, object]]:
         return self._host_services.model_catalog()
-
-    def model_catalog(self):
-        return self._model_catalog()
 
     def active_models(self):
         try:
@@ -904,12 +894,6 @@ class PluginRuntimeApplication:
     def _resolve_model(self, selection: Mapping[str, Any]) -> dict[str, object]:
         reference = model_reference(selection)
         return reference if reference["serviceKey"] else dict(self.active_models()["chat"] or EMPTY_REFERENCE)
-
-
-def _context_request_mapping(request: ContextRequest) -> dict[str, Any]:
-    value = asdict(request)
-    value["recent_messages"] = [dict(item) for item in value.get("recent_messages", [])]
-    return value
 
 
 __all__ = ["PluginRuntimeApplication"]

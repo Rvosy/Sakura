@@ -1,14 +1,4 @@
 import { errorText } from './core/error-display.js';
-const STATUSES = new Set([
-  "startup",
-  "initializing",
-  "ready",
-  "setup_required",
-  "degraded",
-  "failed",
-  "rehydrating",
-]);
-
 const STATUS_CODES = Object.freeze({
   startup: "SHELL_STARTUP",
   initializing: "CORE_INITIALIZING",
@@ -80,58 +70,4 @@ function safeFailure(value) {
   const message = value.message.trim();
   if (!message) return null;
   return Object.freeze({ code: value.code, message: errorText(value.message) });
-}
-
-function safeVersion(value) {
-  return typeof value === "string" && /^\d+(?:\.\d+){1,2}(?:[-+][A-Za-z0-9.-]+)?$/.test(value)
-    ? value
-    : "unavailable";
-}
-
-export function sanitizeDiagnostics(input) {
-  const status = STATUSES.has(input?.status) ? input.status : "failed";
-  return Object.freeze({
-    status,
-    code: STATUS_CODES[status],
-    desktopVersion: safeVersion(input?.desktopVersion),
-    coreVersion: safeVersion(input?.coreVersion),
-    protocolVersion: safeVersion(input?.protocolVersion),
-    logLocation: "Sakura application logs",
-  });
-}
-
-export function createLifecycleReducer() {
-  let accepted = null;
-
-  return Object.freeze({
-    reduce(event) {
-      if (!event || !Number.isSafeInteger(event.generationNumber) || event.generationNumber < 0)
-        return { applied: false };
-      if (!Number.isSafeInteger(event.revision) || event.revision < 0) return { applied: false };
-      if (accepted) {
-        if (event.generationNumber < accepted.generationNumber) return { applied: false };
-        if (
-          event.generationNumber === accepted.generationNumber &&
-          event.generationId !== accepted.generationId
-        )
-          return { applied: false };
-        if (
-          event.generationNumber === accepted.generationNumber &&
-          event.revision < accepted.revision
-        )
-          return { applied: false };
-      }
-      if (!event.view || !STATUSES.has(event.view.status)) return { applied: false };
-      accepted = Object.freeze({
-        generationId: event.generationId ?? null,
-        generationNumber: event.generationNumber,
-        revision: event.revision,
-        ...event.view,
-      });
-      return { applied: true, value: accepted };
-    },
-    current() {
-      return accepted;
-    },
-  });
 }

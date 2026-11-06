@@ -188,7 +188,7 @@ def test_bootstrap_runtime_stages_linux_layout_from_pinned_archive(
         encoding="utf-8",
     )
 
-    def fake_download(_manifest: Path, output_path: Path, _selector: str = "archive") -> int:
+    def fake_download(_manifest: Path, output_path: Path) -> int:
         shutil.copy2(archive, output_path)
         return output_path.stat().st_size
 

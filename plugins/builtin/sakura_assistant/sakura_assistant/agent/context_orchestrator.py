@@ -5,7 +5,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
 from datetime import datetime
-from typing import TYPE_CHECKING, Any, Iterable, Iterator, Mapping, Sequence
+from typing import Any, Callable, Iterable, Iterator, Literal, Mapping, Sequence
 
 from sakura_cancellation import CancelChecker, OperationCancelled, check_cancelled
 from sakura_assistant.diagnostics import diagnostic_attributes, log_event
@@ -28,12 +28,20 @@ from sakura_context import (
     ContextTurnDecision,
 )
 
-if TYPE_CHECKING:
-    ContextProviderContribution = Any
-
-
 MAX_VISUAL_SUMMARIES = 6
 MAX_VISUAL_SUMMARY_CHARS = 500
+
+
+@dataclass(frozen=True)
+class ContextProviderContribution:
+    provider_id: str
+    description: str
+    build_context: Callable[[ContextRequest], Sequence[ContextFragment]]
+    order: float = 100.0
+    enabled: bool = True
+    scope: Literal["step", "turn"] = "step"
+    failure_policy: Literal["skip", "abort"] = "skip"
+    plugin_id: str = ""
 
 
 class ContextContributionError(RuntimeError):

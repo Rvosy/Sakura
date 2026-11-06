@@ -64,8 +64,7 @@ class _ProviderHandler(BaseHTTPRequestHandler):
         body = json.loads(self.rfile.read(length))
         type(self).requests.append(body)
         type(self).received.set()
-        if type(self).outcome == "compatibility" and len(type(self).requests) == 1:
-            assert "response_format" in body
+        if type(self).outcome == "compatibility" and "response_format" in body:
             response = b'{"error":{"message":"response_format unsupported"}}'
             self.send_response(400)
             self.send_header("Content-Type", "application/json")
@@ -2013,9 +2012,9 @@ def test_provider_parameter_compatibility_fallback_completes(tmp_path: Path) -> 
         )
         frames = [_read(process), _read(process), _read(process)]
         assert any(frame.get("name") == "chat.completed" for frame in frames)
-        assert len(_ProviderHandler.requests) == 2
-        assert "response_format" in _ProviderHandler.requests[0]
-        assert "response_format" not in _ProviderHandler.requests[1]
+        assert [request.get("response_format", {}).get("type") for request in _ProviderHandler.requests] == [
+            "json_schema", "json_object", None,
+        ]
         _exchange(process, _request("shutdown", "system.shutdown", {}))
         assert process.wait(timeout=5) == 0
     finally:

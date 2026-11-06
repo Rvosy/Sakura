@@ -124,5 +124,4 @@ mod tests {
         assert_eq!(snapshot.facts["windowLabelProvided"], "true");
         assert!(!snapshot.facts.values().any(|value| value.contains('\\')));
     }
-
 }

@@ -30,7 +30,7 @@ from sakura_assistant.llm.prompts.runtime import (
     estimate_prompt_tokens,
 )
 from sakura_context import ContextFragment, ContextRequest, PromptRecipe
-from app.plugins.models import ContextProviderContribution
+from sakura_assistant.agent.context_orchestrator import ContextProviderContribution
 
 
 def _reply_turn(content: str | None = None) -> ChatCompletionTurn:
