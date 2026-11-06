@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 
 from sakura_cancellation import await_cancellable
 from sakura_model import ModelError
@@ -14,6 +15,7 @@ else:
 
 
 BASE_URL = "https://chatgpt.com/backend-api/codex"
+USAGE_URL = "https://chatgpt.com/backend-api/wham/usage"
 CLIENT_VERSION = "0.160.1"
 
 
@@ -32,12 +34,26 @@ def catalog_models(data):
     return models
 
 
+def account_usage(data):
+    windows = []
+    limits = [("", data.get("rate_limit"))]
+    limits.extend((item.get("limit_name") or item.get("metered_feature") or "其他额度", item.get("rate_limit"))
+                  for item in data.get("additional_rate_limits") or [])
+    for label, limit in limits:
+        for key in ("primary_window", "secondary_window"):
+            window = (limit or {}).get(key)
+            if window is not None:
+                windows.append({"label": label, "usedPercent": window.get("used_percent"),
+                                "windowSeconds": window.get("limit_window_seconds"), "resetsAt": window.get("reset_at")})
+    return {"windows": windows, "updatedAt": time.time()}
+
+
 def execute(account, settings, request, *, cancel_checker, progress, operation="generate"):
     snapshot = settings["account"]
     tokens = account.authorize(snapshot, cancel_checker)
     if operation == "test_connection":
         request = {"messages": [{"role": "user", "content": "Reply with only OK."}]}
-    payload = build_request(settings["model"], request) if operation != "list_models" else None
+    payload = None if operation in {"list_models", "usage"} else build_request(settings["model"], request)
     ignored = []
     if payload:
         for name in ("temperature", "top_p", "max_output_tokens", "text"):
@@ -50,6 +66,9 @@ def execute(account, settings, request, *, cancel_checker, progress, operation="
                    "originator": "sakura", "version": CLIENT_VERSION, "OpenAI-Beta": "responses=experimental",
                    "Accept": "text/event-stream", "User-Agent": "Sakura/codex-subscription"}
         async with http_client(BASE_URL, settings["timeout_seconds"]) as http:
+            if operation == "usage":
+                response = await http.get(USAGE_URL, headers={**headers, "Accept": "application/json"})
+                return {"usage": account_usage(checked_json(response, secrets=(tokens["access_token"],)))}
             if operation == "list_models":
                 response = await http.get(BASE_URL + "/models", params={"client_version": CLIENT_VERSION}, headers=headers)
                 return {"models": catalog_models(checked_json(response, secrets=(tokens["access_token"],)))}

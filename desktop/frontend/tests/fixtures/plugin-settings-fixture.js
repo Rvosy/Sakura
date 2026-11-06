@@ -147,10 +147,13 @@ export function browserFixture() {
   const timers = new Map();
   let nextTimer = 0;
   const window = {
+    CSSStyleSheet: class { replaceSync() {} },
     matchMedia: () => ({ matches: true }),
     setTimeout(callback, milliseconds) { const id = ++nextTimer; timers.set(id, { callback, milliseconds }); return id; },
     clearTimeout(id) { timers.delete(id); },
   };
+  document.defaultView = window;
+  document.adoptedStyleSheets = [];
   return {
     document, window, timers,
     async runTimers(milliseconds) {
