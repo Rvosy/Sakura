@@ -1713,9 +1713,11 @@ class PluginRuntimeManager:
             draining = self._draining_processes.get(caller_id)
             caller_record = self._records.get(caller_id)
             provider_record = self._records.get(binding.provider_id) if binding is not None else None
-            draining_log = (binding is not None
+            # Dependencies can still emit logs while an earlier worker drains.
+            # Keep their log channel open until their own process is stopped.
+            shutdown_log = (binding is not None
                 and getattr(binding.host_service, "allow_during_shutdown", False) is True
-                and draining is not None)
+                and (draining is not None or (caller_record is not None and caller_record.process is not None)))
             # A closing worker must be able to release its own registrations
             # before Core performs the final scope sweep.
             draining_unregister = (binding is not None and binding.host_service is not None
@@ -1739,7 +1741,7 @@ class PluginRuntimeManager:
                 and provider_record is not None and provider_record.state == "active"
                 and provider_record.process is binding.process
             )
-            if self._closed and not (draining_log or draining_unregister or draining_dependency or draining_host_cleanup):
+            if self._closed and not (shutdown_log or draining_unregister or draining_dependency or draining_host_cleanup):
                 raise PluginRuntimeError("GENERATION_INVALIDATED")
             if draining_dependency or draining_host_cleanup:
                 remaining = draining.deadline - time.monotonic()

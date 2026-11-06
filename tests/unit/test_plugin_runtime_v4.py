@@ -2171,6 +2171,47 @@ class Plugin:
     manager.close()
 
 
+def test_generation_close_preserves_logs_from_dependency_not_yet_stopping(tmp_path: Path) -> None:
+    from app.core_host.runtime_logging import CORE_BRIDGE_PREFIX, install_runtime_logging
+
+    roots = _roots(tmp_path)
+    bundled = roots.distribution_root / "plugins" / "builtin"
+    _plugin_source(bundled, "fixture.provider", "fixture.provider.service",
+        requires=("sakura.host.logging",), body='''
+class Plugin:
+    def setup(self, context):
+        logger = context.get("sakura.host.logging")
+        class Service:
+            def finish(self):
+                logger.info("dependency cleanup finished")
+                logger.close()
+        context.provide("fixture.provider.service", Service(), exports=("finish",))
+''')
+    _plugin_source(bundled, "fixture.consumer", "fixture.consumer.service",
+        requires=("fixture.provider.service",), body='''
+class Plugin:
+    def setup(self, context):
+        provider = context.get("fixture.provider.service")
+        context.effect(provider.finish)
+        context.provide("fixture.consumer.service", object(), exports=())
+''')
+    stream = io.BytesIO()
+    bridge = install_runtime_logging(stream)
+    host = PluginApplicationHost(roots, "generation-dependency-logging", ToolRegistry())
+    try:
+        host.start()
+        assert host.wait_until_loaded(timeout=3)
+        assert all(item["state"] == "active" for item in host._manager.snapshot()["plugins"])
+    finally:
+        host.close()
+        bridge.close()
+    records = [json.loads(line.removeprefix(CORE_BRIDGE_PREFIX))
+               for line in stream.getvalue().splitlines() if line.startswith(CORE_BRIDGE_PREFIX)]
+    assert any(record.get("message") == "dependency cleanup finished"
+               and record.get("plugin_id") == "fixture.provider" for record in records), records
+    assert not [record for record in records if record.get("severity") in {"warning", "error"}]
+
+
 def test_generation_close_unregisters_provider_from_live_tts_hub(tmp_path: Path) -> None:
     from app.core_host.runtime_logging import CORE_BRIDGE_PREFIX, install_runtime_logging
 
