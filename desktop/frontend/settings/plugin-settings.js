@@ -130,7 +130,7 @@ export function createPluginSettingsFeature({
     if (presentation.component === "record-table") {
       const inspectAction = section.actions.find(action => action.action_id === presentation.inspectAction);
       return createRecordTable({ document, read, write, presentation, enhanceSelect, refreshSelect, closeSelects,
-        onError: setError, inspectLabel: inspectAction?.label,
+        scope: `${plugin.id}-${section.section_id}`, onError: setError, inspectLabel: inspectAction?.label,
         inspect: inspectAction ? async (id, isCurrent) => {
           const request = { id, requestId: window.crypto.randomUUID() };
           const generation = runtimePluginController.snapshot()?.coreGenerationId;
@@ -1401,15 +1401,71 @@ export function createPluginSettingsFeature({
     if (!sections.length) {
       return container;
     }
+    const recordSections = sections.filter(section => section.presentation?.component === "record-table");
+    if (recordSections.length && sections.every(section => ["record-table", "connection-status"].includes(section.presentation?.component))) {
+      container.classList.add("plugin-record-settings");
+    }
+    const recordTabs = recordSections.length > 1 ? pluginNode("div", "plugin-record-tabs") : null;
+    const recordPanels = [];
+    let selectedRecordSection = recordSections[0]?.section_id;
+    recordTabs?.setAttribute("role", "tablist");
+    recordTabs?.setAttribute("aria-label", "设置分类");
+    function selectRecordSection(id, focus = false) {
+      selectedRecordSection = id;
+      for (const entry of recordPanels) {
+        const selected = entry.section.section_id === id;
+        if ((!selected || !entry.available) && !entry.block.hidden) entry.component.cancel?.();
+        entry.block.hidden = !entry.available || !selected;
+        entry.tab.setAttribute("aria-selected", String(selected));
+        entry.tab.tabIndex = selected ? 0 : -1;
+        if (selected && focus) entry.tab.focus();
+      }
+    }
     sections.forEach((section) => {
       if (section.presentation) {
         const component = createContributedSection(plugin, section); container.components.push(component);
         const block = pluginNode(section.presentation.collapsible ? "details" : "section", "plugin-contribution");
-        if (section.presentation.component !== "connection-status") block.append(pluginNode(section.presentation.collapsible ? "summary" : "h3", "plugin-contribution-title", section.title));
+        if (section.presentation.component === "record-table") block.classList.add("plugin-record-panel");
+        const tabbed = recordTabs && section.presentation.component === "record-table";
+        if (section.presentation.component !== "connection-status" && !tabbed) {
+          const heading = pluginNode(section.presentation.collapsible ? "summary" : "h3", "plugin-contribution-title", section.title);
+          block.append(heading);
+        }
         block.append(component.element);
         const update = component.update;
+        let panel;
+        if (tabbed) {
+          if (!recordTabs.parentElement) container.append(recordTabs);
+          const tab = pluginNode("button", "plugin-record-tab"); tab.type = "button";
+          tab.id = `record-tab-${plugin.id}-${section.section_id}`;
+          block.id = `record-panel-${plugin.id}-${section.section_id}`;
+          tab.setAttribute("role", "tab"); tab.setAttribute("aria-controls", block.id);
+          block.setAttribute("role", "tabpanel"); block.setAttribute("aria-labelledby", tab.id);
+          const count = pluginNode("span", "plugin-record-count");
+          tab.append(pluginNode("span", "", section.title), count);
+          panel = { section, component, block, tab, count, available: false }; recordPanels.push(panel);
+          tab.addEventListener("click", () => selectRecordSection(section.section_id));
+          tab.addEventListener("keydown", event => {
+            const available = recordPanels.filter(entry => entry.available);
+            const index = available.indexOf(panel);
+            const next = event.key === "ArrowRight" ? available[(index + 1) % available.length]
+              : event.key === "ArrowLeft" ? available[(index + available.length - 1) % available.length]
+                : event.key === "Home" ? available[0] : event.key === "End" ? available.at(-1) : null;
+            if (next) { event.preventDefault(); selectRecordSection(next.section.section_id, true); }
+          });
+          recordTabs.append(tab);
+        }
         component.update = () => {
-          block.hidden = Boolean(section.presentation.visibleField) && !pluginSectionValues(plugin.id, section.section_id)[section.presentation.visibleField];
+          const values = pluginSectionValues(plugin.id, section.section_id);
+          const available = !section.presentation.visibleField || Boolean(values[section.presentation.visibleField]);
+          if (panel) {
+            panel.available = available; panel.tab.hidden = !available;
+            panel.count.textContent = String((values[section.presentation.itemsField] || []).length);
+            const visible = recordPanels.filter(entry => entry.available);
+            recordTabs.hidden = !visible.length;
+            selectRecordSection(visible.some(entry => entry.section.section_id === selectedRecordSection)
+              ? selectedRecordSection : visible[0]?.section.section_id);
+          } else block.hidden = !available;
           update?.();
         };
         component.update();
@@ -2941,7 +2997,7 @@ export function createPluginSettingsFeature({
     const general = renderPluginSettings(plugin);
     body.append(general);
     const footer = pluginNode('footer', 'plugin-dialog-footer');
-    footer.append(pluginNode('span', 'plugin-draft-hint', '应用设置后生效'));
+    footer.append(pluginNode('span', 'plugin-draft-hint', '完成后，点击设置页的“应用”保存'));
     const actions = pluginNode('div', '');
     const cancel = pluginNode('button', 'secondary-button', '取消'); cancel.type = 'button';
     const done = pluginNode('button', '', '完成'); done.type = 'submit'; actions.append(cancel, done); footer.append(actions);
