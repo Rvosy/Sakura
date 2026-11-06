@@ -285,6 +285,8 @@ _CORE_CHANNELS = frozenset(
     }
 )
 _FIXED_MESSAGES = {
+    "usage.write.failed": "模型用量保存失败",
+    "usage.read.failed": "使用统计读取失败",
     "plugin.dependencies.attempt.started": "开始安装插件依赖",
     "plugin.dependencies.attempt.failed": "插件依赖安装尝试失败",
     "plugin.dependencies.install.finished": "插件依赖下载安装完成",

@@ -1536,6 +1536,7 @@ def run_host(
     from .plugin_settings import PLUGIN_SETTINGS_REQUEST_NAMES, PluginSettingsBoundary
     from .provider_settings import ProviderSettingsBoundary, SETTINGS_REQUEST_NAMES
     from .storage_settings import STORAGE_SETTINGS_REQUEST_NAMES, StorageSettingsBoundary
+    from .usage_statistics import UsageStatisticsBoundary
     from .tool_settings import TOOL_SETTINGS_REQUEST_NAMES, ToolSettingsBoundary
     from .tts_boundary import TTSBoundary, TTS_REQUEST_NAMES
     from .asr_boundary import ASRBoundary, ASR_REQUEST_NAMES
@@ -1657,6 +1658,7 @@ def run_host(
             config.generation_credential,
             config.user_root,
         )
+        usage_statistics = UsageStatisticsBoundary(config.generation_id, config.generation_credential, config.user_root)
         history = HistoryBoundary(
             config.generation_id,
             config.generation_credential,
@@ -1817,6 +1819,8 @@ def run_host(
                     return character_studio.handle(request)
                 if request.get("name") in STORAGE_SETTINGS_REQUEST_NAMES:
                     return storage_settings.handle(request)
+                if request.get("name") == "usage.statistics.get":
+                    return usage_statistics.handle(request)
                 if request.get("name") in HISTORY_REQUEST_NAMES:
                     return history.handle(request)
                 return provider_settings.handle(request)
@@ -1855,6 +1859,7 @@ def run_host(
                     *CHARACTER_SETTINGS_REQUEST_NAMES,
                     *CHARACTER_STUDIO_REQUEST_NAMES,
                     *STORAGE_SETTINGS_REQUEST_NAMES,
+                    "usage.statistics.get",
                     *HISTORY_REQUEST_NAMES,
                 }
             ),

@@ -1,6 +1,14 @@
 {
   "schema_version": 1,
   "profiles": {
+    "usage-statistics": {
+      "description": "验证本地用量累计、历史日志补入、对话计数和设置统计页",
+      "cases": ["usage-statistics-python", "usage-statistics-frontend", "usage-statistics-browser"]
+    },
+    "memory": {
+      "description": "验证 Mem0 与便签记忆的读写、整理和插件运行",
+      "cases": ["runtime-v2-memory-tests"]
+    },
     "smoke": {
       "description": "快速验证 Product Harness 与 Runtime v2 核心协议边界",
       "cases": [
@@ -193,6 +201,25 @@
   },
   "cases": [
     {
+      "id": "usage-statistics-python",
+      "description": "验证用量口径、历史去重、持久化和对话计数",
+      "argv": ["{python}", "-m", "pytest", "-q", "tests/unit/test_usage_statistics.py", "tests/integration/test_core_host_real_chat_integration.py::test_real_core_local_provider_completed_projection_and_history"],
+      "timeout_seconds": 60
+    },
+    {
+      "id": "usage-statistics-frontend",
+      "description": "验证趋势日期补齐、未知用量和按月汇总",
+      "argv": ["node", "--test", "desktop/frontend/tests/usage-statistics.test.js"],
+      "timeout_seconds": 60
+    },
+    {
+      "id": "usage-statistics-browser",
+      "description": "用真实统计查询验证设置导航、范围切换和图表交互",
+      "argv": ["{python}", "desktop/frontend/tests/usage-statistics.journey.py"],
+      "timeout_seconds": 120,
+      "env": {"PYTHONIOENCODING": "utf-8", "PYTHONDONTWRITEBYTECODE": "1"}
+    },
+    {
       "id": "remote-telemetry-python-tests",
       "description": "验证 Provider usage、Context 指标、Core 错误栈和 Privacy Sentinel",
       "argv": [
@@ -251,6 +278,7 @@
         "pytest",
         "tests/unit/test_legacy_import.py",
         "tests/unit/test_legacy_incremental_import.py",
+        "tests/integration/test_wp_5_03_character_switch_journey.py",
         "-q"
       ],
       "timeout_seconds": 180,
@@ -604,6 +632,13 @@
         "-m",
         "pytest",
         "tests/unit/test_core_host_memory.py",
+        "tests/unit/test_sakura_mem0_fastembed.py",
+        "tests/unit/test_sakura_mem0_plugin.py",
+        "tests/unit/test_mem0_runtime_v4.py",
+        "tests/unit/test_data_transfer.py",
+        "tests/unit/test_assistant_host_contract.py",
+        "tests/unit/test_context_host_contract.py",
+        "tests/unit/test_legacy_incremental_import.py",
         "tests/integration/test_wp_4_01_memory_capability.py",
         "tests/unit/test_fact_memory_plugin.py",
         "tests/integration/test_fact_memory_core_protocol.py",
@@ -676,7 +711,7 @@
     {
       "id": "plugin-marketplace-update",
       "description": "验证运行中插件自动更新、依赖恢复和失败回滚",
-      "argv": ["{python}", "-m", "pytest", "-q", "tests/unit/test_marketplace_update.py", "tests/unit/test_plugin_installer.py", "tests/unit/test_plugin_app_compatibility.py", "tests/unit/test_plugin_frontend_modules.py", "tests/integration/test_core_host_real_chat_integration.py::test_failed_local_assistant_update_preserves_error_and_restores_chat"],
+      "argv": ["{python}", "-m", "pytest", "-q", "tests/unit/test_marketplace_update.py", "tests/unit/test_plugin_installer.py", "tests/unit/test_plugin_app_compatibility.py", "tests/unit/test_plugin_frontend_modules.py", "tests/integration/test_core_host_real_chat_integration.py::test_failed_local_assistant_update_reports_error_and_reinstall_restores_chat"],
       "timeout_seconds": 120
     },
     {
