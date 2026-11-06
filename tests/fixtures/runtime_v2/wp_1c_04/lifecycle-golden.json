@@ -1,0 +1,57 @@
+{
+  "schemaVersion": 1,
+  "protocol": {
+    "major": 2,
+    "minMinor": 0,
+    "maxMinor": 1,
+    "requiredCapabilities": [
+      "system.hello",
+      "system.health",
+      "system.shutdown",
+      "core.initialize",
+      "core.snapshot"
+    ]
+  },
+  "deadlinesMs": {
+    "hello": 3000,
+    "initializeAcceptance": 5000,
+    "readinessWatchdog": 30000,
+    "request": 3000,
+    "shutdown": 3000,
+    "treeStop": 5000
+  },
+  "lifecycle": [
+    "system.hello",
+    "core.initialize",
+    "core.readiness",
+    "core.snapshot",
+    "system.health",
+    "system.shutdown"
+  ],
+  "layouts": [
+    {
+      "target": "windows-x64",
+      "architecture": "x64",
+      "packagedPythonRelativePath": "python/python.exe",
+      "packagedResourceRootRelativePath": "core",
+      "packagedCoreEntryRelativePath": "core/app/core_host/__main__.py",
+      "packagedWorkingDirectoryRelativePath": "core"
+    },
+    {
+      "target": "macos-arm64",
+      "architecture": "arm64",
+      "packagedPythonRelativePath": "python/bin/python3",
+      "packagedResourceRootRelativePath": "core",
+      "packagedCoreEntryRelativePath": "core/app/core_host/__main__.py",
+      "packagedWorkingDirectoryRelativePath": "core"
+    },
+    {
+      "target": "linux-x64",
+      "architecture": "x64",
+      "packagedPythonRelativePath": "python/bin/python3",
+      "packagedResourceRootRelativePath": "core",
+      "packagedCoreEntryRelativePath": "core/app/core_host/__main__.py",
+      "packagedWorkingDirectoryRelativePath": "core"
+    }
+  ]
+}
