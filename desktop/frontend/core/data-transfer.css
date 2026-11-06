@@ -213,7 +213,7 @@
 .date-range-month [data-prev] .sakura-icon { transform: rotate(180deg); }
 .date-range-weekdays, .date-range-days { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 2px; }
 .date-range-weekdays { margin-bottom: 5px; color: var(--transfer-muted); text-align: center; font-size: 11px; }
-.date-range-days button { height: 29px; padding: 0; border: 0; border-radius: 5px; background: transparent; font-size: 12px; }
+.date-range-days button { width: 100%; height: auto; min-height: 0; aspect-ratio: 1; padding: 0; border: 0; border-radius: 5px; background: transparent; font-size: 12px; }
 .date-range-days .is-outside-month { color: var(--transfer-muted); opacity: .65; }
 .date-range-days.has-record-dates :where(button) { color: var(--transfer-muted); }
 .date-range-days .has-records {
@@ -262,6 +262,7 @@
 .data-transfer-dialog[open],
 .data-transfer-actions:popover-open,
 .date-single-panel:popover-open,
+.date-range-popover:popover-open,
 .date-range-panel[open] { opacity: 1; transform: translateY(0) scale(1); }
 .data-transfer-dialog::backdrop {
   background: transparent;
@@ -270,6 +271,11 @@
 }
 .data-transfer-dialog[open]::backdrop { background: color-mix(in srgb, var(--transfer-text) 36%, transparent); }
 .date-range-panel::backdrop { background: transparent; }
+.date-range-popover { inset: auto; margin: 0; transform-origin: top left; }
+.date-range-popover h2 { font-size: 15px; font-weight: 500; margin-bottom: 14px; }
+.date-range-popover .date-range-presets { border: 0; padding-bottom: 2px; }
+.date-range-popover .date-range-calendar { background: transparent; padding: 4px; }
+.date-range-popover .date-range-hint { display: none; }
 .date-single-panel {
   inset: auto;
   width: min(292px, calc(100vw - 16px));
@@ -282,13 +288,14 @@
 .date-single-panel .date-range-month { margin-bottom: 12px; }
 .date-single-panel .date-range-month button { width: 30px; height: 30px; }
 .date-single-panel .date-range-month [data-month] { font-size: 14px; }
-.date-single-panel .date-range-days button { height: 34px; font-size: 13px; }
+.date-single-panel .date-range-days button { font-size: 13px; }
 .date-single-panel .date-range-error { margin: 8px 0 0; font-size: 12px; }
 .date-single-panel .date-range-error:empty { display: none; }
 @starting-style {
   .data-transfer-dialog[open],
   .data-transfer-actions:popover-open,
   .date-single-panel:popover-open,
+  .date-range-popover:popover-open,
   .date-range-panel[open] { opacity: 0; transform: translateY(6px) scale(.97); }
   .data-transfer-dialog[open]::backdrop { background: transparent; }
 }
@@ -297,7 +304,6 @@
   .date-range-fields { display: contents; }
   .date-range-hint, .date-range-calendar, .date-range-error, .date-range-actions { grid-column: 1 / -1; }
   .date-range-calendar { grid-row: 3; }
-  .date-range-days button { height: 30px; }
   .date-range-trigger > span:not(.sakura-icon) { font-size: 11px; }
 }
 @media (max-width: 400px) {
@@ -305,6 +311,6 @@
   .data-transfer-dialog footer { flex-wrap: wrap; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .data-transfer-dialog, .data-transfer-dialog::backdrop, .date-range-panel::backdrop, .data-transfer-dialog *,
+  .data-transfer-dialog, .data-transfer-dialog::backdrop, .date-range-panel, .date-range-panel *, .date-range-panel::backdrop, .data-transfer-dialog *,
   .data-transfer-menu, .data-transfer-menu * { transition: none !important; animation: none !important; }
 }

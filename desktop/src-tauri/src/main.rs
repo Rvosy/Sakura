@@ -5010,6 +5010,25 @@ async fn storage_settings_request(
 }
 
 #[tauri::command]
+async fn settings_usage_statistics_get(
+    window: WebviewWindow,
+    shell: State<'_, product_shell::ProductShellState>,
+    lifecycle: State<'_, ShellLifecycleState>,
+    period: String,
+    start_date: Option<String>,
+    end_date: Option<String>,
+) -> Result<Value, String> {
+    storage_settings_request(
+        &window,
+        &shell,
+        &lifecycle,
+        "usage.statistics.get",
+        json!({"period": period, "startDate": start_date, "endDate": end_date}),
+    )
+    .await
+}
+
+#[tauri::command]
 async fn settings_storage_get(
     window: WebviewWindow,
     shell: State<'_, product_shell::ProductShellState>,
@@ -7943,6 +7962,7 @@ fn main() {
             close_character_studio,
             close_character_studio_for_exit,
             settings_storage_get,
+            settings_usage_statistics_get,
             settings_storage_open_user_root,
             settings_storage_choose_tts_root,
             settings_storage_reset_tts_root,

@@ -36,6 +36,25 @@ finally:
 
 请求使用 `messages`，可带 `tools`、`toolChoice`、`responseFormat`、`parameters`、`stream`。消息含 `role/content`，工具消息可带 `toolCalls/toolCallId`；content 可以是文本或文字、图片内容列表。工具定义为 `{name, description, parameters}`，parameters 是 JSON Schema。结果为 `{message, usage, finishReason, diagnostics?}`；工具调用为 `{id, name, arguments}`，arguments 保持 JSON 字符串。提供方附带的 `providerData` 作为不透明数据保留。
 
+### 记录用量
+
+普通模型调用在创建客户端时标记功能即可：`ModelClient(context, reference, usage_category="memory_curation")`。自定义功能可传 `usage_category="summary", usage_label="摘要生成"`。客户端会自动记录响应中的 usage。
+
+自行请求外部模型的插件可写入同一统计库：
+
+```python
+usage = context.get("sakura.host.usage")
+usage.record({
+    "recordId": response_id,
+    "model": model_id,
+    "category": "summary",
+    "categoryLabel": "摘要生成",
+    "usage": provider_response["usage"],
+})
+```
+
+`response_id` 在重发同一记录时保持不变。字段约定与分类规则见[用量统计接口](plugin-sdk.md#用量统计)。
+
 ### 实现模型提供方
 
 提供方暴露独立服务，并用 `register_provider({serviceKey, label}, catalog=...)` 登记。目录返回 `{profileId, label, models: [{modelId, label}]}` 列表，只读取本地已保存配置。远端模型可由明确的获取操作刷新，也可作为账号登录流程的一部分自动同步。

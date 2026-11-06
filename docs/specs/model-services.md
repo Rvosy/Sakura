@@ -4,6 +4,8 @@
 
 本模块向上服务 Assistant、记忆整理等消费者，向下连接远程 API 或兼容的本地服务。用户配置入口见[模型指南](../guide/models.md)，开发接口见[插件能力接入](../development/plugin-recipes.md#使用模型)。
 
+模型客户端收到响应时，宿主保存提供方返回的用量，供[使用统计](settings.md#使用统计)查询；保存失败记入运行日志，不中断模型回复。
+
 ## 配置归属
 
 “OpenAI 兼容模型”（`sakura.model.openai_compatible`）是模型服务的基础插件，提供统一的服务工作台和 API 连接能力。OpenAI Official 等模型服务扩展依赖它，在同一工作台增加登录入口和账号面板；工作台由基础插件提供，宿主负责挂载和汇总设置贡献。

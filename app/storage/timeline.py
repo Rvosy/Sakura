@@ -108,6 +108,33 @@ class TimelineStore:
         except sqlite3.DatabaseError as exc:
             raise TimelineDataError("TIMELINE_DATABASE_INVALID") from exc
 
+    def usage_summary(self, start: str | None, end: str, *, hourly: bool = False) -> dict:
+        """按用户发起的轮次计数，回复分段和工具调用不增加对话轮数。"""
+        if not self.path.exists():
+            return {"turns": 0, "messages": 0, "characters": 0, "daily": [], **({"hourly": []} if hourly else {})}
+        bucket = "strftime('%Y-%m-%dT%H:00:00', first_at, 'localtime')" if hourly else "date(first_at, 'localtime')"
+        with self._connect_existing() as connection:
+            rows = connection.execute(f"""
+                SELECT {bucket}, character_id, COUNT(*), SUM(messages)
+                FROM (
+                    SELECT character_id, turn_id, MIN(julianday(created_at)) AS first_at, COUNT(*) AS messages
+                    FROM timeline_entries WHERE kind='human'
+                    AND julianday(created_at) >= julianday(?) AND julianday(created_at) <= julianday(?)
+                    GROUP BY character_id, turn_id
+                ) GROUP BY {bucket}, character_id ORDER BY first_at
+            """, (start or "1970-01-01", end)).fetchall()
+        daily = {}
+        hours = {}
+        for time, _, turns, _ in rows:
+            day = time[:10]
+            daily[day] = daily.get(day, 0) + turns
+            if hourly:
+                hours[time] = hours.get(time, 0) + turns
+        return {"turns": sum(row[2] for row in rows), "messages": sum(row[3] for row in rows),
+                "characters": len({row[1] for row in rows}),
+                "daily": [{"day": day, "turns": count} for day, count in sorted(daily.items())],
+                **({"hourly": [{"hour": hour, "turns": count} for hour, count in sorted(hours.items())]} if hourly else {})}
+
     def append(self, entry: NewTimelineEntry) -> TimelineEntry:
         return self.append_many([entry])[0]
 

@@ -844,6 +844,13 @@ impl SettingsCapabilityManifest {
             },
         );
         manifest.unavailable_reasons.remove("system");
+        manifest.sections.insert(
+            "statistics".to_string(),
+            SettingsSectionCapability {
+                status: "available".to_string(),
+                features: BTreeMap::new(),
+            },
+        );
         if cfg!(windows) {
             manifest.unavailable_reasons.remove("chat.bubble_auto_hide");
         } else {
