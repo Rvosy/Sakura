@@ -1,4 +1,4 @@
-#[cfg(not(any(windows, target_os = "macos")))]
+#[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
 use std::sync::Mutex;
 
 use serde::Serialize;
@@ -35,7 +35,7 @@ impl InputVisualEffectStatus {
         }
     }
 
-    #[cfg(any(test, windows, target_os = "macos"))]
+    #[cfg(any(test, windows, target_os = "macos", target_os = "linux"))]
     pub const fn ready(mode: InputVisualEffectMode) -> Self {
         Self {
             initialized: true,
@@ -85,13 +85,15 @@ pub struct InputVisualEffectState {
     backend: crate::windows_glass_poc::WindowsInputGlassState,
     #[cfg(target_os = "macos")]
     backend: crate::macos_input_glass::MacInputGlassState,
-    #[cfg(not(any(windows, target_os = "macos")))]
+    #[cfg(target_os = "linux")]
+    backend: crate::linux_input_glass::LinuxInputGlassState,
+    #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
     status: Mutex<InputVisualEffectStatus>,
 }
 
 impl InputVisualEffectState {
     pub fn from_environment(runtime_log: crate::runtime_log::RuntimeLogService) -> Self {
-        #[cfg(not(windows))]
+        #[cfg(not(any(windows, target_os = "linux")))]
         let _ = &runtime_log;
         Self {
             #[cfg(windows)]
@@ -100,7 +102,9 @@ impl InputVisualEffectState {
             ),
             #[cfg(target_os = "macos")]
             backend: crate::macos_input_glass::MacInputGlassState::new(),
-            #[cfg(not(any(windows, target_os = "macos")))]
+            #[cfg(target_os = "linux")]
+            backend: crate::linux_input_glass::LinuxInputGlassState::new(runtime_log),
+            #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
             status: Mutex::new(InputVisualEffectStatus::unavailable()),
         }
     }
@@ -110,14 +114,16 @@ impl InputVisualEffectState {
         return self.backend.support();
         #[cfg(target_os = "macos")]
         return self.backend.support();
-        #[cfg(not(any(windows, target_os = "macos")))]
+        #[cfg(target_os = "linux")]
+        return self.backend.support();
+        #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
         return InputVisualEffectSupport::new(false, false);
     }
 
     pub fn status(&self) -> InputVisualEffectStatus {
-        #[cfg(any(windows, target_os = "macos"))]
+        #[cfg(any(windows, target_os = "macos", target_os = "linux"))]
         return self.backend.status();
-        #[cfg(not(any(windows, target_os = "macos")))]
+        #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
         return self
             .status
             .lock()
@@ -146,7 +152,9 @@ impl InputVisualEffectState {
         }
         #[cfg(target_os = "macos")]
         return self.backend.update_appearance(window, values);
-        #[cfg(not(any(windows, target_os = "macos")))]
+        #[cfg(target_os = "linux")]
+        return self.backend.update_appearance(window, values);
+        #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
         {
             let _ = (window, values);
             Ok(self.status())
@@ -179,7 +187,15 @@ impl InputVisualEffectState {
             previous_surface,
             transition,
         );
-        #[cfg(not(any(windows, target_os = "macos")))]
+        #[cfg(target_os = "linux")]
+        return self.backend.update_control_surface(
+            window,
+            surface,
+            application,
+            previous_surface,
+            transition,
+        );
+        #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
         {
             let _ = (window, surface, application, previous_surface, transition);
             Ok(())
@@ -207,9 +223,9 @@ impl InputVisualEffectState {
     }
 
     pub fn teardown(&self, window: &tauri::WebviewWindow) {
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
         self.backend.teardown(window);
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(not(any(target_os = "macos", target_os = "linux")))]
         let _ = window;
     }
 }

@@ -708,6 +708,8 @@ impl SettingsCapabilityManifest {
                 "appearance.input_visual_effect.gaussian_blur".to_string(),
                 if cfg!(windows) {
                     "高斯模糊不可用，详情见运行日志".to_string()
+                } else if cfg!(target_os = "linux") {
+                    "需要 X11 会话".to_string()
                 } else {
                     "仅支持 Windows 和 macOS".to_string()
                 },
