@@ -31,6 +31,7 @@
 | 文档 | 内容 |
 |---|---|
 | [贡献指南](../.github/CONTRIBUTING.md) | 开发环境、目录与提交 |
+| [界面设计规范](development/ui-design.md) | 设置页与角色工坊的视觉约定，以及聊天记录和日志的设计边界 |
 | [Plugin API v4](development/plugin-sdk.md) | 清单、通用接口、设置贡献与最小插件 |
 | [插件能力接入](development/plugin-recipes.md) | 模型、Assistant、语音、MCP 等公共服务接口 |
 | [角色与表现接口](development/characters.md) | 资源格式、渲染与工坊编辑器接入 |

@@ -49,8 +49,7 @@ button:focus-visible,
 input:focus-visible,
 .log-record:focus-visible,
 .record-disclosure > summary:focus-visible {
-  outline: 3px solid var(--focus-ring);
-  outline-offset: 2px;
+  outline: none;
 }
 
 .log-shell {
@@ -441,7 +440,7 @@ h1 {
   background: var(--primary);
 }
 .auto-scroll-control input:checked + .auto-scroll-track::after { transform: translateX(14px); }
-.auto-scroll-control input:focus-visible + .auto-scroll-track { box-shadow: 0 0 0 3px var(--focus-ring); }
+.auto-scroll-control input:focus-visible + .auto-scroll-track { box-shadow: none; }
 .button {
   min-width: 82px;
   border: 1px solid var(--hairline);

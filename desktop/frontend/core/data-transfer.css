@@ -49,8 +49,7 @@
 .data-transfer-menu :focus-visible,
 .data-transfer-dialog :focus-visible,
 .date-range-panel :focus-visible {
-  outline: 3px solid var(--transfer-ring);
-  outline-offset: 2px;
+  outline: none;
 }
 .data-transfer-actions {
   position: fixed;
