@@ -237,6 +237,8 @@ def quality(c=None, filters=None):
         sum(severity IS NULL) AS missing_severity,
         sum(reason_code IS NULL) AS missing_reason,
         sum(operation_id IS NULL) AS missing_operation,
+        sum(coalesce(json_array_length(breadcrumbs_json),json_array_length(report_json,'$.breadcrumbs'),0)=0) AS missing_breadcrumbs,
+        sum(json_extract(report_json,'$.evidence.diagnostic') IS NULL) AS missing_diagnostic,
         sum(json_extract(details_json,'$.file') IS NULL AND (stack_json IS NULL OR stack_json='[]') AND coalesce(json_array_length(report_json,'$.stack'),0)=0 AND json_extract(report_json,'$.evidence.exception_stack') IS NULL) AS missing_location
         FROM error_events WHERE {condition} GROUP BY schema_version,build_id ORDER BY max(id) DESC""",
             args,
@@ -255,15 +257,17 @@ def groups(filters, limit=100, offset=0):
             FROM telemetry_events WHERE event='error.repeated'
             GROUP BY installation_id,run_id,generation,fingerprint
         ), runs AS (
-            SELECT min(e.id) AS sample_id,e.group_key,e.fingerprint,e.fingerprint_version,e.component,e.error_code,e.reason_code,e.stage,
+            SELECT max(e.id) AS sample_id,e.group_key,e.fingerprint,e.fingerprint_version,e.component,e.error_code,e.reason_code,e.stage,
+                e.app_version,e.platform,
                 e.installation_id,e.run_id,e.generation,count(*) AS reports,
                 max(count(*),coalesce(max(counts.occurrences),1)) AS occurrences,
                 min(e.received_at) AS first_seen,max(e.received_at) AS last_seen
             FROM error_events e LEFT JOIN counts ON counts.installation_id=e.installation_id AND counts.run_id=e.run_id
                 AND counts.generation IS e.generation AND counts.fingerprint=e.fingerprint
             WHERE {condition}
-            GROUP BY +e.fingerprint,e.fingerprint_version,e.component,e.error_code,e.reason_code,e.stage,e.installation_id,e.run_id,e.generation
-        ) SELECT min(sample_id) AS sample_id,min(fingerprint) AS fingerprint,fingerprint_version,component,error_code,reason_code,stage,
+            GROUP BY +e.fingerprint,e.fingerprint_version,e.component,e.error_code,e.reason_code,e.stage,e.installation_id,e.run_id,e.generation,e.app_version,e.platform
+        ) SELECT max(sample_id) AS sample_id,min(fingerprint) AS fingerprint,fingerprint_version,component,error_code,reason_code,stage,
+            group_concat(DISTINCT app_version) AS versions,group_concat(DISTINCT platform) AS platforms,
             sum(reports) AS reports,count(DISTINCT installation_id) AS installations,
             sum(occurrences) AS occurrences,min(first_seen) AS first_seen,max(last_seen) AS last_seen
         FROM runs GROUP BY coalesce(group_key,fingerprint),fingerprint_version,component,error_code,reason_code,stage"""
@@ -272,8 +276,8 @@ def groups(filters, limit=100, offset=0):
             for r in c.execute(
                 "SELECT selected.*,json_extract(e.report_json,'$.evidence.diagnostic') AS diagnostic FROM ("
                 "SELECT grouped.*,count(*) OVER () AS total_groups FROM (" + sql + ") grouped"
-                " ORDER BY reports DESC,fingerprint LIMIT ? OFFSET ?) selected"
-                " JOIN error_events e ON e.id=selected.sample_id ORDER BY selected.reports DESC,selected.fingerprint",
+                " ORDER BY installations DESC,reports DESC,fingerprint LIMIT ? OFFSET ?) selected"
+                " JOIN error_events e ON e.id=selected.sample_id ORDER BY selected.installations DESC,selected.reports DESC,selected.fingerprint",
                 [*args, limit, offset],
             )
         ]
@@ -284,6 +288,8 @@ def groups(filters, limit=100, offset=0):
         for row in rows:
             row.pop("sample_id")
             row.pop("total_groups")
+            for field in ("versions", "platforms"):
+                row[field] = sorted(row[field].split(",")) if row[field] else []
         return dict(
             items=rows,
             total=total,

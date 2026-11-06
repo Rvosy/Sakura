@@ -180,6 +180,49 @@ def test_failed_model_metric_keeps_estimate_and_unknown_usage(monkeypatch, tmp_p
     assert SENTINELS["exception"] not in json.dumps(metric, sort_keys=True)
 
 
+@pytest.mark.parametrize("code,domain,status", [
+    ("MODEL_AUTHENTICATION_FAILED", "authentication", 401),
+    ("MODEL_RATE_LIMITED", "rate_limit", 429),
+    ("MODEL_HTTP_FAILED", "provider", 503),
+])
+def test_provider_failure_keeps_original_evidence_and_delivers_model_metric(tmp_path, code, domain, status):
+    from sakura_model_client import ModelError
+
+    original = {
+        "faultDomain": domain, "httpStatus": status, "stage": "request", "attemptCount": 2,
+        "compatibilityFallbacks": ["response_format"],
+        "diagnostic": SENTINELS["exception"], "exception_stack": SENTINELS["absolute_path"],
+        "exception_chain": SENTINELS["exception"], "validation_field": "choices",
+    }
+    error = ModelError(code, SENTINELS["exception"], diagnostics=original)
+    provider = MagicMock()
+    provider.complete.side_effect = error
+    recorder = AgentTraceRecorder(tmp_path)
+    client = AssistantModelClient(DialogueSettings(model=SENTINELS["model"]),
+                                  agent_trace_recorder=recorder, model_client=provider)
+    stream = io.BytesIO()
+    bridge = install_runtime_logging(stream)
+    try:
+        with recorder.operation("provider-failure", finalize_external=True):
+            with pytest.raises(ApiRequestError) as caught:
+                client.complete_raw("system", [{"role": "user", "content": SENTINELS["chat"]}])
+    finally:
+        bridge.close()
+
+    assert caught.value.__cause__ is error
+    assert error.diagnostics == original
+    metrics = [item["modelCall"] for item in _telemetry_payloads(stream) if item["kind"] == "modelCall"]
+    assert len(metrics) == 1
+    assert metrics[0]["outcome"] == "failed"
+    assert metrics[0]["request"] == {
+        "faultDomain": domain, "reasonCode": code, "httpStatus": status, "stage": "request",
+        "attemptCount": 2, "compatibilityFallback": "response_format",
+    }
+    assert metrics[0]["usage"] is None
+    encoded = json.dumps(metrics)
+    assert all(value not in encoded for value in SENTINELS.values())
+
+
 def test_provider_compatibility_is_reported_in_one_semantic_model_call(monkeypatch, tmp_path) -> None:  # type: ignore[no-untyped-def]
     stream = io.BytesIO()
     bridge = install_runtime_logging(stream)

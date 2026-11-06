@@ -21,7 +21,9 @@ def original_report(message, **overrides):
 def test_original_error_survives_ingestion_details_and_export(client, tmp_path):
     payload = original_report("no such table: memories; see https://example.test/help")
     payload["stack"] = [{"file": "migration.py", "function": "import_rows", "line": 42}]
-    payload["breadcrumbs"] = [{"offsetMs": -10, "source": "core", "severity": "info", "channel": "runtime", "event": "migration.started"}]
+    payload["breadcrumbs"] = [{"offsetMs": -10, "source": "core", "severity": "info", "channel": "model", "event": "model.call.finished",
+                               "operationId": "op-1", "requestId": "req-1", "stage": "request", "pluginId": "sakura.assistant",
+                               "modelCall": 1, "httpStatus": 503, "outcome": "failed"}]
     assert client.post("/v3/errors", json=payload).status_code == 202
     assert client.post("/v3/errors", json=payload).status_code == 202
     listing = client.get("/admin/api/v2/records/errors").json()
@@ -71,6 +73,72 @@ def test_quality_recognizes_original_stack(client):
     assert client.post("/v3/errors", json=payload).status_code == 202
     quality = client.get("/admin/api/v2/quality").json()
     assert quality["items"][0]["missing_location"] == 0
+
+
+def test_renderer_groups_across_runtime_urls_and_lines_without_changing_evidence(client):
+    payloads = []
+    for index, resource in enumerate(("renderer.js", "renderer.js", "other.js")):
+        url = f"http://sakura-character.localhost/module/{index + 1:02x}/{str(index) * 32}/{resource}"
+        payload = original_report(f"TypeError: Failed to fetch dynamically imported module: {url}", runId=f"renderer-{index}")
+        payload["error"].update(code="VISUAL_RENDERER_FAILED", fingerprint=f"renderer-{index}")
+        payload["evidence"].update(exception_stack=f"TypeError: Failed to fetch\n    at mount ({url}:{index + 1}:12)",
+                                   exception_chain="")
+        assert client.post("/v3/errors", json=payload).status_code == 202
+        payloads.append(payload)
+    groups = client.get("/admin/api/v2/groups").json()
+    assert sorted(row["reports"] for row in groups["items"]) == [1, 2]
+    for payload in payloads:
+        stored = client.get(f'/admin/api/reports/{payload["reportId"]}').json()
+        assert stored["evidence"] == payload["evidence"]
+
+
+def test_group_migration_preserves_reports_and_links(client):
+    import db
+    from v2_db import initialize_v2
+
+    for index in range(2):
+        payload = original_report("same failure", runId=f"migration-{index}")
+        payload["error"]["fingerprint"] = f"old-{index}"
+        assert client.post("/v3/errors", json=payload).status_code == 202
+    with db.connect() as connection:
+        connection.execute("UPDATE error_events SET group_key=report_id")
+        connection.execute("PRAGMA user_version=3")
+        before = connection.execute("SELECT report_json,received_at FROM error_events ORDER BY id").fetchall()
+    initialize_v2()
+    initialize_v2()
+    assert client.get("/admin/api/v2/groups").json()["total"] == 1
+    assert client.get("/admin/api/v2/records/errors?group=old-1").json()["total"] == 2
+    with db.connect() as connection:
+        assert connection.execute("SELECT report_json,received_at FROM error_events ORDER BY id").fetchall() == before
+
+
+def test_grouping_keeps_http_causes_and_compares_across_bundle_versions(client):
+    for index, status in enumerate((401, 401, 503)):
+        payload = original_report(f"HTTP {status}: request failed", runId=f"http-{index}")
+        payload["error"]["fingerprint"] = f"http-{index}"
+        payload["evidence"].update(bundle_version=f"1.0.{index}", gpu_driver=f"5{index}.0", backend="cuda")
+        assert client.post("/v3/errors", json=payload).status_code == 202
+    assert sorted(row["reports"] for row in client.get("/admin/api/v2/groups").json()["items"]) == [1, 2]
+
+
+def test_group_priority_and_environment_facets_follow_filtered_reports(client):
+    import uuid
+
+    for index in range(5):
+        payload = original_report("widespread" if index < 2 else "noisy", runId=f"priority-{index}")
+        payload["error"]["fingerprint"] = f"priority-{index}"
+        if index < 2:
+            payload["installationId"] = str(uuid.uuid4())
+        payload["app"]["version"] = "1.3.6" if index == 0 else "1.3.5"
+        payload["system"]["platform"] = "windows" if index == 0 else "macos"
+        assert client.post("/v3/errors", json=payload).status_code == 202
+    first = client.get("/admin/api/v2/groups").json()["items"][0]
+    assert first["diagnostic"] == "widespread" and first["installations"] == 2
+    assert first["versions"] == ["1.3.5", "1.3.6"]
+    assert first["platforms"] == ["macos", "windows"]
+    filtered = client.get("/admin/api/v2/groups", params={"version": "1.3.6"}).json()["items"]
+    assert len(filtered) == 1 and filtered[0]["reports"] == 1
+    assert filtered[0]["versions"] == ["1.3.6"] and filtered[0]["platforms"] == ["windows"]
 
 
 def test_compaction_preserves_existing_evidence_and_pagination(client, tmp_path):

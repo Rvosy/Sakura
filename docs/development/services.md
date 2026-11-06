@@ -61,6 +61,10 @@ GitHub 配置 SAKURA_SERVICE_DEPLOY_KEY 与固定主机公钥 SAKURA_SERVICE_KNO
 
 接收端另行部署并检查 /health 和实际写入路径。诊断契约变更先部署兼容服务端，再发布使用它的客户端。官网发布不重启控制台或接收端。
 
+带操作上下文的 v3 步骤新增可选的 operationId、requestId、stage、pluginId、modelCall 和 httpStatus。接收端需先支持这些字段；旧客户端报告和旧待发报告仍可接收。先更新接收端，再更新独立管理台的查询副本与界面，最后发布客户端。
+
+接收端启动时通过 initialize_v2 将诊断库升级到 user_version=4，事务内重算历史 v3 报告的派生 group_key；原始 JSON、接收时间、报告身份及旧指纹链接不变。迁移前使用 SQLite backup 备份，预留启动期间的数据库写锁时间。管理台仅查询，不执行迁移。
+
 代码回退切换上一版代码，保留新产生的数据库记录、草稿、导出及公开发布资料。不能用旧数据库快照覆盖期间产生的数据；涉及数据格式变化时，应确认回退代码的兼容性。
 
 SQLite 在线备份使用 backup API，不能只复制主数据库而遗漏 WAL。认证文件、密钥、在线数据库和公开版本 JSON 不提交仓库。

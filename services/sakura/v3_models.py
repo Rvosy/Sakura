@@ -19,6 +19,12 @@ class ErrorInfoV3(ErrorInfo):
 
 class BreadcrumbV3(Breadcrumb):
     diagnostic: DiagnosticText | None = None
+    operation_id: SafeToken | None = Field(default=None, alias="operationId")
+    request_id: SafeToken | None = Field(default=None, alias="requestId")
+    stage: SafeToken | None = None
+    plugin_id: SafeToken | None = Field(default=None, alias="pluginId")
+    model_call: Annotated[int, Field(ge=1, le=2**53 - 1)] | None = Field(default=None, alias="modelCall")
+    http_status: Annotated[int, Field(ge=100, le=599)] | None = Field(default=None, alias="httpStatus")
 
 
 class ErrorDetailV3(DiagnosticDetail):

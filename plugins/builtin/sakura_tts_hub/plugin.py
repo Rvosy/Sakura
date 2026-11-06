@@ -30,6 +30,7 @@ class _JobBinding:
     service_key: str
     job_id: str
     provider: object
+    operation_id: str | None = None
     terminal: dict[str, Any] | None = None
 
 
@@ -212,7 +213,9 @@ class SakuraTTSHub:
     def begin(self, request: Mapping[str, Any]) -> dict[str, Any]:
         result = self._begin(request)
         if result["state"] == "failed" and result["errorCode"] != "TTS_DISABLED":
-            self._log("error", "语音请求未受理", reason_code=result["errorCode"], request_id=result["requestId"], provider=result["providerId"])
+            options = request.get("options") if isinstance(request, Mapping) else None
+            operation_id = options.get("operationId") if isinstance(options, Mapping) else None
+            self._log("error", "语音请求未受理", reason_code=result["errorCode"], request_id=result["requestId"], provider=result["providerId"], operation_id=operation_id)
         return result
 
     def _begin(self, request: Mapping[str, Any]) -> dict[str, Any]:
@@ -240,6 +243,7 @@ class SakuraTTSHub:
                 None,
                 "TTS_REQUEST_INVALID",
             )
+        operation_id = request["options"].get("operationId")
         selection = self._selection(character_id)
         provider_id = selection.provider_id
         if not selection.enabled:
@@ -256,7 +260,7 @@ class SakuraTTSHub:
         try:
             provider = getattr(self._context, "bind")(descriptor.service_key)
         except Exception as error:
-            self._log("error", "语音引擎绑定失败", request_id=request_id, provider=provider_id)
+            self._log("error", "语音引擎绑定失败", request_id=request_id, provider=provider_id, operation_id=operation_id)
             return self._failed(request_id, provider_id, "TTS_PROVIDER_UNAVAILABLE", provider_failure("TTS_PROVIDER_UNAVAILABLE", error)["diagnostics"])
         try:
             job_id = provider.begin(
@@ -268,7 +272,7 @@ class SakuraTTSHub:
                 }
             )
         except Exception as error:
-            self._log("error", "语音合成启动失败", request_id=request_id, provider=provider_id)
+            self._log("error", "语音合成启动失败", request_id=request_id, provider=provider_id, operation_id=operation_id)
             code = _stable_error_code(error, "TTS_SYNTHESIS_FAILED")
             return self._failed(
                 request_id, provider_id, code,
@@ -286,7 +290,7 @@ class SakuraTTSHub:
             )
         if not self._valid_identifier(job_id):
             return self._failed(request_id, provider_id, "TTS_JOB_INVALID")
-        binding = _JobBinding(provider_id, descriptor.service_key, job_id, provider)
+        binding = _JobBinding(provider_id, descriptor.service_key, job_id, provider, operation_id)
         with self._lock:
             if request_id in self._jobs:
                 try:
@@ -316,7 +320,7 @@ class SakuraTTSHub:
             try:
                 result = binding.provider.poll(binding.job_id)
             except Exception as error:
-                self._log("error", "语音合成失败", request_id=request_id, provider=binding.provider_id, reason_code="TTS_PROVIDER_UNAVAILABLE")
+                self._log("error", "语音合成失败", request_id=request_id, provider=binding.provider_id, reason_code="TTS_PROVIDER_UNAVAILABLE", operation_id=binding.operation_id)
                 failure_reported = True
                 result = {"state": "failed", **provider_failure("TTS_PROVIDER_UNAVAILABLE", error)}
         else:
@@ -328,7 +332,7 @@ class SakuraTTSHub:
                     del self._jobs[request_id]
                     if (normalized["state"] == "failed" and not failure_reported
                             and normalized["errorCode"] != "TTS_BACKGROUND_DEFERRED"):
-                        self._log("error", "语音合成失败", request_id=request_id, provider=binding.provider_id, reason_code=normalized["errorCode"])
+                        self._log("error", "语音合成失败", request_id=request_id, provider=binding.provider_id, reason_code=normalized["errorCode"], operation_id=binding.operation_id)
         return normalized
 
     def cancel(self, request_id: str) -> dict[str, Any]:

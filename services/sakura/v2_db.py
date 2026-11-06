@@ -2,6 +2,7 @@
 
 import json
 from db import connect, beijing_received_at
+from grouping import error_group_key
 
 TABLES = ("error_events", "telemetry_events", "model_call_metrics")
 COMMON = {
@@ -75,7 +76,12 @@ def initialize_v2():
             c.execute(
                 f"CREATE INDEX IF NOT EXISTS ix_{table}_overview ON {table}({columns})"
             )
-        c.execute("PRAGMA user_version=3")
+        if c.execute("PRAGMA user_version").fetchone()[0] < 4:
+            rows = c.execute("SELECT id,report_json FROM error_events WHERE schema_version=3 AND report_json IS NOT NULL")
+            while batch := rows.fetchmany(128):
+                c.executemany("UPDATE error_events SET group_key=? WHERE id=?",
+                              [(error_group_key(json.loads(raw)), identity) for identity, raw in batch])
+            c.execute("PRAGMA user_version=4")
 
 
 def common(item, received):
@@ -141,27 +147,7 @@ def insert_v2(kind, payload):
             # 完整报告已经包含栈和面包屑，详情与导出从同一份原文读取。
             row["stack_json"] = None
             row["breadcrumbs_json"] = None
-            failure_context = [r.evidence.get(field) for field in (
-                "plugin_id", "section_id", "validation_field", "detail_stage", "command", "service_key",
-                "error_type", "cause_type", "cause_code",
-            )]
-            # Reports without the new identity fields must still join the
-            # existing v3 groups; persisted historical keys are not rewritten.
-            if any(r.evidence.get(field) is not None for field in ("slot_id", "provider_id")):
-                failure_context.extend(r.evidence.get(field) for field in ("slot_id", "provider_id"))
-            if "bundle_version" in r.evidence:
-                failure_context.extend(r.evidence.get(field) for field in (
-                    "bundle_version", "bundle_source_commit", "backend", "requested_backend",
-                    "profile", "runtime_mode", "gpu_name", "gpu_memory_mib", "gpu_driver",
-                ))
-            row["group_key"] = json.dumps([
-                r.error.component, r.error.event, r.error.code,
-                r.details.reason_code, r.details.stage,
-                r.evidence.get("diagnostic"), r.evidence.get("exception_stack"),
-                r.evidence.get("exception_chain"),
-                [frame.model_dump(exclude_none=True) for frame in r.stack],
-                failure_context,
-            ], ensure_ascii=False, separators=(",", ":"))
+            row["group_key"] = error_group_key(r.model_dump(by_alias=True, exclude_none=True))
         rows.append(row)
         table = "error_events"
     elif kind == "events":

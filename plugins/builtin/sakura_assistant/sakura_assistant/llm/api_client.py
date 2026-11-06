@@ -603,11 +603,9 @@ class AssistantModelClient:
             response = self._model_client.complete(request, cancel_checker=cancel_checker)
         except ModelError as error:
             raise ApiRequestError(str(error)) from error
-        diagnostic = dict(response.get("diagnostics") or {})
-        fallbacks = diagnostic.pop("compatibilityFallbacks", [])
-        if fallbacks:
-            diagnostic["compatibilityFallback"] = fallbacks[-1]
-        self._trace_local.request_diagnostic.update(diagnostic)
+        self._trace_local.request_diagnostic.update(
+            _request_metric_diagnostic(response.get("diagnostics") or {})
+        )
         message = response["message"]
         internal_message = {"role": "assistant", "content": message.get("content"), "providerData": message.get("providerData", {})}
         if message.get("toolCalls"):
@@ -785,6 +783,17 @@ def _summarize_token_usage(usage: Any) -> dict[str, Any]:
     return summary
 
 
+def _request_metric_diagnostic(diagnostics: Mapping[str, Any]) -> dict[str, Any]:
+    # 原始异常留在错误报告；调用指标只投影 RequestDiagnostic 协议字段。
+    result = {key: diagnostics[key] for key in (
+        "faultDomain", "reasonCode", "httpStatus", "stage", "attemptCount", "compatibilityFallback",
+    ) if key in diagnostics}
+    fallbacks = diagnostics.get("compatibilityFallbacks")
+    if fallbacks:
+        result["compatibilityFallback"] = fallbacks[-1]
+    return result
+
+
 def _request_failure(error: BaseException) -> dict[str, Any]:
     if isinstance(error, OperationCancelled):
         return {"faultDomain": "cancelled", "reasonCode": "REQUEST_CANCELLED", "stage": "request"}
@@ -792,7 +801,7 @@ def _request_failure(error: BaseException) -> dict[str, Any]:
     while cause is not None and id(cause) not in seen:
         seen.add(id(cause))
         if isinstance(cause, ModelError):
-            return {**cause.diagnostics, "reasonCode": cause.code}
+            return {**_request_metric_diagnostic(cause.diagnostics), "reasonCode": cause.code}
         cause = cause.__cause__
     return {"faultDomain": "unknown", "reasonCode": "MODEL_REQUEST_FAILED", "stage": "unknown"}
 

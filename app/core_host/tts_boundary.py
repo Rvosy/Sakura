@@ -796,6 +796,8 @@ class TTSBoundary:
                     "options": {
                         "tone": authorization.tone,
                         "portrait": authorization.portrait,
+                        "operationId": authorization.operation_id,
+                        "segmentIndex": authorization.segment_index,
                         **({"background": True} if authorization.background else {}),
                     },
                 },

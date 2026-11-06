@@ -2,6 +2,7 @@ from __future__ import annotations
 from sakura_provider_errors import provider_failure
 
 from concurrent.futures import ThreadPoolExecutor
+from contextvars import copy_context
 import json
 import os
 from pathlib import Path
@@ -14,13 +15,13 @@ try:
     from ._bundle import BundleStore, Cancelled
     from ._runtime import Runtime, probe
     from ._updates import UpdateAnnouncement
-    from ._diagnostics import operation
+    from ._diagnostics import diagnostic_context, operation, request_context
     from ._storage import runtime_directory
 except ImportError:
     from _bundle import BundleStore, Cancelled
     from _runtime import Runtime, probe
     from _updates import UpdateAnnouncement
-    from _diagnostics import operation
+    from _diagnostics import diagnostic_context, operation, request_context
     from _storage import runtime_directory
 
 PROVIDER_ID = 'sakura.tts.sakuratts'
@@ -117,7 +118,7 @@ class Provider:
                    'runtime_mode': 'direct' if self.config['idleSeconds'] == 0 else 'managed',
                    'bundle_version': (self.bundle.release_id or release.get('version')) if bundle else None,
                    'bundle_source_commit': release.get('source_commit'), **self.runtime.device}
-        getattr(self.logger, level)(message, fields={key: value for key, value in {**context, **fields}.items() if value is not None})
+        getattr(self.logger, level)(message, fields={key: value for key, value in {**context, **diagnostic_context.get(), **fields}.items() if value is not None})
 
     def publish(self, activate):
         def switch():
@@ -203,12 +204,12 @@ class Provider:
                 if self.wake is cancel:
                     self.wake = None
 
-    def record_error(self, error):
+    def record_error(self, error, **fields):
         self.error = str(error)
-        self.log('error', 'SakuraTTS 运行失败', diagnostic=self.error, error_type=type(error).__name__)
+        self.log('error', 'SakuraTTS 运行失败', diagnostic=self.error, error_type=type(error).__name__, **fields)
 
     def begin(self, request):
-        with self.lock:
+        with request_context(request), self.lock:
             if self.closed or not self.bundle.current():
                 return {'errorCode': 'TTS_RUNTIME_NOT_INSTALLED'}
             try:
@@ -220,9 +221,9 @@ class Provider:
             allocation = self.artifacts.allocate({'mediaType': 'audio/wav', 'suffix': '.wav'})
             job_id = 'job_' + uuid.uuid4().hex
             job = {'state': 'running', 'cancel': threading.Event(), 'allocation': allocation, 'released': False,
-                   'queued_at': time.monotonic()}
+                   'queued_at': time.monotonic(), 'context': diagnostic_context.get()}
             self.jobs[job_id] = job
-            self.executor.submit(self._synthesize, job, request, voice)
+            self.executor.submit(copy_context().run, self._synthesize, job, request, voice)
             return job_id
 
     def _release(self, job):
@@ -291,7 +292,7 @@ class Provider:
                     try:
                         return {'state': state, 'artifact': self.artifacts.commit(job['allocation']['artifactId'])}
                     except Exception as error:
-                        self.record_error(error)
+                        self.record_error(error, **job['context'])
                         return {'state': 'failed', **provider_failure('TTS_ARTIFACT_INVALID', error)}
                 return {'state': state, **(job['failure'] if state == 'failed' else {})}
             finally:

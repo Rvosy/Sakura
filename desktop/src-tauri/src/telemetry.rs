@@ -90,8 +90,15 @@ struct SenderDiagnostics {
     rejected: u64,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 struct BreadcrumbState {
+    generation: Option<String>,
+    operation_id: Option<String>,
+    request_id: Option<String>,
+    stage: Option<String>,
+    plugin_id: Option<String>,
+    model_call: Option<u64>,
+    http_status: Option<u64>,
     diagnostic: Option<String>,
     elapsed_ms: u64,
     source: String,
@@ -197,6 +204,18 @@ struct SafeStackFrame {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct Breadcrumb {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    operation_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    request_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    stage: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    plugin_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    model_call: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    http_status: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     diagnostic: Option<String>,
     offset_ms: i64,
@@ -788,6 +807,9 @@ impl TelemetryService {
     }
 
     fn bump_epoch(&self) {
+        if let Ok(mut breadcrumbs) = self.inner.breadcrumbs.lock() {
+            breadcrumbs.clear();
+        }
         if let Ok(mut reports) = self.inner.reports.lock() {
             reports.clear();
         }
@@ -984,11 +1006,16 @@ impl TelemetryService {
             return Ok(false);
         };
         let now_ms = self.inner.started_at.elapsed().as_millis() as u64;
+        let generation = self.diagnostic_context().generation;
         let breadcrumb_state = self.inner.breadcrumbs.lock().map_err(|_| ())?;
-        let breadcrumbs = project_breadcrumbs(&breadcrumb_state, now_ms);
+        let breadcrumbs = project_breadcrumbs(
+            &breadcrumb_state,
+            now_ms,
+            generation.as_deref(),
+            candidate.operation_id.as_deref(),
+        );
         drop(breadcrumb_state);
         // Compare the actual failure, not a lossy code or a home-grown digest.
-        let generation = self.diagnostic_context().generation;
         let mut failure_context = vec![
             "plugin_id",
             "section_id",
@@ -1147,6 +1174,20 @@ impl TelemetryService {
             usage: candidate.usage,
             estimate: candidate.estimate,
         };
+        self.push_breadcrumb(
+            "core",
+            "info",
+            "model",
+            "model.call.finished",
+            item.operation_id.as_deref(),
+            Some(&json!({
+                "outcome": item.outcome, "elapsed_ms": item.latency_ms,
+                "code": item.request.reason_code.as_ref().or(item.error_code.as_ref()),
+                "stage": item.request.stage, "http_status": item.request.http_status,
+                "model_call": item.model_call, "model_family": item.model_family,
+                "purpose": item.purpose, "fault_domain": item.request.fault_domain,
+            })),
+        );
         Ok(self.enqueue_at_epoch(TelemetryRecord::ModelCall(item), epoch))
     }
 
@@ -1159,13 +1200,15 @@ impl TelemetryService {
         operation_id: Option<&str>,
         attributes: Option<&Value>,
     ) {
-        if matches!(
-            event,
-            "webview.command.started"
-                | "webview.command.completed"
-                | "ipc.request.started"
-                | "ipc.request.completed"
-        ) {
+        if operation_id.is_none()
+            && matches!(
+                event,
+                "webview.command.started"
+                    | "webview.command.completed"
+                    | "ipc.request.started"
+                    | "ipc.request.completed"
+            )
+        {
             return;
         }
         if !matches!(source, "rust" | "core" | "webview" | "plugin")
@@ -1175,14 +1218,24 @@ impl TelemetryService {
         {
             return;
         }
+        let generation = self.diagnostic_context().generation;
         let mut ring = match self.inner.breadcrumbs.lock() {
             Ok(ring) => ring,
             Err(_) => return,
         };
-        if ring.len() == 40 {
-            ring.pop_front();
-        }
         ring.push_back(BreadcrumbState {
+            generation,
+            operation_id: operation_id
+                .and_then(|value| valid_token(value, 128))
+                .map(str::to_owned),
+            request_id: stable_token_attribute(attributes, "request_id", 128),
+            stage: stable_token_attribute(attributes, "stage", 128)
+                .or_else(|| stable_token_attribute(attributes, "detail_stage", 128)),
+            plugin_id: stable_token_attribute(attributes, "plugin_id", 128),
+            model_call: integer_attribute(attributes, "model_call")
+                .filter(|value| (1..=9_007_199_254_740_991).contains(value)),
+            http_status: integer_attribute(attributes, "http_status")
+                .filter(|value| (100..=599).contains(value)),
             diagnostic: breadcrumb_diagnostic(operation_id, attributes),
             elapsed_ms: self.inner.started_at.elapsed().as_millis() as u64,
             source: source.to_string(),
@@ -1193,7 +1246,13 @@ impl TelemetryService {
             }
             .to_string(),
             channel: channel.to_string(),
-            event: event.to_string(),
+            event: if event == "runtime.message" {
+                stable_token_attribute(attributes, "event", 96)
+                    .filter(|name| valid_event_name(name, 96))
+                    .unwrap_or_else(|| event.to_string())
+            } else {
+                event.to_string()
+            },
             code: stable_attribute(attributes, "code")
                 .or_else(|| stable_attribute(attributes, "reason_code")),
             outcome: outcome_attribute(attributes),
@@ -1201,6 +1260,11 @@ impl TelemetryService {
                 .or_else(|| integer_attribute(attributes, "elapsed_ms"))
                 .filter(|value| *value <= 86_400_000),
         });
+        // Retain concurrent operations within one report-sized memory budget.
+        let mut bytes: usize = ring.iter().map(breadcrumb_bytes).sum();
+        while bytes > ERROR_BODY_LIMIT {
+            bytes -= breadcrumb_bytes(&ring.pop_front().expect("nonempty breadcrumb buffer"));
+        }
     }
 
     #[cfg(test)]
@@ -2036,11 +2100,67 @@ fn outcome_attribute(attributes: Option<&Value>) -> Option<String> {
     }
 }
 
-fn project_breadcrumbs(items: &VecDeque<BreadcrumbState>, now_ms: u64) -> Vec<Breadcrumb> {
-    items
-        .iter()
-        .filter(|item| now_ms.saturating_sub(item.elapsed_ms) <= 86_400_000)
+fn breadcrumb_bytes(item: &BreadcrumbState) -> usize {
+    std::mem::size_of::<BreadcrumbState>()
+        + [&item.source, &item.severity, &item.channel, &item.event]
+            .into_iter()
+            .map(|s| s.capacity())
+            .sum::<usize>()
+        + [
+            &item.generation,
+            &item.operation_id,
+            &item.request_id,
+            &item.stage,
+            &item.plugin_id,
+            &item.diagnostic,
+            &item.code,
+            &item.outcome,
+        ]
+        .into_iter()
+        .flatten()
+        .map(|s| s.capacity())
+        .sum::<usize>()
+}
+
+fn project_breadcrumbs(
+    items: &VecDeque<BreadcrumbState>,
+    now_ms: u64,
+    generation: Option<&str>,
+    operation: Option<&str>,
+) -> Vec<Breadcrumb> {
+    let eligible = || {
+        items
+            .iter()
+            .filter(|item| now_ms.saturating_sub(item.elapsed_ms) <= 86_400_000)
+            .filter(|item| {
+                item.generation
+                    .as_deref()
+                    .is_none_or(|id| Some(id) == generation)
+            })
+    };
+    let mut selected = eligible()
+        .rev()
+        .filter(|item| operation.is_none_or(|id| item.operation_id.as_deref() == Some(id)))
+        .take(40)
+        .collect::<Vec<_>>();
+    if operation.is_some() {
+        selected.extend(
+            eligible()
+                .rev()
+                .filter(|item| item.operation_id.is_none())
+                .take(40 - selected.len()),
+        );
+    }
+    selected.sort_by_key(|item| item.elapsed_ms);
+    selected
+        .into_iter()
         .map(|item| Breadcrumb {
+            operation_id: item.operation_id.clone(),
+            request_id: item.request_id.clone(),
+            stage: item.stage.clone(),
+            plugin_id: item.plugin_id.clone(),
+            model_call: item.model_call,
+            http_status: item.http_status,
             diagnostic: item.diagnostic.clone(),
             offset_ms: item.elapsed_ms as i64 - now_ms as i64,
             source: item.source.clone(),
@@ -2054,8 +2174,7 @@ fn project_breadcrumbs(items: &VecDeque<BreadcrumbState>, now_ms: u64) -> Vec<Br
         .collect()
 }
 
-// Keep this within v3's existing diagnostic field so installed receivers can
-// accept it. Only the operation's identity and phase are copied, never payloads.
+// Only operation context and diagnostic text are copied, never payloads.
 fn breadcrumb_diagnostic(operation_id: Option<&str>, attributes: Option<&Value>) -> Option<String> {
     let mut context = Vec::new();
     if let Some(operation) = operation_id.and_then(|value| valid_token(value, 128)) {
@@ -2068,6 +2187,9 @@ fn breadcrumb_diagnostic(operation_id: Option<&str>, attributes: Option<&Value>)
         "command",
         "service_key",
         "request_id",
+        "model_family",
+        "purpose",
+        "fault_domain",
     ] {
         if let Some(value) = stable_token_attribute(attributes, key, 128) {
             context.push(format!("{key}={value}"));
@@ -3433,7 +3555,16 @@ mod tests {
                 Some(&json!({"elapsed_ms": index})),
             );
         }
-        assert_eq!(service.inner.breadcrumbs.lock().unwrap().len(), 40);
+        assert_eq!(
+            project_breadcrumbs(
+                &service.inner.breadcrumbs.lock().unwrap(),
+                0,
+                Some("generation-a"),
+                None
+            )
+            .len(),
+            40
+        );
         service.push_breadcrumb(
             "core",
             "trace",
@@ -3463,8 +3594,9 @@ mod tests {
             code: None,
             outcome: None,
             duration_ms: None,
+            ..Default::default()
         }]);
-        assert!(project_breadcrumbs(&old, 86_400_002).is_empty());
+        assert!(project_breadcrumbs(&old, 86_400_002, None, None).is_empty());
         drop(ring);
         let frames = (1..17)
             .map(|line| SafeStackFrame {
@@ -3697,16 +3829,56 @@ mod tests {
     fn failed_errors_survive_restart_and_disable_clears_pending_reports() {
         let failing = TestServer::start(503, Duration::ZERO);
         let (root, service) = service_for(&failing, "durable-errors", 128, TEST_WAIT);
+        service.activate_generation("previous-generation");
+        service.push_breadcrumb(
+            "core",
+            "info",
+            "runtime",
+            "old.started",
+            Some("op-failed"),
+            None,
+        );
+        service.activate_generation("current-generation");
+        service.push_breadcrumb(
+            "core",
+            "info",
+            "chat",
+            "chat.started",
+            Some("op-failed"),
+            None,
+        );
+        service.submit_model_call(serde_json::from_value(json!({
+            "schema": 1, "operationId": "op-failed", "modelCall": 2,
+            "purpose": "agent_step", "modelFamily": "openai", "outcome": "failed",
+            "errorCode": "PROVIDER_REQUEST_FAILED", "latencyMs": 120,
+            "contextWindowTokens": 8192, "contextWindowSource": "configured",
+            "request": {"faultDomain": "provider", "reasonCode": "PROVIDER_REQUEST_FAILED", "httpStatus": 503, "stage": "request", "attemptCount": 1}
+        })).unwrap()).unwrap();
+        assert_eq!(failing.next_request(&service).0, "/v2/model-calls");
+        for _ in 0..60 {
+            service.push_breadcrumb("core", "info", "tts", "tts.started", Some("op-other"), None);
+        }
         service.observe_runtime_event(
             "rust",
             "error",
             "runtime",
             "future.error",
-            None,
+            Some("op-failed"),
             Some(&json!({"diagnostic": "cannot load dependency", "code": "UNKNOWN_FAILURE"})),
         );
         let (_, sent) = failing.next_request(&service);
         let sent: Value = serde_json::from_slice(&sent).unwrap();
+        let steps = sent["breadcrumbs"].as_array().unwrap();
+        assert!(steps.iter().any(|step| step["event"] == "chat.started"));
+        let model = steps
+            .iter()
+            .find(|step| step["event"] == "model.call.finished")
+            .unwrap();
+        assert_eq!(model["modelCall"], 2);
+        assert_eq!(model["httpStatus"], 503);
+        assert_eq!(model["outcome"], "failed");
+        assert!(steps.iter().all(|step| step["operationId"] == "op-failed"));
+        assert!(!steps.iter().any(|step| step["event"] == "old.started"));
         assert!(wait_for_diagnostic(&service, |d| d.failed) > 0);
         service.shutdown();
         assert!(wait_for_sender_exit(&service));
@@ -3731,6 +3903,32 @@ mod tests {
             .is_empty());
         resumed.shutdown();
         assert!(wait_for_sender_exit(&resumed));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn breadcrumb_buffer_is_bounded_and_identity_reset_discards_context() {
+        let server = TestServer::start(202, Duration::ZERO);
+        let (root, service) = service_for(&server, "breadcrumb-budget", 128, TEST_WAIT);
+        for _ in 0..600 {
+            service.push_breadcrumb("plugin", "info", "tts", "runtime.message", Some("op-tts"),
+                Some(&json!({"event": "tts.operation.started", "stage": "synthesis", "request_id": "request-1", "diagnostic": "x".repeat(1024)})));
+        }
+        {
+            let ring = service.inner.breadcrumbs.lock().unwrap();
+            assert!(ring.iter().map(breadcrumb_bytes).sum::<usize>() <= ERROR_BODY_LIMIT);
+            let steps = project_breadcrumbs(&ring, 0, None, Some("op-tts"));
+            assert_eq!(steps.len(), 40);
+            assert_eq!(steps[0].event, "tts.operation.started");
+            assert_eq!(steps[0].request_id.as_deref(), Some("request-1"));
+        }
+        service.regenerate_installation_id().unwrap();
+        assert!(service.inner.breadcrumbs.lock().unwrap().is_empty());
+        service.push_breadcrumb("core", "info", "chat", "chat.started", Some("new-op"), None);
+        service.set_enabled(false).unwrap();
+        assert!(service.inner.breadcrumbs.lock().unwrap().is_empty());
+        service.shutdown();
+        assert!(wait_for_sender_exit(&service));
         let _ = fs::remove_dir_all(root);
     }
 

@@ -1,5 +1,6 @@
 """SakuraTTS operation results and optional NVIDIA device context."""
 from contextlib import contextmanager
+from contextvars import ContextVar
 import csv
 import io
 import shutil
@@ -12,6 +13,22 @@ try:
     from ._bundle import Cancelled
 except ImportError:
     from _bundle import Cancelled
+
+
+diagnostic_context = ContextVar('sakuratts_diagnostic_context', default={})
+
+
+@contextmanager
+def request_context(request):
+    options = request.get('options', {})
+    fields = {'request_id': request.get('requestId'),
+              'operation_id': options.get('operationId'),
+              'segment_index': options.get('segmentIndex')}
+    token = diagnostic_context.set({key: value for key, value in fields.items() if value is not None})
+    try:
+        yield
+    finally:
+        diagnostic_context.reset(token)
 
 
 def nvidia_device():
@@ -33,6 +50,7 @@ def nvidia_device():
 @contextmanager
 def operation(log, stage, *, cancel=None, report_error=True):
     started = time.monotonic()
+    log('info', 'SakuraTTS 操作开始', event='tts.operation.started', stage=stage)
     fields = {'event': 'tts.operation.finished', 'stage': stage}
     level = 'info'
     try:

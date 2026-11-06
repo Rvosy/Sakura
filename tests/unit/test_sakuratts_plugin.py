@@ -259,12 +259,13 @@ def test_hub_logs_real_synthesis_failures_but_not_background_deferrals(tmp_path,
         assert p.error == ''
         assert not [entry for entry in logs if entry[0] in {'warning', 'error'}]
 
-        hub.begin({'requestId': 'user-replay', 'characterId': 'character', 'text': 'reply', 'options': {}})
+        hub.begin({'requestId': 'user-replay', 'characterId': 'character', 'text': 'reply', 'options': {'operationId': 'chat-replay'}})
         p.executor.submit(lambda: None).result(3)
         assert hub.poll('user-replay')['errorCode'] == 'TTS_SYNTHESIS_FAILED'
         errors = [fields for level, _, fields in logs if level == 'error']
         assert len(errors) == 1
         assert errors[0]['reason_code'] == 'TTS_SYNTHESIS_FAILED'
+        assert errors[0]['operation_id'] == 'chat-replay'
     finally:
         p.close()
 
@@ -549,7 +550,7 @@ def test_auto_backend_rechecks_on_restart_and_preserves_check_errors(tmp_path, m
         if isinstance(failure, RuntimeFailure) and failure.device_unavailable:
             runtime.start(bundle, config, voice, cancel)
             assert runtime.backend == 'cpu'
-            assert logs[0]['diagnostic'] == str(failure)
+            assert any(record.get('diagnostic') == str(failure) for record in logs)
             runtime.start(bundle, config, voice, cancel)
             assert len(checks) == len(launches) == 1
             runtime.stop()
@@ -1178,8 +1179,9 @@ def test_operation_reports_terminal_result_and_preserves_failure(outcome):
     else:
         with pytest.raises(Cancelled if outcome == 'cancelled' else RuntimeError):
             run()
-    assert len(records) == 1
-    level, fields = records[0]
+    assert records[0][1]['event'] == 'tts.operation.started'
+    assert len(records) == 2
+    level, fields = records[1]
     assert fields['outcome'] == outcome
     assert fields['event'] == 'tts.operation.finished'
     assert fields['stage'] == 'synthesis'
@@ -1218,5 +1220,34 @@ def test_prewake_failure_includes_runtime_context_once(tmp_path, monkeypatch):
         assert records[0]['gpu_memory_mib'] == 8192
         assert records[0]['diagnostic'] == 'engine unavailable'
         assert 'text' not in records[0] and 'prompt_text' not in records[0]
+    finally:
+        p.close()
+
+
+def test_synthesis_context_crosses_worker_and_does_not_leak_between_jobs(tmp_path, monkeypatch):
+    p, _ = provider(tmp_path, monkeypatch)
+    records = []
+    for level in ('info', 'error'):
+        setattr(p.logger, level, lambda message, fields: records.append(fields))
+
+    def fail(*args):
+        p.log('info', '引擎启动', event='tts.engine.starting')
+        raise RuntimeError('engine unavailable')
+
+    monkeypatch.setattr(p.runtime, 'start', fail)
+    try:
+        for index in range(2):
+            job = p.begin({'requestId': f'request-{index}', 'characterId': 'character',
+                           'text': 'private-synthesis-text',
+                           'options': {'operationId': f'chat-{index}', 'segmentIndex': index}})
+            p.executor.submit(lambda: None).result(3)
+            assert p.poll(job)['state'] == 'failed'
+        for event in ('tts.operation.started', 'tts.engine.starting', 'tts.operation.finished'):
+            steps = [fields for fields in records if fields.get('event') == event]
+            assert [(step['operation_id'], step['request_id'], step['segment_index']) for step in steps] == [
+                ('chat-0', 'request-0', 0), ('chat-1', 'request-1', 1)]
+        p.executor.submit(p.log, 'info', '空闲运行检查').result(3)
+        assert 'operation_id' not in records[-1] and 'request_id' not in records[-1]
+        assert 'private-synthesis-text' not in json.dumps(records)
     finally:
         p.close()

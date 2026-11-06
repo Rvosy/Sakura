@@ -52,12 +52,12 @@ def jobs(request: pytest.FixtureRequest, tmp_path: Path):
         call_service=lambda _key, method, *args, **_kwargs: getattr(hub, method)(*args)
     )
 
-    def start(request_id="request"):
+    def start(request_id="request", operation_id=None):
         assert hub.begin({
             "requestId": request_id,
             "characterId": "fixture",
             "text": "fixture",
-            "options": {},
+            "options": {"operationId": operation_id} if operation_id else {},
         })["state"] == "running"
         return provider._jobs[f"job_{request_id}"]
 
@@ -173,7 +173,7 @@ def test_hub_logs_terminal_failure_once_without_poll_noise(jobs) -> None:
 
     logger = Mock()
     jobs.hub._logger = logger
-    job = jobs.start("logging-request")
+    job = jobs.start("logging-request", operation_id="chat-logging")
     for _ in range(20):
         assert jobs.hub.poll("logging-request")["state"] == "running"
     assert logger.mock_calls == []
@@ -184,4 +184,5 @@ def test_hub_logs_terminal_failure_once_without_poll_noise(jobs) -> None:
     assert logger.error.call_args.kwargs["fields"] == {
         "request_id": "logging-request", "provider": jobs.provider_id,
         "reason_code": "TTS_RUNTIME_UNAVAILABLE",
+        "operation_id": "chat-logging",
     }

@@ -12,6 +12,8 @@ Rust 统一接收并写入运行日志。Core、插件和前端沿各自既有�
 
 Agent Trace 与普通日志分开，记录默认 Assistant 实际使用的模型输入和输出。远程诊断复用同一错误捕获链，通过用户开关控制发送；只移除具体凭据，不把其他诊断压缩成通用错误码。
 
+错误报告携带同一操作的关键步骤和模型请求摘要，复用现有待发队列补传。服务端从原始证据生成稳定归组字段，消除运行地址和栈行列的动态差异，原文保留供查看与导出。归组参考 [Sentry 的错误分组](https://docs.sentry.io/concepts/data-management/event-grouping/)，操作关联参考 [OpenTelemetry Trace](https://opentelemetry.io/docs/concepts/signals/traces/)；这里沿用已有的运行、操作和模型调用标识，不引入独立采集服务。
+
 ## 理由
 
 一条完整的操作链比多层重复日志更容易回答“哪一步失败”。一个写入者也避免不同进程对同一文件争用、交错或各自维护不一致的轮转规则。
