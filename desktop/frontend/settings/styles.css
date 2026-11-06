@@ -367,8 +367,8 @@ html.is-theme-view-transition::view-transition-new(root) {
 .page-heading-icon :is(.sakura-icon, svg) { width: 20px; height: 20px; }
 .page-heading-content .page-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .has-custom-titlebar .page-head { padding-right: 0; }
-.window-controls { display: flex; align-self: stretch; flex-shrink: 0; }
-.window-controls > button { display: grid; place-items: center; width: 44px; min-width: 0; min-height: 0; padding: 0; border: 0; border-radius: 0; background: transparent; color: var(--sakura-secondary-text); box-shadow: none; }
+.window-controls { display: flex; align-self: flex-start; flex-shrink: 0; }
+.window-controls > button { display: grid; place-items: center; width: 44px; height: 36px; min-width: 0; min-height: 0; padding: 0; border: 0; border-radius: 0; background: transparent; color: var(--sakura-secondary-text); box-shadow: none; }
 .window-controls > button:focus-visible { outline-offset: -3px; }
 .window-controls > button:hover:not(:disabled) { background: var(--tint-soft); color: var(--sakura-text); transform: none; box-shadow: none; }
 .window-controls > #windowClose:hover { background: #e81123; color: #fff; }
