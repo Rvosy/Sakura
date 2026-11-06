@@ -2755,19 +2755,6 @@ mod tests {
     }
 
     #[test]
-    fn product_layout_has_deterministic_ordered_hit_regions() {
-        let model = logical_hit_regions(&contract(), PresentationState::Product).unwrap();
-        assert_eq!(model.interactive.len(), 2);
-        assert_eq!(model.drag.len(), 2);
-        assert!(model.neutral.is_empty());
-        assert_eq!(model.drag[0], LogicalHitRect::new(150, 328, 600, 656));
-        assert_eq!(
-            model.drag[1],
-            LogicalHitRect::new(130, 680, 640, 128).with_corner_radius(BUBBLE_CORNER_RADIUS)
-        );
-    }
-
-    #[test]
     fn hidden_control_surfaces_leave_only_the_portrait_visible_and_interactive() {
         let contract = contract();
         let mut surface = extreme_control_surface(&contract, 640, 128, 0, 0, 52).unwrap();
@@ -2793,20 +2780,6 @@ mod tests {
             )
             .unwrap(),
             [148, 326, 604, 660]
-        );
-    }
-
-    #[test]
-    fn native_drag_completion_matches_platform_event_timing() {
-        #[cfg(windows)]
-        assert_eq!(
-            native_drag_completion(),
-            NativeDragCompletion::SynchronousMoveLoop
-        );
-        #[cfg(not(windows))]
-        assert_eq!(
-            native_drag_completion(),
-            NativeDragCompletion::DeferredWindowMoved
         );
     }
 

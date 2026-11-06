@@ -149,21 +149,6 @@ function fixture(initial = snapshot(), intercept = () => undefined) {
     control(kind, slot) { return browser.document.querySelector(`[data-slot-${kind}="${slot}"]`); } };
 }
 
-test("slot edits send only neutral references and retain injected identity", async () => {
-  const ui = fixture(); await ui.feature.initialize();
-  ui.control("model", "core:chat").value = "third-model";
-  await ui.control("model", "core:chat").fire("change");
-  assert.equal(ui.feature.isDirty(), true);
-  await ui.feature.save();
-  const [command, payload] = ui.calls.find(([command]) => command.endsWith("_save"));
-  assert.equal(command, "settings_provider_model_save");
-  assert.equal(payload.windowGeneration, 4);
-  assert.equal(payload.coreGenerationId, "generation-a");
-  assert.deepEqual(Object.keys(payload.draft), ["model_slots"]);
-  assert.deepEqual(payload.draft.model_slots["core:chat"], ref("third-model"));
-  assert.equal(ui.feature.isDirty(), false);
-});
-
 test("failed catalog and slot loads show source diagnostics instead of an unexplained empty choice", async () => {
   const initial = snapshot();
   initial.providers[0].profiles = [];
@@ -201,26 +186,6 @@ test("unavailable selections stay visible and save without silently retargeting"
   assert.match(model.options.find(option => option.value === "lost").textContent, /不可用/);
   await ui.feature.save();
   assert.deepEqual(ui.calls.find(([command]) => command.endsWith("_save"))[1].draft.model_slots["core:chat"], initial.model_slots[0].selection);
-});
-
-test("removing a saved model explains the affected use without changing or blocking its reference", async () => {
-  const ui = fixture(); await ui.feature.initialize();
-  const providers = structuredClone(snapshot().providers);
-  providers[0].profiles[0].models = [{ modelId: "manual-model" }];
-  ui.setCatalog(providers);
-  const warning = ui.document.getElementById("modelSelectionWarnings");
-  assert.equal(warning.hidden, false);
-  assert.match(warning.textContent, /Chat.*fixture-model.*Fixture/);
-  assert.equal(ui.control("model", "core:chat").value, "fixture-model");
-  assert.equal(ui.control("model", "core:vision_chat").value, "fixture-model");
-  assert.equal(ui.feature.isDirty(), false);
-  await warning.querySelector("button").fire("click");
-  assert.equal(ui.pages.at(-1), "model");
-  assert.equal(ui.document.activeElement, ui.control("model", "core:chat"));
-  await ui.feature.save();
-  assert.deepEqual(ui.calls.find(([command]) => command.endsWith("_save"))[1].draft.model_slots["core:chat"], ref());
-  ui.setCatalog(snapshot().providers);
-  assert.equal(warning.hidden, true);
 });
 
 test("a deleted draft selection can be corrected from its field without losing another slot draft", async () => {

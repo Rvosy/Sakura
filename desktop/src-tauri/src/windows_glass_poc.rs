@@ -1,12 +1,18 @@
-use std::{collections::HashSet, ffi::OsStr, sync::Mutex};
+use std::ffi::OsStr;
+#[cfg(windows)]
+use std::{collections::HashSet, sync::Mutex};
 
-use crate::character_appearance::{AppearanceValues, InputVisualEffectMode};
+#[cfg(windows)]
+use crate::character_appearance::AppearanceValues;
+use crate::character_appearance::InputVisualEffectMode;
 use crate::input_visual_effect::InputVisualEffectStatus;
+#[cfg(windows)]
 use crate::runtime_log::{RuntimeLogEvent, RuntimeLogService, Severity};
 
+#[cfg(windows)]
 pub const FORCE_FAILURE_ENV: &str = "SAKURA_WINDOWS_INPUT_GLASS_FORCE_FAILURE";
-pub const LIQUID_GLASS_POC_ENV: &str = "SAKURA_WINDOWS_LIQUID_GLASS_POC";
 
+#[cfg(windows)]
 const INPUT_CORNER_RADIUS: f64 = 28.0;
 const BASE_GAUSSIAN_STANDARD_DEVIATION: f32 = 8.0;
 const LIQUID_GLASS_NOT_IMPLEMENTED: &str = "WINDOWS_LIQUID_GLASS_NOT_IMPLEMENTED";
@@ -35,7 +41,6 @@ struct NativeRegionGeometry {
 struct NativeLayerVisibility {
     container: bool,
     gaussian: bool,
-    liquid_requested: bool,
 }
 
 fn staged_transition_endpoints(
@@ -57,7 +62,6 @@ fn native_layer_visibility(
     NativeLayerVisibility {
         container: mode != InputVisualEffectMode::Solid && has_geometry,
         gaussian: mode == InputVisualEffectMode::GaussianBlur && has_geometry,
-        liquid_requested: mode == InputVisualEffectMode::LiquidGlass && has_geometry,
     }
 }
 
@@ -107,6 +111,7 @@ fn enabled_value(value: Option<&OsStr>) -> bool {
     })
 }
 
+#[cfg(windows)]
 pub struct WindowsInputGlassState {
     status: Mutex<InputVisualEffectStatus>,
     #[cfg(windows)]
@@ -116,6 +121,7 @@ pub struct WindowsInputGlassState {
     reported_codes: Mutex<HashSet<&'static str>>,
 }
 
+#[cfg(windows)]
 impl WindowsInputGlassState {
     pub fn from_environment(runtime_log: RuntimeLogService) -> Self {
         Self {
@@ -160,11 +166,6 @@ impl WindowsInputGlassState {
             if windows_version::OsVersion::current().build < 22000 {
                 self.set_status(InputVisualEffectStatus::unavailable());
                 return;
-            }
-            if enabled_value(std::env::var_os(LIQUID_GLASS_POC_ENV).as_deref()) {
-                eprintln!(
-                    "[windows-input-glass] LIQUID_GLASS_UNSAFE_BACKEND_RETIRED: ignoring legacy PoC switch"
-                );
             }
             match NativeGlassLayer::install(window) {
                 Ok(layer) => match self.layer.lock() {
@@ -396,8 +397,6 @@ struct NativeGlassLayer {
     input_region: NativeGlassRegion,
     primary_overlay_brush: windows::UI::Composition::CompositionColorBrush,
     theme_tint_brush: windows::UI::Composition::CompositionColorBrush,
-    liquid: Option<crate::windows_liquid_glass_native::SinglePipelineController>,
-    liquid_install_error: Option<&'static str>,
     latest_surface: Mutex<Option<(crate::window_geometry::ControlSurfaceLayout, [u32; 4], f64)>>,
     requested_mode: Mutex<InputVisualEffectMode>,
     input_presented: Mutex<bool>,
@@ -810,10 +809,6 @@ impl NativeGlassLayer {
             &theme_tint_brush,
         )
         .map_err(|error| NativeGlassError::at("GLASS_INPUT_REGION_CREATE_FAILED", error))?;
-        // The Windows liquid pipeline is intentionally not installed until the product
-        // implementation is complete. Existing liquid preferences resolve to solid below.
-        let liquid = None;
-        let liquid_install_error = Some(LIQUID_GLASS_NOT_IMPLEMENTED);
         root.Children()
             .and_then(|children| children.InsertAtTop(&input_region.container))
             .map_err(|error| NativeGlassError::at("GLASS_REGION_INSERT_FAILED", error))?;
@@ -833,8 +828,6 @@ impl NativeGlassLayer {
             input_region,
             primary_overlay_brush,
             theme_tint_brush,
-            liquid,
-            liquid_install_error,
             latest_surface: Mutex::new(None),
             requested_mode: Mutex::new(InputVisualEffectMode::Solid),
             input_presented: Mutex::new(true),
@@ -928,15 +921,7 @@ impl NativeGlassLayer {
                 B: bubble[2],
             })
             .map_err(|error| NativeGlassError::at("GLASS_THEME_TINT_UPDATE_FAILED", error))?;
-        if let Some(liquid) = self.liquid.as_ref() {
-            if let Err(error) = liquid.update_tint([255, 255, 255], 0.0) {
-                eprintln!(
-                    "[windows-input-glass] {}: {}; liquid tint update skipped",
-                    error.code, error.detail
-                );
-            }
-        }
-        let (requested_mode, mut liquid_error) =
+        let (requested_mode, error_code) =
             resolve_windows_requested_mode(values.visual_effect_mode);
         let has_geometry = self
             .latest_surface
@@ -956,20 +941,6 @@ impl NativeGlassLayer {
                 format!("{}: {error}", "presentation lock"),
             )
         })?;
-        if let Some(liquid) = self.liquid.as_ref() {
-            if let Err(error) = liquid.set_requested_visible(visibility.liquid_requested) {
-                eprintln!(
-                    "[windows-input-glass] {}: {}; liquid unavailable, no substitute effect enabled",
-                    error.code, error.detail
-                );
-                liquid_error = Some(error.code);
-            }
-        } else if visibility.liquid_requested && liquid_error.is_none() {
-            liquid_error = Some(
-                self.liquid_install_error
-                    .unwrap_or("LIQUID_GLASS_BACKEND_UNAVAILABLE"),
-            );
-        }
         *self.requested_mode.lock().map_err(|error| {
             NativeGlassError::at(
                 "GLASS_MODE_STATE_UNAVAILABLE",
@@ -990,7 +961,7 @@ impl NativeGlassLayer {
             .map_err(|error| NativeGlassError::at("GLASS_TINT_PRESENTATION_FAILED", error))?;
         Ok(NativeAppearanceOutcome {
             effective_mode: requested_mode,
-            error_code: liquid_error,
+            error_code,
         })
     }
 
@@ -1003,9 +974,6 @@ impl NativeGlassLayer {
     ) -> Result<(), NativeGlassError> {
         let scale = application.scale_factor * application.content_scale;
         if !surface.input_visible {
-            if let Some(liquid) = self.liquid.as_ref() {
-                let _ = liquid.set_requested_visible(false);
-            }
             self.input_region
                 .animate_blur_presented(&self.compositor, true, false, 0)
                 .map_err(|error| NativeGlassError::at("GLASS_BLUR_PRESENTATION_FAILED", error))?;
@@ -1048,28 +1016,6 @@ impl NativeGlassLayer {
                 transition,
             )
             .map_err(|error| NativeGlassError::at("GLASS_REGION_LAYOUT_FAILED", error))?;
-        if let Some(liquid) = self.liquid.as_ref() {
-            let liquid_geometry = crate::windows_liquid_glass::sampling_geometry(
-                surface.input_rect,
-                [active_x, active_y],
-                [
-                    application.physical_placement.x,
-                    application.physical_placement.y,
-                ],
-                [application.work_area.x, application.work_area.y],
-                [application.work_area.width, application.work_area.height],
-                application.scale_factor,
-                application.content_scale,
-            )
-            .map_err(|error| NativeGlassError::at("LIQUID_GLASS_GEOMETRY_FAILED", error))?;
-            if let Err(error) = liquid.update_geometry(liquid_geometry) {
-                eprintln!(
-                    "[windows-input-glass] {}: {}; liquid fused, no substitute effect enabled",
-                    error.code, error.detail
-                );
-                let _ = liquid.set_requested_visible(false);
-            }
-        }
         *self.latest_surface.lock().map_err(|error| {
             NativeGlassError::at(
                 "GLASS_LAYOUT_STATE_UNAVAILABLE",
@@ -1364,11 +1310,11 @@ mod tests {
             Some("GLASS_TEST")
         );
         let limited = InputVisualEffectStatus::limited(
-            InputVisualEffectMode::LiquidGlass,
-            "LIQUID_GLASS_CAPTURE_ISOLATION_UNAVAILABLE",
+            InputVisualEffectMode::Solid,
+            LIQUID_GLASS_NOT_IMPLEMENTED,
         );
         assert_eq!(limited.outcome, "limited");
-        assert_eq!(limited.effective_mode, InputVisualEffectMode::LiquidGlass);
+        assert_eq!(limited.effective_mode, InputVisualEffectMode::Solid);
         assert!(limited.initialized);
     }
 
@@ -1386,7 +1332,6 @@ mod tests {
         let gaussian = native_layer_visibility(InputVisualEffectMode::GaussianBlur, true);
         assert!(gaussian.container);
         assert!(gaussian.gaussian);
-        assert!(!gaussian.liquid_requested);
     }
 
     #[test]
@@ -1399,7 +1344,6 @@ mod tests {
             let visibility = native_layer_visibility(mode, false);
             assert!(!visibility.container, "{mode:?}");
             assert!(!visibility.gaussian, "{mode:?}");
-            assert!(!visibility.liquid_requested, "{mode:?}");
         }
     }
 

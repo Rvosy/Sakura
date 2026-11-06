@@ -21,6 +21,7 @@ export function browserFixture() {
       this.className = "";
       this.value = "";
       this.disabled = false;
+      this.inert = false;
       this.hidden = false;
       this.style = { setProperty() {}, removeProperty() {} };
       this.classList = {
@@ -40,7 +41,7 @@ export function browserFixture() {
     showModal() { this.open = true; }
     close() { this.open = false; }
     scrollIntoView(options) { this.revealed = options.block; }
-    click() { return this.fire("click"); }
+    async click() { if (!this.disabled) await this.fire("click"); }
     closest(selector) { return this.matches(selector) ? this : this.parentElement?.closest(selector) || null; }
     prepend(...children) { for (const child of children.reverse()) this.insertBefore(child, this.firstChild); }
     replaceWith(child) { const parent = this.parentElement; if (parent) { parent.insertBefore(child, this); this.remove(); } }
@@ -134,7 +135,7 @@ export function browserFixture() {
     const group = new Element("div"); const label = new Element("h3"); label.id = `navgrp-${name}`; group.append(label); shell.append(group);
   }
   for (const id of [
-    "pluginTotal", "pluginRoleTabs", "pluginSearch", "pluginInstallMenuRoot", "pluginInstallMenuButton", "pluginInstallMenu",
+    "pluginRoleTabs", "pluginSearch", "pluginInstallMenuRoot", "pluginInstallMenuButton", "pluginInstallMenu",
     "pluginInstallZipButton", "pluginInstallFolderButton", "pluginList", "pluginDetail",
     "aboutComponentsSummary", "aboutComponentsRefresh", "aboutComponentsState", "aboutComponentsList",
     "memorySurface", "screenAwarenessSurface", "page-memory", "page-plugins", "page-about",

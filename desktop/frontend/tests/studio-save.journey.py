@@ -16,12 +16,11 @@ import uuid
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 from playwright.async_api import async_playwright, expect
-from app.agent.tools import ToolRegistry
+from app.plugin_sdk.sakura_tools import ToolRegistry
 from app.core_host.character_studio import CharacterStudioBoundary, CHARACTER_STUDIO_REQUEST_NAMES
 from app.core_host.router import ConcurrentHostRouter
 from app.core_host.plugin_application import PluginApplicationHost
 from app.storage.runtime_roots import RuntimeRoots
-
 
 class BrowserRouter:
     def __init__(self, boundary):
@@ -57,7 +56,6 @@ class BrowserRouter:
         self.thread.join(5)
         assert not self.thread.is_alive()
         assert self.router.fatal_error is None
-
 
 async def run():
     previews = {}
@@ -255,7 +253,6 @@ async def run():
                     output = ROOT / "temp/visual-ui"
                     output.mkdir(parents=True, exist_ok=True)
                     await page.screenshot(path=str(output / "studio-saved.png"))
-                    assert await page.evaluate("document.adoptedStyleSheets.length") == 1, await page.evaluate("document.adoptedStyleSheets.length")
                     assert not await page.evaluate("window.cspViolations")
                     assert not bridge.errors, bridge.errors
                     assert not errors, errors
@@ -271,6 +268,5 @@ async def run():
     finally:
         server.shutdown()
         server.server_close()
-
 
 if __name__ == "__main__": asyncio.run(run())

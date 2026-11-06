@@ -9,75 +9,6 @@ use crate::{
     },
 };
 
-fn validate_settings_save_request(
-    plugin_id: &str,
-    section_id: &str,
-    values: &Value,
-) -> Result<(), String> {
-    if !valid_identifier_text(plugin_id, 64)
-        || !valid_identifier_text(section_id, 64)
-        || !values.is_object()
-    {
-        return Err("PLUGIN_SETTINGS_SAVE_REQUEST_INVALID".to_string());
-    }
-    Ok(())
-}
-
-fn validate_enabled_request(install_id: &str) -> Result<(), String> {
-    if !valid_install_id(Some(&Value::String(install_id.to_string()))) {
-        return Err("PLUGIN_ENABLED_REQUEST_INVALID".to_string());
-    }
-    Ok(())
-}
-
-fn validate_collection_request(
-    operation: &str,
-    plugin_id: &str,
-    section_id: &str,
-    collection_id: &str,
-    payload: &Value,
-) -> Result<(), String> {
-    if ![plugin_id, section_id, collection_id]
-        .iter()
-        .all(|value| valid_identifier_text(value, 64))
-    {
-        return Err("PLUGIN_COLLECTION_REQUEST_INVALID".to_string());
-    }
-    let valid =
-        matches!(operation, "query" | "create" | "update" | "delete") && payload.is_object();
-    if valid {
-        Ok(())
-    } else {
-        Err("PLUGIN_COLLECTION_REQUEST_INVALID".to_string())
-    }
-}
-
-// Core owns plugin display semantics. The Shell checks the transport shape and
-// identities used by commands; it does not reinterpret labels, fields or values.
-fn valid_install_id(value: Option<&Value>) -> bool {
-    value.and_then(Value::as_str).is_some_and(|text| {
-        let Some(directory) = text
-            .strip_prefix("pi_user_")
-            .or_else(|| text.strip_prefix("pi_bundled_"))
-        else {
-            return false;
-        };
-        (2..=2048).contains(&directory.len())
-            && directory.len() % 2 == 0
-            && directory
-                .bytes()
-                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
-    })
-}
-
-fn valid_identifier_text(text: &str, maximum: usize) -> bool {
-    !text.is_empty()
-        && text.len() <= maximum
-        && text
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
-}
-
 #[tauri::command]
 pub(crate) async fn plugin_frontend_module(
     window: WebviewWindow,
@@ -148,7 +79,6 @@ pub(crate) async fn settings_plugins_save(
     lifecycle: State<'_, ShellLifecycleState>,
 ) -> Result<Value, String> {
     product_shell::validate_settings_window(&window)?;
-    validate_settings_save_request(&plugin_id, &section_id, &values)?;
     let handle = settings_core_handle(&lifecycle)?;
     assert_settings_identity(&shell, &handle, window_generation, &core_generation_id)?;
     let response = dispatch_settings_request(
@@ -174,7 +104,6 @@ pub(crate) async fn settings_plugins_enabled_set(
     lifecycle: State<'_, ShellLifecycleState>,
 ) -> Result<Value, String> {
     product_shell::validate_settings_window(&window)?;
-    validate_enabled_request(&install_id)?;
     let handle = settings_core_handle(&lifecycle)?;
     assert_settings_identity(&shell, &handle, window_generation, &core_generation_id)?;
     let response = dispatch_settings_request(
@@ -363,15 +292,6 @@ pub(crate) async fn settings_plugins_collection(
     lifecycle: State<'_, ShellLifecycleState>,
 ) -> Result<Value, String> {
     product_shell::validate_settings_window(&window)?;
-    validate_collection_request(
-        &operation,
-        &plugin_id,
-        &section_id,
-        &collection_id,
-        &payload,
-    )?;
-    let handle = settings_core_handle(&lifecycle)?;
-    assert_settings_identity(&shell, &handle, window_generation, &core_generation_id)?;
     let mut request_payload = payload
         .as_object()
         .cloned()
@@ -386,6 +306,8 @@ pub(crate) async fn settings_plugins_collection(
         "delete" => "plugins.collection.delete",
         _ => return Err("PLUGIN_COLLECTION_REQUEST_INVALID".to_string()),
     };
+    let handle = settings_core_handle(&lifecycle)?;
+    assert_settings_identity(&shell, &handle, window_generation, &core_generation_id)?;
     let response = dispatch_settings_request(
         handle.clone(),
         None,

@@ -38,8 +38,7 @@ export function createPluginMarketplace({ document, host, notify, showError = ({
   let batch = null;
   const tasks = new Map(), documents = new Map(), listeners = [];
   const documentKey = p => { const version = recommended(p) || p.versions.find(v => v.package && !v.yanked); return JSON.stringify([p.id, p.repository, version?.number, version?.commit]); };
-  const mark = p => `<span class="plugin-mark ${["blue", "pink", "gold", "green", "violet"].includes(p.color) ? p.color : "blue"}">${icon(p.icon || "puzzle")}</span>`;
-  const example = p => p.example ? '<span class="example-label">构想示例</span>' : "";
+  const mark = p => `<span class="plugin-mark">${icon(p.icon || "puzzle")}</span>`;
   function listen(target, event, callback) {
     target.addEventListener(event, callback);
     listeners.push(() => target.removeEventListener(event, callback));
@@ -74,7 +73,7 @@ export function createPluginMarketplace({ document, host, notify, showError = ({
   }
   function card(p) {
     return `<article class="market-card">
-      <div class="card-identity">${mark(p)}<div><h2 class="card-name"><button class="card-open" data-action="detail" data-id="${escape(p.id)}">${escape(p.name)}</button></h2><div class="card-author">${escape(p.author)}${example(p)}</div></div></div>
+      <div class="card-identity">${mark(p)}<div><h2 class="card-name"><button class="card-open" data-action="detail" data-id="${escape(p.id)}">${escape(p.name)}</button></h2><div class="card-author">${escape(p.author)}</div></div></div>
       <p class="card-description">${escape(p.description)}</p>
       <div class="card-meta"><span class="category-tag">${escape(p.category === "表现" ? "角色表现" : p.category)}</span></div>
       <div class="card-bottom"><span class="version-hint">${escape(versionHint(p))}${taskHint(p)}</span>${actionButton(p)}</div>
@@ -89,7 +88,6 @@ export function createPluginMarketplace({ document, host, notify, showError = ({
     const market = view === "market";
     tabs.style.setProperty("--active-tab", market ? 1 : 0);
     $("market-surface").hidden = !market;
-    if ($("pluginTotal")) $("pluginTotal").hidden = true;
     $("page-plugins").dataset.marketVisible = String(market);
     $("page-plugins").querySelector(".plugin-toolbar").hidden = market;
     $("page-plugins").querySelector(".plugin-workbench").hidden = market;
@@ -156,7 +154,6 @@ export function createPluginMarketplace({ document, host, notify, showError = ({
       : doc?.state === "loading" ? '<p class="detail-document-state" role="status">正在加载项目说明…</p>'
       : doc?.state === "failed" ? documentFailure : "";
     const description = p.description?.trim() || "";
-    const body = p.body?.trim() || "";
     const versionRow = v => `<div class="version-row"><div class="version-title"><strong>v${escape(v.number)}</strong>${v.yanked ? '<span class="version-label warning">已撤回</span>' : v.prerelease ? '<span class="version-label warning">预发布</span>' : v.compatible === false ? '<span class="version-label warning">不兼容</span>' : ""}${v.date ? `<time>${escape(v.date)}</time>` : ""}</div>${v.notes?.trim() ? `<p>${escape(v.notes)}</p>` : ""}${documentationUrl(v.releaseUrl) ? `<a href="${escape(documentationUrl(v.releaseUrl))}" data-document-link>查看发布说明</a>` : ""}${v.yanked || v.reason ? `<p>${escape(v.yanked || v.reason)}</p>` : ""}</div>`;
     const recent = next?.notes?.trim() ? next : null;
     const history = p.versions.filter(v => v !== recent && (v.notes?.trim() || v.yanked || v.reason));
@@ -178,12 +175,10 @@ export function createPluginMarketplace({ document, host, notify, showError = ({
       ? `<div class="task-state" role="status"><span class="task-label">${task.phase === "installing" ? task.reinstall ? "正在重新安装" : task.replace ? "正在替换" : task.update ? "正在准备依赖并更新" : "正在准备依赖并安装" : "正在下载"}${task.source ? ` · ${escape(task.source)}` : ""}${task.phase === "downloading" ? ` · ${Math.round(task.progress)}%` : ""}</span><div class="resource-progress" role="progressbar" aria-label="安装进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${task.progress}"><span style="width:${task.progress}%"></span></div></div>`
       : task?.state === "failed" ? `<div class="task-state task-error" role="alert">${task.installed ? "插件列表刷新失败" : "安装失败"} <button class="plain" data-task-error>查看错误详情</button></div>` : "";
     $("detail").innerHTML = `<div class="drawer-top"><span>插件详情</span><button class="icon-button" data-close aria-label="关闭插件详情">${icon("x")}</button></div>
-      <div class="drawer-scroll"><div class="drawer-identity">${mark(p)}<div><h2 id="detail-title">${escape(p.name)}</h2><div class="detail-byline">${escape([p.author, p.category === "表现" ? "角色表现" : p.category].filter(Boolean).join(" · "))}${example(p)}</div></div></div>
+      <div class="drawer-scroll"><div class="drawer-identity">${mark(p)}<div><h2 id="detail-title">${escape(p.name)}</h2><div class="detail-byline">${escape([p.author, p.category === "表现" ? "角色表现" : p.category].filter(Boolean).join(" · "))}</div></div></div>
       ${description ? `<p class="detail-summary">${escape(description)}</p>` : ""}
       ${links ? `<div class="detail-links">${links}</div>` : ""}
       ${readme}
-      ${body && body !== description ? `<section class="detail-section"><h3>介绍</h3><p>${escape(body)}</p></section>` : ""}
-      ${p.consequence?.trim() ? `<section class="detail-section"><h3>使用前需了解</h3><p>${escape(p.consequence)}</p></section>` : ""}
       ${recent ? `<section class="detail-section"><h3>最近更新</h3>${versionRow(recent)}</section>` : ""}
       ${history.length ? `<details class="detail-disclosure" data-disclosure="history"><summary data-history>历史版本</summary><div class="detail-section">${history.map(versionRow).join("")}</div></details>` : ""}
       <details class="detail-disclosure" data-disclosure="technical"><summary data-technical>技术信息</summary><dl class="detail-technical"><div><dt>插件标识</dt><dd><code>${escape(p.id)}</code></dd></div>${apiVersion?.api != null ? `<div><dt>v${escape(apiVersion.number)} 接口</dt><dd>Plugin API ${escape(apiVersion.api)}</dd></div>` : ""}${next?.size ? `<div><dt>下载大小</dt><dd>${escape(next.size)}</dd></div>` : ""}</dl></details></div>

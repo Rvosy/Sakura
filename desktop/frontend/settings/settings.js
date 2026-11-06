@@ -11,6 +11,10 @@ import {
 import {
   drawHueSurface,
   drawSaturationValueSurface,
+  hexToRgb,
+  hsvToRgb,
+  rgbToHex,
+  rgbToHsv,
 } from "./theme-color-picker.js";
 import {
   applyThemeTokens,
@@ -151,7 +155,6 @@ let runtimeVoiceController = null;
 let runtimeAsrController = null;
 let runtimeAutostartController = null;
 let firstRunGuideController = null;
-let runtimeCapabilityManifest = null;
 let runtimeVisualEffectModes = Object.freeze([
   Object.freeze({ id: "solid", label: "纯色块", disabled: false, reason: "" }),
   Object.freeze({ id: "gaussian_blur", label: "高斯模糊", disabled: false, reason: "" }),
@@ -669,78 +672,6 @@ function themeFieldLabel(id) {
 function themeFieldValue(id) {
   const input = themeFieldInput(id);
   return normalizeColorText(input?.value, request.theme_defaults[id]);
-}
-
-function hexToRgb(hex) {
-  const value = normalizeColorText(hex, "#000000").slice(1);
-  return {
-    r: Number.parseInt(value.slice(0, 2), 16),
-    g: Number.parseInt(value.slice(2, 4), 16),
-    b: Number.parseInt(value.slice(4, 6), 16),
-  };
-}
-
-function componentToHex(value) {
-  return Math.round(Math.min(255, Math.max(0, value))).toString(16).padStart(2, "0");
-}
-
-function rgbToHex({ r, g, b }) {
-  return `#${componentToHex(r)}${componentToHex(g)}${componentToHex(b)}`;
-}
-
-function rgbToHsv({ r, g, b }) {
-  const red = r / 255;
-  const green = g / 255;
-  const blue = b / 255;
-  const max = Math.max(red, green, blue);
-  const min = Math.min(red, green, blue);
-  const delta = max - min;
-  let h = 0;
-  if (delta !== 0) {
-    if (max === red) {
-      h = ((green - blue) / delta) % 6;
-    } else if (max === green) {
-      h = (blue - red) / delta + 2;
-    } else {
-      h = (red - green) / delta + 4;
-    }
-    h *= 60;
-    if (h < 0) {
-      h += 360;
-    }
-  }
-  return {
-    h,
-    s: max === 0 ? 0 : delta / max,
-    v: max,
-  };
-}
-
-function hsvToRgb({ h, s, v }) {
-  const chroma = v * s;
-  const x = chroma * (1 - Math.abs(((h / 60) % 2) - 1));
-  const m = v - chroma;
-  let red = 0;
-  let green = 0;
-  let blue = 0;
-  if (h < 60) {
-    red = chroma; green = x;
-  } else if (h < 120) {
-    red = x; green = chroma;
-  } else if (h < 180) {
-    green = chroma; blue = x;
-  } else if (h < 240) {
-    green = x; blue = chroma;
-  } else if (h < 300) {
-    red = x; blue = chroma;
-  } else {
-    red = chroma; blue = x;
-  }
-  return {
-    r: (red + m) * 255,
-    g: (green + m) * 255,
-    b: (blue + m) * 255,
-  };
 }
 
 const pageMeta = {
@@ -1424,11 +1355,6 @@ function setThemeValues(theme, options = {}) {
   update();
 }
 
-function runtimeFeatureAvailable(feature) {
-  return Object.values(runtimeCapabilityManifest?.sections || {})
-    .some((section) => section?.features?.[feature] === "available");
-}
-
 // 布局滑块的输出显示；预览和保存由 Appearance controller 处理。
 const layoutSliders = [
   "portraitScale",
@@ -1833,7 +1759,6 @@ async function startSettingsFrontend() {
     inputVisualEffectModes,
   } = await import("./capability-shell.js");
   manifest = applyCapabilityManifest(document, manifest);
-  runtimeCapabilityManifest = manifest;
   runtimeVisualEffectModes = inputVisualEffectModes(manifest);
   const openVoicePlugin = (pluginId) => {
     const plugin = runtimePluginController?.installedPlugins().find(item => item.pluginId === pluginId);

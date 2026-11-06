@@ -25,7 +25,7 @@ function makePlan(mapping = {}) {
     const isExisting = scene === 'duplicate' || ['Haru','NaviCurrent'].includes(target);
     return { sourceCharacterId:row.id, targetCharacterId:target, displayName:row.id, packageStatus:isExisting ? 'existing' : 'new', canImport:true, requiresMapping:scene !== 'duplicate' && row.id === 'N.A.V.I.' && !mapping[row.id] };
   });
-  return { schemaVersion:1, planToken:crypto.randomUUID().replaceAll('-',''), selectionId:'demo-selection', sourceLabel:'Sakura-0.9.9', characters, totals, packages, packagesNew:packages.filter(p=>p.packageStatus==='new').length, targetCharacters:[{characterId:'NaviCurrent',displayName:'N.A.V.I.'},{characterId:'Haru',displayName:'Haru'}], packageIssues:[], conflicts:[], charactersTruncated:false, blocked:false, requiresMapping:packages.some(p=>p.requiresMapping), requiresConflictConfirmation:scene==='conflict', reassociatedRecords:0 };
+  return { schemaVersion:1, planToken:crypto.randomUUID().replaceAll('-',''), selectionId:'demo-selection', sourceLabel:'Sakura-0.9.9', characters, totals, packages, packagesNew:packages.filter(p=>p.packageStatus==='new').length, targetCharacters:[{characterId:'NaviCurrent',displayName:'N.A.V.I.'},{characterId:'Haru',displayName:'Haru'}], packageIssues:[], conflicts:[], charactersTruncated:false, requiresMapping:packages.some(p=>p.requiresMapping), requiresConflictConfirmation:scene==='conflict', reassociatedRecords:0 };
 }
 const client = {
   async legacyRoleDataImportChoose(selectionId, mapping) {

@@ -96,8 +96,6 @@ function activitySnapshot(state) {
   return current;
 }
 
-
-
 test("WP-4-04 plugin enable save uses the applied snapshot while the Core is rebinding", async () => {
   const calls = [];
   const applied = [];
@@ -140,27 +138,6 @@ test("WP-4-04 plugin enable save uses the applied snapshot while the Core is reb
   assert.deepEqual(controller.draft(), { enabledById: {}, settingsById: {} });
   assert.equal(applied.length, 2);
   assert.deepEqual(applied[1][1], { preserveDraft: false, draft: null, keepGlobalCollectionDrafts: false });
-});
-
-test("unchanged plugin polling does not reapply the snapshot or repaint settings", async () => {
-  let applied = 0;
-  let next = snapshot();
-  const controller = createPluginController({
-    invoke: async () => next,
-    applySnapshot: () => { applied += 1; },
-    readDraft: () => ({ enabledById: {}, settingsById: {} }),
-    onDirty: () => {},
-  });
-  controller.initialize(snapshot());
-
-  await controller.refreshCurrent();
-  assert.equal(applied, 1);
-
-  next = snapshot();
-  next.state = "active";
-  next.reasonCode = "ACTIVE";
-  await controller.refreshCurrent();
-  assert.equal(applied, 2);
 });
 
 function enabledResult(next, applicationState = "applied", applicationReasonCode = "READY") {
@@ -254,7 +231,6 @@ test("a delayed poll cannot overwrite a saved enable result", async () => {
   assert.equal(controller.snapshot().plugins[0].enabled, false);
 });
 
-
 test("concurrent plugin polling shares one settings read", async () => {
   let calls = 0;
   let resolveRead;
@@ -302,7 +278,6 @@ test("failed plugin polling rejects once and a later poll can recover", async ()
   assert.equal(calls, 2);
   assert.equal(applied, 2);
 });
-
 
 test("Local plugin install and uninstall preserve the draft and validate identity", async () => {
   const calls = [];
@@ -460,9 +435,6 @@ test("WP-4-04 failed plugin save preserves the page draft", async () => {
   assert.deepEqual(controller.draft(), draft);
 });
 
-
-
-
 test("Plugin API v3 applied settings refresh without changing the Core generation", async () => {
   const calls = [];
   const active = snapshot();
@@ -536,7 +508,6 @@ test("plugin import forwards native picker metadata and excludes readonly values
   assert.deepEqual(calls[0][1].filePicker, picker);
   assert.deepEqual(calls[0][1].values, { label: "" });
 });
-
 
 test("Local package update keeps the enabled plugin available", async () => {
   const current = snapshot();

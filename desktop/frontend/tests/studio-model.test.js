@@ -1,19 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import {
-  characterOptionGroup,
-  characterOptionLabel,
-  hasUnsavedEditorChanges,
-  isValidCharacterId,
-  normalizeColorText,
-  operationCancelState,
-  runtimeReloadState,
-  selectBootstrapCharacter,
-  uniqueReplyTones,
-  validateStudioResponse,
-  visualValidationIssue,
-} from "../studio/studio-model.js";
+import { isValidCharacterId, validateStudioResponse, visualValidationIssue } from "../studio/studio-model.js";
 
 test("visual validation preserves resource and plugin field through the native error envelope", () => {
   const message = "形态「立绘」：标签无效|请修改。\n诊断详情";
@@ -23,52 +11,6 @@ test("visual validation preserves resource and plugin field through the native e
   assert.equal(visualValidationIssue("VISUAL_RESOURCE_INVALID|character.studio"), null);
   assert.equal(visualValidationIssue("VISUAL_RESOURCE_INVALID|character.studio|theme.primary|invalid"), null);
   assert.equal(visualValidationIssue("VISUAL_RESOURCE_INVALID|other|/visuals/resources/portrait|invalid"), null);
-});
-
-test("normalizes valid colors and preserves the requested fallback", () => {
-  assert.equal(normalizeColorText("A1B2C3", "#000000"), "#a1b2c3");
-  assert.equal(normalizeColorText("not-a-color", "#123456"), "#123456");
-});
-
-test("separates published characters from workspace drafts", () => {
-  assert.deepEqual(characterOptionGroup({ is_installed: true }), {
-    id: "published",
-    label: "角色列表",
-    sourceLabel: "已添加",
-  });
-  assert.equal(characterOptionGroup({ is_installed: false }).id, "workspace");
-  assert.equal(characterOptionLabel({ id: "sakura", display_name: "Sakura" }), "Sakura");
-  assert.equal(characterOptionLabel({ id: "draft" }), "draft");
-});
-
-test("selects the requested bootstrap character and falls back deterministically", () => {
-  const characters = [{ id: "sakura" }, { id: "navi" }];
-  assert.equal(selectBootstrapCharacter(characters, "navi"), "navi");
-  assert.equal(selectBootstrapCharacter(characters, "missing"), "sakura");
-  assert.equal(selectBootstrapCharacter([], "missing"), "");
-});
-
-test("keeps edits made while an autosave request is in flight dirty", () => {
-  assert.equal(hasUnsavedEditorChanges("saved-a", "saved-a"), false);
-  assert.equal(hasUnsavedEditorChanges("saved-a", "edited-b"), true);
-});
-
-test("normalizes cancellation and runtime reload states", () => {
-  assert.equal(operationCancelState({ state: "finalizing" }), "finalizing");
-  assert.equal(operationCancelState({ cancelled: true }), "cancelling");
-  assert.equal(operationCancelState({ cancelled: false }), "finished");
-  assert.equal(runtimeReloadState("ready"), "ready");
-  assert.equal(runtimeReloadState("failed"), "failed");
-  assert.equal(runtimeReloadState("unexpected"), "unknown");
-});
-
-test("deduplicates non-empty reply tones without changing order", () => {
-  assert.deepEqual(uniqueReplyTones([
-    { tone: " 温柔 " },
-    { tone: "" },
-    { tone: "开心" },
-    { tone: "温柔" },
-  ]), ["温柔", "开心"]);
 });
 
 test("accepts package-safe character ids and rejects traversal aliases", () => {

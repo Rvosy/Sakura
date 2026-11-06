@@ -56,19 +56,3 @@ export function createCharacterVisualPreviewSessionController({
     isCurrent,
   });
 }
-
-export async function restoreCommittedCharacterVisual({
-  currentState,
-  resetRenderedPortrait,
-  render,
-} = {}) {
-  if (
-    typeof currentState !== "function"
-    || typeof resetRenderedPortrait !== "function"
-    || typeof render !== "function"
-  ) throw new Error("character visual restore dependencies are required");
-
-  const latestState = currentState();
-  resetRenderedPortrait();
-  return render(latestState);
-}

@@ -39,16 +39,13 @@ export function createPluginSettingsFeature({
     pluginInstallFolderButton: document.getElementById("pluginInstallFolderButton"),
     pluginList: document.getElementById("pluginList"),
     pluginDetail: document.getElementById("pluginDetail"),
-    pluginTotal: document.getElementById("pluginTotal"),
     pluginRoleTabs: document.getElementById("pluginRoleTabs"),
     aboutComponentsSummary: document.getElementById("aboutComponentsSummary"),
     aboutComponentsRefresh: document.getElementById("aboutComponentsRefresh"),
     aboutComponentsState: document.getElementById("aboutComponentsState"),
     aboutComponentsList: document.getElementById("aboutComponentsList"),
     memorySurface: document.getElementById("memorySurface"),
-    screenAwarenessSurface: document.getElementById("screenAwarenessSurface"),
     modelProviderSurface: document.getElementById("modelProviderSurface"),
-    modelSettingsSurface: document.getElementById("modelSettingsSurface"),
     pages: {
       memory: document.getElementById("page-memory"),
       plugins: document.getElementById("page-plugins"),
@@ -357,14 +354,6 @@ export function createPluginSettingsFeature({
 
 
 
-  function compactText(value, max = 110) {
-    const text = String(value || "").replace(/\s+/g, " ").trim();
-    if (text.length <= max) {
-      return text;
-    }
-    return `${text.slice(0, max - 1)}…`;
-  }
-
   function clonePlain(value) {
     return JSON.parse(JSON.stringify(value || {}));
   }
@@ -555,7 +544,6 @@ export function createPluginSettingsFeature({
       fields.pluginList.append(issue);
     }
     fields.pluginRoleTabs.textContent = '';
-    fields.pluginTotal.textContent = String(all.length);
     const roles = { all: '全部', ...pluginPresentation.pluginKinds };
     fields.pluginRoleTabs.style.setProperty('--active-tab', Object.keys(roles).indexOf(pluginState.role));
     Object.entries(roles).forEach(([key, label]) => {
@@ -1399,6 +1387,8 @@ export function createPluginSettingsFeature({
     const container = document.createElement("div");
     container.className = "plugin-settings";
     container.components = [];
+    const updates = [];
+    container.update = () => updates.forEach(update => update());
     if (!sections.length) {
       return container;
     }
@@ -1433,7 +1423,6 @@ export function createPluginSettingsFeature({
           block.append(heading);
         }
         block.append(component.element);
-        const update = component.update;
         let panel;
         if (tabbed) {
           if (!recordTabs.parentElement) container.append(recordTabs);
@@ -1456,7 +1445,7 @@ export function createPluginSettingsFeature({
           });
           recordTabs.append(tab);
         }
-        component.update = () => {
+        const update = () => {
           const values = pluginSectionValues(plugin.id, section.section_id);
           const available = !section.presentation.visibleField || Boolean(values[section.presentation.visibleField]);
           if (panel) {
@@ -1467,9 +1456,10 @@ export function createPluginSettingsFeature({
             selectRecordSection(visible.some(entry => entry.section.section_id === selectedRecordSection)
               ? selectedRecordSection : visible[0]?.section.section_id);
           } else block.hidden = !available;
-          update?.();
+          component.update?.();
         };
-        component.update();
+        updates.push(update);
+        update();
         container.append(block); return;
       }
       const block = document.createElement("section");
@@ -1636,7 +1626,6 @@ export function createPluginSettingsFeature({
     settingsUI.render(pluginView.items || []);
     renderProviderFallback();
   }
-  function renderScreenAwarenessSurface() { settingsUI.render(pluginView.items || []); }
 
   function memorySurfaceIsTransitioning() {
     const snapshot = runtimePluginController?.snapshot();
@@ -2938,7 +2927,7 @@ export function createPluginSettingsFeature({
       notify('插件状态已变化，请重新打开设置。', 'info');
       return;
     }
-    editor.general.components?.forEach(component => component.update?.());
+    editor.general.update();
     const draftHint = editor.dialog.querySelector(".plugin-draft-hint");
     if (draftHint) draftHint.hidden = !pluginSettingsSections(plugin).some(section =>
       !sectionDestination(section) && (!section.presentation?.visibleField || pluginSectionValues(plugin.id, section.section_id)[section.presentation.visibleField])
@@ -3045,7 +3034,8 @@ export function createPluginSettingsFeature({
     document.body.append(dialog);
 
     general.querySelectorAll('select').forEach(enhanceSelect);
-    general.components?.forEach(component => { component.update?.(); component.mounted?.(); });
+    general.update();
+    general.components.forEach(component => component.mounted?.());
     close.addEventListener('click', () => void editor.close()); cancel.addEventListener('click', () => void editor.close());
     dialog.addEventListener('cancel', (event) => { event.preventDefault(); void editor.close(); });
     form.addEventListener('submit', (event) => {
@@ -3132,7 +3122,7 @@ export function createPluginSettingsFeature({
       }
       if (page === "plugins" || page === "about") schedulePluginActivityRefresh();
       if (page === "memory") renderMemorySurface();
-      if (page === "interaction") renderScreenAwarenessSurface();
+      if (page === "interaction") settingsUI.render(pluginView.items || []);
       if (page === "providers" || page === "model") { renderModelSurfaces(); schedulePluginActivityRefresh(); }
     },
     clearCharacterState() {
