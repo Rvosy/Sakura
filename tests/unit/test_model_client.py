@@ -30,6 +30,44 @@ def client(service, **kwargs):
     return ModelClient(context, REF, **kwargs)
 
 
+@pytest.mark.parametrize("repair", [False, True])
+def test_existing_memory_plugin_curates_through_host_model_client(repair):
+    from plugins.optional.sakura_mem0.domain_types import ChatHistoryEntry
+    from plugins.optional.sakura_mem0.memory_curator import MemoryCurator
+
+    saved = []
+    responses = iter((["{invalid"] if repair else []) + [
+        '{"operations":[{"op":"add","content":"用户喜欢樱花",'
+        '"layer":"semantic","category":"preference","confidence":0.95}]}'
+    ])
+
+    def action(method, args):
+        if method == "begin":
+            return {"operationId": args[0]["operationId"]}
+        if method == "poll":
+            return {"state": "completed", "sequence": 1, "progress": []}
+        if method == "result":
+            return {"response": {"message": {"content": next(responses)}}}
+        return {}
+
+    store = SimpleNamespace(
+        list_memories=lambda **_kwargs: [],
+        create_memory=lambda value, **_kwargs: saved.append(value),
+    )
+    model = client(Service(action))
+    try:
+        result = MemoryCurator(model, store).curate_entries([
+            ChatHistoryEntry(created_at="2026-10-14T12:00:00+08:00", role="user",
+                             content="记住我喜欢樱花", entry_id="entry-1",
+                             turn_id="turn-1", evidence_ready=True)
+        ])
+    finally:
+        model.close()
+    assert result.created == 1
+    assert saved[0]["content"] == "用户喜欢樱花"
+    assert saved[0]["source_entry_ids"] == ["entry-1"]
+
+
 def test_unknown_ack_releases_the_same_id_without_replay():
     def action(method, _args):
         if method == "begin":

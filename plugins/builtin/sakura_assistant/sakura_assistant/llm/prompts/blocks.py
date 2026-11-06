@@ -5,6 +5,7 @@ from typing import Mapping
 
 from sakura_assistant.llm.prompts.render import render_blocks
 from sakura_context import PromptBlock
+from sakura_assistant.llm.reply_schema import reply_schema
 
 
 DEFAULT_REPLY_TONES = ["中性", "不满", "害羞", "请求", "困惑", "惊讶"]
@@ -35,39 +36,7 @@ def json_only_block() -> PromptBlock:
 
 
 def segment_format_block(tones: list[str], visual: Mapping | None) -> PromptBlock:
-    if visual is None:
-        example = {"segments": [{"ja": "日文原文", "zh": "中文译文", "tone": tones[0]}]}
-        return PromptBlock(None, "JSON 格式如下：\n" + json.dumps(example, ensure_ascii=False))
-    # Embed the provider-owned payload schema, without inventing an empty payload
-    # example that would be invalid for portraits and other required-field plugins.
-    schema = {
-        "type": "object",
-        "required": ["segments"],
-        "properties": {
-            "segments": {
-                "type": "array", "minItems": 1,
-                "items": {
-                    "type": "object",
-                    "required": ["ja", "zh", "tone", "control"],
-                    "properties": {
-                        "ja": {"type": "string"},
-                        "zh": {"type": "string"},
-                        "tone": {"type": "string", "enum": tones},
-                        "control": {
-                            "type": "object",
-                            "required": ["version", "resourceId", "payload"],
-                            "additionalProperties": False,
-                            "properties": {
-                                "version": {"const": 1},
-                                "resourceId": {"const": visual["resourceId"]},
-                                "payload": visual["outputSchema"],
-                            },
-                        },
-                    },
-                },
-            },
-        },
-    }
+    schema = reply_schema(tones, visual)
     return PromptBlock(None, "回复 JSON 必须符合以下结构；这是 JSON Schema，不要把 Schema 本身作为回复：\n"
                        + json.dumps(schema, ensure_ascii=False))
 

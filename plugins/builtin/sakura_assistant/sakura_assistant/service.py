@@ -427,7 +427,7 @@ def classify_failure(error):
                 # The Provider owns protocol decoding and credential removal.
                 # A successful HTTP status does not make a malformed reply valid.
                 status = cause.status_code
-                invalid = cause.code == "MODEL_RESPONSE_INVALID"
+                invalid = cause.code in {"MODEL_RESPONSE_INVALID", "MODEL_OUTPUT_TRUNCATED", "MODEL_OUTPUT_REFUSED"}
                 return {"code": "PROVIDER_RESPONSE_INVALID" if invalid else "PROVIDER_REQUEST_FAILED",
                         "message": str(cause),
                         "retryable": not invalid and (status is None or status == 429 or status >= 500),
@@ -438,7 +438,7 @@ def classify_failure(error):
             return {"code": "PROVIDER_REQUEST_FAILED", "message": public_provider_http_message(error, status),
                     "retryable": status == 429 or status >= 500, "attributes": {"http_status": status}}
         text = str(error).lower()
-        if any(item in text for item in ("格式无法解析", "invalid json", "remained invalid", "missing", "empty response")):
-            return {"code": "PROVIDER_RESPONSE_INVALID", "message": "模型服务响应格式无效：回复结构不符合协议。", "retryable": False}
+        if any(item in text for item in ("格式无法解析", "修复后仍不符合结构", "invalid json", "remained invalid", "missing", "empty response")):
+            return {"code": "PROVIDER_RESPONSE_INVALID", "message": str(error), "retryable": False}
         return {"code": "PROVIDER_REQUEST_FAILED", "message": "模型请求失败。", "retryable": True}
     return {"code": code or "CHAT_EXECUTION_FAILED", "message": "对话处理失败。", "retryable": False}

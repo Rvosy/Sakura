@@ -32,6 +32,7 @@ from sakura_assistant.llm.api_client import (
     messages_contain_image,
 )
 from sakura_assistant.llm.chat_reply import ChatReply, parse_chat_reply, parse_chat_reply_result, sanitize_reply_tones
+from sakura_assistant.llm.reply_schema import reply_response_format
 from sakura_cancellation import CancelChecker, OperationCancelled, check_cancelled
 from sakura_assistant.diagnostics import (
     diagnostic_attributes,
@@ -360,6 +361,7 @@ class AgentRuntime:
                     "上一条 assistant 输出不是合格的 Sakura 回复 JSON。"
                     "请只把上一条内容修复为合法 JSON，不新增事实、不解释、不使用 Markdown。"
                     "完整结构遵循系统中的回复协议，保留 segments 和各段字段。"
+                    f"具体错误：{parsed.diagnostic or retry_reason}。"
                     "已绑定角色形态时，每段必须包含符合该形态格式的 control；保留已有合法控制，补齐缺失字段。"
                     "ja 字段只能写自然日语，不能包含中文。"
                     "如果 ja 中有中文，请把它的意思翻译成自然日语，不要用固定兜底句替代。"
@@ -412,7 +414,7 @@ class AgentRuntime:
                 tools=[],
                 tool_choice="none",
                 temperature=0.2,
-                structured_response=True,
+                response_format=reply_response_format(self.reply_tones, self.reply_visual, include_observation=messages_contain_image(repair_messages)),
                 runtime_context=repair_prompt_build.runtime_context,
                 trace_metadata=PromptTraceMetadata(
                     purpose="reply_repair",
@@ -464,20 +466,23 @@ class AgentRuntime:
 
         check_cancelled(cancel_checker)
         repaired = parse_chat_reply_result(repaired_turn.content)
+        invalid = repaired.needs_retry or not _reply_has_display_translation(repaired.reply)
         log_event(
             "AgentRuntime",
             "回复修复结果",
             {
                 "repair_reason": retry_reason,
-                "repair_outcome": "invalid" if repaired.needs_retry else "valid",
-                "outcome": "failed" if repaired.needs_retry else "completed",
+                "repair_outcome": "invalid" if invalid else "valid",
+                "outcome": "failed" if invalid else "completed",
+                "diagnostic": repaired.diagnostic or repaired.reason or ("缺少中文译文" if invalid else ""),
             },
             event="reply.repair.finished",
-            severity="warning" if repaired.needs_retry else "info",
+            severity="warning" if invalid else "info",
         )
-        if repaired.needs_retry:
+        if invalid:
             if self.strict_provider_errors:
-                raise ApiRequestError("Provider reply remained invalid after repair")
+                detail = repaired.diagnostic or repaired.reason or "缺少中文译文"
+                raise ApiRequestError(f"模型回复修复后仍不符合结构：{detail}")
             log_event(
                 "AgentRuntime",
                 "最终回复修复后仍不合格，使用安全兜底",
@@ -553,7 +558,7 @@ class AgentRuntime:
             tools=[],
             tool_choice="none",
             temperature=dialogue_temperature,
-            structured_response=True,
+            response_format=reply_response_format(self.reply_tones, self.reply_visual, include_observation=messages_contain_image(working_messages)),
             runtime_context=runtime_context,
             trace_metadata=trace_metadata or PromptTraceMetadata(purpose="final_reply"),
             cancel_checker=cancel_checker,
@@ -770,10 +775,7 @@ class AgentRuntime:
                     tool_choice="auto",
                     temperature=dialogue_temperature,
                     runtime_context=prompt_build.runtime_context,
-                    # Some OpenAI-compatible providers return pseudo tool-call JSON
-                    # in message.content instead of native tool_calls when
-                    # response_format=json_object is combined with tools.
-                    structured_response=not bool(tool_defs),
+                    response_format=reply_response_format(self.reply_tones, self.reply_visual, include_observation=include_visual_observation),
                     trace_metadata=PromptTraceMetadata(
                         purpose="agent_step",
                         inspection=prompt_build.inspection,

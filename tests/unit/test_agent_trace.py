@@ -84,7 +84,7 @@ def test_reply_shapes_and_effective_change_rules(tmp_path: Path) -> None:
     assert replies[0]["raw_text"] == ["普通文本回复"]
     assert replies[0]["processing"]["parse_status"] == "text"
     assert "effective_reply" not in replies[0]
-    assert replies[1]["processing"]["parse_status"] == "invalid_json"
+    assert replies[1]["processing"]["business_parse_status"] == "invalid_structure"
     assert replies[1]["processing"]["repair_requested"] is True
     assert replies[1]["effective_reply"]["segments"][0]["zh"] == "修复"
     assert replies[1]["changes"] == ["reply_repair"]
@@ -107,7 +107,8 @@ def test_trace_recognizes_fenced_json_before_business_parse(tmp_path: Path) -> N
     reply = [item for item in _documents(recorder) if item["type"] == "reply"][0]
     assert reply["processing"]["raw_json_status"] == "valid"
     assert reply["processing"]["business_parse_status"] == "valid"
-    assert reply["processing"]["fence_extracted"] is True
+    assert reply["model_output"]["segments"][0]["zh"] == "嗯。"
+    assert reply["processing"]["deterministic_repair"] is True
     assert reply["processing"]["repair_requested"] is False
 
 

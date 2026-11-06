@@ -712,3 +712,14 @@ def test_tool_prompt_does_not_advertise_unavailable_web_tools() -> None:
     prompt = runtime._build_tool_system_prompt()
     for name in ("web__web_search", "web__fetch_url"):
         assert name not in prompt
+
+
+@pytest.mark.parametrize("field", ["tone", "portrait"])
+def test_null_optional_presentation_field_keeps_valid_reply_without_repair(field):
+    client = _dummy_api_client()
+    client.complete_with_tools.return_value.content = json.dumps({"segments": [
+        {"ja": "こんにちは。", "zh": "你好。", field: None}]})
+    result = AgentRuntime(client, _dummy_system_prompt()).handle_user_message([ChatMessage(role="user", content="你好")])
+    assert result.reply.segments[0].translation == "你好。"
+    assert result.reply.segments[0].text == "こんにちは。"
+    assert client.complete_with_tools.call_count == 1

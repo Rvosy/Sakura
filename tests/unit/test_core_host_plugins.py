@@ -324,6 +324,9 @@ def test_shutdown_stops_starting_plugin_application_before_joining_initializer(
     started = threading.Event()
     stopped = threading.Event()
     calls: list[str] = []
+    failures = []
+    monkeypatch.setattr("app.core_host.assistant_adapter.report_assistant_failure",
+                        lambda error, **kwargs: failures.append(error))
 
     class Application:
         def enter(self, stage):
@@ -332,6 +335,9 @@ def test_shutdown_stops_starting_plugin_application_before_joining_initializer(
                 started.set()
                 assert stopped.wait(3)
                 calls.append("start_returned")
+                if phase == "visual":
+                    from app.core_host.visual_host import VisualHostError
+                    raise VisualHostError("VISUAL_BINDING_EXPIRED")
 
         def start_character_presentation(self):
             self.enter("visual")
@@ -365,6 +371,7 @@ def test_shutdown_stops_starting_plugin_application_before_joining_initializer(
         assert controller.published_plugin_application() is (None if phase == "visual" else application)
         controller.close()
         assert not controller._worker.is_alive()
+        assert not failures
         assert controller.published_plugin_application() is None
         controller.close()
         expected = ["visual", "assistant", "optional"][:["visual", "assistant", "optional"].index(phase) + 1]

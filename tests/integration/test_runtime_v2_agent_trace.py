@@ -12,6 +12,7 @@ from sakura_assistant.agent.trace import (
     traced_message,
 )
 from sakura_assistant.llm.api_client import ApiRequestError, DialogueSettings, AssistantModelClient
+from sakura_assistant.llm.reply_schema import reply_response_format
 from app.plugin_sdk.sakura_context import (
     ContextFragment,
     ContextFragmentDecision,
@@ -163,7 +164,7 @@ def test_final_provider_payload_and_trace_prompt_are_parallel_and_provenance_fre
                     },
                 }
             ],
-            structured_response=True,
+            response_format=reply_response_format(),
             runtime_context="当前本地时间：15:56\n用户偏好简洁回复。",
             trace_metadata=_metadata(),
         )
@@ -268,7 +269,7 @@ def test_provider_compatibility_keeps_one_semantic_trace_call(
         client.complete_with_tools(
             "system",
             _base_messages(),
-            structured_response=True,
+            response_format=reply_response_format(),
             trace_metadata=_metadata("final_reply"),
         )
     documents = _documents(recorder)

@@ -67,11 +67,13 @@ def test_provider_reply_contract_keeps_visual_controls_across_reply_paths(monkey
         schemas = [obj for obj in objects if obj.get("type") == "object" and "segments" in obj.get("properties", {})]
         assert len(schemas) == 1  # Including events: no second, conflicting reply format.
         item = schemas[0]["properties"]["segments"]["items"]
+        if "$ref" in item:
+            item = schemas[0]["$defs"][item["$ref"].rsplit("/", 1)[-1]]
         assert set(item["required"]) == {"ja", "zh", "tone", "control"}
         shape = item["properties"]["control"]
         assert set(shape["required"]) == {"version", "resourceId", "payload"}
-        assert shape["properties"]["version"] == {"const": 1}
-        assert shape["properties"]["resourceId"] == {"const": "portrait-one"}
+        assert shape["properties"]["version"]["const"] == 1
+        assert shape["properties"]["resourceId"]["const"] == "portrait-one"
         assert shape["properties"]["payload"] == visual["outputSchema"]
         assert not any("segments" in obj for obj in objects)  # No incomplete example beside the schema.
     assert reply.segments[0].text == "こんにちは。"
