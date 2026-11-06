@@ -112,6 +112,40 @@ def test_v1_v2_compatibility_time_and_atomic_validation(client):
     assert client.get("/admin/api/v2/records/errors").json()["total"] == 1
 
 
+@pytest.mark.parametrize("schema", [1, 2, 3])
+def test_released_1x_clients_can_report_their_original_installation_kind(client, schema):
+    payload = report(schema=schema, context={"installKind": "legacy_import"})
+    if schema == 1:
+        for key in ("diagnostics", "details", "fingerprintVersion"):
+            payload.pop(key)
+    elif schema == 3:
+        payload.update(fingerprintVersion=3, evidence={"diagnostic": "fixture failure"})
+
+    assert client.post(f"/v{schema}/errors", json=payload).status_code == 202
+    assert client.get("/admin/api/v2/records/errors").json()["total"] == 1
+
+
+@pytest.mark.parametrize("schema", [1, 2])
+def test_released_1x_migration_events_remain_accepted(client, schema):
+    events = ["migration.completed", "migration.failed"]
+    if schema == 2:
+        events.append("migration.recovery")
+    items = []
+    for event in events:
+        item = {
+            "installationId": "550e8400-e29b-41d4-a716-446655440000",
+            "runId": "run-1", "appVersion": "1.2.0", "platform": "windows",
+            "event": event,
+        }
+        if schema == 2:
+            item["diagnostics"] = report()["diagnostics"]
+        items.append(item)
+
+    response = client.post(f"/v{schema}/events", json={"schema": schema, "items": items})
+    assert response.status_code == 202
+    assert response.json()["accepted"] == len(events)
+
+
 def test_full_pagination_and_run_scoping(client):
     for i in range(205):
         r = report(runId="old-run" if i < 204 else "new-run")

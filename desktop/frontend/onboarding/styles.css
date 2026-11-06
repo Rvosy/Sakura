@@ -15,8 +15,6 @@
   --motion-fast: 120ms;
   --motion-state: 180ms;
   --motion-enter: 260ms;
-  --motion-complete: 420ms;
-  --motion-progress: 460ms;
   --motion-ease: cubic-bezier(0.22, 0.61, 0.36, 1);
   --motion-decelerate: cubic-bezier(0.16, 1, 0.3, 1);
   --font-system: "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", "Segoe UI", sans-serif;
@@ -67,52 +65,45 @@ button:focus-visible {
   padding: 28px;
 }
 
-.route-view {
+.welcome-view {
   width: min(440px, calc(100vw - 56px));
 }
 
-.route-view.is-leaving-forward,
-.migration-view.is-leaving-backward,
+.welcome-view.is-leaving-forward,
 .macos-open-help-view.is-leaving-backward,
-.route-view.is-entering-backward,
-.migration-view.is-entering-forward,
+.welcome-view.is-entering-backward,
 .macos-open-help-view.is-entering-forward {
   will-change: opacity, transform;
 }
 
-.route-view.is-leaving-forward {
+.welcome-view.is-leaving-forward {
   animation: view-leave-forward var(--motion-state) var(--motion-ease) both;
 }
 
-.migration-view.is-entering-forward,
 .macos-open-help-view.is-entering-forward {
   animation: view-enter-forward var(--motion-enter) var(--motion-decelerate) both;
 }
 
-.migration-view.is-leaving-backward,
 .macos-open-help-view.is-leaving-backward {
   animation: view-leave-backward var(--motion-state) var(--motion-ease) both;
 }
 
-.route-view.is-entering-backward {
+.welcome-view.is-entering-backward {
   animation: view-enter-backward var(--motion-enter) var(--motion-decelerate) both;
 }
 
-.route-view.is-entering-backward .route-card {
+.welcome-view.is-entering-backward .start-button {
   animation: none;
 }
 
-.route-cards {
-  display: grid;
-  gap: 14px;
-}
-
-.route-card {
+.start-button {
+  width: 100%;
   min-height: 80px;
   border: 1px solid var(--hairline);
   border-radius: 14px;
   padding: 0 24px;
-  background: white;
+  background: color-mix(in srgb, var(--sakura-panel-bg) 44%, white);
+  border-color: color-mix(in srgb, var(--sakura-primary) 62%, white);
   color: var(--sakura-text);
   cursor: pointer;
   text-align: left;
@@ -122,19 +113,10 @@ button:focus-visible {
     border-color var(--motion-state) var(--motion-ease),
     background-color var(--motion-state) var(--motion-ease),
     transform var(--motion-state) var(--motion-ease);
-  animation: route-card-in var(--motion-enter) var(--motion-decelerate) backwards;
+  animation: start-button-in var(--motion-enter) var(--motion-decelerate) backwards;
 }
 
-.route-card:nth-child(2) {
-  animation-delay: 55ms;
-}
-
-.route-card-primary {
-  border-color: color-mix(in srgb, var(--sakura-primary) 62%, white);
-  background: color-mix(in srgb, var(--sakura-panel-bg) 44%, white);
-}
-
-.route-card:hover {
+.start-button:hover {
   border-color: var(--sakura-primary);
   background: color-mix(in srgb, var(--sakura-panel-bg) 32%, white);
   transform: translateX(3px);
@@ -168,13 +150,10 @@ button:focus-visible {
   font-size: 12px;
 }
 
-.startup-status.is-updating,
-.source-label.is-updating,
-.migration-error.is-updating {
+.startup-status.is-updating {
   animation: status-copy-in var(--motion-state) var(--motion-decelerate) both;
 }
 
-.migration-view,
 .macos-open-help-view {
   width: min(620px, calc(100vw - 56px));
   max-height: calc(100vh - 56px);
@@ -185,14 +164,12 @@ button:focus-visible {
   background: white;
 }
 
-.migration-view h1,
 .macos-open-help-view h1 {
   margin: 0;
   font-size: 22px;
   line-height: 1.3;
 }
 
-.migration-view p,
 .macos-open-help-view p {
   margin: 12px 0 0;
   color: var(--sakura-secondary-text);
@@ -270,163 +247,6 @@ button:focus-visible {
   margin-top: 20px;
 }
 
-.source-row,
-.inspection-heading,
-.progress-copy {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 14px;
-}
-
-.source-row {
-  margin-top: 20px;
-}
-
-.source-label {
-  min-width: 0;
-  overflow: hidden;
-  color: var(--sakura-secondary-text);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.inspection,
-.migration-progress {
-  margin-top: 18px;
-  border: 1px solid var(--hairline);
-  border-radius: 12px;
-  padding: 16px;
-  background: color-mix(in srgb, var(--sakura-panel-bg) 24%, white);
-  transition:
-    border-color var(--motion-state) var(--motion-ease),
-    background-color var(--motion-state) var(--motion-ease);
-}
-
-.inspection.is-revealing,
-.migration-progress.is-revealing {
-  animation: panel-reveal var(--motion-enter) var(--motion-decelerate) both;
-}
-
-.inspection.is-revealing .domain-grid dt,
-.inspection.is-revealing .domain-grid dd {
-  animation: inspection-row-in var(--motion-state) var(--motion-decelerate) both;
-  animation-delay: calc(55ms + var(--domain-order, 0) * 28ms);
-}
-
-.inspection.is-revealing .issue-list li {
-  animation: inspection-row-in var(--motion-state) var(--motion-decelerate) both;
-  animation-delay: calc(80ms + var(--issue-order, 0) * 28ms);
-}
-
-.inspection-heading span,
-.progress-copy span {
-  color: var(--sakura-secondary-text);
-  font-size: 12px;
-}
-
-.domain-grid {
-  display: grid;
-  grid-template-columns: 1fr auto;
-  gap: 7px 18px;
-  margin: 14px 0 0;
-}
-
-.domain-grid dt,
-.domain-grid dd {
-  margin: 0;
-}
-
-.domain-grid dd {
-  color: var(--sakura-secondary-text);
-  text-align: right;
-}
-
-.issue-list {
-  margin: 14px 0 0;
-  padding-left: 20px;
-  color: var(--sakura-secondary-text);
-}
-
-.issue-list .blocking,
-.migration-error {
-  color: #b43f5e;
-}
-
-.issue-list .warning {
-  color: #80662d;
-}
-
-.issue-details {
-  margin-inline-start: 8px;
-  border: 0;
-  padding: 0;
-  background: transparent;
-  color: var(--sakura-primary);
-  font: inherit;
-  text-decoration: underline;
-  text-underline-offset: 2px;
-  cursor: pointer;
-}
-
-.migration-progress progress {
-  -webkit-appearance: none;
-  appearance: none;
-  width: 100%;
-  height: 8px;
-  overflow: hidden;
-  border: 0;
-  border-radius: 999px;
-  margin-top: 12px;
-  background: color-mix(in srgb, var(--sakura-border) 34%, white);
-  accent-color: var(--sakura-primary);
-}
-
-.migration-progress progress::-webkit-progress-bar {
-  border-radius: inherit;
-  background: color-mix(in srgb, var(--sakura-border) 34%, white);
-}
-
-.migration-progress progress::-webkit-progress-value {
-  border-radius: inherit;
-  background: var(--sakura-primary);
-  transition: width var(--motion-progress) var(--motion-decelerate);
-}
-
-.migration-progress progress::-moz-progress-bar {
-  border-radius: inherit;
-  background: var(--sakura-primary);
-  transition: width var(--motion-progress) var(--motion-decelerate);
-}
-
-.progress-copy.is-updating,
-.migration-progress > p.is-updating {
-  animation: progress-copy-in var(--motion-state) var(--motion-decelerate) both;
-}
-
-.migration-view[data-migration-state="completed"] .migration-progress {
-  border-color: color-mix(in srgb, var(--sakura-primary) 58%, var(--hairline));
-  background: color-mix(in srgb, var(--sakura-panel-bg) 34%, white);
-}
-
-.migration-progress.is-completing {
-  animation: completion-settle var(--motion-complete) var(--motion-decelerate) both;
-}
-
-.migration-progress p,
-.migration-error {
-  min-height: 1.4em;
-  margin: 8px 0 0;
-  font-size: 12px;
-}
-
-.migration-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 10px;
-  margin-top: 24px;
-}
-
 .primary-button,
 .secondary-button {
   min-height: 38px;
@@ -439,14 +259,6 @@ button:focus-visible {
     background-color var(--motion-fast) var(--motion-ease),
     color var(--motion-fast) var(--motion-ease),
     opacity var(--motion-fast) var(--motion-ease);
-}
-
-.migration-actions button.is-revealing {
-  animation: action-reveal var(--motion-enter) var(--motion-decelerate) both;
-}
-
-#migrationContinueButton.is-revealing {
-  animation-delay: 110ms;
 }
 
 .primary-button {
@@ -471,7 +283,7 @@ button:focus-visible {
   color: var(--sakura-primary);
 }
 
-@keyframes route-card-in {
+@keyframes start-button-in {
   from {
     opacity: 0.35;
     transform: translateY(8px);
@@ -510,50 +322,9 @@ button:focus-visible {
   }
 }
 
-@keyframes panel-reveal {
-  from {
-    opacity: 0;
-    transform: translateY(7px);
-  }
-}
-
-@keyframes inspection-row-in {
-  from {
-    opacity: 0;
-    transform: translateY(4px);
-  }
-}
-
-@keyframes progress-copy-in {
-  from {
-    opacity: 0.42;
-    transform: translateY(3px);
-  }
-}
-
 @keyframes status-copy-in {
   from {
     opacity: 0.42;
     transform: translateY(3px);
-  }
-}
-
-@keyframes completion-settle {
-  0% {
-    transform: scale(0.996);
-  }
-  55% {
-    border-color: var(--sakura-primary);
-    transform: scale(1.002);
-  }
-  100% {
-    transform: scale(1);
-  }
-}
-
-@keyframes action-reveal {
-  from {
-    opacity: 0;
-    transform: translateY(5px);
   }
 }

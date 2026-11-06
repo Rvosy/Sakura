@@ -132,6 +132,7 @@ class ErrorReportV2(ErrorReport):
 
 
 class EventItemV2(TelemetryEventItem):
+    # Released 1.x clients can still send migration events using this protocol.
     event: Literal[
         "app.started",
         "app.ready",

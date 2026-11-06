@@ -1,6 +1,14 @@
 {
   "schema_version": 1,
   "profiles": {
+    "first-run": {
+      "description": "验证首次启动、配置引导和已完成配置后的设置入口",
+      "cases": [
+        "first-run-lifecycle",
+        "runtime-v2-product-shell-tests",
+        "first-run-frontend-journey"
+      ]
+    },
     "usage-statistics": {
       "description": "验证本地用量累计、历史日志补入、对话计数和设置统计页",
       "cases": ["usage-statistics-python", "usage-statistics-frontend", "usage-statistics-browser"]
@@ -157,15 +165,6 @@
         "runtime-v2-character-studio-frontend-journey"
       ]
     },
-    "legacy-import": {
-      "description": "验证 0.9.x 显式迁移、paused Core、Timeline 转换、回滚和首次页交互",
-      "cases": [
-        "legacy-import-python-tests",
-        "legacy-import-rust-tests",
-        "legacy-import-rust-transaction-tests",
-        "legacy-import-frontend-behavior"
-      ]
-    },
     "remote-telemetry": {
       "description": "验证匿名统计配置、固定 DTO、隐私边界和设置页接口",
       "cases": [
@@ -200,6 +199,19 @@
     }
   },
   "cases": [
+    {
+      "id": "first-run-frontend-journey",
+      "description": "验证欢迎页启动、失败重试、首次配置引导和设置页",
+      "argv": [
+        "{python}",
+        "desktop/frontend/tests/first-run.journey.py"
+      ],
+      "timeout_seconds": 120,
+      "env": {
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "PYTHONIOENCODING": "utf-8"
+      }
+    },
     {
       "id": "usage-statistics-python",
       "description": "验证用量口径、历史去重、持久化和对话计数",
@@ -270,25 +282,7 @@
       }
     },
     {
-      "id": "legacy-import-python-tests",
-      "description": "验证 0.9.x 检查、配置/角色/Timeline/Memory 转换、脱敏和事务回滚",
-      "argv": [
-        "{python}",
-        "-m",
-        "pytest",
-        "tests/unit/test_legacy_import.py",
-        "tests/unit/test_legacy_incremental_import.py",
-        "tests/integration/test_wp_5_03_character_switch_journey.py",
-        "-q"
-      ],
-      "timeout_seconds": 180,
-      "env": {
-        "PYTHONDONTWRITEBYTECODE": "1",
-        "PYTHONIOENCODING": "utf-8"
-      }
-    },
-    {
-      "id": "legacy-import-rust-tests",
+      "id": "first-run-lifecycle",
       "description": "验证首次启动 lifecycle 保持 paused 并支持显式启动",
       "argv": [
         "cargo",
@@ -304,38 +298,6 @@
       "env": {
         "NO_COLOR": "1",
         "CARGO_TERM_COLOR": "never"
-      }
-    },
-    {
-      "id": "legacy-import-rust-transaction-tests",
-      "description": "验证迁移 deadline、进程树回收、journal 三态和不确定 finalize 的失败关闭",
-      "argv": [
-        "cargo",
-        "test",
-        "--manifest-path",
-        "desktop/src-tauri/Cargo.toml",
-        "--locked",
-        "legacy_import::tests",
-        "--",
-        "--test-threads=1"
-      ],
-      "timeout_seconds": 180,
-      "env": {
-        "NO_COLOR": "1",
-        "CARGO_TERM_COLOR": "never"
-      }
-    },
-    {
-      "id": "legacy-import-frontend-behavior",
-      "description": "验证目录检查会立即进入可见状态，并使用不确定进度",
-      "argv": [
-        "node",
-        "--test",
-        "desktop/frontend/tests/legacy-import-inspection-feedback.test.js"
-      ],
-      "timeout_seconds": 120,
-      "env": {
-        "NO_COLOR": "1"
       }
     },
     {
@@ -638,7 +600,6 @@
         "tests/unit/test_data_transfer.py",
         "tests/unit/test_assistant_host_contract.py",
         "tests/unit/test_context_host_contract.py",
-        "tests/unit/test_legacy_incremental_import.py",
         "tests/integration/test_wp_4_01_memory_capability.py",
         "tests/unit/test_fact_memory_plugin.py",
         "tests/integration/test_fact_memory_core_protocol.py",

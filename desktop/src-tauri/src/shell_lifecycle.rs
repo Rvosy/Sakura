@@ -189,7 +189,6 @@ pub struct ShellLifecyclePublication {
 #[derive(Clone)]
 enum ShellCommand {
     Start,
-    Stop,
     Retry,
     Restart,
     Shutdown,
@@ -318,25 +317,6 @@ impl ShellLifecycleHandle {
         Ok(())
     }
 
-    pub fn stop_core(&self) -> Result<(), String> {
-        self.send_stopping_command(ShellCommand::Stop)
-    }
-
-    pub fn stop_and_wait(&self, timeout: Duration) -> Result<(), String> {
-        self.stop_core()?;
-        let deadline = Instant::now() + timeout;
-        loop {
-            let publication = self.snapshot()?;
-            if publication.supervisor.state == "stopped" {
-                return Ok(());
-            }
-            if Instant::now() >= deadline {
-                return Err("LIFECYCLE_STOP_TIMEOUT".to_string());
-            }
-            thread::sleep(Duration::from_millis(20));
-        }
-    }
-
     pub fn readiness(&self) -> Result<Option<String>, String> {
         let publication = self.snapshot()?;
         if publication.supervisor.app_shutdown {
@@ -360,15 +340,6 @@ impl ShellLifecycleHandle {
             .snapshot
             .as_ref()
             .map(|snapshot| snapshot.readiness.clone()))
-    }
-
-    pub fn is_stopped(&self) -> Result<bool, String> {
-        self.publication
-            .lock()
-            .map(|publication| publication.supervisor.state == "stopped")
-            .map_err(|error| {
-                crate::runtime_log::diagnostic_error("LIFECYCLE_STATE_UNAVAILABLE", error)
-            })
     }
 
     pub fn retry(&self) -> Result<(), String> {
@@ -780,12 +751,7 @@ fn run_worker(
         if state.cleanup_blocked {
             match commands.recv() {
                 Ok(ShellCommand::Shutdown) | Err(_) => break,
-                Ok(
-                    ShellCommand::Start
-                    | ShellCommand::Stop
-                    | ShellCommand::Retry
-                    | ShellCommand::Restart,
-                ) => continue,
+                Ok(ShellCommand::Start | ShellCommand::Retry | ShellCommand::Restart) => continue,
                 #[cfg(test)]
                 Ok(ShellCommand::CrashForTest(reply)) => {
                     let _ = reply.send(Err("CORE_TEST_CLEANUP_BLOCKED".to_string()));
@@ -867,7 +833,6 @@ fn drain_chat_events(state: &mut WorkerState, events: &Sender<DesktopProjection>
 fn submit_command(state: &mut WorkerState, command: ShellCommand) -> Vec<LifecycleAction> {
     match command {
         ShellCommand::Start => state.supervisor.submit(LifecycleIntent::Start),
-        ShellCommand::Stop => state.supervisor.submit(LifecycleIntent::Stop),
         ShellCommand::Retry => state.supervisor.submit(LifecycleIntent::Retry),
         ShellCommand::Restart => state.supervisor.submit(LifecycleIntent::Restart),
         ShellCommand::Shutdown => state.supervisor.submit(LifecycleIntent::AppShutdown),
@@ -1914,7 +1879,7 @@ mod tests {
     fn paused_session_does_not_touch_core_until_explicit_start() {
         let _test_lock = crate::core_host_runtime::lifecycle_test_lock();
         let root = std::env::temp_dir().join(format!(
-            "sakura-legacy-import-paused-{}-{}",
+            "sakura-first-run-paused-{}-{}",
             std::process::id(),
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)

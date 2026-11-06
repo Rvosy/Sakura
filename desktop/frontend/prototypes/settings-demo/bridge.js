@@ -449,12 +449,6 @@ export function createBridge(win, state, hooks) {
       case "settings_storage_open_user_root":
         hooks.info?.("数据目录", "这是演示目录，不会打开或修改实际数据。");
         return null;
-      case "settings_legacy_data_import_choose":
-        hooks.info?.(
-          "导入旧数据",
-          "演示不读取旧数据；正式程序仍使用原有导入流程。",
-        );
-        return null;
       case "settings_telemetry_get":
         return telemetry();
       case "settings_telemetry_set_enabled":

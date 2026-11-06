@@ -168,28 +168,6 @@ def test_handoff_keeps_legacy_generation_defaults_and_explicit_zero(tmp_path, ge
     assert module._read(_assistant(tmp_path))["generation"] == expected
 
 
-def test_legacy_import_validation_discards_partial_handoff_before_optional_config_skip(tmp_path, monkeypatch):
-    from app.legacy_import.importer import _validate_current_settings
-    from app.legacy_import.errors import LegacyImportError
-    legacy = _legacy(tmp_path)
-    original = legacy.read_bytes()
-    module._write(_provider(tmp_path), {"custom": "keep"})
-    prior_provider = _provider(tmp_path).read_bytes()
-    write = module._write
-    def fail_assistant(path, value):
-        if path == _assistant(tmp_path):
-            raise OSError("fixture write failed")
-        write(path, value)
-    monkeypatch.setattr(module, "_write", fail_assistant)
-    with pytest.raises(LegacyImportError) as error:
-        _validate_current_settings(tmp_path)
-    assert error.value.code == "LEGACY_SETTINGS_VALIDATION_FAILED"
-    assert _provider(tmp_path).read_bytes() == prior_provider
-    assert not _assistant(tmp_path).exists()
-    assert not ModelReferenceRepository(tmp_path).path.exists()
-    assert legacy.read_bytes() == original
-
-
 def test_earlier_plugin_chat_budget_is_adopted_once_without_overwriting_clear(tmp_path):
     ModelReferenceRepository(tmp_path).save({"chat": REF, "vision_chat": EMPTY_REFERENCE})
     module._write(_provider(tmp_path), {"profiles": [{"profileId": "fixture", "models": [{"modelId": "chat-model", "contextWindowTokens": 96000}]}]})

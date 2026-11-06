@@ -1,5 +1,4 @@
 import { createErrorDialog } from "../core/error-dialog.js";
-import { openLegacyDataImport } from './legacy-data-import.js';
 import { installClickIconMotion } from "../core/icons.js";
 import { enhanceSelect, refreshSelect, closeSelects, focusSelect } from "./select-control.js";
 import {
@@ -88,8 +87,6 @@ const fields = {
   storageOpenUserRoot: document.getElementById("storageOpenUserRoot"),
   storageChooseTtsRoot: document.getElementById("storageChooseTtsRoot"),
   storageResetTtsRoot: document.getElementById("storageResetTtsRoot"),
-  legacyRoleDataImportButton: document.getElementById("legacyRoleDataImportButton"),
-  legacyRoleDataImportStatus: document.getElementById("legacyRoleDataImportStatus"),
   systemFirstRunGuideButton: document.getElementById("systemFirstRunGuideButton"),
   macosSettingsOpenSystemSettingsButton: document.getElementById("macosSettingsOpenSystemSettingsButton"),
   macosSettingsOpenAppleSupportButton: document.getElementById("macosSettingsOpenAppleSupportButton"),
@@ -813,20 +810,6 @@ async function resetTtsStorageRoot() {
   }
 }
 
-let legacyImportDialog = null;
-function importLegacyRoleData() {
-  if (legacyImportDialog?.dialog.isConnected) return;
-  legacyImportDialog = openLegacyDataImport({
-    client: rootSettingsClient,
-    setBusy: setSubmissionBusy,
-    onError: setError,
-    onComplete: async () => {
-      fields.legacyRoleDataImportStatus.textContent = "迁移完成。";
-      await runtimeCharacterFeature?.refreshCatalog({});
-    },
-  });
-}
-
 function applyUpdateSnapshot(snapshot) {
   latestUpdateSnapshot = snapshot;
   fields.updateFeedback.hidden = !snapshot.available;
@@ -1530,7 +1513,6 @@ fields.storageOpenUserRoot.addEventListener("click", () => {
 });
 fields.storageChooseTtsRoot.addEventListener("click", chooseTtsStorageRoot);
 fields.storageResetTtsRoot.addEventListener("click", resetTtsStorageRoot);
-fields.legacyRoleDataImportButton.addEventListener("click", importLegacyRoleData);
 fields.aboutWebsiteButton.addEventListener("click", () => {
   rootSettingsClient.aboutOpenWebsite().catch((error) => setError(error));
 });
@@ -1969,10 +1951,6 @@ async function startSettingsFrontend() {
   }
   if (featureStatus(manifest, "telemetry.anonymous_statistics") === "available") {
     await initializeRuntimeSettingsSection(refreshTelemetrySettings);
-  }
-  fields.legacyRoleDataImportButton.disabled = featureStatus(manifest, "storage.legacy_role_data_import") !== "available";
-  if (fields.legacyRoleDataImportButton.disabled) {
-    fields.legacyRoleDataImportStatus.textContent = "当前运行环境不支持旧数据导入。";
   }
   if (manifest.availableSections.includes("about")) {
     await initializeRuntimeSettingsSection(refreshAboutSettings);

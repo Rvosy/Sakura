@@ -14,7 +14,6 @@ macOS / Linux 改用 `runtime/bin/python`。打开对应地址：
 |---|---|
 | `/prototypes/asr/` | 录音状态、模拟识别与草稿回填 |
 | `/prototypes/icon-motion/` | 输入栏、发送和语音状态的动效 |
-| `/prototypes/legacy-data-import/` | 目录选择、冲突确认和迁移结果 |
 | `/prototypes/marketplace/` | 插件目录、详情、模拟下载与安装 |
 | `/prototypes/plugins/` | 插件列表、筛选、设置和资源状态 |
 | `/prototypes/settings-demo/` | 角色显示方式与设置草稿 |

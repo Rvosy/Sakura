@@ -1972,7 +1972,6 @@ fn viewer_problem_description(
         "screen.capture.failed" => "这次请求没有附带屏幕画面，文字内容仍会正常发送。",
         "updater.signature.failed" => "更新包没有通过安全校验，本次更新已经停止。",
         value if value.starts_with("updater.") => "本次更新没有完成，当前版本仍可继续使用。",
-        value if value.starts_with("legacy_import.") => "旧版本数据没有全部迁移完成。",
         value if value.starts_with("tts.") => "语音功能没有正常完成，文字回复仍可使用。",
         value if value.starts_with("appearance.") || value.starts_with("ui.") => {
             "界面效果已改用兼容模式。"
@@ -2477,8 +2476,6 @@ fn business_message(event: &str) -> Option<&'static str> {
         "first_run.core_start.failed" => "首次配置 Core 启动失败",
         "first_run.configuration.completed" => "首次配置已完成",
         "first_run.configuration.failed" => "首次配置保存失败",
-        "legacy_import.recovery.completed" => "上次中断的旧版本迁移已回滚",
-        "legacy_import.recovery.failed" => "旧版本迁移恢复失败",
         "updater.check.started" => "正在检查更新",
         "updater.check.completed" => "更新检查完成",
         "updater.check.failed" => "更新检查失败",
@@ -2489,60 +2486,6 @@ fn business_message(event: &str) -> Option<&'static str> {
         "updater.install.started" => "正在安装更新",
         "updater.install.completed" => "更新安装已启动",
         "updater.install.failed" => "更新安装失败",
-        value if value.starts_with("legacy_import.") => legacy_import_business_message(value)?,
-        _ => return None,
-    })
-}
-
-fn legacy_import_business_message(event: &str) -> Option<&'static str> {
-    Some(match event {
-        "legacy_import.started" => "旧版本迁移开始",
-        "legacy_import.staged" => "旧版本迁移已提交，等待 Core 校验",
-        "legacy_import.failed" => "旧版本迁移失败",
-        "legacy_import.worker_started" => "旧版本迁移任务已启动",
-        "legacy_import.progress_received" => "旧版本迁移进度已更新",
-        "legacy_import.core_validation_entered" => "旧版本迁移进入 Core 校验",
-        "legacy_import.core_start_submitted" => "迁移后的 Core 启动已提交",
-        "legacy_import.core_start_failed" => "迁移后的 Core 启动失败",
-        "legacy_import.core_ready" => "迁移后的 Core 已就绪",
-        "legacy_import.core_setup_required" => "迁移后仍需完成首次配置",
-        "legacy_import.core_validation_failed" => "迁移后的 Core 校验失败",
-        "legacy_import.core_readiness_changed" => "迁移后的 Core 就绪状态已变化",
-        "legacy_import.python_started" => "迁移 Python 子进程已启动",
-        "legacy_import.stdout_read_failed" => "读取迁移 Python 输出失败",
-        "legacy_import.stdout_json_invalid" => "迁移 Python 输出格式无效",
-        "legacy_import.result_received" => "桌面端收到迁移结果",
-        "legacy_import.error_received" => "桌面端收到迁移错误",
-        "legacy_import.stdout_closed" => "迁移 Python 输出流已关闭",
-        "legacy_import.python_exited" => "迁移 Python 子进程已退出",
-        "legacy_import.result_invalid" => "迁移结果无效",
-        "legacy_import.result_recovered_from_journal" => "迁移结果已从事务状态恢复",
-        "legacy_import.memory_copy_started" => "开始复制旧版本长期记忆",
-        "legacy_import.memory_snapshot_started" => "开始创建长期记忆 SQLite 快照",
-        "legacy_import.memory_snapshot_source_opened" => "旧版本长期记忆数据库已打开",
-        "legacy_import.memory_snapshot_completed" => "长期记忆 SQLite 快照创建完成",
-        "legacy_import.memory_snapshot_failed" => "长期记忆 SQLite 快照创建失败",
-        "legacy_import.memory_completed" => "旧版本长期记忆迁移完成",
-        "legacy_import.memory_model_reused" => "目标中的记忆模型已通过校验",
-        "legacy_import.memory_model_copied" => "随旧版本迁移的记忆模型已通过校验",
-        "legacy_import.memory_model_prepared" => "当前记忆模型已写入迁移事务并通过校验",
-        "legacy_import.memory_model_failed" => "迁移所需的记忆模型准备失败",
-        "legacy_import.tts_copy_started" => "TTS 资源复制开始",
-        "legacy_import.tts_copy_completed" => "TTS 资源复制完成",
-        "legacy_import.tts_copy_failed" => "TTS 资源复制失败",
-        "legacy_import.tts_copy_preflight_completed" => "TTS 资源复制预扫描完成",
-        "legacy_import.tts_copy_robocopy_started" => "TTS 系统复制开始",
-        "legacy_import.tts_copy_robocopy_completed" => "TTS 系统复制完成",
-        "legacy_import.tts_copy_robocopy_failed" => "TTS 系统复制失败",
-        "legacy_import.tts_onnx_started" => "开始合并旧版 TTS ONNX 资源",
-        "legacy_import.tts_profiles_adapted" => "旧版 TTS 托管配置已适配",
-        "legacy_import.tts_runtime_paths_sanitized" => "旧版 TTS Python 路径已适配",
-        "legacy_import.tts_completed" => "旧版本 TTS 资源迁移完成",
-        "legacy_import.tts_skipped" => "TTS 资源迁移失败，已保留聊天和记忆",
-        "legacy_import.tts_config_skipped" => "TTS 配置迁移失败，已保留聊天和记忆",
-        "legacy_import.tts_onnx_binding_skipped" => "TTS ONNX 角色绑定失败，模型资源已保留",
-        "legacy_import.characters_skipped" => "角色包迁移失败，已保留聊天和记忆",
-        "legacy_import.character_validation_failed" => "迁移后的角色包校验失败",
         _ => return None,
     })
 }
@@ -2927,20 +2870,6 @@ fn format_human_summary(event: &str, attributes: Option<&Value>) -> String {
         "status",
         "code",
     ];
-    const LEGACY_COPY_PRIORITY: [&str; 12] = [
-        "detail_stage",
-        "copy_method",
-        "return_code",
-        "source_files",
-        "source_bytes",
-        "expected_files",
-        "expected_bytes",
-        "actual_files",
-        "actual_bytes",
-        "code",
-        "reason_code",
-        "error_type",
-    ];
     const FAILURE_DETAIL_PRIORITY: [&str; 19] = [
         "diagnostic",
         "exception_chain",
@@ -2994,7 +2923,6 @@ fn format_human_summary(event: &str, attributes: Option<&Value>) -> String {
             "provider",
             "status",
         ],
-        value if value.starts_with("legacy_import.tts_copy_") => &LEGACY_COPY_PRIORITY,
         value if value.starts_with("plugin.dependencies.") => &[
             "plugin_id",
             "dependency_source",
@@ -4660,24 +4588,6 @@ mod tests {
     }
 
     #[test]
-    fn legacy_tts_copy_summary_preserves_post_scan_comparison() {
-        assert_eq!(
-            format_human_summary(
-                "legacy_import.tts_copy_failed",
-                Some(&json!({
-                    "detail_stage": "post_scan",
-                    "copy_method": "robocopy",
-                    "expected_files": 120,
-                    "expected_bytes": 4096,
-                    "actual_files": 119,
-                    "actual_bytes": 4000,
-                }))
-            ),
-            "detail_stage=post_scan copy_method=robocopy expected_files=120 expected_bytes=4096 actual_files=119 actual_bytes=4000"
-        );
-    }
-
-    #[test]
     fn wp_4l_02_generic_webview_success_is_debug_but_failure_stays_warning() {
         let root = temp_root("webview-noise");
         let log = RuntimeLogService::start_with_config(test_config(root.join("runtime.log")));
@@ -5655,7 +5565,7 @@ mod tests {
     }
 
     #[test]
-    fn release_business_catalog_projects_first_run_core_and_migration_events() {
+    fn release_business_catalog_projects_first_run_and_core_events() {
         for event in [
             "first_run.state.loaded",
             "first_run.onboarding.opened",
@@ -5664,11 +5574,6 @@ mod tests {
             "first_run.core_start.started",
             "first_run.core_start.completed",
             "first_run.core_start.failed",
-            "legacy_import.recovery.completed",
-            "legacy_import.recovery.failed",
-            "legacy_import.started",
-            "legacy_import.memory_snapshot_failed",
-            "legacy_import.tts_copy_failed",
             "settings.provider_model.slot_save_failed",
             "tts.settings.partial",
         ] {

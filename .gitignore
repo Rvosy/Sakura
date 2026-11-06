@@ -2,7 +2,6 @@
 .codex/
 
 .env
-.env.migrated
 
 # macOS
 .DS_Store
@@ -61,7 +60,6 @@ data/tts_bundles/
 data/logs/
 data/cache/
 data/sakura.lock
-data/migration_backup/
 data/character_studio/
 data/.test_visual_context_*.tmp
 

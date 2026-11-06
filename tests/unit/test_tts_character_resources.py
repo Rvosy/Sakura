@@ -12,7 +12,7 @@ from app.core_host.plugin_character import PluginCharacterStore
 def test_legacy_path_spelling_is_declared_as_portable_resources(tmp_path, provider):
     package = tmp_path / "characters/demo"
     (package / "voice/refs").mkdir(parents=True)
-    (package / "voice/refs/ref.txt").write_text(" ./voice//neutral.wav |JA|hello|中性\n")
+    (package / "voice/refs/ref.txt").write_text(" ./voice//neutral.wav |JA|hello|中性\n", encoding="utf-8")
     for name in ("gpt.ckpt", "sovits.pth", "neutral.wav"):
         (package / "voice" / name).write_bytes(b"fixture")
     extension = {

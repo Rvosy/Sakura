@@ -621,7 +621,6 @@ impl TelemetryService {
             | "tts.synthesis.failed"
             | "tts.synthesis.cancelled" => Some("tts.finished"),
             "reply.repair.finished" => Some("reply.repair.finished"),
-            "legacy_import.recovery.failed" => Some("migration.recovery"),
             _ => None,
         };
         if let Some(name) = runtime_event {
@@ -649,24 +648,6 @@ impl TelemetryService {
 
         if let Some(feature) = feature_for_event(event) {
             self.submit_feature_once(feature);
-        }
-        if event == "legacy_import.completed" {
-            self.submit_runtime_event("migration.completed", None, None, None, None, None);
-        } else if matches!(
-            event,
-            "legacy_import.failed"
-                | "legacy_import.result_invalid"
-                | "legacy_import.core_validation_failed"
-                | "legacy_import.recovery.failed"
-        ) {
-            self.submit_runtime_event(
-                "migration.failed",
-                None,
-                None,
-                None,
-                stable_attribute(attributes, "code"),
-                None,
-            );
         }
         // Cancellation still contributes its business terminal and breadcrumb,
         // but must not fall through to the generic diagnostic error collector.
@@ -1222,8 +1203,6 @@ impl TelemetryService {
                 "chat.finished"
                     | "tts.finished"
                     | "tts.operation.finished"
-                    | "migration.failed"
-                    | "migration.recovery"
                     | "diagnostics.summary"
                     | "error.repeated"
             ),
@@ -2194,17 +2173,7 @@ fn allowlisted_runtime_error(
                 )
             })
             .map(|code| ("webview", code.to_string())),
-        "legacy_import.recovery.failed" => {
-            Some(("rust", "LEGACY_IMPORT_RECOVERY_FAILED".to_string()))
-        }
         "first_run.state.failed" => Some(("rust", "FIRST_RUN_STATE_FAILED".to_string())),
-        "legacy_import.failed" => stable_attribute(attributes, "code").map(|code| ("rust", code)),
-        "legacy_import.core_validation_failed" => {
-            stable_attribute(attributes, "code").map(|code| ("rust", code))
-        }
-        "legacy_import.result_invalid" => {
-            stable_attribute(attributes, "code").map(|code| ("rust", code))
-        }
         "core.spawn.failed" if source == "rust" => match token_attribute(
             attributes,
             "category",
@@ -3656,15 +3625,15 @@ mod tests {
             log.submit(
                 RuntimeLogEvent::rust(
                     Severity::Warning,
-                    "migration",
-                    "migration.import.failed",
-                    "Import failed",
+                    "plugin",
+                    "plugin.storage.failed",
+                    "Plugin storage failed",
                 )
                 .attributes(json!({
-                    "code": "LEGACY_IMPORT_INTERNAL", "diagnostic": message,
-                    "exception_chain": format!("RuntimeError: import failed\nCaused by: {message}"),
-                    "exception_stack": "at migration::import_rows:42",
-                    "source_file": "desktop/src-tauri/src/migration.rs", "source_line": 42,
+                    "code": "PLUGIN_STORAGE_FAILED", "diagnostic": message,
+                    "exception_chain": format!("RuntimeError: storage failed\nCaused by: {message}"),
+                    "exception_stack": "at storage::write_rows:42",
+                    "source_file": "desktop/src-tauri/src/storage.rs", "source_line": 42,
                     "path": "C:\\Users\\测试 用户\\Sakura\\data\\memory.db",
                     "endpoint": "https://example.test/v1?token=test-secret&model=demo",
                     "repair_reason": "duplicate_rows", "repair_outcome": "invalid",

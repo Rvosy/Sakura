@@ -11,8 +11,8 @@ from queries import Filters
 def original_report(message, **overrides):
     return report(schema=3, fingerprintVersion=3, evidence={
         "diagnostic": message,
-        "exception_chain": f"RuntimeError: import failed\nCaused by: OperationalError: {message}",
-        "exception_stack": f"{message}\n  at migration:import_rows:42",
+        "exception_chain": f"RuntimeError: storage failed\nCaused by: OperationalError: {message}",
+        "exception_stack": f"{message}\n  at storage:write_rows:42",
         "path": "C:\\Users\\测试 用户\\Sakura\\data\\memory.db",
         "endpoint": "https://provider.test/v1/chat/completions?model=test&token=[REDACTED]",
     }, **overrides)
@@ -20,8 +20,8 @@ def original_report(message, **overrides):
 
 def test_original_error_survives_ingestion_details_and_export(client, tmp_path):
     payload = original_report("no such table: memories; see https://example.test/help")
-    payload["stack"] = [{"file": "migration.py", "function": "import_rows", "line": 42}]
-    payload["breadcrumbs"] = [{"offsetMs": -10, "source": "core", "severity": "info", "channel": "runtime", "event": "migration.started"}]
+    payload["stack"] = [{"file": "storage.py", "function": "write_rows", "line": 42}]
+    payload["breadcrumbs"] = [{"offsetMs": -10, "source": "core", "severity": "info", "channel": "runtime", "event": "plugin.storage.started"}]
     assert client.post("/v3/errors", json=payload).status_code == 202
     assert client.post("/v3/errors", json=payload).status_code == 202
     listing = client.get("/admin/api/v2/records/errors").json()
@@ -67,7 +67,7 @@ def test_quality_recognizes_original_stack(client):
     payload["evidence"].pop("exception_stack")
     payload["details"].pop("file")
     payload["details"].pop("line")
-    payload["stack"] = [{"file": "migration.py", "line": 42}]
+    payload["stack"] = [{"file": "storage.py", "line": 42}]
     assert client.post("/v3/errors", json=payload).status_code == 202
     quality = client.get("/admin/api/v2/quality").json()
     assert quality["items"][0]["missing_location"] == 0

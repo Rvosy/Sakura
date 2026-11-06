@@ -21,7 +21,7 @@
 | [聊天与语音](guide/chat.md) | 截图、主动搭话、历史、上下文和语音 |
 | [角色与外观](guide/characters.md) | 导入、工坊、布局与桌面交互 |
 | [插件与资源](guide/plugins.md) | 安装、更新、设置、资源与联网工具 |
-| [数据管理](guide/data.md) | 数据目录、备份、迁移与清理 |
+| [数据管理](guide/data.md) | 数据目录、备份、导入导出与清理 |
 | [故障排查](guide/diagnostics.md) | 按操作步骤定位失败与读取日志 |
 | [隐私政策](guide/privacy.md) | 模型与插件的数据流向、统计开关与保存期限 |
 | [Code signing policy](guide/code-signing.md) | 签名状态、维护职责与发行范围 |

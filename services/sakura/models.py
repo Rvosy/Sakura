@@ -168,6 +168,7 @@ class ErrorInfo(StrictModel):
 
 
 class ErrorContext(StrictModel):
+    # Released 1.x clients can still report their original installation kind.
     install_kind: Literal["fresh", "upgrade", "legacy_import", "unknown"] = Field(
         alias="installKind"
     )
@@ -241,6 +242,7 @@ class ErrorReport(PrivacyCheckedModel):
     )
 
 
+# Keep the event vocabulary accepted from released 1.x clients.
 TelemetryEventName = Literal[
     "app.started",
     "app.ready",

@@ -708,8 +708,7 @@ export function createRuntimeAppearanceController({
           }
           if (presentation?.generationId !== targetGeneration) return;
           if (!snapshot) {
-            // Startup migration may take minutes. Observe presentation readiness
-            // instead of abandoning initialization after the first failed read.
+            // Retry initialization once the current Core presentation is ready.
             const next = await invoke("settings_character_appearance_get");
             if (!disposed && next?.presentation?.generationId === targetGeneration) applySnapshot(next);
           } else {
