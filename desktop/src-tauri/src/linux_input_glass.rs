@@ -21,6 +21,7 @@ const MAX_PAINT_WIDTH: i32 = 640;
 
 const PREPARE_CAPTURE_JS: &str = r#"(() => {
   const root = document.documentElement;
+  root.dataset.linuxInputBlur = "1";
   root.dataset.linuxInputCapturing = "1";
   root.style.removeProperty("--linux-input-desktop");
 })()"#;
@@ -31,6 +32,7 @@ const CANCEL_CAPTURE_JS: &str = r#"(() => {
 
 const CLEAR_PAINT_JS: &str = r#"(() => {
   const root = document.documentElement;
+  delete root.dataset.linuxInputBlur;
   delete root.dataset.linuxInputCapturing;
   root.style.removeProperty("--linux-input-desktop");
 })()"#;
