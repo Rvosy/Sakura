@@ -83,13 +83,14 @@ def _isolated_lifecycle_distribution(tmp_path, assistant_dependencies, monkeypat
                     ignore=shutil.ignore_patterns("__pycache__"),
                 )
             shutil.copy2(REPO_ROOT / "VERSION", distribution / "VERSION")
-            dependencies = distribution / "plugins/dependencies/sakura.model.openai_compatible"
-            shutil.copytree(assistant_dependencies, dependencies, copy_function=os.link)
-            (dependencies / ".sakura-dependencies.json").write_text(
-                json.dumps({"schemaVersion": 1, "kind": "requirements.txt",
-                            "python": f"{sys.version_info.major}.{sys.version_info.minor}"}),
-                encoding="utf-8",
-            )
+            for plugin_id in ("sakura.assistant.default", "sakura.model.openai_compatible"):
+                dependencies = distribution / "plugins/dependencies" / plugin_id
+                shutil.copytree(assistant_dependencies, dependencies, copy_function=os.link)
+                (dependencies / ".sakura-dependencies.json").write_text(
+                    json.dumps({"schemaVersion": 1, "kind": "requirements.txt",
+                                "python": f"{sys.version_info.major}.{sys.version_info.minor}"}),
+                    encoding="utf-8",
+                )
         return original_start(app_root, generation_id, distribution_root=distribution)
 
     monkeypatch.setattr(sys.modules[__name__], "start_host", start)
@@ -104,8 +105,9 @@ def start_host(
     process = subprocess.Popen(
         [
             sys.executable,
-            "-m",
-            "app.core_host",
+            "-c",
+            "import runpy,sys; sys.path.insert(0,sys.argv.pop(1)); runpy.run_module('app.core_host',run_name='__main__')",
+            str(REPO_ROOT),
             "--distribution-root",
             str(distribution_root),
             "--user-root",

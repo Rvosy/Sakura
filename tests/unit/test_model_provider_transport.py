@@ -172,7 +172,34 @@ def test_parameter_fallback_is_bounded_and_does_not_mutate_request(monkeypatch, 
     assert "temperature" in REQUEST["parameters"] and REQUEST["responseFormat"]
 
 
-@pytest.mark.parametrize("status,message", [(401, "response_format unsupported"), (429, "try later"), (503, "unavailable"), (400, "temperature must be between 0 and 2")])
+@pytest.mark.parametrize("with_tools", [False, True])
+def test_schema_falls_back_only_after_explicit_provider_rejection(monkeypatch, with_tools):
+    calls = []
+    def handler(request):
+        body = json.loads(request.content)
+        calls.append(body)
+        format = body.get("response_format", {}).get("type")
+        if format in {"json_schema", "json_object"}:
+            return httpx.Response(400, json={"error": {"message": f"response_format {format} is not supported"}})
+        if "temperature" in body:
+            return httpx.Response(400, json={"error": {"message": "temperature is not supported"}})
+        return httpx.Response(200, json={"choices": [{"message": {"content": "OK"}}]})
+    mock_http(monkeypatch, handler)
+    request = {**REQUEST, "responseFormat": {"type": "json_schema", "json_schema": {
+        "name": "reply", "strict": True, "schema": {"type": "object", "properties": {}, "additionalProperties": False},
+    }}}
+    if with_tools:
+        request["tools"] = [{"name": "search", "parameters": {"type": "object", "properties": {}}}]
+    result = run(request=request)
+    formats = [body.get("response_format", {}).get("type") for body in calls]
+    assert formats == (["json_schema", None, None] if with_tools else ["json_schema", "json_object", None, None])
+    assert all(body["messages"] == request["messages"] for body in calls)
+    assert result["message"]["content"] == "OK"
+    assert result["diagnostics"]["responseFormat"] == "text"
+    assert request["responseFormat"]["type"] == "json_schema"
+
+
+@pytest.mark.parametrize("status,message", [(401, "response_format unsupported"), (429, "try later"), (503, "unavailable"), (400, "temperature must be between 0 and 2"), (400, "Invalid schema for response_format: additionalProperties is not allowed")])
 def test_http_failure_is_not_replayed_and_credentials_stay_private(monkeypatch, status, message):
     calls = []
     def handler(request):
@@ -428,3 +455,42 @@ def test_provider_diagnostic_keeps_urls_paths_newlines_and_long_error_tail():
     assert "\nupstream request req-42" in result
     assert "user:password" not in result and "private-token" not in result
     assert "private-conversation" not in public_provider_http_message(RuntimeError('API HTTP 502: {"choices":[{"content":"private-conversation"}]}'), 502)
+
+
+@pytest.mark.parametrize("with_tools", [False, True])
+@pytest.mark.parametrize("base_url", ["https://api.deepseek.com/v1", "https://compatible.invalid/v1"])
+def test_schema_chat_uses_supported_format_when_provider_has_no_schema_mode(monkeypatch, with_tools, base_url):
+    calls = []
+    def handler(request):
+        body = json.loads(request.content)
+        calls.append(body)
+        if body.get("response_format", {}).get("type") == "json_schema":
+            return httpx.Response(400, json={"error": {"message": "This response_format type is unavailable now"}})
+        return httpx.Response(200, json={"choices": [{"message": {"content": '{"segments": []}'}}]})
+    mock_http(monkeypatch, handler)
+    request = {**REQUEST, "responseFormat": {"type": "json_schema", "json_schema": {
+        "name": "reply", "schema": {"type": "object"}}}}
+    if with_tools:
+        request["tools"] = [{"name": "search", "parameters": {"type": "object"}}]
+    result = run(settings={**SETTINGS, "base_url": base_url}, request=request)
+    assert result["message"]["content"] == '{"segments": []}'
+    assert calls[-1].get("response_format") == (None if with_tools else {"type": "json_object"})
+    assert len(calls) == (1 if "api.deepseek.com" in base_url else 2)
+    assert request["responseFormat"]["type"] == "json_schema"
+
+
+@pytest.mark.parametrize("refused", [False, True])
+def test_responses_preserves_incomplete_and_refusal_for_consumers(refused):
+    from sakura_openai_responses import response_result
+    from sakura_structured_output import require_complete_response
+
+    response = {"status": "completed" if refused else "incomplete", "output": [{
+        "type": "message", "content": [{"type": "refusal", "refusal": "请求被拒绝"} if refused else {
+            "type": "output_text", "text": '{"operations":[]}',
+        }],
+    }]}
+    if not refused:
+        response["incomplete_details"] = {"reason": "max_output_tokens"}
+    with pytest.raises(ModelError) as caught:
+        require_complete_response(response_result(response))
+    assert caught.value.code == ("MODEL_OUTPUT_REFUSED" if refused else "MODEL_OUTPUT_TRUNCATED")
