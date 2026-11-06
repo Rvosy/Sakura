@@ -12,7 +12,6 @@ from pathlib import Path
 
 import pytest
 
-from app.plugins.discovery import PluginDiscovery
 from app.plugins.inventory import PluginDesiredStateStore, PluginInventory
 from app.plugins.installer import LocalPluginInstaller, PluginInstallError
 from app.plugins.runtime_v4 import PluginRuntimeManager
@@ -235,7 +234,7 @@ class _BoundaryWorker:
 
     def settings_snapshot(self) -> dict[str, object]:
         plugins = []
-        for spec in PluginDiscovery(self.app_root).discover():
+        for spec in PluginInventory(self.app_root).scan().runtime_specs:
             source = spec.source if spec.source in {"bundled", "user"} else "bundled"
             required = bool(spec.required and source != "user")
             invalid_user_required = source == "user" and spec.required
@@ -297,7 +296,7 @@ def test_folder_install_is_disabled_until_enabled_and_uninstall_keeps_data(
     assert installed.plugin_id == "com.example.local"
     assert installed.code_dir.parent == StoragePaths(app_root).user_plugins_dir
     assert not (installed.code_dir / "setup.marker").exists()
-    spec = next(item for item in PluginDiscovery(app_root).discover() if item.plugin_id == installed.plugin_id)
+    spec = next(item for item in PluginInventory(app_root).scan().runtime_specs if item.plugin_id == installed.plugin_id)
     assert spec.source == "user"
     assert spec.enabled is False
     assert not (installed.code_dir / "imported.marker").exists()
@@ -334,7 +333,7 @@ def test_folder_install_is_disabled_until_enabled_and_uninstall_keeps_data(
     assert not installed.code_dir.exists()
     assert private_data.read_text(encoding="utf-8") == "keep"
     assert installed.plugin_id not in {
-        item.plugin_id for item in PluginDiscovery(app_root).discover()
+        item.plugin_id for item in PluginInventory(app_root).scan().runtime_specs
     }
     assert installed.plugin_id not in StoragePaths(app_root).plugins_config().read_text(
         encoding="utf-8"
@@ -419,7 +418,7 @@ def test_core_boundary_rolls_back_code_when_plugin_lifecycle_fails(tmp_path: Pat
     assert failed.value.code == "PLUGIN_INSTALL_APPLY_FAILED"
     assert worker.lifecycle_count == 2
     assert "com.example.local" not in {
-        spec.plugin_id for spec in PluginDiscovery(app_root).discover()
+        spec.plugin_id for spec in PluginInventory(app_root).scan().runtime_specs
     }
     config = StoragePaths(app_root).plugins_config()
     assert not config.is_file() or "com.example.local" not in config.read_text(encoding="utf-8")
@@ -499,11 +498,11 @@ def test_failed_install_keeps_disabled_guard_when_code_removal_fails(
     assert failed.value.code == "PLUGIN_INSTALL_ROLLBACK_FAILED"
     spec = next(
         item
-        for item in PluginDiscovery(app_root).discover()
+        for item in PluginInventory(app_root).scan().runtime_specs
         if item.plugin_id == "com.example.local"
     )
     assert spec.enabled is False
-    assert not (spec.plugin_root / "setup.marker").exists()
+    assert not (StoragePaths(app_root).user_plugins_dir / spec.directory_name / "setup.marker").exists()
 
 
 def test_core_boundary_rolls_back_uninstall_when_plugin_lifecycle_fails(tmp_path: Path) -> None:
@@ -529,7 +528,7 @@ def test_core_boundary_rolls_back_uninstall_when_plugin_lifecycle_fails(tmp_path
     assert code_dir.is_dir()
     assert config.read_text(encoding="utf-8") == config_before
     assert "com.example.local" in {
-        spec.plugin_id for spec in PluginDiscovery(app_root).discover()
+        spec.plugin_id for spec in PluginInventory(app_root).scan().runtime_specs
     }
 
 
@@ -563,7 +562,7 @@ def test_uninstall_cleanup_failure_is_not_reported_as_success(
         boundary.uninstall(installed["installId"])
     assert failed.value.code == "PLUGIN_UNINSTALL_CLEANUP_FAILED"
     assert "com.example.local" not in {
-        spec.plugin_id for spec in PluginDiscovery(app_root).discover()
+        spec.plugin_id for spec in PluginInventory(app_root).scan().runtime_specs
     }
     assert list(StoragePaths(app_root).user_plugins_dir.glob(".uninstall-*/code"))
 
@@ -726,6 +725,28 @@ def test_install_rejects_invalid_existing_plugin_config(tmp_path: Path) -> None:
     assert not user_root.exists() or not any(user_root.iterdir())
 
 
+def test_install_preserves_an_existing_plugin_with_a_missing_entry(tmp_path: Path) -> None:
+    app_root = tmp_path / "app"
+    existing = _plugin_folder(
+        StoragePaths(app_root).user_plugins_dir,
+        manifest=MANIFEST.replace("entry: plugin:LocalPlugin\n", ""),
+    )
+    manifest = (existing / "plugin.yaml").read_bytes()
+    desired = PluginDesiredStateStore(app_root)
+    desired.set("com.example.local", True)
+    config = desired.path.read_bytes()
+    source = _plugin_folder(tmp_path / "source")
+
+    with pytest.raises(PluginInstallError, match="PLUGIN_ID_CONFLICT"):
+        LocalPluginInstaller(app_root).install(source, "folder")
+
+    assert (existing / "plugin.yaml").read_bytes() == manifest
+    assert desired.path.read_bytes() == config
+    snapshot = PluginInventory(app_root).scan()
+    assert len(snapshot.records) == 1
+    assert snapshot.records[0].reason_code == "PLUGIN_MANIFEST_INVALID"
+
+
 def test_install_rejects_malformed_manifest_field_types(
     tmp_path: Path,
 ) -> None:
@@ -788,7 +809,7 @@ def test_marketplace_install_checks_identity_before_writing(tmp_path):
     installer = LocalPluginInstaller(root)
     with pytest.raises(PluginInstallError, match="PLUGIN_PACKAGE_IDENTITY_MISMATCH"):
         installer.install(package, "zip", expected=("other.plugin", "1.0.0"))
-    assert not PluginDiscovery(root).discover()
+    assert not PluginInventory(root).scan().runtime_specs
     assert not StoragePaths(root).plugins_config().exists()
 
 
@@ -805,13 +826,13 @@ def test_marketplace_update_preserves_settings_and_rolls_back_invalid_package(tm
     request = {"sourcePath": str(new), "pluginId": "com.example.local", "version": "1.1.0"}
     result = boundary.marketplace_install(request)
     assert result["managementAction"] == "updated"
-    spec = PluginDiscovery(root).discover()[0]
+    spec = PluginInventory(root).scan().runtime_specs[0]
     assert spec.version == "1.1.0" and not spec.enabled
     assert config.read_text(encoding="utf-8") == original_config
     with pytest.raises(PluginSettingsError) as invalid_package:
         boundary.marketplace_install({**request, "version": "2.0.0"})
     assert invalid_package.value.code == "PLUGIN_PACKAGE_IDENTITY_MISMATCH"
-    assert PluginDiscovery(root).discover()[0].version == "1.1.0"
+    assert PluginInventory(root).scan().runtime_specs[0].version == "1.1.0"
     assert config.read_text(encoding="utf-8") == original_config
 
 
@@ -834,4 +855,4 @@ def test_marketplace_update_rolls_back_runtime_failure(tmp_path):
     with pytest.raises(PluginSettingsError):
         boundary.marketplace_install({"sourcePath": str(new), "pluginId": "com.example.local", "version": "1.1.0"})
     assert len(attempts) == 2
-    assert PluginDiscovery(root).discover()[0].version == "1.0.0"
+    assert PluginInventory(root).scan().runtime_specs[0].version == "1.0.0"

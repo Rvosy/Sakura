@@ -37,7 +37,9 @@ def test_settings_service_saves_character_without_replacing_other_domains(tmp_pa
     service = AppSettingsService(tmp_path)
     service.config_dir.mkdir(parents=True)
     service.characters_config_path.write_text(
-        "current_character_id: sakura\nother: keep\n", encoding="utf-8"
+        "current_character_id: sakura\nother: keep\n"
+        "visual_selections:\n  sakura: alternate\n  nanami: default\n"
+        "seed_import_exclusions: [removed]\n", encoding="utf-8"
     )
     service.system_config_path.write_text(
         "config_version: 1\nstartup:\n  launch_at_login: true\n", encoding="utf-8"
@@ -46,7 +48,11 @@ def test_settings_service_saves_character_without_replacing_other_domains(tmp_pa
     service.save_current_character_id(CharacterRegistryStub(), "nanami")  # type: ignore[arg-type]
     characters = load_yaml_mapping(service.characters_config_path)
     system = load_yaml_mapping(service.system_config_path)
-    assert characters == {"current_character_id": "nanami", "other": "keep"}
+    assert characters == {
+        "current_character_id": "nanami", "other": "keep",
+        "visual_selections": {"sakura": "alternate", "nanami": "default"},
+        "seed_import_exclusions": ["removed"],
+    }
     assert system["startup"]["launch_at_login"] is True
 
 

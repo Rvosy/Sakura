@@ -9,6 +9,7 @@ from app.config.character_loader import CharacterRegistry
 from app.config.yaml_config import load_yaml_mapping, save_yaml_mapping
 from app.config.models import (
     DEFAULT_THEME_SETTINGS,
+    DebugLogSettings,
     ThemeSettings,
     theme_colors_to_mapping,
     theme_from_mapping,
@@ -27,20 +28,6 @@ API_CONFIG_FILE = "api.yaml"
 CHARACTERS_CONFIG_FILE = "characters.yaml"
 SYSTEM_CONFIG_FILE = "system_config.yaml"
 SYSTEM_CONFIG_VERSION = 1
-
-
-@dataclass(frozen=True)
-class DebugLogSettings:
-    """运行日志配置。"""
-
-    enabled: bool = True
-    body_enabled: bool = False
-    file_enabled: bool = True
-    profile: str = "info"
-    # 开发者选项:舞台调试框(画窗口/布局/实际立绘三框 + DPR 数值,排查布局/HiDPI)。
-    stage_debug_overlay: bool = False
-    # 舞台碰撞遮罩(默认开):setMask 到内容矩形并集,立绘四周空白点击穿透,避免误拖/挡点击。
-    stage_collision_mask: bool = True
 
 
 @dataclass(frozen=True)
@@ -255,12 +242,10 @@ class AppSettingsService:
         self.save_character_selection(character_registry, character_id, {})
 
     def load_visual_selections(self) -> dict[str, str]:
-        raw = load_yaml_mapping(self.characters_config_path).get("visual_selections", {})
-        return {key: value for key, value in raw.items() if isinstance(key, str) and isinstance(value, str)} if isinstance(raw, dict) else {}
+        return _visual_selections(load_yaml_mapping(self.characters_config_path))
 
     def load_seed_import_exclusions(self) -> set[str]:
-        raw = load_yaml_mapping(self.characters_config_path).get("seed_import_exclusions", [])
-        return {value for value in raw if isinstance(value, str) and value} if isinstance(raw, list) else set()
+        return _seed_import_exclusions(load_yaml_mapping(self.characters_config_path))
 
     def selected_visual_resource(self, profile):
         resource_id = self.load_visual_selections().get(profile.id, profile.default_visual_id)
@@ -270,7 +255,7 @@ class AppSettingsService:
         character_registry.get(character_id)
         data = load_yaml_mapping(self.characters_config_path)
         data["current_character_id"] = character_id
-        selections = self.load_visual_selections()
+        selections = _visual_selections(data)
         for target, resource_id in visual_selections.items():
             profile = character_registry.get(target)
             if resource_id is None:
@@ -292,7 +277,7 @@ class AppSettingsService:
         next_character_id: str | None,
     ) -> None:
         data = load_yaml_mapping(self.characters_config_path)
-        data["seed_import_exclusions"] = sorted(self.load_seed_import_exclusions() | {removed_id})
+        data["seed_import_exclusions"] = sorted(_seed_import_exclusions(data) | {removed_id})
         if next_character_id:
             character_registry.get(next_character_id)
             data["current_character_id"] = next_character_id
@@ -300,7 +285,7 @@ class AppSettingsService:
             configured = str(data.get("current_character_id", "")).strip()
             if configured == removed_id or configured not in character_registry.profiles:
                 data.pop("current_character_id", None)
-        selections = self.load_visual_selections()
+        selections = _visual_selections(data)
         selections.pop(removed_id, None)
         for key in [item for item in selections if item not in character_registry.profiles]:
             selections.pop(key, None)
@@ -321,6 +306,16 @@ class AppSettingsService:
         if isinstance(version, bool) or not isinstance(version, int) or version != SYSTEM_CONFIG_VERSION:
             raise ValueError("系统配置版本不受支持。")
         return data
+
+
+def _visual_selections(data: dict[str, Any]) -> dict[str, str]:
+    raw = data.get("visual_selections", {})
+    return {key: value for key, value in raw.items() if isinstance(key, str) and isinstance(value, str)} if isinstance(raw, dict) else {}
+
+
+def _seed_import_exclusions(data: dict[str, Any]) -> set[str]:
+    raw = data.get("seed_import_exclusions", [])
+    return {value for value in raw if isinstance(value, str) and value} if isinstance(raw, list) else set()
 
 
 def _mapping(value: Any) -> dict[str, Any]:

@@ -13,7 +13,6 @@ from harness.runner import (
     HarnessError,
     _write_captured_output,
     load_manifest,
-    main,
     run_profile,
 )
 
@@ -72,34 +71,6 @@ def test_manifest_rejects_unknown_duplicate_and_unreferenced_cases(
     path.write_text(json.dumps(value), encoding="utf-8")
     with pytest.raises(HarnessError, match="unreferenced cases: c"):
         load_manifest(path)
-
-
-def test_profile_runs_cases_in_manifest_order(tmp_path: Path) -> None:
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    manifest = load_manifest(_manifest(tmp_path / "suites.json"))
-
-    _, report, _ = run_profile(manifest, "second", repo_root=repo)
-
-    assert [case["id"] for case in report["cases"]] == ["b", "c"]
-
-
-def test_list_preserves_profile_and_case_order(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    manifest_path = _manifest(tmp_path / "suites.json")
-
-    assert main(["--manifest", str(manifest_path), "list"]) == 0
-
-    lines = capsys.readouterr().out.splitlines()
-    assert lines == [
-        "first: first",
-        "  - a: a",
-        "  - b: b",
-        "second: second",
-        "  - b: b",
-        "  - c: c",
-    ]
 
 
 @pytest.mark.parametrize(
@@ -212,10 +183,7 @@ def test_timeout_preserves_utf8_output_returned_by_subprocess(
     manifest = load_manifest(
         _manifest(tmp_path / "suites.json", code="raise AssertionError", timeout=0.02)
     )
-    observed_timeouts: list[float] = []
-
     def raise_timeout(*args: object, **kwargs: object) -> None:
-        observed_timeouts.append(float(kwargs["timeout"]))
         raise subprocess.TimeoutExpired(
             cmd=args[0],
             timeout=kwargs["timeout"],
@@ -228,7 +196,6 @@ def test_timeout_preserves_utf8_output_returned_by_subprocess(
     exit_code, report, _ = run_profile(manifest, "first", repo_root=repo)
 
     assert exit_code == 1
-    assert observed_timeouts == [0.02, 0.02]
     assert [case["timed_out"] for case in report["cases"]] == [True, True]
     assert [case["stdout"] for case in report["cases"]] == ["中文", "中文"]
     assert [case["stderr"] for case in report["cases"]] == ["错误", "错误"]

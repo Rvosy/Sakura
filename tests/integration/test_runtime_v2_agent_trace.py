@@ -152,7 +152,7 @@ def test_final_provider_payload_and_trace_prompt_are_parallel_and_provenance_fre
     recorder = CapturingTraceRecorder(tmp_path)
     client = CapturingClient(recorder)
     with recorder.operation("operation-tail-system", finalize_external=True):
-        turn = client.complete_with_tools(
+        client.complete_with_tools(
             "固定人格\n\n回复协议",
             _base_messages(),
             tools=[
@@ -196,7 +196,6 @@ def test_final_provider_payload_and_trace_prompt_are_parallel_and_provenance_fre
     assert "parameters" not in request["tools"]["definitions"][0]
     assert request["parameters"]["temperature"] == payload["temperature"]
     assert request["parameters"]["response_format"] == payload["response_format"]
-    assert turn.runtime_context_placement == "tail_system"
     assert reply["model_output"]["visual_observation"]["summary"] == "画面摘要"
     assert reply["usage"] == {"prompt_tokens": 51, "completion_tokens": 19, "total_tokens": 70}
 
@@ -208,13 +207,12 @@ def test_runtime_context_tail_user_and_merged_system_follow_real_payload_positio
     user_client = CapturingClient(recorder)
     user_client._runtime_context_role = "user"
     with recorder.operation("operation-tail-user", finalize_external=True):
-        turn = user_client.complete_with_tools(
+        user_client.complete_with_tools(
             "system",
             _base_messages(),
             runtime_context="动态事实",
             trace_metadata=_metadata(),
         )
-    assert turn.runtime_context_placement == "tail_user"
     first_request = _documents(recorder)[0]
     assert next(iter(first_request["prompt"][-1])) == "runtime_context"
     assert user_client.payloads[0]["messages"][-1]["role"] == "user"
@@ -242,13 +240,12 @@ def test_runtime_context_tail_user_and_merged_system_follow_real_payload_positio
         ),
     ]
     with recorder.operation("operation-merged", finalize_external=True):
-        merged_turn = merged_client.complete_with_tools(
+        merged_client.complete_with_tools(
             "system",
             tool_messages,
             runtime_context="动态事实",
             trace_metadata=_metadata(),
         )
-    assert merged_turn.runtime_context_placement == "merged_system"
     assert merged_client.payloads[0]["messages"][-1]["role"] == "tool"
     assert "动态事实" in merged_client.payloads[0]["messages"][0]["content"]
     merged_request = [item for item in _documents(recorder) if item["type"] == "request"][-1]

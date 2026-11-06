@@ -17,6 +17,7 @@ from sakura_model import ApiConfigError, ApiRequestError, ModelClient, ModelErro
 from sakura_tools import Tool, ToolExecutionResult, ToolRegistry
 from . import diagnostics
 from .agent.actions import AgentEvent
+from .agent.context_orchestrator import ContextProviderContribution
 from .agent.runtime import AgentRuntime
 from .agent.trace import AgentTraceRecorder, traced_message
 from .agent.screen_observation import (
@@ -340,7 +341,7 @@ class AssistantPlugin:
                 def collect(context_request, registration_id=row["registrationId"]):
                     operation.check()
                     return tuple(ContextFragment(**item) for item in contexts.collect(registration_id, asdict(context_request)))
-                providers.append(SimpleNamespace(provider_id=row["providerId"], description=row["description"], order=row["order"],
+                providers.append(ContextProviderContribution(provider_id=row["providerId"], description=row["description"], order=row["order"],
                     enabled=row["enabled"], scope=row["scope"], failure_policy=row["failurePolicy"], plugin_id=row["pluginId"], build_context=collect))
             runtime = AgentRuntime(client, with_desktop_pet_context(character["systemPrompt"]),
                 reply_tones=character["replyTones"], character_id=character["id"], character_name=character["displayName"],

@@ -19,13 +19,10 @@ from typing import BinaryIO, Iterator
 import yaml
 
 from app.plugins.app_compatibility import app_version_reason
-from app.plugins.discovery import (
-    PluginDiscovery,
-    plugin_spec_from_manifest,
-)
 from app.plugins.dependencies import PluginDependencyError, PluginDependencyRoots
 from app.plugins.models import PLUGIN_API_V4_VERSION, PluginSpec
 from app.plugins.inventory import PluginDesiredStateStore, PluginInventory
+from app.plugins.visuals import visual_capabilities_from_manifest
 from app.storage.atomic import atomic_write_text
 from app.storage.paths import StoragePaths, sanitize_directory_component
 from app.storage.runtime_roots import RuntimeRoots, coerce_runtime_roots
@@ -467,20 +464,25 @@ class LocalPluginInstaller:
         reason = app_version_reason(raw, self._roots.distribution_root)
         if reason != "READY":
             raise PluginInstallError(reason)
-        spec = plugin_spec_from_manifest(raw, plugin_root, source="user")
-        if spec is None:
+        plugin_id = raw.get("id", "").strip()
+        entry = raw.get("entry", "").strip()
+        if not plugin_id or not entry:
             raise PluginInstallError("PLUGIN_MANIFEST_INVALID")
-        if spec.api_version != PLUGIN_API_V4_VERSION:
+        if raw.get("api", 0) != PLUGIN_API_V4_VERSION:
             raise PluginInstallError("API_VERSION_UNSUPPORTED")
         if (
-            not _PLUGIN_ID.fullmatch(spec.plugin_id)
-            or spec.plugin_id.endswith(".")
-            or spec.required
+            not _PLUGIN_ID.fullmatch(plugin_id)
+            or plugin_id.endswith(".")
+            or raw.get("required", False)
         ):
             raise PluginInstallError("PLUGIN_MANIFEST_INVALID")
-        if any(not _SERVICE_KEY.fullmatch(key) for key in (*spec.provides, *spec.requires)):
+        declarations = {
+            key: tuple(dict.fromkeys(item.strip() for item in raw.get(key, []) if item.strip()))
+            for key in ("permissions", "provides", "requires")
+        }
+        if any(not _SERVICE_KEY.fullmatch(key) for key in (*declarations["provides"], *declarations["requires"])):
             raise PluginInstallError("PLUGIN_MANIFEST_INVALID")
-        module_name, separator, class_name = spec.entry.partition(":")
+        module_name, separator, class_name = entry.partition(":")
         module_parts = module_name.split(".")
         if (
             separator != ":"
@@ -490,7 +492,25 @@ class LocalPluginInstaller:
             or not plugin_root.joinpath(*module_parts).with_suffix(".py").is_file()
         ):
             raise PluginInstallError("PLUGIN_ENTRY_INVALID")
-        return spec
+        return PluginSpec(
+            entry=entry,
+            plugin_id=plugin_id,
+            name=raw.get("name", "").strip() or plugin_id,
+            author=raw.get("author", "").strip(),
+            description=raw.get("description", "").strip(),
+            version=raw.get("version", "").strip() or "0.0.0",
+            api_version=raw["api"],
+            enabled=raw.get("enabled", True),
+            priority=raw.get("priority", 100),
+            permissions=declarations["permissions"],
+            provides=declarations["provides"],
+            requires=declarations["requires"],
+            plugin_root=plugin_root,
+            source="user",
+            visuals=visual_capabilities_from_manifest(
+                raw.get("visuals", []), declarations["provides"], plugin_root=plugin_root, issues=[],
+            ),
+        )
 
     @staticmethod
     def _validate_manifest_shape(raw: dict[str, object]) -> None:
@@ -516,10 +536,10 @@ class LocalPluginInstaller:
 
     def _reject_conflicts(self, spec: PluginSpec) -> None:
         try:
-            existing = PluginDiscovery(self._roots).discover()
+            existing = PluginInventory(self._roots).scan().records
         except (OSError, UnicodeDecodeError, yaml.YAMLError, ValueError) as error:
             raise PluginInstallError("PLUGIN_CONFIG_INVALID") from error
-        if any(item.plugin_id.casefold() == spec.plugin_id.casefold() for item in existing):
+        if any(item.plugin_id is not None and item.plugin_id.casefold() == spec.plugin_id.casefold() for item in existing):
             raise PluginInstallError("PLUGIN_ID_CONFLICT")
 
     def _copy_folder(self, source: Path, destination: Path) -> None:

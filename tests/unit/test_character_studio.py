@@ -14,7 +14,6 @@ from app.config.character_studio import (
     CharacterStudioOperationCancelled,
     CharacterStudioService,
 )
-from app.storage.paths import sanitize_directory_component
 
 
 def _write_character(root: Path, character_id: str = "sakura") -> Path:
@@ -144,10 +143,18 @@ def test_character_studio_uses_portable_directories_for_windows_trailing_dot_id(
     saved = service.save_character(doc, created["workspace_id"])
 
     assert created["workspace_id"] == "N.A.V.I."
-    assert Path(created["package_dir"]).parent.name == sanitize_directory_component("N.A.V.I.")
     assert saved["saved_character_id"] == "N.A.V.I."
     profile = CharacterRegistry(tmp_path).get("N.A.V.I.")
-    assert profile.package_dir.name == sanitize_directory_component("N.A.V.I.")
+    assert not profile.package_dir.name.endswith((".", " "))
+    assert profile.card_path.read_text(encoding="utf-8") == "system prompt"
+
+    other = service.create_character({"id": "N.A.V.I", "display_name": "另一角色"})
+    other["doc"]["card_text"] = "another prompt"
+    service.save_character(other["doc"], other["workspace_id"])
+    registry = CharacterRegistry(tmp_path)
+    assert registry.get("N.A.V.I").package_dir != profile.package_dir
+    assert registry.get("N.A.V.I").card_path.read_text(encoding="utf-8") == "another prompt"
+    assert registry.get("N.A.V.I.").card_path.read_text(encoding="utf-8") == "system prompt"
 
 
 def test_invalid_published_save_preserves_the_original_character(tmp_path: Path) -> None:
@@ -741,12 +748,17 @@ def test_studio_theme_save_preserves_an_unmanaged_voice_provider(tmp_path: Path)
     opened = service.open_character("sakura")
     assert opened["doc"]["voice"] is None
     doc = opened["doc"]
-    doc["theme"]["accent"] = "#112233"
+    doc["theme"]["primary_color"] = "#445566"
+    doc["theme"]["accent_color"] = "#112233"
     service.save_draft(doc, opened["workspace_id"])
     saved = json.loads(
         (Path(opened["package_dir"]) / "character.json").read_text(encoding="utf-8")
     )
 
+    assert saved["theme"]["primary_color"] == "#445566"
+    assert saved["theme"]["accent_color"] == "#112233"
+    assert saved["theme"]["source"] == "package"
+    assert "ai_enabled" not in saved["theme"]
     assert saved["extensions"] == {key: value for key, value in manifest["extensions"].items() if key != "sakura.tts"}
 
 
