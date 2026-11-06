@@ -70,6 +70,7 @@ def test_login_discovery_and_model_request_through_real_plugin_host(tmp_path, mo
     shutil.copytree(ROOT / "plugins/builtin/sakura_model_openai_compatible",
                     roots.distribution_root / "plugins/builtin/sakura_model_openai_compatible",
                     ignore=shutil.ignore_patterns("__pycache__"))
+    shutil.copy2(ROOT / "VERSION", roots.distribution_root / "VERSION")
     provider = roots.distribution_root / "plugins/builtin/codex"
     shutil.copytree(ROOT / "plugins/optional/sakura_codex", provider, ignore=shutil.ignore_patterns("__pycache__"))
     manifest = provider / "plugin.yaml"
