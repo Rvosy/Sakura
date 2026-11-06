@@ -118,7 +118,7 @@ class Account:
                 device = checked_json(await http.post(ISSUER + "/api/accounts/deviceauth/usercode", json={"client_id": CLIENT_ID}))
                 device_id, code = device["device_auth_id"], device["user_code"]
                 interval = float(device.get("interval", 5))
-                publish({"url": DEVICE_URL, "userCode": code, "message": "在浏览器登录 ChatGPT，并输入此代码。"})
+                publish({"userCode": code, "message": "在浏览器登录 ChatGPT，并输入此代码。"})
                 deadline = time.monotonic() + float(device.get("expires_in", 900))
                 while time.monotonic() < deadline:
                     response = await http.post(ISSUER + "/api/accounts/deviceauth/token", json={"device_auth_id": device_id, "user_code": code})
@@ -140,7 +140,6 @@ class Account:
                 raise OperationCancelled()
             self._save(value)
             self.generation += 1
-        return self.public()
 
     def authorize(self, snapshot, cancel_checker, *, force=False):
         check_cancelled(cancel_checker)
