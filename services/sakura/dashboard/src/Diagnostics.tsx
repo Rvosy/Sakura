@@ -294,7 +294,7 @@ export function Diagnostics({ route }: { route: Route }) {
     }),
     [JSON.stringify(route)],
   );
-  const quality = useApi(`v2/quality?${params(filters)}`);
+  const quality = useApi(`v2/quality?${params(filters)}`, route.tab === "quality");
   const [kind, setKind] = useState("events");
   return (
     <>

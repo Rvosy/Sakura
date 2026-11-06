@@ -1,10 +1,6 @@
-const SNAPSHOT_KEYS = ["schemaVersion", "revision", "state", "reasonCode", "plugins", "windowGeneration", "coreGenerationId"];
+const SNAPSHOT_KEYS = ["schemaVersion", "state", "reasonCode", "plugins", "windowGeneration", "coreGenerationId"];
 
 function clone(value) { return structuredClone(value); }
-
-function isObject(value) {
-  return Boolean(value && typeof value === "object" && !Array.isArray(value));
-}
 
 function transitionError(error) {
   const message = String(error?.message || error || "");
@@ -15,7 +11,7 @@ function transitionError(error) {
 function uncertainManagementError(error) {
   const message = String(error?.message || error || "");
   return transitionError(error) || [
-    "CONFIG_REVISION_CONFLICT", "SETTINGS_REQUEST_ABORTED",
+    "SETTINGS_REQUEST_ABORTED",
     "TRANSPORT_", "PLUGIN_INSTALL_ROLLBACK_FAILED", "PLUGIN_INSTALL_RECOVERY_FAILED",
     "PLUGIN_UNINSTALL_ROLLBACK_FAILED", "PLUGIN_UNINSTALL_RECOVERY_FAILED",
     "PLUGIN_UNINSTALL_CLEANUP_FAILED",
@@ -171,7 +167,6 @@ export function createPluginController({ invoke, applySnapshot, readDraft, onDir
           const result = await invoke("settings_plugins_enabled_set", {
             windowGeneration: current.windowGeneration,
             coreGenerationId: previousGeneration,
-            revision: current.revision,
             installId: plugin.installId,
             enabled,
           });
@@ -222,7 +217,8 @@ export function createPluginController({ invoke, applySnapshot, readDraft, onDir
         });
       } catch (error) {
         if (savingSection && !savedSections.includes(savingSection)) {
-          const [pluginId, sectionId] = savingSection.split("/"); onSectionFailed(pluginId, sectionId);
+          const [pluginId, sectionId] = savingSection.split("/");
+          onSectionFailed(pluginId, sectionId, settings.settingsById[pluginId][sectionId]);
         }
         if (!refreshAttempted && (hasDetailedSettings || enableResultPending || uncertainManagementError(error))) {
           // The desired state may already be saved even when the reply is lost.
@@ -251,16 +247,9 @@ export function createPluginController({ invoke, applySnapshot, readDraft, onDir
         const result = await invoke("settings_plugins_install", {
           windowGeneration: current.windowGeneration,
           coreGenerationId: current.coreGenerationId,
-          revision: current.revision,
           sourceKind,
         });
         if (result.cancelled === true) return null;
-        if (result.managementAction !== "installed"
-            || !result.plugins.some((plugin) => plugin.installId === result.installId
-              && plugin.pluginId === result.pluginId
-              && plugin.source === "user" && plugin.canUninstall && !plugin.enabled)) {
-          throw new Error("PLUGIN_MANAGEMENT_RESPONSE_INVALID");
-        }
         initialize(Object.fromEntries(SNAPSHOT_KEYS.map((key) => [key, result[key]])), {
           preserveDraft: true,
         });
@@ -282,7 +271,6 @@ export function createPluginController({ invoke, applySnapshot, readDraft, onDir
         const result = await invoke("settings_plugins_uninstall", {
           windowGeneration: current.windowGeneration,
           coreGenerationId: current.coreGenerationId,
-          revision: current.revision,
           installId,
         });
         if (result.managementAction !== "uninstalled" || result.installId !== installId

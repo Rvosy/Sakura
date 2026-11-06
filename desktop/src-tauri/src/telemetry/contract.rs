@@ -79,6 +79,32 @@ pub(crate) struct DiagnosticDetail {
     pub gpu_driver: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gpu_memory_mib: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queue_ms: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_ms: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub engine_total_ms: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inference_ms: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reference_ms: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frontend_ms: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gpt_ms: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sovits_ms: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio_seconds: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text_chars: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reference_cache: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub synthesis_status: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]

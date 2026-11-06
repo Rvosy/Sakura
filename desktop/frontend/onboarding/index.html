@@ -10,16 +10,10 @@
   </head>
   <body>
     <main class="onboarding-shell" aria-label="开始使用 Sakura">
-      <section id="routeView" class="route-view" aria-label="开始方式">
-        <div class="route-cards">
-          <button id="firstUseButton" class="route-card route-card-primary" type="button">
-            开始使用
-          </button>
-
-          <button id="migrationButton" class="route-card" type="button">
-            导入旧版数据
-          </button>
-        </div>
+      <section id="welcomeView" class="welcome-view" aria-label="开始使用">
+        <button id="firstUseButton" class="start-button" type="button">
+          开始使用
+        </button>
         <div class="route-help">
           <button id="macosOpenHelpButton" class="route-help-button" type="button" hidden>
             应用打开遇到问题？
@@ -59,42 +53,6 @@
           <button id="macosOpenHelpBackButton" class="secondary-button" type="button">返回</button>
           <button id="macosOpenSystemSettingsButton" class="secondary-button" type="button">打开系统设置</button>
           <button id="macosOpenAppleSupportButton" class="primary-button" type="button">查看 Apple 官方说明</button>
-        </div>
-      </section>
-
-      <section id="migrationView" class="migration-view" aria-labelledby="migrationTitle" hidden>
-        <h1 id="migrationTitle">导入旧版数据</h1>
-        <p class="migration-intro">保留旧版文件</p>
-
-        <div class="source-row">
-          <button id="migrationChooseButton" class="primary-button" type="button">选择旧版目录</button>
-          <span id="migrationSourceLabel" class="source-label">尚未选择</span>
-        </div>
-
-        <section id="migrationInspection" class="inspection" aria-live="polite" hidden>
-          <div class="inspection-heading">
-            <strong id="migrationVersion">旧版本</strong>
-            <span id="migrationSpace"></span>
-          </div>
-          <dl id="migrationDomains" class="domain-grid"></dl>
-          <ul id="migrationIssues" class="issue-list"></ul>
-        </section>
-
-        <section id="migrationProgress" class="migration-progress" aria-live="polite" hidden>
-          <div class="progress-copy">
-            <strong id="migrationStage">正在准备</strong>
-            <span id="migrationPercent">0%</span>
-          </div>
-          <progress id="migrationProgressBar" max="100" value="0"></progress>
-          <p id="migrationMessage"></p>
-        </section>
-
-        <p id="migrationError" class="migration-error" role="alert"></p>
-        <div class="migration-actions">
-          <button id="migrationBackButton" class="secondary-button" type="button">返回</button>
-          <button id="migrationCancelButton" class="secondary-button" type="button" hidden>取消导入</button>
-          <button id="migrationStartButton" class="primary-button" type="button" disabled>开始导入</button>
-          <button id="migrationContinueButton" class="primary-button" type="button" hidden>继续首次设置</button>
         </div>
       </section>
     </main>

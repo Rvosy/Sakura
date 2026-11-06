@@ -39,16 +39,13 @@ export function createPluginSettingsFeature({
     pluginInstallFolderButton: document.getElementById("pluginInstallFolderButton"),
     pluginList: document.getElementById("pluginList"),
     pluginDetail: document.getElementById("pluginDetail"),
-    pluginTotal: document.getElementById("pluginTotal"),
     pluginRoleTabs: document.getElementById("pluginRoleTabs"),
     aboutComponentsSummary: document.getElementById("aboutComponentsSummary"),
     aboutComponentsRefresh: document.getElementById("aboutComponentsRefresh"),
     aboutComponentsState: document.getElementById("aboutComponentsState"),
     aboutComponentsList: document.getElementById("aboutComponentsList"),
     memorySurface: document.getElementById("memorySurface"),
-    screenAwarenessSurface: document.getElementById("screenAwarenessSurface"),
     modelProviderSurface: document.getElementById("modelProviderSurface"),
-    modelSettingsSurface: document.getElementById("modelSettingsSurface"),
     pages: {
       memory: document.getElementById("page-memory"),
       plugins: document.getElementById("page-plugins"),
@@ -72,8 +69,17 @@ export function createPluginSettingsFeature({
   let pluginSettingsDialog = null;
   let availableUpdates = [], openUpdate = () => {};
   const pluginModules = new Map();
-  const pendingApplication = new Set();
+  let disposed = false;
+  const modelServices = () => [...pluginModules.keys()].flatMap(module => module.contributions()?.modelServices || []);
+  const modelServicePresets = () => [...pluginModules.keys()].flatMap(module => module.contributions()?.modelServicePresets || []);
+  const pendingApplication = new Map();
   const settingsUI = createSettingsUI({ document, showPage, createSection: createContributedSection });
+
+  function moduleContributionsChanged() {
+    if (disposed) return;
+    for (const module of pluginModules.keys()) module.updateContributions();
+    onModelCatalogChanged();
+  }
 
   function createContributedSection(plugin, section) {
     const read = key => pluginSectionValues(plugin.id, section.section_id)[key];
@@ -100,10 +106,11 @@ export function createPluginSettingsFeature({
     if (presentation.component === "module") {
       const generation = runtimePluginController.snapshot()?.coreGenerationId;
       const component = createPluginModule({ document, source: presentation.source,
-        onError: setError, onReady: onModelCatalogChanged,
+        onError: setError, onReady: moduleContributionsChanged,
         context: { document, window, section, read, write, invoke, notify, onError: setError,
           enhanceSelect, refreshSelect, closeSelects, createIcon,
-          onCatalogChanged: onModelCatalogChanged,
+          onCatalogChanged: moduleContributionsChanged,
+          modelServices, modelServicePresets,
           readSection: (sectionId, key) => pluginSectionValues(plugin.id, sectionId)[key],
           isCurrent: () => generation === runtimePluginController.snapshot()?.coreGenerationId,
           action: (actionId, values) => runtimePluginController.action({
@@ -112,15 +119,15 @@ export function createPluginSettingsFeature({
           importModule: path => import(new URL(`../${path}`, import.meta.url)),
         },
       });
-      pluginModules.set(component, { pluginId: plugin.plugin_id, sectionId: section.section_id });
+      pluginModules.set(component, { pluginId: plugin.plugin_id, sectionId: section.section_id, pageId: sectionDestination(section) });
       const dispose = component.dispose;
-      component.dispose = () => { pluginModules.delete(component); dispose(); };
+      component.dispose = () => { pluginModules.delete(component); dispose(); moduleContributionsChanged(); };
       return component;
     }
     if (presentation.component === "record-table") {
       const inspectAction = section.actions.find(action => action.action_id === presentation.inspectAction);
       return createRecordTable({ document, read, write, presentation, enhanceSelect, refreshSelect, closeSelects,
-        onError: setError, inspectLabel: inspectAction?.label,
+        scope: `${plugin.id}-${section.section_id}`, onError: setError, inspectLabel: inspectAction?.label,
         inspect: inspectAction ? async (id, isCurrent) => {
           const request = { id, requestId: window.crypto.randomUUID() };
           const generation = runtimePluginController.snapshot()?.coreGenerationId;
@@ -347,14 +354,6 @@ export function createPluginSettingsFeature({
 
 
 
-  function compactText(value, max = 110) {
-    const text = String(value || "").replace(/\s+/g, " ").trim();
-    if (text.length <= max) {
-      return text;
-    }
-    return `${text.slice(0, max - 1)}…`;
-  }
-
   function clonePlain(value) {
     return JSON.parse(JSON.stringify(value || {}));
   }
@@ -416,13 +415,7 @@ export function createPluginSettingsFeature({
       ...section,
       values: pluginState.settingsValues[plugin?.id]?.[section.section_id] || section.values,
     }));
-    return pluginPresentation?.projectPluginActivity?.({ ...plugin, settings }) || {
-      state: "neutral",
-      label: "",
-      message: "",
-      hasRunningResource: false,
-      isTransient: false,
-    };
+    return pluginPresentation.projectPluginActivity({ ...plugin, settings });
   }
 
   function pluginStatusCopy(plugin) {
@@ -438,16 +431,6 @@ export function createPluginSettingsFeature({
     });
   }
 
-  function pluginStatusIsStarting(plugin) {
-    return plugin?.reason_code === "PLUGIN_APPLICATION_NOT_READY";
-  }
-
-  function pluginHasExceptionalStatus(plugin) {
-    if (pluginStatusIsStarting(plugin)) return false;
-    const status = pluginStatusCopy(plugin);
-    return Boolean(status.message || status.diagnostic);
-  }
-
   function pluginInstallMenuItems() {
     return [...fields.pluginInstallMenu.querySelectorAll('[role="menuitem"]')]
       .filter((item) => !item.disabled && !item.hidden && item.getClientRects().length);
@@ -457,7 +440,6 @@ export function createPluginSettingsFeature({
     const nextOpen = Boolean(open && !fields.pluginInstallMenuButton.disabled);
     fields.pluginInstallMenu.hidden = !nextOpen;
     fields.pluginInstallMenuButton.setAttribute("aria-expanded", String(nextOpen));
-    fields.pluginInstallMenuRoot.classList.toggle("is-open", nextOpen);
     if (nextOpen && focusItem) {
       pluginInstallMenuItems()[0]?.focus();
     } else if (!nextOpen && restoreFocus && !fields.pluginInstallMenuButton.disabled) {
@@ -553,6 +535,7 @@ export function createPluginSettingsFeature({
     ));
     const oldCards = new Map([...fields.pluginList.querySelectorAll('.plugin-card')].map((card) => [card.dataset.pluginInstallId, card]));
     const focusedId = document.activeElement?.closest('.plugin-card')?.dataset.pluginInstallId;
+    const focusedUpdate = document.activeElement?.classList.contains('plugin-update-button');
     fields.pluginList.textContent = '';
     if (pluginView.diagnostics?.diagnostic) {
       const issue = pluginNode('div', 'error');
@@ -561,8 +544,8 @@ export function createPluginSettingsFeature({
       fields.pluginList.append(issue);
     }
     fields.pluginRoleTabs.textContent = '';
-    fields.pluginTotal.textContent = String(all.length);
     const roles = { all: '全部', ...pluginPresentation.pluginKinds };
+    fields.pluginRoleTabs.style.setProperty('--active-tab', Object.keys(roles).indexOf(pluginState.role));
     Object.entries(roles).forEach(([key, label]) => {
       const count = key === 'all' ? all.length : all.filter((plugin) => pluginPresentation.pluginMetadata(plugin).kind === key).length;
       const tab = pluginNode('button', 'plugin-role-tab', `${label} ${count}`);
@@ -626,45 +609,62 @@ export function createPluginSettingsFeature({
         const activity = pluginLiveStatus(plugin);
         const selected = plugin.id === pluginState.selectedId;
         const update = availableUpdates.find(item => item.id === plugin.plugin_id);
-        const signature = JSON.stringify([update, plugin.name, plugin.description, plugin.source, metadata, activity, selected]);
+        const signature = JSON.stringify([update, plugin.name, plugin.version, plugin.directory_name, plugin.description, plugin.source, metadata, activity, selected]);
         let card = oldCards.get(plugin.id);
         if (!card || card.dataset.signature !== signature) {
-          card = pluginNode('button', `plugin-card${selected ? ' is-selected' : ''}`);
-          card.type = 'button'; card.dataset.pluginInstallId = plugin.id; card.dataset.signature = signature;
-          card.setAttribute('aria-pressed', String(selected));
+          card = pluginNode('article', `plugin-card${selected ? ' is-selected' : ''}`);
+          card.dataset.pluginInstallId = plugin.id; card.dataset.signature = signature;
+          card.addEventListener('click', event => {
+            if (!event.target.closest('button')) selectManagedPlugin(plugin.id);
+          });
+          const select = pluginNode('button', 'plugin-card-select');
+          select.type = 'button'; select.setAttribute('aria-pressed', String(selected));
+          select.setAttribute('aria-label', `查看 ${plugin.name || plugin.plugin_id || plugin.id}`);
           const main = pluginNode('span', 'plugin-card-main');
-          const titleLine = pluginNode('span', 'plugin-card-title-line');
           const title = pluginNode('strong', 'plugin-card-title', plugin.name || plugin.plugin_id || plugin.id);
-          title.dataset.tooltip = title.textContent;
-          const live = renderSemanticStatus(activity);
-          live.dataset.tooltip = activity.label;
-          live.setAttribute('aria-label', `运行状态：${activity.label}`);
-          titleLine.append(title, live);
-          if (update) titleLine.append(pluginNode("span", "plugin-system-problems", "可更新"));
-          main.append(titleLine);
+          main.append(title);
+          if (plugin.reason_code === 'PLUGIN_ID_CONFLICT') main.append(pluginNode('span', 'card-desc', `v${plugin.version} · ${plugin.directory_name}`));
           if (plugin.description) main.append(pluginNode('span', 'card-desc', plugin.description));
-          card.append(pluginIcon(plugin), main);
-          card.addEventListener('click', () => selectManagedPlugin(plugin.id));
+          select.append(pluginIcon(plugin), main);
+          select.addEventListener('click', () => selectManagedPlugin(plugin.id));
+          const footer = pluginNode('div', 'plugin-card-footer');
+          const live = renderSemanticStatus(activity);
+          live.id = `plugin-live-${plugin.id}`;
+          select.setAttribute('aria-describedby', live.id);
+          live.setAttribute('aria-label', `运行状态：${activity.label}`);
+          if (update) {
+            const button = pluginNode('button', 'plugin-update-button', '查看更新');
+            button.type = 'button'; button.prepend(createIcon(document, 'circle-arrow-up'));
+            button.setAttribute('aria-label', `查看 ${plugin.name || plugin.plugin_id} 的更新`);
+            button.addEventListener('click', () => openUpdate(update.id));
+            footer.append(button);
+          }
+          footer.append(live);
+          card.append(select, footer);
         }
         cards.append(card);
       }
       fields.pluginList.append(group);
     }
     if (!plugins.length) fields.pluginList.append(pluginNode('p', 'empty-state', '没有找到符合条件的插件。'));
-    if (focusedId) fields.pluginList.querySelector(`[data-plugin-install-id="${CSS.escape(focusedId)}"]`)?.focus({ preventScroll: true });
+    if (focusedId) {
+      const card = fields.pluginList.querySelector(`[data-plugin-install-id="${CSS.escape(focusedId)}"]`);
+      (focusedUpdate && card?.querySelector('.plugin-update-button') || card?.querySelector('.plugin-card-select'))?.focus({ preventScroll: true });
+    }
   }
 
   function renderSemanticStatus(value, className = "") {
-    const state = ["neutral", "ready", "working", "warning", "error"].includes(value?.state)
-      ? value.state : "neutral";
+    const icons = {
+      neutral: 'info', ready: 'circle-check', disabled: 'circle-pause',
+      working: 'loader-circle', warning: 'triangle-alert', error: 'circle-x',
+    };
+    const state = Object.hasOwn(icons, value?.state) ? value.state : "neutral";
     const status = document.createElement("span");
     status.className = `semantic-status is-${state} ${className}`.trim();
-    const dot = document.createElement("span");
-    dot.className = "semantic-status__dot";
-    dot.setAttribute("aria-hidden", "true");
+    const icon = createIcon(document, icons[state]);
     const label = document.createElement("span");
     label.textContent = String(value?.label || "状态未知");
-    status.append(dot, label);
+    status.append(icon, label);
     return status;
   }
 
@@ -1387,21 +1387,79 @@ export function createPluginSettingsFeature({
     const container = document.createElement("div");
     container.className = "plugin-settings";
     container.components = [];
+    const updates = [];
+    container.update = () => updates.forEach(update => update());
     if (!sections.length) {
       return container;
+    }
+    const recordSections = sections.filter(section => section.presentation?.component === "record-table");
+    if (recordSections.length && sections.every(section => ["record-table", "connection-status"].includes(section.presentation?.component))) {
+      container.classList.add("plugin-record-settings");
+    }
+    const recordTabs = recordSections.length > 1 ? pluginNode("div", "plugin-record-tabs") : null;
+    const recordPanels = [];
+    let selectedRecordSection = recordSections[0]?.section_id;
+    recordTabs?.setAttribute("role", "tablist");
+    recordTabs?.setAttribute("aria-label", "设置分类");
+    function selectRecordSection(id, focus = false) {
+      selectedRecordSection = id;
+      for (const entry of recordPanels) {
+        const selected = entry.section.section_id === id;
+        if ((!selected || !entry.available) && !entry.block.hidden) entry.component.cancel?.();
+        entry.block.hidden = !entry.available || !selected;
+        entry.tab.setAttribute("aria-selected", String(selected));
+        entry.tab.tabIndex = selected ? 0 : -1;
+        if (selected && focus) entry.tab.focus();
+      }
     }
     sections.forEach((section) => {
       if (section.presentation) {
         const component = createContributedSection(plugin, section); container.components.push(component);
         const block = pluginNode(section.presentation.collapsible ? "details" : "section", "plugin-contribution");
-        if (section.presentation.component !== "connection-status") block.append(pluginNode(section.presentation.collapsible ? "summary" : "h3", "plugin-contribution-title", section.title));
+        if (section.presentation.component === "record-table") block.classList.add("plugin-record-panel");
+        const tabbed = recordTabs && section.presentation.component === "record-table";
+        if (section.presentation.component !== "connection-status" && !tabbed) {
+          const heading = pluginNode(section.presentation.collapsible ? "summary" : "h3", "plugin-contribution-title", section.title);
+          block.append(heading);
+        }
         block.append(component.element);
-        const update = component.update;
-        component.update = () => {
-          block.hidden = Boolean(section.presentation.visibleField) && !pluginSectionValues(plugin.id, section.section_id)[section.presentation.visibleField];
-          update?.();
+        let panel;
+        if (tabbed) {
+          if (!recordTabs.parentElement) container.append(recordTabs);
+          const tab = pluginNode("button", "plugin-record-tab"); tab.type = "button";
+          tab.id = `record-tab-${plugin.id}-${section.section_id}`;
+          block.id = `record-panel-${plugin.id}-${section.section_id}`;
+          tab.setAttribute("role", "tab"); tab.setAttribute("aria-controls", block.id);
+          block.setAttribute("role", "tabpanel"); block.setAttribute("aria-labelledby", tab.id);
+          const count = pluginNode("span", "plugin-record-count");
+          tab.append(pluginNode("span", "", section.title), count);
+          panel = { section, component, block, tab, count, available: false }; recordPanels.push(panel);
+          tab.addEventListener("click", () => selectRecordSection(section.section_id));
+          tab.addEventListener("keydown", event => {
+            const available = recordPanels.filter(entry => entry.available);
+            const index = available.indexOf(panel);
+            const next = event.key === "ArrowRight" ? available[(index + 1) % available.length]
+              : event.key === "ArrowLeft" ? available[(index + available.length - 1) % available.length]
+                : event.key === "Home" ? available[0] : event.key === "End" ? available.at(-1) : null;
+            if (next) { event.preventDefault(); selectRecordSection(next.section.section_id, true); }
+          });
+          recordTabs.append(tab);
+        }
+        const update = () => {
+          const values = pluginSectionValues(plugin.id, section.section_id);
+          const available = !section.presentation.visibleField || Boolean(values[section.presentation.visibleField]);
+          if (panel) {
+            panel.available = available; panel.tab.hidden = !available;
+            panel.count.textContent = String((values[section.presentation.itemsField] || []).length);
+            const visible = recordPanels.filter(entry => entry.available);
+            recordTabs.hidden = !visible.length;
+            selectRecordSection(visible.some(entry => entry.section.section_id === selectedRecordSection)
+              ? selectedRecordSection : visible[0]?.section.section_id);
+          } else block.hidden = !available;
+          component.update?.();
         };
-        component.update();
+        updates.push(update);
+        update();
         container.append(block); return;
       }
       const block = document.createElement("section");
@@ -1462,9 +1520,6 @@ export function createPluginSettingsFeature({
         }
         const control = pluginSettingControl(plugin, section, field);
         if (!pluginFieldEditable(field)) control.dataset.pluginLiveField = field.key;
-        if (field.type !== "boolean" && field.description) {
-          control.dataset.tooltip = field.description;
-        }
         if (field.type === "resource") {
           row.append(control);
         } else {
@@ -1571,7 +1626,6 @@ export function createPluginSettingsFeature({
     settingsUI.render(pluginView.items || []);
     renderProviderFallback();
   }
-  function renderScreenAwarenessSurface() { settingsUI.render(pluginView.items || []); }
 
   function memorySurfaceIsTransitioning() {
     const snapshot = runtimePluginController?.snapshot();
@@ -2350,17 +2404,25 @@ export function createPluginSettingsFeature({
     }
     const metadata = pluginPresentation.pluginMetadata(plugin);
     const status = pluginLiveStatus(plugin);
+    const summary = pluginNode('section', 'plugin-detail-summary');
     const heading = pluginNode('header', 'plugin-detail-heading');
     const identity = pluginNode('div', 'plugin-detail-identity');
     const title = pluginNode('div', 'plugin-detail-title');
-    title.append(pluginNode('h2', '', plugin.name || plugin.id), pluginNode('p', 'plugin-detail-tags', `${pluginPresentation.pluginCategories[metadata.category]} · ${plugin.source === 'user' ? '用户安装' : '内置'}`));
+    const tags = pluginNode('div', 'plugin-detail-tags');
+    const liveStatus = renderSemanticStatus(status);
+    liveStatus.setAttribute('aria-label', `运行状态：${status.label}`);
+    tags.append(pluginNode('span', '', [plugin.author || '未知作者', plugin.version && `v${plugin.version}`].filter(Boolean).join(' · ')), liveStatus);
+    title.append(pluginNode('h2', '', plugin.name || plugin.id), tags);
     identity.append(pluginIcon(plugin), title);
-    const aside = pluginNode('div', 'plugin-detail-aside');
+    heading.append(identity);
+    summary.append(heading);
+    if (plugin.description) summary.append(pluginNode('p', 'detail-desc', plugin.description));
+    const toolbar = pluginNode('div', 'plugin-detail-toolbar');
     if (hasPrivateSettings(plugin)) {
       const configure = pluginNode('button', 'secondary-button plugin-configure', '插件设置');
       configure.prepend(createIcon(document, 'settings'));
       configure.type = 'button'; configure.setAttribute('aria-haspopup', 'dialog');
-      configure.addEventListener('click', () => openPluginSettingsDialog(plugin)); aside.append(configure);
+      configure.addEventListener('click', () => openPluginSettingsDialog(plugin)); toolbar.append(configure);
     }
     const destinations = new Set(pluginSettingsSections(plugin).map(sectionDestination).filter(Boolean));
     const labels = { providers: "模型服务", model: "模型", voice: "语音", memory: "记忆", interaction: "交互" };
@@ -2370,31 +2432,15 @@ export function createPluginSettingsFeature({
       const available = pluginSettingsSections(plugin).some(s => sectionDestination(s) === destination && s.placement?.available !== false);
       const link = pluginNode("button", "secondary-button plugin-settings-link", title && available ? `打开${title}设置` : "设置页面不可用");
       link.type = "button"; link.disabled = !title || !available;
-      link.addEventListener("click", () => showPage(target)); aside.append(link);
+      link.addEventListener("click", () => showPage(target)); toolbar.append(link);
     }
-    heading.append(identity);
-    if (aside.childElementCount) heading.append(aside);
-    fields.pluginDetail.append(heading);
-    if (plugin.description) fields.pluginDetail.append(pluginNode('p', 'detail-desc', plugin.description));
     const update = availableUpdates.find(item => item.id === plugin.plugin_id);
     if (update) {
       const button = pluginNode("button", "secondary-button", `查看更新 ${update.currentVersion} → ${update.version}`);
       button.type = "button";
       button.addEventListener("click", () => openUpdate(update.id));
-      fields.pluginDetail.append(button);
+      toolbar.append(button);
     }
-    if (status.message || status.diagnostic) {
-      const notice = pluginNode('div', 'plugin-health-notice');
-      if (plugin.diagnostics?.diagnostic) notice.append(pluginNode('p', '', status.message));
-      if (status.diagnostic || ["warning", "error", "failed"].includes(status.state)) {
-        notice.append(errorDetailsButton(status, status.label));
-      } else if (status.message) notice.append(pluginNode('p', '', status.message));
-      fields.pluginDetail.append(notice);
-    }
-    const enableRow = pluginNode('section', 'plugin-enable-row');
-    const enableCopy = pluginNode('div', '');
-    enableCopy.append(pluginNode('h3', '', '启用插件'));
-    if (plugin.required) enableCopy.append(pluginNode('p', '', 'Sakura 必需组件'));
     const enabled = Boolean(pluginState.enabledById[plugin.id] || plugin.required);
     const enableControls = pluginNode('div', 'plugin-enable-controls');
     enableControls.append(pluginNode('span', 'plugin-enable-label', enabled ? '已启用' : '已停用'));
@@ -2410,32 +2456,49 @@ export function createPluginSettingsFeature({
     }
     const toggle = switchLabel.querySelector('input'); toggle.checked = enabled;
     toggle.disabled = Boolean(plugin.required || pluginState.managementBusy || !plugin.plugin_id || plugin.reason_code === 'PLUGIN_ID_CONFLICT' || (!plugin.supported && !enabled));
-    enableControls.append(switchLabel); enableRow.append(enableCopy, enableControls); fields.pluginDetail.append(enableRow);
+    enableControls.append(switchLabel); toolbar.append(enableControls); summary.append(toolbar);
+    if (plugin.required) summary.append(pluginNode('p', 'plugin-required-note', 'Sakura 必需组件'));
+    if (status.message || status.diagnostic) {
+      const notice = pluginNode('div', 'plugin-health-notice');
+      if (plugin.diagnostics?.diagnostic) notice.append(pluginNode('p', '', status.message));
+      if (status.diagnostic || ["warning", "error", "failed"].includes(status.state)) {
+        notice.append(errorDetailsButton(status, status.label));
+      } else if (status.message) notice.append(pluginNode('p', '', status.message));
+      summary.append(notice);
+    }
+    fields.pluginDetail.append(summary);
     const providers = pluginPresentation.requiredPluginProviders(plugin, pluginView.items);
     if (providers.length) {
-      const section = pluginNode('section', 'plugin-dependencies'); section.append(pluginNode('h3', '', `依赖组件 ${providers.length}`));
+      const section = pluginNode('section', 'plugin-detail-section plugin-dependencies'); section.append(pluginNode('h3', '', `依赖组件 ${providers.length}`));
       for (const provider of providers) {
         const dependency = pluginNode('button', 'plugin-dependency'); dependency.type = 'button';
-        dependency.append(pluginNode('span', '', provider.name), renderSemanticStatus(pluginLiveStatus(provider)));
+        const copy = pluginNode('span', 'plugin-dependency-copy');
+        const providerMetadata = pluginPresentation.pluginMetadata(provider);
+        copy.append(pluginNode('strong', '', provider.name), pluginNode('span', '', pluginPresentation.pluginKinds[providerMetadata.kind]));
+        dependency.append(pluginIcon(provider), copy, renderSemanticStatus(pluginLiveStatus(provider)), createIcon(document, 'chevron-right'));
         dependency.addEventListener('click', () => selectManagedPlugin(provider.id, { reveal: true })); section.append(dependency);
       }
       fields.pluginDetail.append(section);
     }
+    const info = pluginNode('section', 'plugin-detail-section');
+    info.append(pluginNode('h3', '', '插件信息'));
     const meta = pluginNode('dl', 'detail-meta');
-    for (const [label, value] of [['版本', plugin.version], ['作者', plugin.author || '未知'], ['安装来源', plugin.source === 'user' ? '用户安装' : 'Sakura 内置'], ['插件类型', pluginPresentation.pluginKinds[metadata.kind]]]) {
+    for (const [label, value] of [['插件类型', pluginPresentation.pluginKinds[metadata.kind]], ['功能分类', pluginPresentation.pluginCategories[metadata.category]], ['安装来源', plugin.source === 'user' ? '用户安装' : 'Sakura 内置']]) {
       meta.append(pluginNode('dt', '', label), pluginNode('dd', '', value));
     }
-    fields.pluginDetail.append(meta);
+    info.append(meta);
     const technical = pluginNode('details', 'plugin-technical'); technical.append(pluginNode('summary', '', '技术信息'));
-    for (const [label, values] of [['插件 ID', [plugin.plugin_id || plugin.id]], ['提供的服务', plugin.provides || []], ['依赖的服务', plugin.requires || []]]) {
-      if (values.length) technical.append(pluginNode('p', '', `${label}：${values.join('、')}`));
+    const technicalMeta = pluginNode('dl', 'detail-meta');
+    for (const [label, values] of [['安装目录', [plugin.directory_name]], ['插件 ID', [plugin.plugin_id || plugin.id]], ['提供的服务', plugin.provides || []], ['依赖的服务', plugin.requires || []]]) {
+      if (values.length) technicalMeta.append(pluginNode('dt', '', label), pluginNode('dd', '', values.join('、')));
     }
-    fields.pluginDetail.append(technical);
+    technical.append(technicalMeta); info.append(technical); fields.pluginDetail.append(info);
     if (plugin.can_uninstall) {
+      const footer = pluginNode('footer', 'plugin-detail-footer');
       const uninstall = pluginNode('button', 'danger-button', pluginState.managementBusy ? '卸载中…' : '卸载插件');
       uninstall.type = 'button'; uninstall.disabled = pluginState.managementBusy;
       uninstall.addEventListener('click', () => uninstallLocalPlugin(plugin));
-      fields.pluginDetail.append(uninstall);
+      footer.append(uninstall); fields.pluginDetail.append(footer);
     }
     if (previousId !== plugin.id) replayMotion(fields.pluginDetail, 'plugin-detail-enter');
   }
@@ -2467,7 +2530,8 @@ export function createPluginSettingsFeature({
       const result = await runtimePluginController.install(sourceKind);
       if (!result) return;
       installedId = result.installId;
-      notify("已安装", "success");
+      if (result.warning) setError(result.warning.detail, result.warning.message);
+      else notify(result.managementAction === "updated" ? `已从 v${result.previousVersion} 更新至 v${result.version}` : "已安装", "success");
     } catch (error) {
       setError(error, "安装插件失败");
     } finally {
@@ -2484,7 +2548,7 @@ export function createPluginSettingsFeature({
       return;
     }
     const confirmed = await confirmAction(
-      `卸载“${plugin.name || plugin.id}”？`,
+      `卸载“${plugin.name || plugin.id}”（v${plugin.version}，${plugin.directory_name}）？`,
       { title: "卸载插件", confirmText: "卸载", cancelText: "取消", danger: true },
     );
     if (!confirmed) return;
@@ -2523,18 +2587,21 @@ export function createPluginSettingsFeature({
       const sections = pluginSettingsSections(plugin);
       if (sections.length) {
         sections.forEach((section) => {
-          const values = clonePlain(editablePluginSectionValues(
+          const values = editablePluginSectionValues(
             section,
             pluginSectionValues(plugin.id, section.section_id),
-          ));
+          );
           const initial = editablePluginSectionValues(
             section,
             pluginState.initialSettingsValues[plugin.id]?.[section.section_id] || {},
           );
-          if (!plainEqual(values, initial) || pendingApplication.has(`${plugin.plugin_id}/${section.section_id}`)) {
+          const pending = pendingApplication.get(`${plugin.plugin_id}/${section.section_id}`) || {};
+          const changed = Object.fromEntries(Object.entries(values).filter(([key, value]) =>
+            Object.hasOwn(pending, key) || JSON.stringify(value) !== JSON.stringify(initial[key])));
+          if (Object.keys(changed).length) {
             if (!plugin.plugin_id) return;
             settingsById[plugin.plugin_id] = settingsById[plugin.plugin_id] || {};
-            settingsById[plugin.plugin_id][section.section_id] = values;
+            settingsById[plugin.plugin_id][section.section_id] = clonePlain(changed);
           }
         });
       }
@@ -2554,7 +2621,7 @@ export function createPluginSettingsFeature({
         throw new Error(`${plugin.name}设置暂不可用，修改已保留。`);
       }
       for (const field of section.fields) {
-        if (!pluginFieldEditable(field)) continue;
+        if (!pluginFieldEditable(field) || !Object.hasOwn(values, field.key)) continue;
         const value = values[field.key];
         let invalid = field.required && (value == null || value === "");
         if (value != null && ["integer", "number"].includes(field.type)) invalid ||= !Number.isFinite(value)
@@ -2598,6 +2665,7 @@ export function createPluginSettingsFeature({
         plugin_id: plugin.pluginId,
         name: plugin.name,
         version: plugin.version,
+        directory_name: plugin.directoryName,
         author: plugin.author,
         description: plugin.description,
         presentation: plugin.presentation,
@@ -2707,11 +2775,11 @@ export function createPluginSettingsFeature({
     applySnapshot: applyRuntimePluginSnapshot,
     readDraft: runtimePluginDraft,
     onDirty: refreshDirty,
-    onSectionFailed(pluginId, sectionId) { pendingApplication.add(`${pluginId}/${sectionId}`); },
+    onSectionFailed(pluginId, sectionId, values) { pendingApplication.set(`${pluginId}/${sectionId}`, values); },
     onSectionSaved(pluginId, sectionId, values) {
       pendingApplication.delete(`${pluginId}/${sectionId}`);
       const plugin = pluginView.items.find(p => p.plugin_id === pluginId);
-      if (plugin) pluginState.initialSettingsValues[plugin.id][sectionId] = clonePlain(values);
+      if (plugin) Object.assign(pluginState.initialSettingsValues[plugin.id][sectionId], clonePlain(values));
     },
   });
 
@@ -2806,11 +2874,16 @@ export function createPluginSettingsFeature({
   function pluginLiveStatus(plugin) {
     const activity = projectPluginActivity(plugin);
     const status = pluginStatusCopy(plugin);
+    const hasError = plugin.reason_code !== 'PLUGIN_APPLICATION_NOT_READY'
+      && Boolean(status.message || status.diagnostic);
+    let state = activity.state;
+    if (state !== 'disabled') {
+      if (hasError || state === 'failed') state = 'error';
+      else if (state === 'neutral' && !activity.label && plugin.state === 'active') state = 'ready';
+    }
     return {
-      state: plugin.state === 'disabled' ? 'neutral' : pluginHasExceptionalStatus(plugin) ? 'error'
-        : activity.state === 'failed' ? 'error' : activity.state === 'disabled' ? 'neutral'
-          : activity.state === 'neutral' && !activity.label && plugin.state === 'active' ? 'ready' : activity.state,
-      label: activity.label || status.label,
+      state,
+      label: state === 'ready' ? '正常' : activity.label || status.label,
       message: activity.message || status.message,
       diagnostic: status.diagnostic,
     };
@@ -2831,7 +2904,7 @@ export function createPluginSettingsFeature({
     renderPluginPage();
     fields.pluginDetail.scrollTop = 0;
     const card = fields.pluginList.querySelector(`[data-plugin-install-id="${CSS.escape(id)}"]`);
-    card?.focus({ preventScroll: true });
+    card?.querySelector('.plugin-card-select')?.focus({ preventScroll: true });
     if (reveal) card?.scrollIntoView({ block: 'nearest' });
   }
 
@@ -2854,7 +2927,7 @@ export function createPluginSettingsFeature({
       notify('插件状态已变化，请重新打开设置。', 'info');
       return;
     }
-    editor.general.components?.forEach(component => component.update?.());
+    editor.general.update();
     const draftHint = editor.dialog.querySelector(".plugin-draft-hint");
     if (draftHint) draftHint.hidden = !pluginSettingsSections(plugin).some(section =>
       !sectionDestination(section) && (!section.presentation?.visibleField || pluginSectionValues(plugin.id, section.section_id)[section.presentation.visibleField])
@@ -2928,7 +3001,7 @@ export function createPluginSettingsFeature({
     const general = renderPluginSettings(plugin);
     body.append(general);
     const footer = pluginNode('footer', 'plugin-dialog-footer');
-    footer.append(pluginNode('span', 'plugin-draft-hint', '应用设置后生效'));
+    footer.append(pluginNode('span', 'plugin-draft-hint', '完成后，点击设置页的“应用”保存'));
     const actions = pluginNode('div', '');
     const cancel = pluginNode('button', 'secondary-button', '取消'); cancel.type = 'button';
     const done = pluginNode('button', '', '完成'); done.type = 'submit'; actions.append(cancel, done); footer.append(actions);
@@ -2961,7 +3034,8 @@ export function createPluginSettingsFeature({
     document.body.append(dialog);
 
     general.querySelectorAll('select').forEach(enhanceSelect);
-    general.components?.forEach(component => { component.update?.(); component.mounted?.(); });
+    general.update();
+    general.components.forEach(component => component.mounted?.());
     close.addEventListener('click', () => void editor.close()); cancel.addEventListener('click', () => void editor.close());
     dialog.addEventListener('cancel', (event) => { event.preventDefault(); void editor.close(); });
     form.addEventListener('submit', (event) => {
@@ -3041,9 +3115,14 @@ export function createPluginSettingsFeature({
     dialogElement: () => pluginSettingsDialog?.dialog,
     onPageChanged(page) {
       clearPluginActivityRefresh();
+      if (page !== "providers") {
+        for (const [module, owner] of pluginModules) {
+          if (owner.pageId === "host:providers") void Promise.resolve(module.cancel()).catch(setError);
+        }
+      }
       if (page === "plugins" || page === "about") schedulePluginActivityRefresh();
       if (page === "memory") renderMemorySurface();
-      if (page === "interaction") renderScreenAwarenessSurface();
+      if (page === "interaction") settingsUI.render(pluginView.items || []);
       if (page === "providers" || page === "model") { renderModelSurfaces(); schedulePluginActivityRefresh(); }
     },
     clearCharacterState() {
@@ -3064,6 +3143,7 @@ export function createPluginSettingsFeature({
       refreshDirty();
     },
     dispose() {
+      disposed = true;
       settingsUI.dispose();
       const editor = pluginSettingsDialog;
       pluginSettingsDialog = null;

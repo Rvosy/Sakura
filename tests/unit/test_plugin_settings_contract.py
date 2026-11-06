@@ -44,7 +44,7 @@ def test_management_keeps_all_installed_plugins_visible(tmp_path: Path, mode: st
         application_provider=lambda: None if mode in {"starting", "initialization_failed"} else application,
         initialization_failed=lambda: mode == "initialization_failed",
     )
-    snapshot = (boundary.set_enabled(inventory.revision, inventory.records[-1].install_id, True)
+    snapshot = (boundary.set_enabled(inventory.records[-1].install_id, True)
                 if mode == "enabled_changed" else boundary.snapshot())
     assert {plugin["installId"] for plugin in snapshot["plugins"]} == {record.install_id for record in inventory.records}
     assert len(snapshot["plugins"]) == 65

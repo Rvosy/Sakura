@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
-import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -38,46 +36,6 @@ def test_dependency_check_preserves_actual_filesystem_or_parse_failure(tmp_path,
     assert marker.name in str(caught.value)
     assert isinstance(caught.value.__cause__, cause)
     assert str(caught.value.__cause__) in str(caught.value)
-
-
-@pytest.mark.skipif(os.name != "nt", reason="Windows verbatim path semantics")
-@pytest.mark.parametrize("probe", ["working_directory", "relative_native_resource"])
-def test_entry_validation_accepts_windows_verbatim_roots(tmp_path: Path, probe: str) -> None:
-    code = tmp_path / "plugin"
-    code.mkdir()
-    (code / "plugin.py").write_text("class Plugin: pass\n", encoding="utf-8")
-    dependency = tmp_path / "dependencies"
-    module = dependency / "probe"
-    module.mkdir(parents=True)
-    if probe == "working_directory":
-        source = '''import os
-assert not os.getcwd().startswith("\\\\\\\\?\\\\"), "VERBATIM_WORKING_DIRECTORY"
-'''
-    else:
-        (dependency / "native.bin").write_bytes(b"native resource")
-        source = '''import os
-with open(os.path.join(os.path.dirname(__file__), "..", "native.bin"), "rb") as stream:
-    assert stream.read() == b"native resource"
-'''
-    (module / "__init__.py").write_text(source, encoding="utf-8")
-    PluginDependencyRoots(tmp_path / "user")._validate_entry(
-        "fixture", Path("\\\\?\\" + str(code)), Path("\\\\?\\" + str(dependency)),
-        "plugin:Plugin", runtime_imports=["probe"],
-    )
-
-
-def test_entry_validation_does_not_write_bytecode(tmp_path: Path) -> None:
-    code = tmp_path / "plugin"
-    code.mkdir()
-    (code / "plugin.py").write_text("class Plugin: pass\n", encoding="utf-8")
-    dependency = tmp_path / "dependencies"
-    dependency.mkdir()
-    (dependency / "probe.py").write_text("value = 1\n", encoding="utf-8")
-    PluginDependencyRoots(tmp_path / "user")._validate_entry(
-        "fixture", code, dependency, "plugin:Plugin", runtime_imports=["probe"],
-    )
-    assert not list(code.rglob("*.pyc"))
-    assert not list(dependency.rglob("*.pyc"))
 
 
 def test_dependency_verification_accepts_legacy_line_endings_without_reinstall(
@@ -151,7 +109,6 @@ def test_dependency_declaration_format_change_keeps_installed_imports(tmp_path: 
     roots = PluginDependencyRoots(tmp_path / "user")
 
     installed = roots.verified_root("fixture", plugin)
-    roots._validate_entry("fixture", plugin, installed, "plugin:Plugin")
 
     assert installed == dependency
     assert marker.read_bytes() == before

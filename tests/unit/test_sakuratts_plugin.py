@@ -10,6 +10,7 @@ import pytest
 
 from plugins.builtin.sakura_sakuratts._bundle import BundleStore, unpack
 from plugins.builtin.sakura_sakuratts.plugin import Provider, character_voice
+from plugins.builtin.sakura_sakuratts._runtime import RuntimeFailure
 from app.plugin_sdk.sakura_tools import ToolRegistry
 from app.core_host.plugin_runtime_application import PluginRuntimeApplication
 from app.plugins.inventory import PluginInventory
@@ -182,7 +183,7 @@ def test_background_synthesis_reuses_only_loaded_models_without_auto_sleep(tmp_p
     calls = []
     monkeypatch.setattr(p.runtime, 'status', lambda: 'awake' if state == 'other-character' else state)
     monkeypatch.setattr(p.runtime, 'start', lambda *_: calls.append('start'))
-    monkeypatch.setattr(p.runtime, 'request', lambda *_: calls.append('tts') or b'audio')
+    monkeypatch.setattr(p.runtime, 'request', lambda *_args, **_kwargs: calls.append('tts') or b'audio')
     try:
         job = p.begin({'characterId': 'character', 'text': 'history', 'options': {'background': True}})
         p.executor.submit(lambda: None).result(3)
@@ -272,7 +273,7 @@ def test_cancel_stops_writer_before_releasing_artifact_without_poll(tmp_path, mo
     p, released = provider(tmp_path, monkeypatch)
     writing, stop = threading.Event(), threading.Event()
     monkeypatch.setattr(p.runtime, 'start', lambda *_: None)
-    def request(*_):
+    def request(*_args, **_kwargs):
         writing.set()
         assert stop.wait(3)
         return b'audio'
@@ -517,7 +518,11 @@ def test_precision_reaches_engine_and_switching_profile_restarts_service(tmp_pat
         runtime.stop()
 
 
-@pytest.mark.parametrize('failure', [RuntimeError('CUDA unavailable'), TimeoutError('check timed out'),
+@pytest.mark.parametrize('failure', [RuntimeFailure(json.dumps({'error': 'cudaErrorInsufficientDriver',
+                                    'error_type': 'CUDARuntimeError'}), 'cuda', 'check.log'),
+                                      RuntimeFailure(json.dumps({'error': 'cannot open source file "cuda/std/__cccl/is_non_narrowing_convertible.h"',
+                                      'error_type': 'CompileException'}), 'cuda', 'check.log'),
+                                    RuntimeError('missing compiler header'), TimeoutError('check timed out'),
                                     OSError('cannot execute check')])
 def test_auto_backend_rechecks_on_restart_and_preserves_check_errors(tmp_path, monkeypatch, failure):
     from plugins.builtin.sakura_sakuratts import _runtime
@@ -541,7 +546,7 @@ def test_auto_backend_rechecks_on_restart_and_preserves_check_errors(tmp_path, m
     voice, cancel = {'gpt': 'voice.ckpt', 'sovits': 'voice.pth'}, threading.Event()
     config = configuration({})
     try:
-        if isinstance(failure, RuntimeError):
+        if isinstance(failure, RuntimeFailure) and failure.device_unavailable:
             runtime.start(bundle, config, voice, cancel)
             assert runtime.backend == 'cpu'
             assert logs[0]['diagnostic'] == str(failure)
@@ -549,15 +554,16 @@ def test_auto_backend_rechecks_on_restart_and_preserves_check_errors(tmp_path, m
             assert len(checks) == len(launches) == 1
             runtime.stop()
         else:
-            with pytest.raises(type(failure), match=str(failure)):
+            with pytest.raises(type(failure)) as caught:
                 runtime.start(bundle, config, voice, cancel)
+            assert caught.value is failure
             assert launches == []
         runtime.start(bundle, config, voice, cancel)
         assert runtime.backend == 'cuda'
         assert runtime.selection_reason == ''
         runtime.start(bundle, config, voice, cancel)
         assert len(checks) == 2
-        assert len(launches) == (2 if isinstance(failure, RuntimeError) else 1)
+        assert len(launches) == (2 if isinstance(failure, RuntimeFailure) and failure.device_unavailable else 1)
     finally:
         runtime.stop()
 
@@ -571,9 +577,26 @@ def test_runtime_preserves_engine_http_error_details(tmp_path, monkeypatch):
     monkeypatch.setattr('plugins.builtin.sakura_sakuratts._runtime.urlopen_direct_for_loopback', fail)
     runtime = Runtime(tmp_path)
     runtime.url = 'http://127.0.0.1'
-    with pytest.raises(RuntimeError, match='DLL load failed: path too long'):
+    with pytest.raises(RuntimeError, match='DLL load failed: path too long') as caught:
         runtime.request('/tts', {'text': 'test'})
+    from sakura_provider_errors import provider_failure
+    details = provider_failure('TTS_SYNTHESIS_FAILED', caught.value)['diagnostics']
+    assert 'DLL load failed: path too long' in details['diagnostic']
+    assert 'HTTPError' in details['exception_chain']
     assert response.closed
+
+
+def test_cpu_selection_reason_survives_idle_sleep(tmp_path, monkeypatch):
+    p, _ = provider(tmp_path, monkeypatch)
+    p.runtime.backend = 'cpu'
+    p.runtime.selection_reason = '自动选择了 CPU。NVIDIA 驱动无法运行当前 CUDA 环境，请更新显卡驱动。'
+    monkeypatch.setattr(p.runtime, 'status', lambda: 'sleeping')
+    try:
+        status = p.engine_state()
+        assert 'CPU' in status['label']
+        assert p.runtime.selection_reason in status['message']
+    finally:
+        p.close()
 
 
 def test_engine_status_http_failure_keeps_settings_available(tmp_path, monkeypatch):
@@ -628,6 +651,45 @@ def test_synthesis_metrics_use_host_tts_log_without_text_or_prompt(tmp_path, mon
     assert record['fields']['reference_cache'] == 'miss'
     assert 'frontend_ms' not in record['fields']
     assert 'private' not in json.dumps(records)
+
+
+@pytest.mark.parametrize('with_headers', [True, False])
+def test_synthesis_result_carries_available_performance_without_content(tmp_path, monkeypatch, with_headers):
+    p, _ = provider(tmp_path, monkeypatch)
+    records = []
+    p.logger.info = lambda message, fields: records.append(fields)
+    monkeypatch.setattr(p.runtime, 'start', lambda *_: None)
+    p.runtime.url, p.runtime.backend = 'http://127.0.0.1', 'cuda'
+    response = io.BytesIO(b'wav-fixture')
+    response.headers = {
+        'X-SakuraTTS-Total-Ms': '1250.25', 'X-SakuraTTS-Request-Ms': '1200.5',
+        'X-SakuraTTS-Audio-Seconds': '11.5', 'X-SakuraTTS-Reference-Ms': '200.125',
+        'X-SakuraTTS-Frontend-Ms': 'nan', 'X-SakuraTTS-Semantic-Ms': '-1',
+        'X-SakuraTTS-Acoustic-Ms': 'inf', 'X-SakuraTTS-Status': 'completed',
+        'X-SakuraTTS-Reference-Cache': 'memory',
+    } if with_headers else {}
+    monkeypatch.setattr('plugins.builtin.sakura_sakuratts._runtime.urlopen_direct_for_loopback', lambda *_args, **_kwargs: response)
+    try:
+        job = p.begin({'characterId': 'character', 'text': 'private speech'})
+        p.executor.submit(lambda: None).result(3)
+        assert p.poll(job)['state'] == 'succeeded'
+        terminals = [row for row in records if row.get('event') == 'tts.operation.finished']
+        assert len(terminals) == 1
+        fields = terminals[0]
+        assert fields['outcome'] == 'success'
+        assert fields['request_ms'] >= 0 and fields['elapsed_ms'] >= 0 and fields['queue_ms'] >= 0
+        assert fields['text_chars'] == len('private speech') and fields['language'] == 'ja'
+        if with_headers:
+            assert fields['engine_total_ms'] == 1250.25 and fields['inference_ms'] == 1200.5
+            assert fields['audio_seconds'] == 11.5 and fields['reference_ms'] == 200.125
+            assert fields['reference_cache'] == 'memory' and fields['synthesis_status'] == 'completed'
+        else:
+            assert 'audio_seconds' not in fields and 'inference_ms' not in fields
+        assert not {'frontend_ms', 'gpt_ms', 'sovits_ms'} & fields.keys()
+        assert 'private speech' not in json.dumps(records)
+        assert not {'text', 'prompt_text', 'ref_audio_path'} & fields.keys()
+    finally:
+        p.close()
 
 
 @pytest.fixture
@@ -891,7 +953,7 @@ def test_configuration_restarts_only_for_runtime_options(tmp_path, monkeypatch, 
     started, finish = threading.Event(), threading.Event()
     monkeypatch.setattr(p.runtime, 'start', lambda *_: None)
     monkeypatch.setattr(p.runtime, 'stop', lambda: stopped.append(True))
-    def synthesize(*_):
+    def synthesize(*_args, **_kwargs):
         started.set()
         assert finish.wait(3)
         return b'audio'

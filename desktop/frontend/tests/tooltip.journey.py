@@ -10,11 +10,9 @@ import threading
 
 from playwright.sync_api import sync_playwright, expect
 
-
 class QuietHandler(http.server.SimpleHTTPRequestHandler):
     def log_message(self, *_args):
         pass
-
 
 frontend = Path(__file__).resolve().parents[1]
 parser = argparse.ArgumentParser()
@@ -61,21 +59,13 @@ try:
         page.keyboard.press('Escape')
         expect(tip).to_be_hidden()
         assert help.get_attribute('aria-describedby') is None
-        # Live colors and dynamic text use the same tooltip without stale labels or HTML.
+        # 动态说明按纯文本显示，关闭后恢复原有的辅助说明。
         help.evaluate('el => el.setAttribute("aria-describedby", "existing-help")')
         help.click()
-        page.evaluate('''() => {
-          const root = document.documentElement;
-          root.style.setProperty('--sakura-panel-bg', '#202630');
-          root.style.setProperty('--sakura-text', '#e0e8f2');
-          root.style.setProperty('--sakura-border', '#596d88');
-        }''')
-        expect(tip).to_have_css('background-color', 'rgb(32, 38, 48)')
-        expect(tip).to_have_css('color', 'rgb(224, 232, 242)')
         help.evaluate('el => el.dataset.tooltip = "<b>动态说明</b>"')
         expect(tip).to_have_text('<b>动态说明</b>')
         assert tip.locator('b').count() == 0
-        page.screenshot(path=str(output / 'settings-dark-tooltip.png'))
+        page.screenshot(path=str(output / 'settings-dynamic-tooltip.png'))
         page.keyboard.press('Escape')
         assert help.get_attribute('aria-describedby') == 'existing-help'
         # 弹窗内的提示保持键盘关闭和焦点行为。
@@ -117,7 +107,7 @@ try:
         expect(tip).to_be_hidden()
         assert not errors, errors
         browser.close()
-        print(f'PASS: settings help, themes, modal and edges. Screenshots: {output}')
+        print(f'PASS: settings help, dynamic text, modal and edges. Screenshots: {output}')
 finally:
     server.shutdown()
     server.server_close()

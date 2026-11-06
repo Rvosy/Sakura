@@ -21,22 +21,24 @@ test("catalog supplies details and chooses the highest available stable compatib
   assert.equal(compareVersions("1.0.0+build.1", "1.0.0+build.2"), 0);
 });
 
-test("application version declarations do not restrict catalog selection", () => {
+test("minimum app version blocks downloads but keeps the newer release visible", () => {
   for (const minimum of ["99.0.0", "broken", null]) {
-    const item = release("1.0.0"); item.manifest.min_app_version = minimum;
-    const [plugin] = catalogPlugins({ schema_version: 1, plugins: [{ id: "demo", versions: [item] }] },
-      { api: 4, services: ["host.service"] });
-    assert.equal(plugin.recommendedVersion, "1.0.0");
-    assert.equal(plugin.versions[0].compatible, true);
+    const item = release("2.0.0"); item.manifest.min_app_version = minimum;
+    const [plugin] = catalogPlugins({ schema_version: 1, plugins: [{ id: "demo", versions: [item, release("1.0.0")] }] },
+      { api: 4, appVersion: "1.3.6", services: ["host.service"] });
+    assert.equal(plugin.latestVersion, "2.0.0");
+    assert.equal(plugin.recommendedVersion, undefined);
+    assert.equal(plugin.versions[0].compatible, false);
+    assert.ok(plugin.compatibilityReason);
   }
 });
 
 class Channel { onmessage = () => {}; }
 
-test("installation replaces a newer local version and ignores minimum app declarations", async () => {
-  const item = release("1.0.0"); item.manifest.min_app_version = "99.0.0";
+test("installation can replace a newer local version when the minimum is satisfied", async () => {
+  const item = release("1.0.0"); item.manifest.min_app_version = "1.3.6";
   const [plugin] = catalogPlugins({ schema_version: 1, plugins: [{ id: "demo", versions: [item] }] },
-    { api: 4, services: ["host.service"] });
+    { api: 4, appVersion: "1.3.6", services: ["host.service"] });
   const calls = [];
   const source = createMarketplaceSource({ Channel, host: { isDirty: () => false }, randomUUID: () => "install",
     invoke: async (command, args) => {
@@ -78,7 +80,7 @@ test("market installation uses current runtime identity and cancels in-flight do
   const source = createMarketplaceSource({ Channel, randomUUID: () => "request", host: { isDirty: () => false },
     invoke: async (name, args) => {
       calls.push(name);
-      if (name === "settings_plugins_get") return { plugins: [], revision: "revision", windowGeneration: 2, coreGenerationId: "core" };
+      if (name === "settings_plugins_get") return { plugins: [], windowGeneration: 2, coreGenerationId: "core" };
       if (name === "settings_marketplace_cancel") { abort(); return; }
       if (name === "settings_marketplace_install") {
         installed = args;
@@ -88,7 +90,7 @@ test("market installation uses current runtime identity and cancels in-flight do
   });
   const [plugin] = catalogPlugins(catalog, { api: 4, services: ["host.service"] });
   await assert.rejects(source.install(plugin, { signal: controller.signal, onProgress() {} }), /cancelled/);
-  assert.equal(installed.version, "1.10.0"); assert.equal(installed.revision, "revision");
+  assert.equal(installed.version, "1.10.0");
   assert.equal(installed.coreGenerationId, "core"); assert.ok(calls.includes("settings_marketplace_cancel"));
 });
 
@@ -109,31 +111,34 @@ test("a user plugin can reinstall the current version to repair code or dependen
   const source = createMarketplaceSource({ Channel, host: { isDirty: () => false }, invoke: async name => {
     commands.push(name);
     if (name === "settings_plugins_get") return { plugins: [{ pluginId: "demo", source: "user", version: "1.10.0",
-      enabled: true, state: "failed", reasonCode: "PLUGIN_DEPENDENCIES_MISSING" }], revision: "current" };
+      enabled: true, state: "failed", reasonCode: "PLUGIN_DEPENDENCIES_MISSING" }] };
   } });
   await source.install(plugin, { signal: new AbortController().signal, onProgress() {} });
   assert.deepEqual(commands, ["settings_plugins_get", "settings_marketplace_install"]);
 });
-
 
 test("enabled plugin updates are sent as one Core operation without toggling user settings", async () => {
   const [plugin] = catalogPlugins(catalog, { api: 4, services: ["host.service"] });
   const commands = [];
   const source = createMarketplaceSource({ Channel, host: { isDirty: () => false }, invoke: async (name, args) => {
     commands.push(name);
-    if (name === "settings_plugins_get") return { plugins: [{ pluginId: "demo", enabled: true, source: "user", version: "1.0.0" }], revision: "current" };
-    assert.equal(name, "settings_marketplace_install"); assert.equal(args.revision, "current");
+    if (name === "settings_plugins_get") return { plugins: [{ pluginId: "demo", enabled: true, source: "user", version: "1.0.0" }] };
+    assert.equal(name, "settings_marketplace_install");
   } });
   await source.install(plugin, { signal: new AbortController().signal, onProgress() {} });
   assert.deepEqual(commands, ["settings_plugins_get", "settings_marketplace_install"]);
 });
 
-
-test("connection plugins keep their declared marketplace category", () => {
-  const mobile = release("1.0.0");
-  mobile.manifest.presentation.category = "connectivity";
-  const [plugin] = catalogPlugins({ schema_version: 1, plugins: [{ id: "sakura_mobile", versions: [mobile] }] },
-    { api: 4, services: ["host.service"] });
-  assert.equal(plugin.category, "连接");
-  assert.equal(plugin.recommendedVersion, "1.0.0");
+test("incompatible release is visible as an update without an install or LLM candidate", async () => {
+  const { hasUpdate, canInstall, availableUpdates, updateCandidates } = await import("../settings/plugin-marketplace-runtime.js");
+  const item = release("2.0.0"); item.manifest.min_app_version = "1.4.0";
+  const [plugin] = catalogPlugins({ schema_version: 1, plugins: [{ id: "demo", versions: [item] }] },
+    { api: 4, appVersion: "1.3.6", services: ["host.service"] });
+  plugin.installed = "1.0.0";
+  const source = createMarketplaceSource({ Channel, host: { isDirty: () => false }, invoke() { assert.fail("must not download"); } });
+  assert.equal(hasUpdate(plugin), true);
+  assert.equal(canInstall(plugin, source), false);
+  assert.equal(availableUpdates([plugin])[0].version, "2.0.0");
+  assert.deepEqual(updateCandidates([plugin]), []);
+  await assert.rejects(source.install(plugin, { signal: new AbortController().signal }), /不可安装/);
 });

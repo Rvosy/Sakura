@@ -12,23 +12,158 @@ import pytest
 from plugins.builtin.sakura_model_openai_compatible.transport import execute
 from sakura_cancellation import OperationCancelled
 from sakura_model import ModelError
+from sakura_model_provider import ModelProvider
 from app.plugins.sakura_plugin_sdk import PluginContext
+from tests.model_fixture import mock_http
 
 
 SETTINGS = {"base_url": "https://fixture.invalid/v1", "api_key": "opaque-secret", "model": "fixture", "timeout_seconds": 5}
 REQUEST = {"messages": [{"role": "user", "content": "Hello"}], "parameters": {"temperature": .8}, "responseFormat": {"type": "json_object"}}
 
 
-def mock_http(monkeypatch, handler):
-    class Client(httpx.AsyncClient):
-        def __init__(self, **kwargs):
-            kwargs.pop("proxy", None)
-            super().__init__(**kwargs, transport=httpx.MockTransport(handler))
-    monkeypatch.setattr(httpx, "AsyncClient", Client)
-
-
 def run(settings=SETTINGS, request=REQUEST, **kwargs):
     return execute(settings, request, cancel_checker=kwargs.pop("cancel_checker", None), progress=kwargs.pop("progress", lambda _event: None), **kwargs)
+
+
+@pytest.mark.parametrize("refused", [False, True])
+def test_responses_preserves_incomplete_and_refusal_for_consumers(refused):
+    from sakura_openai_responses import response_result
+    from sakura_structured_output import require_complete_response
+
+    response = {"status": "completed" if refused else "incomplete", "output": [{
+        "type": "message", "content": [{"type": "refusal", "refusal": "请求被拒绝"} if refused else {
+            "type": "output_text", "text": '{"operations":[]}',
+        }],
+    }]}
+    if not refused:
+        response["incomplete_details"] = {"reason": "max_output_tokens"}
+    with pytest.raises(ModelError) as caught:
+        require_complete_response(response_result(response))
+    assert caught.value.code == ("MODEL_OUTPUT_REFUSED" if refused else "MODEL_OUTPUT_TRUNCATED")
+
+
+def test_generation_forwards_sdk_parameters_to_the_provider(monkeypatch):
+    received = []
+    def handler(request):
+        received.append(json.loads(request.content))
+        return httpx.Response(200, json={"choices": [{"message": {"content": "OK"}}]})
+    mock_http(monkeypatch, handler)
+    result = run(request={"messages": REQUEST["messages"], "parameters": {"reasoning_effort": "high", "parallel_tool_calls": False}})
+    assert received[0]["reasoning_effort"] == "high"
+    assert received[0]["parallel_tool_calls"] is False
+    assert result["message"]["content"] == "OK"
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("parameters", [
+    {"thinking": {"type": "enabled"}, "reasoning_effort": "high"},
+    {"extra_body": None, "thinking": {"type": "enabled"}, "reasoning_effort": "high"},
+    {"thinking": {"type": "disabled"}, "extra_body": {"thinking": {"type": "enabled"}},
+     "reasoning_effort": "high"},
+])
+def test_provider_extensions_reach_http_in_streaming_and_complete_requests(monkeypatch, stream, parameters):
+    received = []
+    def handler(request):
+        received.append(json.loads(request.content))
+        if stream:
+            chunk = {"id": "fixture", "object": "chat.completion.chunk", "created": 1, "model": "fixture",
+                     "choices": [{"index": 0, "delta": {"content": "OK"}, "finish_reason": "stop"}]}
+            return httpx.Response(200, headers={"Content-Type": "text/event-stream"},
+                                  content="data: " + json.dumps(chunk) + "\n\ndata: [DONE]\n\n")
+        return httpx.Response(200, json={"choices": [{"message": {"content": "OK"}}]})
+    mock_http(monkeypatch, handler)
+    result = run(request={"messages": REQUEST["messages"], "parameters": parameters, "stream": stream})
+    body, = received
+    assert body["thinking"] == {"type": "enabled"}
+    assert body["reasoning_effort"] == "high"
+    assert "extra_body" not in body
+    assert result["message"]["content"] == "OK"
+
+
+@pytest.fixture
+def job_provider():
+    from types import SimpleNamespace
+    provider = ModelProvider()
+    context = SimpleNamespace(caller_id="consumer", caller_scope="scope", effect=lambda _: None, on=lambda *a: None,
+        provide=lambda *a, **k: None, get=lambda _: SimpleNamespace(register_provider=lambda *a, **k: None),
+        exception_diagnostics=PluginContext.exception_diagnostics)
+    profiles = SimpleNamespace(set_service=lambda _: None, register_settings=lambda: None, catalog=lambda: [],
+                               resolve=lambda *a: {})
+    provider.setup(context, profiles=profiles, service_key="fixture", label="Fixture")
+    yield provider
+    provider.close()
+
+
+def test_concurrent_requests_keep_independent_results_and_release(job_provider):
+    entered = threading.Barrier(3)
+    finish = threading.Event()
+    replies = {"first": "first reply", "second": "second reply"}
+    def respond(_settings, request, **_kwargs):
+        entered.wait(timeout=5)
+        assert finish.wait(5)
+        return {"message": {"content": replies[request["text"]]}}
+    job_provider.execute = respond
+    try:
+        for identity in replies:
+            job_provider.begin({"operationId": identity, "profileId": "profile", "modelId": "model", "request": {"text": identity}})
+        entered.wait(timeout=5)
+        finish.set()
+        for identity, expected in replies.items():
+            while job_provider.poll(identity)["state"] == "running":
+                pass
+            assert job_provider.result(identity)["response"]["message"]["content"] == expected
+            assert job_provider.release(identity)["released"]
+            with pytest.raises(ModelError) as missing:
+                job_provider.result(identity)
+            assert missing.value.code == "MODEL_OPERATION_NOT_FOUND"
+    finally:
+        finish.set()
+
+
+def test_cancel_before_start_is_idempotent_and_leaves_next_request_usable(job_provider):
+    calls = []
+    def respond(_settings, request, **_kwargs):
+        calls.append(request)
+        return {"message": {"content": "OK"}}
+    job_provider.execute = respond
+    job_provider.cancel("cancelled")
+    job_provider.cancel("cancelled")
+    with pytest.raises(OperationCancelled):
+        job_provider.begin({"operationId": "cancelled", "profileId": "profile", "modelId": "model", "request": {}})
+    job_provider.begin({"operationId": "next", "profileId": "profile", "modelId": "model", "request": {"text": "hello"}})
+    while job_provider.poll("next")["state"] == "running":
+        pass
+    assert job_provider.result("next")["response"]["message"]["content"] == "OK"
+    assert calls == [{"text": "hello"}]
+    assert job_provider.release("next")["released"]
+
+
+@pytest.mark.parametrize("payload", [b'{"messages":[]}', b"{"])
+def test_request_cleanup_failure_keeps_generation_or_original_parse_error(job_provider, tmp_path, payload):
+    from types import SimpleNamespace
+    path = tmp_path / "request.json"
+    path.write_bytes(payload)
+    logs = []
+    def release_received(*args, **kwargs):
+        raise TimeoutError("request cleanup unavailable")
+    job_provider.artifacts = SimpleNamespace(resolve=lambda _: {
+        "path": str(path), "delivery": {"senderId": "consumer", "senderScope": "scope", "operationId": "job"}},
+        release_received=release_received)
+    job_provider.context.get = lambda _: SimpleNamespace(warning=lambda message, **kwargs: logs.append((message, kwargs)))
+    job_provider.execute = lambda *a, **k: {"message": {"content": "OK"}}
+    job_provider.begin({"operationId": "job", "profileId": "profile", "modelId": "model",
+                        "requestArtifact": {"artifactId": "request"}})
+    while (status := job_provider.poll("job"))["state"] == "running":
+        pass
+    result = job_provider.result("job")
+    if payload == b"{":
+        assert status["state"] == "failed"
+        assert "JSONDecodeError" in str(result["failure"])
+    else:
+        assert status["state"] == "completed"
+        assert result["response"]["message"]["content"] == "OK"
+    assert "request cleanup unavailable" in str(logs)
+    assert job_provider.release("job")["released"]
 
 
 @pytest.mark.parametrize("operation", ["list_models", "test_connection", "generate"])
@@ -46,33 +181,20 @@ def test_keyless_network_endpoint_uses_the_server_authentication_policy(monkeypa
     assert result["models"] == ["fixture"] if operation == "list_models" else result["message"]["content"] == "OK"
 
 
-def test_async_model_worker_preserves_cause_before_releasing_credentials(monkeypatch):
-    from types import SimpleNamespace
-    from plugins.builtin.sakura_model_openai_compatible import plugin, transport
-    def fail(*args, **kwargs):
-        raise OSError('connection reset at C:\\runtime\\model opaque-secret')
-    monkeypatch.setattr(transport, 'execute', fail)
-    worker = plugin.ModelPlugin()
-    worker.context = SimpleNamespace(exception_diagnostics=PluginContext.exception_diagnostics)
-    worker.changed = threading.Condition()
-    worker._read_request = lambda job: REQUEST
-    job = plugin.Job('failure', ('owner', 'scope'), dict(SETTINGS), {})
-    worker._run(job)
-    assert job.state == 'failed'
-    assert not job.settings
-    assert 'connection reset at C:\\runtime\\model' in job.failure['message']
-    assert 'OSError' in job.failure['diagnostics']['exception_stack']
-    assert 'opaque-secret' not in json.dumps(job.failure)
-
-
-def test_parameter_fallback_is_bounded_and_does_not_mutate_request(monkeypatch):
+@pytest.mark.parametrize("temperature_error", [
+    "temperature is not supported",
+    "invalid temperature: only 1 is allowed for this model",
+    "temperature does not support 0.8 with this model. Only the default (1) value is supported.",
+])
+def test_parameter_fallback_is_bounded_and_does_not_mutate_request(monkeypatch, temperature_error):
     calls = []
     def handler(request):
         body = json.loads(request.content)
         calls.append(body)
         for parameter in ("response_format", "temperature"):
             if parameter in body:
-                return httpx.Response(400, json={"error": {"message": parameter + " is not supported"}})
+                message = temperature_error if parameter == "temperature" else parameter + " is not supported"
+                return httpx.Response(400, json={"error": {"message": message}})
         return httpx.Response(200, json={"choices": [{"message": {"content": "OK"}}]})
     mock_http(monkeypatch, handler)
     result = run()
@@ -82,7 +204,34 @@ def test_parameter_fallback_is_bounded_and_does_not_mutate_request(monkeypatch):
     assert "temperature" in REQUEST["parameters"] and REQUEST["responseFormat"]
 
 
-@pytest.mark.parametrize("status,message", [(401, "response_format unsupported"), (429, "try later"), (503, "unavailable"), (400, "temperature must be between 0 and 2")])
+@pytest.mark.parametrize("with_tools", [False, True])
+def test_schema_falls_back_only_after_explicit_provider_rejection(monkeypatch, with_tools):
+    calls = []
+    def handler(request):
+        body = json.loads(request.content)
+        calls.append(body)
+        format = body.get("response_format", {}).get("type")
+        if format in {"json_schema", "json_object"}:
+            return httpx.Response(400, json={"error": {"message": f"response_format {format} is not supported"}})
+        if "temperature" in body:
+            return httpx.Response(400, json={"error": {"message": "temperature is not supported"}})
+        return httpx.Response(200, json={"choices": [{"message": {"content": "OK"}}]})
+    mock_http(monkeypatch, handler)
+    request = {**REQUEST, "responseFormat": {"type": "json_schema", "json_schema": {
+        "name": "reply", "strict": True, "schema": {"type": "object", "properties": {}, "additionalProperties": False},
+    }}}
+    if with_tools:
+        request["tools"] = [{"name": "search", "parameters": {"type": "object", "properties": {}}}]
+    result = run(request=request)
+    formats = [body.get("response_format", {}).get("type") for body in calls]
+    assert formats == (["json_schema", None, None] if with_tools else ["json_schema", "json_object", None, None])
+    assert all(body["messages"] == request["messages"] for body in calls)
+    assert result["message"]["content"] == "OK"
+    assert result["diagnostics"]["responseFormat"] == "text"
+    assert request["responseFormat"]["type"] == "json_schema"
+
+
+@pytest.mark.parametrize("status,message", [(401, "response_format unsupported"), (429, "try later"), (503, "unavailable"), (400, "temperature must be between 0 and 2"), (400, "Invalid schema for response_format: additionalProperties is not allowed")])
 def test_http_failure_is_not_replayed_and_credentials_stay_private(monkeypatch, status, message):
     calls = []
     def handler(request):
@@ -268,40 +417,40 @@ def test_streaming_batches_large_network_deltas_without_losing_final_content(mon
 
 
 @pytest.mark.parametrize("count", [100, 180])
-def test_poll_drains_retained_progress_in_bounded_batches_before_terminal_state(count):
-    from types import SimpleNamespace
-    from plugins.builtin.sakura_model_openai_compatible.plugin import ModelPlugin, Job
-    plugin = ModelPlugin()
-    plugin.context = SimpleNamespace(caller_id="consumer", caller_scope="scope")
-    plugin.changed = threading.Condition()
-    job = Job("job", ("consumer", "scope"), {}, {}, state="completed", sequence=count)
-    for index in range(1, count + 1):
-        job.progress.append((index, {"type": "text_delta", "text": str(index)}))
-    plugin.jobs = {(("consumer", "scope"), "job"): job}
+def test_poll_delivers_ordered_progress_and_preserves_complete_result(job_provider, count):
+    chunks = [f"chunk-{index};" for index in range(count)]
+    published = threading.Event()
+    def respond(_settings, _request, *, progress, **_kwargs):
+        for chunk in chunks:
+            progress({"type": "text_delta", "text": chunk})
+        published.set()
+        return {"message": {"content": "".join(chunks)}}
+    job_provider.execute = respond
+    job_provider.begin({"operationId": "stream", "profileId": "profile", "modelId": "model", "request": {}})
+    assert published.wait(5)
+
     sequence, received, truncated = 0, [], False
     while True:
-        result = plugin.poll("job", sequence, 0)
-        assert len(result["progress"]) <= 32
-        received.extend(int(item["text"]) for item in result["progress"])
+        result = job_provider.poll("stream", sequence)
+        received.extend(event["text"] for event in result["progress"])
         sequence = result["sequence"]
         truncated |= result["truncated"]
         if result["state"] != "running":
             break
-    assert received == list(range(max(1, count - 127), count + 1))
-    assert truncated == (count > 128)
+
+    assert received
+    assert truncated is (len(received) < len(chunks))
+    assert received == chunks[-len(received):]
+    assert job_provider.result("stream")["response"]["message"]["content"] == "".join(chunks)
+    assert job_provider.release("stream")["released"]
 
 
 @pytest.mark.parametrize("kind", ["filesystem", "connection", "http"])
-def test_background_failure_retains_original_reason_frames_and_redacts_credentials(monkeypatch, kind):
-    from types import SimpleNamespace
-    from plugins.builtin.sakura_model_openai_compatible import plugin as provider
+def test_background_failure_retains_original_reason_frames_and_redacts_credentials(monkeypatch, job_provider, kind):
     from plugins.builtin.sakura_model_openai_compatible import transport
     from sakura_model_client import decode_model_result
 
-    plugin = provider.ModelPlugin()
-    plugin.context = SimpleNamespace(exception_diagnostics=PluginContext.exception_diagnostics)
-    plugin.changed = threading.Condition()
-    job = provider.Job("job", ("consumer", "scope"), dict(SETTINGS), {"request": REQUEST})
+    job_provider.profiles.resolve = lambda *_: dict(SETTINGS)
     if kind == "filesystem":
         def execute(*args, **kwargs):
             raise PermissionError(13, "fixture disk is locked opaque-secret", "C:/model/cache/data.json")
@@ -315,18 +464,23 @@ def test_background_failure_retains_original_reason_frames_and_redacts_credentia
     else:
         mock_http(monkeypatch, lambda request: httpx.Response(403, json={"error": {"message": "project access denied opaque-secret", "param": "project", "request_id": "req-42"}, "choices": [{"message": {"content": "private-conversation"}}]}))
         expected = "project access denied"
-    plugin._run(job)
-    assert job.state == "failed" and job.settings == {} and job.descriptor == {}
+    job_provider.execute = transport.execute
+    job_provider.begin({"operationId": "job", "profileId": "profile", "modelId": "model", "request": REQUEST})
+    while (status := job_provider.poll("job"))["state"] == "running":
+        pass
+    assert status["state"] == "failed"
+    result = job_provider.result("job")
     with pytest.raises(ModelError) as caught:
-        decode_model_result({"failure": job.failure}, None, {}, job.operation_id)
+        decode_model_result(result, None, {}, "job")
     evidence = caught.value.diagnostics
     assert expected in str(caught.value) and expected in evidence["diagnostic"]
-    assert "sakura_model_openai_compatible.plugin:_run:" in evidence["exception_stack"]
-    assert ("openai._base_client:request:" if kind == "http" else "test_model_provider_transport:") in evidence["exception_stack"]
-    assert "opaque-secret" not in json.dumps(job.failure)
-    assert "private-conversation" not in json.dumps(job.failure)
+    assert expected in evidence["exception_stack"]
+    assert evidence["exception_site"]
+    assert "opaque-secret" not in json.dumps(result)
+    assert "private-conversation" not in json.dumps(result)
     if kind == "http":
         assert "req-42" in evidence["diagnostic"]
+    assert job_provider.release("job")["released"]
 
 
 def test_provider_diagnostic_keeps_urls_paths_newlines_and_long_error_tail():
@@ -338,3 +492,25 @@ def test_provider_diagnostic_keeps_urls_paths_newlines_and_long_error_tail():
     assert "\nupstream request req-42" in result
     assert "user:password" not in result and "private-token" not in result
     assert "private-conversation" not in public_provider_http_message(RuntimeError('API HTTP 502: {"choices":[{"content":"private-conversation"}]}'), 502)
+
+
+@pytest.mark.parametrize("with_tools", [False, True])
+@pytest.mark.parametrize("base_url", ["https://api.deepseek.com/v1", "https://compatible.invalid/v1"])
+def test_schema_chat_uses_supported_format_when_provider_has_no_schema_mode(monkeypatch, with_tools, base_url):
+    calls = []
+    def handler(request):
+        body = json.loads(request.content)
+        calls.append(body)
+        if body.get("response_format", {}).get("type") == "json_schema":
+            return httpx.Response(400, json={"error": {"message": "This response_format type is unavailable now"}})
+        return httpx.Response(200, json={"choices": [{"message": {"content": '{"segments": []}'}}]})
+    mock_http(monkeypatch, handler)
+    request = {**REQUEST, "responseFormat": {"type": "json_schema", "json_schema": {
+        "name": "reply", "schema": {"type": "object"}}}}
+    if with_tools:
+        request["tools"] = [{"name": "search", "parameters": {"type": "object"}}]
+    result = run(settings={**SETTINGS, "base_url": base_url}, request=request)
+    assert result["message"]["content"] == '{"segments": []}'
+    assert calls[-1].get("response_format") == (None if with_tools else {"type": "json_object"})
+    assert len(calls) == (1 if "api.deepseek.com" in base_url else 2)
+    assert request["responseFormat"]["type"] == "json_schema"

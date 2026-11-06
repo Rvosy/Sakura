@@ -1,5 +1,4 @@
 from __future__ import annotations
-from tests.model_fixture import LocalModelClient
 
 import json
 from pathlib import Path
@@ -13,21 +12,10 @@ from sakura_assistant.llm.api_client import (
     ApiRequestError,
     DialogueSettings,
     AssistantModelClient,
-    _build_chat_completion_payload,
-    _filter_supported_chat_params,
 )
 from sakura_assistant_contract import ChatReply, ChatSegment
 from sakura_assistant.llm.chat_reply import parse_chat_reply, sanitize_reply_tones
-from sakura_assistant.llm.prompts.runtime import ContextPolicy, PromptRuntime
-from sakura_context import ContextFragment, ContextRequest, PromptRecipe
-
-
-def mock_http(monkeypatch, handler):
-    class MockClient(httpx.AsyncClient):
-        def __init__(self, **kwargs):
-            kwargs.pop("proxy", None)
-            super().__init__(**kwargs, transport=httpx.MockTransport(handler))
-    monkeypatch.setattr("httpx.AsyncClient", MockClient)
+from tests.model_fixture import LocalModelClient, mock_http
 
 
 @pytest.mark.parametrize("body,code,detail", [
@@ -49,6 +37,51 @@ def test_provider_response_failure_reaches_chat_with_specific_reason(monkeypatch
     assert "private-conversation" not in repr(failure)
 
 
+@pytest.mark.parametrize("finish,refusal,detail", [
+    ("length", None, "长度上限"),
+    ("content_filter", None, "拦截"),
+    ("stop", "模型拒绝了该请求", "模型拒绝了该请求"),
+])
+def test_incomplete_or_refused_reply_is_not_repaired(monkeypatch, finish, refusal, detail):
+    from sakura_assistant.agent.runtime import AgentRuntime
+    from sakura_assistant.service import classify_failure
+
+    requests = []
+    def handler(request):
+        requests.append(request)
+        return httpx.Response(200, json={"choices": [{"finish_reason": finish, "message": {
+            "content": '{"segments":[{"ja":"こんにちは。","zh":"你好。"}]}', "refusal": refusal,
+        }}], "usage": {"completion_tokens": 4096}})
+    mock_http(monkeypatch, handler)
+    runtime = AgentRuntime(AssistantModelClient(DialogueSettings(model="model"), model_client=LocalModelClient()),
+                           "角色", strict_provider_errors=True)
+    with pytest.raises(RuntimeError) as caught:
+        runtime.handle_user_message([{"role": "user", "content": "你好"}])
+    assert len(requests) == 1
+    failure = classify_failure(caught.value)
+    assert detail in failure["message"]
+    assert failure["retryable"] is False
+
+
+@pytest.mark.parametrize("content", [
+    '```json\n{"segments":[{"ja":"こんにちは。","zh":"你好。"}]}\n```',
+    '{"segments":[{"ja":"「こんにちは」って言ったよ。","zh":"我说了"你好"。"}]}',
+])
+def test_chat_repairs_syntax_locally_without_another_generation(monkeypatch, content):
+    from sakura_assistant.agent.runtime import AgentRuntime
+
+    requests = []
+    def handler(request):
+        requests.append(request)
+        return httpx.Response(200, json={"choices": [{"finish_reason": "stop", "message": {"content": content}}]})
+    mock_http(monkeypatch, handler)
+    runtime = AgentRuntime(AssistantModelClient(DialogueSettings(model="model"), model_client=LocalModelClient()), "角色")
+    result = runtime.handle_user_message([{"role": "user", "content": "你好"}])
+    assert "こんにちは" in result.reply.segments[0].text
+    assert "你好" in result.reply.segments[0].translation
+    assert len(requests) == 1
+
+
 def test_sanitize_reply_tones_normalizes_out_of_set_tone() -> None:
     allowed = ["中性", "不满", "害羞", "请求", "惊讶"]
     reply = ChatReply(
@@ -68,176 +101,72 @@ def test_sanitize_reply_tones_normalizes_out_of_set_tone() -> None:
     assert out.segments[0].portrait == "站立待机"
 
 
-def test_chat_param_filter_keeps_supported_values() -> None:
-    filtered = _filter_supported_chat_params(
-        {
-            "temperature": 0.2,
-            "max_tokens": 32,
-            "max_completion_tokens": 64,
-            "unsupported_internal_flag": True,
-            "top_p": None,
-        }
-    )
+@pytest.mark.parametrize("parameters,expected", [
+    ({"max_tokens": 8}, {"max_tokens": 8}),
+    ({"max_tokens": 8, "max_completion_tokens": 16}, {"max_completion_tokens": 16}),
+])
+def test_complete_raw_sends_only_supported_parameters(monkeypatch, parameters, expected):
+    received = []
+    def respond(request):
+        received.append(json.loads(request.content))
+        return httpx.Response(200, json={"choices": [{"message": {"content": "OK"}}]})
 
-    assert filtered == {
-        "temperature": 0.2,
-        "max_completion_tokens": 64,
-    }
-
-
-def test_build_chat_payload_drops_unsupported_params() -> None:
-    payload = _build_chat_completion_payload(
-        model="gpt-compatible",
-        system_prompt=" system ",
-        messages=[{"role": "user", "content": "hi"}],
-        temperature=0.8,
-        chat_params={"presence_penalty": 0.1, "bad": "ignored"},
-    )
-
-    assert payload["model"] == "gpt-compatible"
-    assert payload["temperature"] == 0.8
-    assert payload["presence_penalty"] == 0.1
-    assert "bad" not in payload
-    assert payload["messages"][0] == {"role": "system", "content": "system"}
-
-
-def test_complete_raw_applies_param_filter(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    captured: dict[str, Any] = {}
-    client = AssistantModelClient(
-        DialogueSettings(model="model")
-    , model_client=LocalModelClient())
-
-    def fake_post(payload: dict[str, Any], **_kwargs: Any) -> dict[str, Any]:
-        captured.update(payload)
-        return {"choices": [{"message": {"content": "OK"}}]}
-
-    monkeypatch.setattr(client, "_post_chat_completions", fake_post)
-
-    assert client.complete_raw(
-        "system",
-        [{"role": "user", "content": "hello"}],
-        temperature=0.1,
-        unsupported_internal_flag=True,
-        max_tokens=8,
-    ) == "OK"
-
-    assert captured["temperature"] == 0.1
-    assert captured["max_tokens"] == 8
-    assert "unsupported_internal_flag" not in captured
-
-
-def test_complete_raw_does_not_log_request_body(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    events: list[tuple[str, dict[str, Any]]] = []
-    client = AssistantModelClient(
-        DialogueSettings(model="model")
-    , model_client=LocalModelClient())
-    monkeypatch.setattr(
-        client,
-        "_call_model_with_trace",
-        lambda *_args, **_kwargs: {"choices": [{"message": {"content": "OK"}}]},
-    )
-    monkeypatch.setattr(
-        "sakura_assistant.llm.api_client.log_event",
-        lambda _channel, message, attributes=None, **_kwargs: events.append((message, attributes or {})),
-    )
-
-    client.complete_raw("system prompt", [{"role": "user", "content": "full request"}])
-
-    request = next(attributes for message, attributes in events if message == "准备发送聊天补全请求")
-    assert "payload" not in request
-    assert "messages" not in request
-
-
-@pytest.mark.parametrize("method", ["complete_raw", "complete_with_tools"])
-def test_runtime_role_fallback_preserves_unclassified_context(
-    monkeypatch: pytest.MonkeyPatch, method: str,
-) -> None:
+    mock_http(monkeypatch, respond)
     client = AssistantModelClient(DialogueSettings(model="model"), model_client=LocalModelClient())
-    snapshot = ContextPolicy().select(ContextRequest(), [
-        ContextFragment(
-            "rule", "plugin:fixture", "用简短的句子回答。",
-            required=True,
-        ),
-        ContextFragment("reference", "plugin:fixture", "这是一段参考资料。"),
-    ])
-    runtime_context = PromptRuntime().build(PromptRecipe("fixture", []), snapshot).runtime_context
-    calls: list[dict[str, Any]] = []
+    assert client.complete_raw(" system ", [{"role": "user", "content": "hello"}],
+        temperature=0.1, presence_penalty=0.2, top_p=None,
+        unsupported_internal_flag=True, **parameters) == "OK"
 
-    def fake_post(payload: dict[str, Any], **_kwargs: Any) -> dict[str, Any]:
-        calls.append(payload)
-        if payload["messages"][-1]["role"] == "system":
-            raise ApiRequestError("system messages must be first")
-        return {"choices": [{"message": {"role": "assistant", "content": "OK"}}]}
-
-    monkeypatch.setattr(client, "_post_chat_completions", fake_post)
-    invoke = getattr(client, method)
-    result = invoke("角色身份", [{"role": "user", "content": "你好"}], runtime_context=runtime_context)
-
-    assert (result if method == "complete_raw" else result.content) == "OK"
-    assert len(calls) == 2
-    assert calls[0]["messages"][-1] == {"role": "system", "content": runtime_context}
-    fallback = calls[1]["messages"][-1]
-    assert fallback["role"] == "user"
-    prefix, retained_context = fallback["content"].split("\n", 1)
-    assert retained_context == runtime_context
-    assert "用简短的句子回答。" in retained_context
-    assert "这是一段参考资料。" in retained_context
-    assert 'kind=' not in retained_context
-    assert 'trust=' not in retained_context
-    assert "facts" not in prefix.lower()
-    assert "host" in prefix.lower()
-
-    invoke("角色身份", [{"role": "user", "content": "继续"}], runtime_context=runtime_context)
-    assert len(calls) == 3
-    assert calls[-1]["messages"][-1] == fallback
+    assert len(received) == 1
+    payload = received[0]
+    assert payload["messages"] == [{"role": "system", "content": "system"}, {"role": "user", "content": "hello"}]
+    assert payload["temperature"] == 0.1
+    assert payload["presence_penalty"] == 0.2
+    assert {key: payload[key] for key in ("max_tokens", "max_completion_tokens") if key in payload} == expected
+    assert "unsupported_internal_flag" not in payload
+    assert "top_p" not in payload
 
 
-def test_complete_raw_ignores_reasoning_content(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    client = AssistantModelClient(
-        DialogueSettings(model="model")
-    , model_client=LocalModelClient())
+def test_complete_raw_does_not_log_request_body(monkeypatch):
+    events = []
+    mock_http(monkeypatch, lambda _: httpx.Response(200, json={"choices": [{"message": {"content": "OK"}}]}))
+    monkeypatch.setattr("sakura_assistant.llm.api_client.log_event",
+        lambda *args, **kwargs: events.append((args, kwargs)))
+    client = AssistantModelClient(DialogueSettings(model="model"), model_client=LocalModelClient())
 
-    monkeypatch.setattr(
-        client,
-        "_call_model_with_trace",
-        lambda *_args, **_kwargs: {
-            "choices": [
-                {
-                    "message": {
-                        "reasoning_content": '{"secret":"hidden"}',
-                        "content": '{"segments":[]}',
-                    }
-                }
-            ]
-        },
-    )
+    assert client.complete_raw("private-system-sentinel", [{"role": "user", "content": "private-user-sentinel"}]) == "OK"
 
+    assert events
+    assert "private-system-sentinel" not in repr(events)
+    assert "private-user-sentinel" not in repr(events)
+
+
+def test_complete_raw_ignores_reasoning_content(monkeypatch):
+    mock_http(monkeypatch, lambda _: httpx.Response(200, json={"choices": [{"message": {
+        "reasoning_content": '{"secret":"hidden"}', "content": '{"segments":[]}',
+    }}]}))
+    client = AssistantModelClient(DialogueSettings(model="model"), model_client=LocalModelClient())
     assert client.complete_raw("system", [{"role": "user", "content": "hi"}]) == '{"segments":[]}'
 
 
+def test_chat_requests_structured_json_and_parses_reply(monkeypatch):
+    received = []
+    def respond(request):
+        received.append(json.loads(request.content))
+        return httpx.Response(200, json={"choices": [{"message": {
+            "content": '{"segments":[{"ja":"うん。","zh":"嗯。","tone":"中性"}]}',
+        }}]})
+    mock_http(monkeypatch, respond)
+    client = AssistantModelClient(DialogueSettings(model="model"), model_client=LocalModelClient())
 
+    reply = client.chat("system", [{"role": "user", "content": "hello"}])
 
-
-
-
-
-def test_complete_raw_requests_structured_json_by_default_for_chat(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    captured: dict[str, Any] = {}
-    client = AssistantModelClient(
-        DialogueSettings(model="model")
-    , model_client=LocalModelClient())
-
-    def fake_post(payload: dict[str, Any], **_kwargs: Any) -> dict[str, Any]:
-        captured.update(payload)
-        return {"choices": [{"message": {"content": '{"segments":[{"ja":"うん。","zh":"嗯。"}]}'}}]}
-
-    monkeypatch.setattr(client, "_post_chat_completions", fake_post)
-
-    client.chat("system", [{"role": "user", "content": "hello"}])
-
-    assert captured["response_format"] == {"type": "json_object"}
-
-
+    assert len(received) == 1
+    response_format = received[0]["response_format"]
+    assert response_format["type"] == "json_schema"
+    assert response_format["json_schema"]["strict"] is True
+    assert response_format["json_schema"]["schema"]["required"] == ["segments"]
+    assert [(segment.text, segment.translation) for segment in reply.segments] == [("うん。", "嗯。")]
 
 
 @pytest.mark.parametrize("method", ["complete_raw", "complete_with_tools"])
@@ -374,178 +303,90 @@ def test_runtime_context_fallback_only_changes_an_actual_trailing_system_once(
     assert len(payloads) == attempts
 
 
+def test_tool_call_roundtrip_preserves_arguments_and_provider_metadata(monkeypatch):
+    received = []
+    tool = {"type": "function", "function": {"name": "echo_tool", "description": "Echo",
+        "parameters": {"type": "object", "properties": {"value": {"type": "string"}}}}}
+    call = {"id": "call_1", "type": "function", "function": {"name": "echo_tool", "arguments": '{"value":"ok"}'},
+        "extra_content": {"google": {"thought_signature": "opaque-signature"}}}
+    def respond(request):
+        received.append(json.loads(request.content))
+        message = {"role": "assistant", "content": "", "tool_calls": [call]} if len(received) == 1 else {"role": "assistant", "content": "done"}
+        return httpx.Response(200, json={"choices": [{"message": message}]})
+    mock_http(monkeypatch, respond)
+    client = AssistantModelClient(DialogueSettings(model="model"), model_client=LocalModelClient())
+    messages = [{"role": "user", "content": "hello"}]
+
+    turn = client.complete_with_tools("system", messages, tools=[tool])
+    assert len(turn.tool_calls) == 1
+    assert (turn.tool_calls[0].id, turn.tool_calls[0].name, turn.tool_calls[0].arguments) == ("call_1", "echo_tool", {"value": "ok"})
+    messages.extend([turn.message, {"role": "tool", "tool_call_id": turn.tool_calls[0].id, "content": "ok"}])
+    final = client.complete_with_tools("system", messages, tools=[tool])
+
+    assert final.content == "done"
+    assert len(received) == 2
+    assert received[0]["tools"] == [tool]
+    assert received[0]["tool_choice"] == "auto"
+    assert received[1]["messages"][-2]["tool_calls"] == [call]
+    assert received[1]["messages"][-1] == {"role": "tool", "tool_call_id": "call_1", "content": "ok"}
 
 
-def test_complete_with_tools_sends_tools_and_parses_tool_calls(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    captured: dict[str, Any] = {}
-    client = AssistantModelClient(
-        DialogueSettings(model="model")
-    , model_client=LocalModelClient())
+def test_complete_with_tools_parses_pseudo_tool_call_json_content(monkeypatch):
+    mock_http(monkeypatch, lambda _: httpx.Response(200, json={"choices": [{"message": {
+        "role": "assistant", "content": '{"tool":"playwright_navigate","parameters":{"url":"https://example.com"}}',
+    }}]}))
+    client = AssistantModelClient(DialogueSettings(model="model"), model_client=LocalModelClient())
 
-    def fake_post(payload: dict[str, Any], **_kwargs: Any) -> dict[str, Any]:
-        captured.update(payload)
-        return {
-            "choices": [
-                {
-                    "message": {
-                        "role": "assistant",
-                        "content": "",
-                        "tool_calls": [
-                            {
-                                "id": "call_1",
-                                "type": "function",
-                                "function": {
-                                    "name": "echo_tool",
-                                    "arguments": '{"value":"ok"}',
-                                },
-                            }
-                        ],
-                    }
-                }
-            ]
-        }
+    turn = client.complete_with_tools("system", [{"role": "user", "content": "open"}], tools=[{
+        "type": "function", "function": {"name": "playwright_navigate", "description": "Open",
+            "parameters": {"type": "object", "properties": {}}},
+    }])
 
-    monkeypatch.setattr(client, "_post_chat_completions", fake_post)
-
-    turn = client.complete_with_tools(
-        "system",
-        [{"role": "user", "content": "hello"}],
-        tools=[
-            {
-                "type": "function",
-                "function": {
-                    "name": "echo_tool",
-                    "description": "Echo",
-                    "parameters": {"type": "object", "properties": {}},
-                },
-            }
-        ],
-    )
-
-    assert captured["tools"][0]["function"]["name"] == "echo_tool"
-    assert captured["tool_choice"] == "auto"
-    assert turn.tool_calls[0].id == "call_1"
-    assert turn.tool_calls[0].name == "echo_tool"
-    assert turn.tool_calls[0].arguments == {"value": "ok"}
-    assert turn.message["tool_calls"][0]["id"] == "call_1"
-
-
-def test_complete_with_tools_preserves_provider_tool_call_metadata_for_continuation(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    client = AssistantModelClient(
-        DialogueSettings(model="gemini-3")
-    , model_client=LocalModelClient())
-
-    monkeypatch.setattr(
-        client,
-        "_post_chat_completions",
-        lambda _payload, **_kwargs: {
-            "choices": [{
-                "message": {
-                    "role": "assistant",
-                    "content": "",
-                    "tool_calls": [{
-                        "id": "call_1",
-                        "type": "function",
-                        "function": {"name": "echo_tool", "arguments": "{}"},
-                        "extra_content": {"google": {"thought_signature": "opaque-signature"}},
-                    }],
-                }
-            }]
-        },
-    )
-
-    turn = client.complete_with_tools(
-        "system",
-        [{"role": "user", "content": "hello"}],
-        tools=[{
-            "type": "function",
-            "function": {
-                "name": "echo_tool",
-                "description": "Echo",
-                "parameters": {"type": "object", "properties": {}},
-            },
-        }],
-    )
-
-    assert turn.message["tool_calls"][0]["extra_content"] == {
-        "google": {"thought_signature": "opaque-signature"}
-    }
-
-
-def test_complete_with_tools_parses_pseudo_tool_call_json_content(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    client = AssistantModelClient(
-        DialogueSettings(model="model")
-    , model_client=LocalModelClient())
-
-    def fake_post(_payload: dict[str, Any], **_kwargs: Any) -> dict[str, Any]:
-        return {
-            "choices": [
-                {
-                    "message": {
-                        "role": "assistant",
-                        "content": (
-                            '{"tool":"playwright_navigate",'
-                            '"parameters":{"url":"https://example.com"}}'
-                        ),
-                    }
-                }
-            ]
-        }
-
-    monkeypatch.setattr(client, "_post_chat_completions", fake_post)
-
-    turn = client.complete_with_tools(
-        "system",
-        [{"role": "user", "content": "open"}],
-        tools=[
-            {
-                "type": "function",
-                "function": {
-                    "name": "playwright_navigate",
-                    "description": "Open",
-                    "parameters": {"type": "object", "properties": {}},
-                },
-            }
-        ],
-    )
-
-    assert turn.tool_calls[0].id == "pseudo_tool_call_0"
+    assert len(turn.tool_calls) == 1
+    assert turn.tool_calls[0].id
     assert turn.tool_calls[0].name == "playwright_navigate"
     assert turn.tool_calls[0].arguments == {"url": "https://example.com"}
-    assert turn.message["tool_calls"][0]["function"]["name"] == "playwright_navigate"
+    assert turn.message["tool_calls"][0]["id"] == turn.tool_calls[0].id
 
 
-def test_complete_with_tools_ignores_plain_json_reply_without_tool_call(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    client = AssistantModelClient(
-        DialogueSettings(model="model")
-    , model_client=LocalModelClient())
-
-    monkeypatch.setattr(
-        client,
-        "_post_chat_completions",
-        lambda _payload, **_kwargs: {
-            "choices": [{"message": {"role": "assistant", "content": '{"segments":[]}'}}]
-        },
-    )
-
-    turn = client.complete_with_tools(
-        "system",
-        [{"role": "user", "content": "hello"}],
-        structured_response=True,
-    )
-
+def test_complete_with_tools_ignores_plain_json_reply_without_tool_call(monkeypatch):
+    mock_http(monkeypatch, lambda _: httpx.Response(200, json={"choices": [{"message": {
+        "role": "assistant", "content": '{"segments":[]}',
+    }}]}))
+    client = AssistantModelClient(DialogueSettings(model="model"), model_client=LocalModelClient())
+    turn = client.complete_with_tools("system", [{"role": "user", "content": "hello"}])
+    assert turn.content == '{"segments":[]}'
     assert turn.tool_calls == []
-    assert "tool_calls" not in turn.message
 
 
+@pytest.mark.parametrize("invalid_segment", [42, {"ja": "おはよう。"}])
+def test_chat_correction_keeps_context_and_identifies_invalid_segment(monkeypatch, invalid_segment):
+    from sakura_assistant.agent.runtime import AgentRuntime
+
+    requests = []
+    def handler(request):
+        requests.append(json.loads(request.content))
+        segments = [{"ja": "こんにちは。", "zh": "你好。"}]
+        if len(requests) == 1:
+            segments.append(invalid_segment)
+        return httpx.Response(200, json={"choices": [{"finish_reason": "stop", "message": {
+            "content": json.dumps({"segments": segments}, ensure_ascii=False),
+        }}]})
+    mock_http(monkeypatch, handler)
+    runtime = AgentRuntime(AssistantModelClient(DialogueSettings(model="model"), model_client=LocalModelClient()), "角色")
+    result = runtime.handle_user_message([{"role": "user", "content": "原始问题"}])
+    assert result.reply.segments[0].translation == "你好。"
+    assert len(requests) == 2
+    correction = requests[-1]["messages"]
+    assert any(message["content"] == "原始问题" for message in correction)
+    assert any("segments.1" in str(message["content"]) for message in correction)
 
 
-
-
-
-
-
-
+def test_invalid_optional_control_keeps_readable_reply():
+    reply = parse_chat_reply('{"segments":[{"ja":"うん。","zh":"嗯。","control":"broken"}]}')
+    assert reply.segments[0].text == "うん。"
+    assert reply.segments[0].translation == "嗯。"
+    assert reply.segments[0].control is None
 
 
 def test_parse_chat_reply_keeps_segment_portrait() -> None:
@@ -556,27 +397,11 @@ def test_parse_chat_reply_keeps_segment_portrait() -> None:
     assert reply.segments[0].portrait == "站立待机"
 
 
-def test_parse_chat_reply_fenced_json() -> None:
-    reply = parse_chat_reply(
-        '```json\n{"segments":[{"ja":"うん。","zh":"嗯。","tone":"中性"}]}\n```'
-    )
-
-    assert reply.segments[0].text == "うん。"
-
-
-def test_parse_chat_reply_bad_json_does_not_echo_raw() -> None:
-    reply = parse_chat_reply(
-        '{"segments":[{"ja":"うん。","zh":"这里有 `""` 裸双引号","tone":"中性"}]}'
-    )
-
-    assert reply.segments[0].text != '{"segments":[{"ja":"うん。","zh":"这里有 `""` 裸双引号","tone":"中性"}]}'
-
-
-def test_parse_chat_reply_suppresses_tts_for_safe_parse_failure() -> None:
-    reply = parse_chat_reply('{"segments":')
-
-    assert reply.segments[0].text
-    assert reply.segments[0].suppress_tts is True
+def test_incomplete_reply_is_not_displayed_or_spoken():
+    raw = '{"segments":'
+    reply = parse_chat_reply(raw)
+    assert reply.segments
+    assert all(segment.text and segment.text != raw and segment.suppress_tts for segment in reply.segments)
 
 
 def test_model_call_runtime_events_match_final_payload_and_trace(
@@ -593,14 +418,10 @@ def test_model_call_runtime_events_match_final_payload_and_trace(
         events.append((kwargs.get("event"), dict(attributes or {})))
 
     monkeypatch.setattr("sakura_assistant.llm.api_client.log_event", capture_log_event)
-    monkeypatch.setattr(
-        client,
-        "_post_chat_completions",
-        lambda _payload, cancel_checker=None: {
-            "choices": [{"message": {"content": '{"answer":"ok"}'}}],
-            "usage": {"prompt_tokens": 120, "completion_tokens": 8, "total_tokens": 128},
-        },
-    )
+    mock_http(monkeypatch, lambda _: httpx.Response(200, json={
+        "choices": [{"message": {"content": '{"answer":"ok"}'}}],
+        "usage": {"prompt_tokens": 120, "completion_tokens": 8, "total_tokens": 128},
+    }))
 
     with recorder.operation("chat-runtime-log", finalize_external=True):
         result = client.complete_raw(

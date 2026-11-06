@@ -21,6 +21,7 @@ export function browserFixture() {
       this.className = "";
       this.value = "";
       this.disabled = false;
+      this.inert = false;
       this.hidden = false;
       this.style = { setProperty() {}, removeProperty() {} };
       this.classList = {
@@ -40,7 +41,7 @@ export function browserFixture() {
     showModal() { this.open = true; }
     close() { this.open = false; }
     scrollIntoView(options) { this.revealed = options.block; }
-    click() { return this.fire("click"); }
+    async click() { if (!this.disabled) await this.fire("click"); }
     closest(selector) { return this.matches(selector) ? this : this.parentElement?.closest(selector) || null; }
     prepend(...children) { for (const child of children.reverse()) this.insertBefore(child, this.firstChild); }
     replaceWith(child) { const parent = this.parentElement; if (parent) { parent.insertBefore(child, this); this.remove(); } }
@@ -134,7 +135,7 @@ export function browserFixture() {
     const group = new Element("div"); const label = new Element("h3"); label.id = `navgrp-${name}`; group.append(label); shell.append(group);
   }
   for (const id of [
-    "pluginTotal", "pluginRoleTabs", "pluginSearch", "pluginInstallMenuRoot", "pluginInstallMenuButton", "pluginInstallMenu",
+    "pluginRoleTabs", "pluginSearch", "pluginInstallMenuRoot", "pluginInstallMenuButton", "pluginInstallMenu",
     "pluginInstallZipButton", "pluginInstallFolderButton", "pluginList", "pluginDetail",
     "aboutComponentsSummary", "aboutComponentsRefresh", "aboutComponentsState", "aboutComponentsList",
     "memorySurface", "screenAwarenessSurface", "page-memory", "page-plugins", "page-about",
@@ -147,10 +148,13 @@ export function browserFixture() {
   const timers = new Map();
   let nextTimer = 0;
   const window = {
+    CSSStyleSheet: class { replaceSync() {} },
     matchMedia: () => ({ matches: true }),
     setTimeout(callback, milliseconds) { const id = ++nextTimer; timers.set(id, { callback, milliseconds }); return id; },
     clearTimeout(id) { timers.delete(id); },
   };
+  document.defaultView = window;
+  document.adoptedStyleSheets = [];
   return {
     document, window, timers,
     async runTimers(milliseconds) {
@@ -175,7 +179,7 @@ export function field(key, overrides = {}) {
 
 export function snapshot(coreGenerationId = "generation-a", label = "fixture") {
   return {
-    schemaVersion: 1, revision: "0123456789abcdef", state: "ready", reasonCode: "READY",
+    schemaVersion: 1, state: "ready", reasonCode: "READY",
     windowGeneration: 7, coreGenerationId,
     plugins: [{
       installId: "pi_bundled_666978747572655f706c7567696e", pluginId: "fixture_plugin", name: "Fixture Plugin",

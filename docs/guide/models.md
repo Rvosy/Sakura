@@ -2,6 +2,8 @@
 
 Sakura 通过模型服务插件连接 API。默认提供 OpenAI 兼容接口，需要服务商的 Base URL 和模型名称；服务要求认证时填写 API Key，局域网等无需认证的服务可留空。
 
+保持“OpenAI 兼容模型”基础插件启用，也可安装 [OpenAI Official 插件](../../plugins/optional/sakura_codex/README.md)，在“添加模型服务”中选择“OpenAI Official”，然后在右侧登录 ChatGPT。登录后自动添加全部可用模型，只需到“模型”页更换对话模型。
+
 ## 获取模型服务信息
 
 在服务商的开发者控制台或 API 接入文档中，确认 API 地址、密钥和模型 ID 来自同一服务。网页聊天会员不一定包含 API 额度，请单独查看服务商说明。使用中转服务时，以该服务的接入说明为准。

@@ -11,8 +11,10 @@ HOST_CALLER_SCOPE: ContextVar[str | None] = ContextVar("sakura_host_caller_scope
 HOST_CALLER_LOG_METADATA: ContextVar[tuple[str, tuple[str, ...]]] = ContextVar("sakura_host_log_metadata", default=("", ()))
 
 HOST_CONTEXT_SERVICE = "sakura.host.context"
+HOST_HOOKS_SERVICE = "sakura.host.hooks"
 HOST_DIAGNOSTICS_SERVICE = "sakura.host.diagnostics"
 HOST_LOGGING_SERVICE = "sakura.host.logging"
+HOST_USAGE_SERVICE = "sakura.host.usage"
 HOST_ARTIFACTS_SERVICE = "sakura.host.artifacts"
 HOST_CHARACTER_SERVICE = "sakura.host.character"
 HOST_MODEL_SLOTS_SERVICE = "sakura.host.model_slots.v2"
@@ -32,8 +34,10 @@ __all__ = [
     "HOST_CHARACTER_SERVICE",
     "HOST_COMPOSER_TOOLS_V0_SERVICE",
     "HOST_CONTEXT_SERVICE",
+    "HOST_HOOKS_SERVICE",
     "HOST_DIAGNOSTICS_SERVICE",
     "HOST_LOGGING_SERVICE",
+    "HOST_USAGE_SERVICE",
     "HOST_CONVERSATION_SERVICE",
     "HOST_SPEECH_SERVICE",
     "HOST_MOBILE_SERVICE",

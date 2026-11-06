@@ -1,5 +1,4 @@
 import { createErrorDialog } from "../core/error-dialog.js";
-import { openLegacyDataImport } from './legacy-data-import.js';
 import { installClickIconMotion } from "../core/icons.js";
 import { enhanceSelect, refreshSelect, closeSelects, focusSelect } from "./select-control.js";
 import {
@@ -11,6 +10,10 @@ import {
 import {
   drawHueSurface,
   drawSaturationValueSurface,
+  hexToRgb,
+  hsvToRgb,
+  rgbToHex,
+  rgbToHsv,
 } from "./theme-color-picker.js";
 import {
   applyThemeTokens,
@@ -21,9 +24,13 @@ import {
 import { FALLBACK_THEME_TOKENS } from "../core/theme.js";
 import { installDevtoolsShortcutGuard } from "../core/devtools-guard.js";
 import { isRuntimeCancellation } from "../core/runtime-diagnostics.js";
+import { installSettingsWindowControls } from "./window-controls.js";
+import { installSettingsSidebar } from "./sidebar.js";
+import { createUsageStatistics } from "./usage-statistics.js";
 
 installDevtoolsShortcutGuard();
 installClickIconMotion(document);
+const sidebar = installSettingsSidebar({ document, storage: window.localStorage });
 
 const nativeInvoke = window.__TAURI__.core.invoke;
 let runtimeDiagnostics = null;
@@ -40,7 +47,15 @@ function invoke(command, args) {
   ));
 }
 const rootSettingsClient = createRootSettingsClient({ invoke });
+const usageStatistics = createUsageStatistics({ document, invoke });
 const settingsCloseFlowPromise = import("./close-flow.js");
+const windowControls = installSettingsWindowControls({
+  document,
+  appWindow: window.__TAURI__.window.getCurrentWindow(),
+  useCustomTitlebar: window.navigator.userAgent.includes("Windows"),
+  onClose: requestCancelClose,
+  onError: setError,
+});
 const runtimeFontsReadyPromise = import("../core/font-loader.js")
   .then(({ waitForRuntimeFonts }) => waitForRuntimeFonts({ families: ["sc"] }))
   .catch(() => {
@@ -72,8 +87,6 @@ const fields = {
   storageOpenUserRoot: document.getElementById("storageOpenUserRoot"),
   storageChooseTtsRoot: document.getElementById("storageChooseTtsRoot"),
   storageResetTtsRoot: document.getElementById("storageResetTtsRoot"),
-  legacyRoleDataImportButton: document.getElementById("legacyRoleDataImportButton"),
-  legacyRoleDataImportStatus: document.getElementById("legacyRoleDataImportStatus"),
   systemFirstRunGuideButton: document.getElementById("systemFirstRunGuideButton"),
   macosSettingsOpenSystemSettingsButton: document.getElementById("macosSettingsOpenSystemSettingsButton"),
   macosSettingsOpenAppleSupportButton: document.getElementById("macosSettingsOpenAppleSupportButton"),
@@ -93,6 +106,7 @@ const fields = {
   telemetryCopyButton: document.getElementById("telemetryCopyButton"),
   telemetryRegenerateButton: document.getElementById("telemetryRegenerateButton"),
   aboutVersion: document.getElementById("aboutVersion"),
+  sidebarVersion: document.getElementById("sidebarVersion"),
   aboutWebsiteButton: document.getElementById("aboutWebsiteButton"),
   aboutRepositoryButton: document.getElementById("aboutRepositoryButton"),
   aboutChangelogButton: document.getElementById("aboutChangelogButton"),
@@ -102,7 +116,10 @@ const fields = {
   applyButton: document.getElementById("applyButton"),
   cancelButton: document.getElementById("cancelButton"),
   pageHead: document.querySelector(".page-head"),
+  pageScroll: document.querySelector(".page-scroll"),
+  footer: document.querySelector("footer"),
   pageTitle: document.getElementById("pageTitle"),
+  pageIcon: document.getElementById("pageIcon"),
   pageSubtitle: document.getElementById("pageSubtitle"),
   navItems: Array.from(document.querySelectorAll(".nav-item[data-page]")),
   pages: {
@@ -115,6 +132,7 @@ const fields = {
     tools: document.getElementById("page-tools"),
     plugins: document.getElementById("page-plugins"),
     system: document.getElementById("page-system"),
+    statistics: document.getElementById("page-statistics"),
     "open-help": document.getElementById("page-open-help"),
     about: document.getElementById("page-about"),
     memory: document.getElementById("page-memory"),
@@ -137,7 +155,6 @@ let runtimeVoiceController = null;
 let runtimeAsrController = null;
 let runtimeAutostartController = null;
 let firstRunGuideController = null;
-let runtimeCapabilityManifest = null;
 let runtimeVisualEffectModes = Object.freeze([
   Object.freeze({ id: "solid", label: "纯色块", disabled: false, reason: "" }),
   Object.freeze({ id: "gaussian_blur", label: "高斯模糊", disabled: false, reason: "" }),
@@ -244,6 +261,10 @@ function showError({ title = "操作失败", message = "", error }) {
 function setError(error, message = "操作失败") {
   if (error == null || (typeof error === "string" && !error.trim())) {
     fields.errorText.replaceChildren();
+    return;
+  }
+  if (runtimeProviderFeature?.handleValidationError(error)) {
+    fields.errorText.textContent = error.message;
     return;
   }
   showError({ title: message, error });
@@ -653,78 +674,6 @@ function themeFieldValue(id) {
   return normalizeColorText(input?.value, request.theme_defaults[id]);
 }
 
-function hexToRgb(hex) {
-  const value = normalizeColorText(hex, "#000000").slice(1);
-  return {
-    r: Number.parseInt(value.slice(0, 2), 16),
-    g: Number.parseInt(value.slice(2, 4), 16),
-    b: Number.parseInt(value.slice(4, 6), 16),
-  };
-}
-
-function componentToHex(value) {
-  return Math.round(Math.min(255, Math.max(0, value))).toString(16).padStart(2, "0");
-}
-
-function rgbToHex({ r, g, b }) {
-  return `#${componentToHex(r)}${componentToHex(g)}${componentToHex(b)}`;
-}
-
-function rgbToHsv({ r, g, b }) {
-  const red = r / 255;
-  const green = g / 255;
-  const blue = b / 255;
-  const max = Math.max(red, green, blue);
-  const min = Math.min(red, green, blue);
-  const delta = max - min;
-  let h = 0;
-  if (delta !== 0) {
-    if (max === red) {
-      h = ((green - blue) / delta) % 6;
-    } else if (max === green) {
-      h = (blue - red) / delta + 2;
-    } else {
-      h = (red - green) / delta + 4;
-    }
-    h *= 60;
-    if (h < 0) {
-      h += 360;
-    }
-  }
-  return {
-    h,
-    s: max === 0 ? 0 : delta / max,
-    v: max,
-  };
-}
-
-function hsvToRgb({ h, s, v }) {
-  const chroma = v * s;
-  const x = chroma * (1 - Math.abs(((h / 60) % 2) - 1));
-  const m = v - chroma;
-  let red = 0;
-  let green = 0;
-  let blue = 0;
-  if (h < 60) {
-    red = chroma; green = x;
-  } else if (h < 120) {
-    red = x; green = chroma;
-  } else if (h < 180) {
-    green = chroma; blue = x;
-  } else if (h < 240) {
-    green = x; blue = chroma;
-  } else if (h < 300) {
-    red = x; blue = chroma;
-  } else {
-    red = chroma; blue = x;
-  }
-  return {
-    r: (red + m) * 255,
-    g: (green + m) * 255,
-    b: (blue + m) * 255,
-  };
-}
-
 const pageMeta = {
   character: { title: "角色与布局" },
   appearance: { title: "外观" },
@@ -735,12 +684,32 @@ const pageMeta = {
   tools: { title: "工具" },
   plugins: { title: "插件" },
   system: { title: "系统" },
+  statistics: { title: "使用统计" },
   about: { title: "关于" },
   memory: { title: "记忆" },
   "open-help": { title: "应用打开遇到问题？" },
 };
 
+function syncFooterShadow() {
+  const { pageScroll, footer } = fields;
+  footer.classList.toggle("has-content-below",
+    !pageScroll.classList.contains("is-admin-active")
+      && pageScroll.scrollHeight - pageScroll.clientHeight - pageScroll.scrollTop > 1);
+}
+
+const pageScrollResize = new ResizeObserver(syncFooterShadow);
+fields.pageScroll.addEventListener("scroll", syncFooterShadow, { passive: true });
+
+function observePageScroll() {
+  pageScrollResize.disconnect();
+  pageScrollResize.observe(fields.pageScroll);
+  const page = document.querySelector(".settings-page.is-active");
+  if (page) pageScrollResize.observe(page);
+  syncFooterShadow();
+}
+
 function showPage(page) {
+  const pageChanged = document.querySelector(".settings-page.is-active")?.id !== `page-${page}`;
   Array.from(document.querySelectorAll(".settings-page")).map(element => [element.id.slice(5), element]).forEach(([key, element]) => {
     element.hidden = key !== page;
     element.classList.toggle("is-active", key === page);
@@ -750,11 +719,12 @@ function showPage(page) {
     item.classList.toggle("is-active", active);
     if (active) {
       item.setAttribute("aria-current", "page");
+      fields.pageIcon.replaceChildren(item.querySelector(".nav-item-icon").cloneNode(true));
     } else {
       item.removeAttribute("aria-current");
     }
   });
-  document.querySelector(".page-scroll")?.classList.toggle(
+  fields.pageScroll.classList.toggle(
     "is-admin-active",
     page === "memory" || page === "plugins" || page === "providers",
   );
@@ -763,14 +733,16 @@ function showPage(page) {
     fields.pageTitle.textContent = meta.title;
     fields.pageSubtitle.textContent = "";
     fields.pageSubtitle.hidden = true;
-    replayMotion(fields.pageHead, "is-switching");
+    if (pageChanged) replayMotion(fields.pageHead, "is-switching");
   }
   runtimeProviderFeature?.onPageChanged(page);
+  usageStatistics.onPageChanged(page);
   runtimePluginController?.onPageChanged(page);
   runtimePluginMarketplace?.onPageChanged(page);
   runtimeAsrController?.onPageChanged(page);
   void runtimeVoiceController?.onPageChanged(page);
   runtimeCharacterFeature?.onPageChanged(page);
+  observePageScroll();
 }
 
 function syncBubbleState() {
@@ -838,20 +810,6 @@ async function resetTtsStorageRoot() {
   }
 }
 
-let legacyImportDialog = null;
-function importLegacyRoleData() {
-  if (legacyImportDialog?.dialog.isConnected) return;
-  legacyImportDialog = openLegacyDataImport({
-    client: rootSettingsClient,
-    setBusy: setSubmissionBusy,
-    onError: setError,
-    onComplete: async () => {
-      fields.legacyRoleDataImportStatus.textContent = "迁移完成。";
-      await runtimeCharacterFeature?.refreshCatalog({});
-    },
-  });
-}
-
 function applyUpdateSnapshot(snapshot) {
   latestUpdateSnapshot = snapshot;
   fields.updateFeedback.hidden = !snapshot.available;
@@ -876,6 +834,7 @@ function applyUpdateSnapshot(snapshot) {
 
 function applyAboutSnapshot(snapshot) {
   fields.aboutVersion.textContent = `版本 v${snapshot.version}`;
+  fields.sidebarVersion.textContent = `v${snapshot.version}`;
 }
 
 async function refreshAboutSettings() {
@@ -1038,7 +997,7 @@ function renderThemeControls() {
     swatchButton.type = "button";
     swatchButton.className = "theme-color-swatch";
     swatchButton.dataset.themeSwatch = id;
-    swatchButton.dataset.tooltip = "调整颜色";
+    swatchButton.setAttribute("aria-label", `调整${label}`);
     swatchButton.addEventListener("click", () => openThemeColorPopover(id, swatchButton));
 
     const textInput = document.createElement("input");
@@ -1384,11 +1343,6 @@ function setThemeValues(theme, options = {}) {
   update();
 }
 
-function runtimeFeatureAvailable(feature) {
-  return Object.values(runtimeCapabilityManifest?.sections || {})
-    .some((section) => section?.features?.[feature] === "available");
-}
-
 // 布局滑块的输出显示；预览和保存由 Appearance controller 处理。
 const layoutSliders = [
   "portraitScale",
@@ -1559,7 +1513,6 @@ fields.storageOpenUserRoot.addEventListener("click", () => {
 });
 fields.storageChooseTtsRoot.addEventListener("click", chooseTtsStorageRoot);
 fields.storageResetTtsRoot.addEventListener("click", resetTtsStorageRoot);
-fields.legacyRoleDataImportButton.addEventListener("click", importLegacyRoleData);
 fields.aboutWebsiteButton.addEventListener("click", () => {
   rootSettingsClient.aboutOpenWebsite().catch((error) => setError(error));
 });
@@ -1720,6 +1673,10 @@ detailCard?.addEventListener("input", (event) => {
 
 window.addEventListener("beforeunload", () => {
   beginSettingsWindowClose();
+  windowControls.dispose();
+  sidebar.dispose();
+  usageStatistics.dispose();
+  pageScrollResize.disconnect();
   errorDialog.dispose();
   runtimeAppearanceController?.dispose();
   runtimeCharacterFeature?.dispose();
@@ -1747,6 +1704,7 @@ async function initializeRuntimeSettingsSection(initialize) {
 
 async function startSettingsFrontend() {
   await runtimeDiagnosticsReady;
+  await windowControls.ready;
   let windowRevealed = false;
   const reveal = async () => {
     if (windowRevealed || settingsWindowClosing) return;
@@ -1789,7 +1747,6 @@ async function startSettingsFrontend() {
     inputVisualEffectModes,
   } = await import("./capability-shell.js");
   manifest = applyCapabilityManifest(document, manifest);
-  runtimeCapabilityManifest = manifest;
   runtimeVisualEffectModes = inputVisualEffectModes(manifest);
   const openVoicePlugin = (pluginId) => {
     const plugin = runtimePluginController?.installedPlugins().find(item => item.pluginId === pluginId);
@@ -1862,6 +1819,7 @@ async function startSettingsFrontend() {
         enhanceSelect,
         refreshSelect,
         markInvalid,
+        focusSelect,
         setControlDisabled,
         setNumericBounds,
       });
@@ -1994,10 +1952,6 @@ async function startSettingsFrontend() {
   if (featureStatus(manifest, "telemetry.anonymous_statistics") === "available") {
     await initializeRuntimeSettingsSection(refreshTelemetrySettings);
   }
-  fields.legacyRoleDataImportButton.disabled = featureStatus(manifest, "storage.legacy_role_data_import") !== "available";
-  if (fields.legacyRoleDataImportButton.disabled) {
-    fields.legacyRoleDataImportStatus.textContent = "当前运行环境不支持旧数据导入。";
-  }
   if (manifest.availableSections.includes("about")) {
     await initializeRuntimeSettingsSection(refreshAboutSettings);
   }
@@ -2007,6 +1961,7 @@ async function startSettingsFrontend() {
 
 startSettingsFrontend()
   .then(async () => {
+    observePageScroll();
     const { createFirstRunGuide, firstRunGuideRequested } = await import("./first-run-guide.js");
     firstRunGuideController = createFirstRunGuide({
       document,

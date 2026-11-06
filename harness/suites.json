@@ -1,6 +1,22 @@
 {
   "schema_version": 1,
   "profiles": {
+    "first-run": {
+      "description": "验证首次启动、配置引导和已完成配置后的设置入口",
+      "cases": [
+        "first-run-lifecycle",
+        "runtime-v2-product-shell-tests",
+        "first-run-frontend-journey"
+      ]
+    },
+    "usage-statistics": {
+      "description": "验证本地用量累计、历史日志补入、对话计数和设置统计页",
+      "cases": ["usage-statistics-python", "usage-statistics-frontend", "usage-statistics-browser"]
+    },
+    "memory": {
+      "description": "验证 Mem0 的读写、整理和插件运行",
+      "cases": ["runtime-v2-memory-tests"]
+    },
     "smoke": {
       "description": "快速验证 Product Harness 与 Runtime v2 核心协议边界",
       "cases": [
@@ -149,15 +165,6 @@
         "runtime-v2-character-studio-frontend-journey"
       ]
     },
-    "legacy-import": {
-      "description": "验证 0.9.x 显式迁移、paused Core、Timeline 转换、回滚和首次页交互",
-      "cases": [
-        "legacy-import-python-tests",
-        "legacy-import-rust-tests",
-        "legacy-import-rust-transaction-tests",
-        "legacy-import-frontend-behavior"
-      ]
-    },
     "remote-telemetry": {
       "description": "验证匿名统计配置、固定 DTO、隐私边界和设置页接口",
       "cases": [
@@ -192,6 +199,38 @@
     }
   },
   "cases": [
+    {
+      "id": "first-run-frontend-journey",
+      "description": "验证欢迎页启动、失败重试、首次配置引导和设置页",
+      "argv": [
+        "{python}",
+        "desktop/frontend/tests/first-run.journey.py"
+      ],
+      "timeout_seconds": 120,
+      "env": {
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "PYTHONIOENCODING": "utf-8"
+      }
+    },
+    {
+      "id": "usage-statistics-python",
+      "description": "验证用量口径、历史去重、持久化和对话计数",
+      "argv": ["{python}", "-m", "pytest", "-q", "tests/unit/test_usage_statistics.py", "tests/integration/test_core_host_real_chat_integration.py::test_real_core_local_provider_completed_projection_and_history"],
+      "timeout_seconds": 60
+    },
+    {
+      "id": "usage-statistics-frontend",
+      "description": "验证趋势日期补齐、未知用量和按月汇总",
+      "argv": ["node", "--test", "desktop/frontend/tests/usage-statistics.test.js"],
+      "timeout_seconds": 60
+    },
+    {
+      "id": "usage-statistics-browser",
+      "description": "用真实统计查询验证设置导航、范围切换和图表交互",
+      "argv": ["{python}", "desktop/frontend/tests/usage-statistics.journey.py"],
+      "timeout_seconds": 120,
+      "env": {"PYTHONIOENCODING": "utf-8", "PYTHONDONTWRITEBYTECODE": "1"}
+    },
     {
       "id": "remote-telemetry-python-tests",
       "description": "验证 Provider usage、Context 指标、Core 错误栈和 Privacy Sentinel",
@@ -243,24 +282,7 @@
       }
     },
     {
-      "id": "legacy-import-python-tests",
-      "description": "验证 0.9.x 检查、配置/角色/Timeline/Memory 转换、脱敏和事务回滚",
-      "argv": [
-        "{python}",
-        "-m",
-        "pytest",
-        "tests/unit/test_legacy_import.py",
-        "tests/unit/test_legacy_incremental_import.py",
-        "-q"
-      ],
-      "timeout_seconds": 180,
-      "env": {
-        "PYTHONDONTWRITEBYTECODE": "1",
-        "PYTHONIOENCODING": "utf-8"
-      }
-    },
-    {
-      "id": "legacy-import-rust-tests",
+      "id": "first-run-lifecycle",
       "description": "验证首次启动 lifecycle 保持 paused 并支持显式启动",
       "argv": [
         "cargo",
@@ -276,38 +298,6 @@
       "env": {
         "NO_COLOR": "1",
         "CARGO_TERM_COLOR": "never"
-      }
-    },
-    {
-      "id": "legacy-import-rust-transaction-tests",
-      "description": "验证迁移 deadline、进程树回收、journal 三态和不确定 finalize 的失败关闭",
-      "argv": [
-        "cargo",
-        "test",
-        "--manifest-path",
-        "desktop/src-tauri/Cargo.toml",
-        "--locked",
-        "legacy_import::tests",
-        "--",
-        "--test-threads=1"
-      ],
-      "timeout_seconds": 180,
-      "env": {
-        "NO_COLOR": "1",
-        "CARGO_TERM_COLOR": "never"
-      }
-    },
-    {
-      "id": "legacy-import-frontend-behavior",
-      "description": "验证目录检查会立即进入可见状态，并使用不确定进度",
-      "argv": [
-        "node",
-        "--test",
-        "desktop/frontend/tests/legacy-import-inspection-feedback.test.js"
-      ],
-      "timeout_seconds": 120,
-      "env": {
-        "NO_COLOR": "1"
       }
     },
     {
@@ -582,8 +572,10 @@
         "tests/unit/test_model_client.py",
         "tests/unit/test_model_provider_profiles.py",
         "tests/unit/test_model_provider_transport.py",
+        "tests/unit/test_codex_provider.py",
         "tests/unit/test_plugin_settings_apply.py",
         "tests/integration/test_model_service.py",
+        "tests/integration/test_codex_plugin.py",
         "tests/integration/test_model_optional_startup.py",
         "tests/integration/test_provider_apply.py",
         "-q"
@@ -596,15 +588,19 @@
     },
     {
       "id": "runtime-v2-memory-tests",
-      "description": "验证 Mem0 与便签记忆的通用 Context/Tools/Collection、整理游标及独立数据边界",
+      "description": "验证 Mem0 的 Context/Tools/Collection 接入、整理游标与数据边界",
       "argv": [
         "{python}",
         "-m",
         "pytest",
         "tests/unit/test_core_host_memory.py",
+        "tests/unit/test_sakura_mem0_fastembed.py",
+        "tests/unit/test_sakura_mem0_plugin.py",
+        "tests/unit/test_mem0_runtime_v4.py",
+        "tests/unit/test_data_transfer.py",
+        "tests/unit/test_assistant_host_contract.py",
+        "tests/unit/test_context_host_contract.py",
         "tests/integration/test_wp_4_01_memory_capability.py",
-        "tests/unit/test_fact_memory_plugin.py",
-        "tests/integration/test_fact_memory_core_protocol.py",
         "-q"
       ],
       "timeout_seconds": 180,
@@ -633,6 +629,7 @@
         "tests/unit/test_plugin_settings_contract.py",
         "tests/unit/test_plugin_settings_collections.py",
         "tests/unit/test_plugin_service_binding.py",
+        "tests/unit/test_plugin_hooks.py",
         "tests/unit/test_bound_service_lifecycle.py",
         "tests/unit/test_context_contributions.py",
         "tests/integration/test_context_plugin_chat.py",
@@ -673,7 +670,7 @@
     {
       "id": "plugin-marketplace-update",
       "description": "验证运行中插件自动更新、依赖恢复和失败回滚",
-      "argv": ["{python}", "-m", "pytest", "-q", "tests/unit/test_marketplace_update.py", "tests/unit/test_plugin_installer.py", "tests/unit/test_plugin_app_compatibility.py", "tests/unit/test_offline_plugin_updates.py", "tests/unit/test_plugin_frontend_modules.py"],
+      "argv": ["{python}", "-m", "pytest", "-q", "tests/unit/test_marketplace_update.py", "tests/unit/test_plugin_installer.py", "tests/unit/test_plugin_app_compatibility.py", "tests/unit/test_plugin_frontend_modules.py", "tests/integration/test_core_host_real_chat_integration.py::test_failed_local_assistant_update_reports_error_and_reinstall_restores_chat"],
       "timeout_seconds": 120
     },
     {
@@ -1197,7 +1194,7 @@
     {
       "id": "settings-contributions-frontend",
       "description": "验证动态页面、私有设置、草稿保留和部分保存",
-      "argv": ["node", "--test", "desktop/frontend/tests/settings-pages.test.js", "desktop/frontend/tests/plugin-settings.test.js", "desktop/frontend/tests/plugin-runtime.test.js", "desktop/frontend/tests/provider-settings.test.js"],
+      "argv": ["node", "--test", "desktop/frontend/tests/settings-pages.test.js", "desktop/frontend/tests/plugin-settings.test.js", "desktop/frontend/tests/plugin-runtime.test.js", "desktop/frontend/tests/provider-settings.test.js", "desktop/frontend/tests/codex-provider.test.js"],
       "timeout_seconds": 120
     },
     {

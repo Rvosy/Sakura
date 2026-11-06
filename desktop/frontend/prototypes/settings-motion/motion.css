@@ -1,0 +1,35 @@
+/* 演示只补动效，页面尺寸、布局和控件外观沿用正式设置。 */
+.preview-test-feedback { display: flex; align-items: center; gap: 6px; padding: 10px 0 0; color: var(--sakura-primary); }
+.preview-asr-waveform { width: 100%; height: 36px; display: block; color: var(--sakura-primary); }
+.preview-test-feedback span { font-size: 12px; color: var(--sakura-secondary-text); }
+.preview-test-feedback[data-state="success"] span { color: var(--sakura-primary); }
+.preview-test-feedback[data-state="error"] span { color: var(--sakura-accent); }
+.preview-asr-waveform[hidden] { display: none; }
+.preview-action-icon { display: inline-flex; align-items: center; width: 16px; height: 16px; margin-right: 7px; vertical-align: -3px; }
+.preview-action-icon .sakura-morph-icon { width: 16px; height: 16px; }
+body[data-preview-motion="off"] .preview-action-icon { display: none; }
+body[data-preview-motion="on"] .advanced-section { interpolate-size: allow-keywords; }
+body[data-preview-motion="on"] .advanced-section::details-content {
+  height: 0;
+  opacity: 0;
+  overflow: clip;
+  transition: height 220ms var(--ease), opacity 180ms ease, content-visibility 220ms allow-discrete;
+}
+body[data-preview-motion="on"] .advanced-section[open]::details-content { height: auto; opacity: 1; }
+body[data-preview-motion="on"] .custom-select__menu {
+  opacity: 0;
+  transform: translateY(-4px) scale(.99);
+  transition: opacity 150ms var(--ease), transform 150ms var(--ease), display 150ms allow-discrete, overlay 150ms allow-discrete;
+}
+body[data-preview-motion="on"] .custom-select__menu:popover-open { opacity: 1; transform: none; animation: none; }
+@starting-style {
+  body[data-preview-motion="on"] .custom-select__menu:popover-open { opacity: 0; transform: translateY(-4px) scale(.99); }
+}
+body[data-preview-motion="on"] .sakura-icon.icon-user-round { --icon-motion: lucide-breathe 380ms ease-in-out; }
+body[data-preview-motion="on"] .sakura-icon:is(.icon-cloud, .icon-messages-square) { --icon-motion: lucide-bounce 400ms ease-in-out; }
+body[data-preview-motion="on"] .sakura-icon:is(.icon-cpu, .icon-info) { --icon-motion: lucide-breathe 400ms ease-in-out; }
+body[data-preview-motion="on"] .sakura-icon.icon-wrench { --icon-motion: lucide-wave 450ms ease-in-out; }
+@media (prefers-reduced-motion: reduce) {
+  body[data-preview-motion="on"] .advanced-section::details-content,
+  body[data-preview-motion="on"] .custom-select__menu { transition: none; }
+}

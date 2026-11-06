@@ -18,8 +18,8 @@ pub struct DownloadSources(pub UiConfigRepository);
 pub fn defaults() -> Vec<DownloadSource> {
     vec![
         DownloadSource {
-            name: "gitproxy.mrhjx.cn".into(),
-            prefix: "https://gitproxy.mrhjx.cn/".into(),
+            name: "gh-proxy.com".into(),
+            prefix: "https://gh-proxy.com/".into(),
             enabled: true,
         },
         DownloadSource {

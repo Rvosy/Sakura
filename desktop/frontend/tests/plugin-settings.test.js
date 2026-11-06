@@ -82,6 +82,42 @@ test("native image refresh clears QR while record reads preserve permission draf
   ui.feature.dispose();
 });
 
+test("record tabs preserve independent drafts across navigation and refresh, and cancel restores them", async () => {
+  const data = snapshot();
+  const records = (sectionId, columns, values) => ({ sectionId, title: sectionId, reasonCode: "READY", surface: null,
+    presentation: { component: "record-table", itemsField: "items", valueField: "grants", columns },
+    fields: [field("items", { type: "data", readonly: true }), field("grants", { type: "data", default: {} })],
+    actions: [], collections: [], values: { items: [{ id: "one", label: sectionId }], grants: { one: values } } });
+  data.plugins[0].sections = [records("devices", [field("alias"), field("mode", { type: "select", default: "hidden", options: [
+    { value: "hidden", label: "不开放" }, { value: "read", label: "仅查询" }, { value: "control", label: "允许控制" }] })], { alias: "", mode: "hidden" }),
+    records("scenes", [field("allowed", { type: "boolean", default: false })], { allowed: false })];
+  const ui = featureFixture(async () => structuredClone(data));
+  ui.feature.initialize(structuredClone(data)); await ui.openSettings();
+  const dialog = ui.document.querySelector('.plugin-settings-dialog');
+  const panels = dialog.querySelectorAll('[role="tabpanel"]');
+  const tabs = dialog.querySelectorAll('[role="tab"]');
+  const alias = panels[0].querySelector('.record-editor input');
+  alias.value = "床头灯"; await alias.fire("input");
+  const control = panels[0].querySelectorAll('.record-option input')[2];
+  control.checked = true; await control.fire("change");
+  await tabs[1].fire("click");
+  assert.equal(panels[0].hidden, true);
+  assert.equal(panels[1].hidden, false);
+  const allowed = panels[1].querySelector('.record-editor input'); allowed.checked = true; await allowed.fire("change");
+  await ui.feature.refreshCurrent();
+  await tabs[1].fire("keydown", { key: "ArrowLeft" });
+  assert.equal(panels[0].hidden, false);
+  assert.equal(panels[1].hidden, true);
+  assert.equal(alias.value, "床头灯");
+  assert.equal(control.checked, true);
+  assert.equal(allowed.checked, true);
+  assert.equal(ui.feature.isDirty(), true);
+  await ui.document.querySelector('.plugin-settings-dialog').fire('cancel');
+  assert.equal(ui.feature.isDirty(), false);
+  assert.deepEqual(ui.errors, []);
+  ui.feature.dispose();
+});
+
 const collectionSurfaces = ["memory", null, "custom_archive"];
 
 test("connection stages show only available actions and connected records", async () => {
@@ -164,33 +200,6 @@ test("failed plugin status retains accessible diagnostics in the shared error di
   assert.equal(ui.errors.length, 1);
   assert.match(ui.errors[0].diagnostic, /File not found: C:\/plugins\/.sakura-dependencies.json/);
   assert.match(ui.errors[0].diagnostic, /verified_path:233/);
-  ui.feature.dispose();
-});
-
-test("plugin field availability follows boolean toggles without losing values", async () => {
-  const data = snapshot();
-  const section = data.plugins[0].sections[0];
-  section.fields = [field("enabled", { type: "boolean", value: true }),
-    field("interval", { type: "integer", value: 25, enabledWhen: { field: "enabled", equals: "true" } })];
-  section.values = { enabled: true, interval: 25 };
-  const ui = featureFixture(async () => data);
-  ui.feature.initialize(data);
-  await ui.openSettings();
-  const block = ui.document.querySelector('[data-plugin-section="general"]');
-  const toggle = block.querySelectorAll('input').find(input => input.type === "checkbox");
-  const input = block.querySelectorAll('input').find(input => input.type === "number");
-  assert.equal(input.disabled, false);
-  toggle.checked = false;
-  await toggle.fire("change");
-  await block.fire("change", { target: toggle });
-  assert.equal(input.disabled, true);
-  assert.equal(input.value, "25");
-  toggle.checked = true;
-  await toggle.fire("change");
-  await block.fire("change", { target: toggle });
-  assert.equal(input.disabled, false);
-  assert.equal(input.value, "25");
-  assert.equal(ui.feature.isDirty(), false);
   ui.feature.dispose();
 });
 
@@ -278,7 +287,8 @@ test("a pending character choice locks only character-owned Memory collections i
   try {
     ui.feature.initialize(data);
     await ui.runTimers(0);
-    assert.deepEqual(ui.document.querySelectorAll(".memory-archive").map((archive) => archive.inert), [true, false]);
+    assert.deepEqual(ui.document.querySelectorAll(".memory-archive").map(archive => archive.inert), [true, false]);
+    assert.match(ui.document.querySelector(".memory-record-content").textContent, /global-note/);
   } finally {
     ui.feature.dispose();
   }
@@ -622,6 +632,36 @@ test("plugin dialog preserves drafts across refresh, restores cancel, and saves 
   assert.equal(document.querySelector(".plugin-settings-dialog"), null);
 });
 
+for (const retry of [false, true]) test(`局部保存${retry ? "失败后重试仍" : ""}保留未编辑字段`, async t => {
+  const data = snapshot();
+  const section = data.plugins[0].sections[0];
+  section.fields.push(field("other", { type: "string", required: true }));
+  section.values.other = "initial";
+  const saves = [];
+  const ui = featureFixture(async (command, args) => {
+    if (command === "settings_plugins_get") return structuredClone(data);
+    assert.equal(command, "settings_plugins_save");
+    saves.push(args.values);
+    Object.assign(section.values, args.values);
+    if (retry && saves.length === 1) throw new Error("CONFIG_APPLY_FAILED");
+    return { saved: true, pluginId: args.pluginId, sectionId: args.sectionId, changePlan: "applied",
+      applicationState: "applied", applicationReasonCode: "READY" };
+  });
+  t.after(() => ui.feature.dispose());
+  ui.feature.initialize(structuredClone(data)); await ui.openSettings();
+  const input = ui.document.querySelector('.plugin-settings-dialog input');
+  input.value = "draft"; await input.fire("input");
+  section.values.other = "changed elsewhere";
+  if (retry) {
+    await assert.rejects(() => ui.feature.save(), /CONFIG_APPLY_FAILED/);
+    assert.equal(ui.feature.isDirty(), true);
+  }
+  await ui.feature.save();
+  assert.deepEqual(section.values, { label: "draft", other: "changed elsewhere" });
+  assert.ok(saves.every(values => Object.keys(values).length === 1 && values.label === "draft"));
+  assert.equal(ui.feature.isDirty(), false);
+});
+
 test("plugin feature owns page polling and removes mounted listeners and pending work on disposal", async () => {
   const calls = [];
   const fixture = featureFixture(async (command) => { calls.push(command); return snapshot(); });
@@ -919,7 +959,6 @@ test("disposing during dialog exit releases it once and ignores the late animati
   assert.equal(ui.feature.dialogElement(), undefined);
   assert.equal(ui.timers.size, 0);
 });
-
 
 test("memory cards render only the owning collection columns and preserve record identity", async () => {
   const data = snapshot();

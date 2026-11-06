@@ -10,6 +10,7 @@ import subprocess
 import sys
 import threading
 import time
+from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from types import SimpleNamespace
@@ -18,7 +19,6 @@ from typing import BinaryIO
 import pytest
 
 from app.core_host.protocol import encode_frame, read_frame
-from app.legacy_import.history import import_history
 from app.storage.timeline import TimelineKind, TimelineStore
 from app.core_host.real_chat import RealChatBoundary, RealChatRejection
 from app.plugin_sdk.sakura_assistant_contract import ChatReply, ChatSegment
@@ -63,8 +63,7 @@ class _ProviderHandler(BaseHTTPRequestHandler):
         body = json.loads(self.rfile.read(length))
         type(self).requests.append(body)
         type(self).received.set()
-        if type(self).outcome == "compatibility" and len(type(self).requests) == 1:
-            assert "response_format" in body
+        if type(self).outcome == "compatibility" and "response_format" in body:
             response = b'{"error":{"message":"response_format unsupported"}}'
             self.send_response(400)
             self.send_header("Content-Type", "application/json")
@@ -193,14 +192,15 @@ def _isolated_assistant_distribution(tmp_path, assistant_dependencies, monkeypat
                     ignore=shutil.ignore_patterns("__pycache__"),
                 )
         shutil.copy2(REPO_ROOT / "VERSION", distribution / "VERSION")
-        dependencies = distribution / "plugins/dependencies/sakura.model.openai_compatible"
-        if not dependencies.exists():
-            shutil.copytree(assistant_dependencies, dependencies, copy_function=os.link)
-            (dependencies / ".sakura-dependencies.json").write_text(
-                json.dumps({"schemaVersion": 1, "kind": "requirements.txt",
-                            "python": f"{sys.version_info.major}.{sys.version_info.minor}"}),
-                encoding="utf-8",
-            )
+        for plugin_id in ("sakura.assistant.default", "sakura.model.openai_compatible"):
+            dependencies = distribution / "plugins/dependencies" / plugin_id
+            if not dependencies.exists():
+                shutil.copytree(assistant_dependencies, dependencies, copy_function=os.link)
+                (dependencies / ".sakura-dependencies.json").write_text(
+                    json.dumps({"schemaVersion": 1, "kind": "requirements.txt",
+                                "python": f"{sys.version_info.major}.{sys.version_info.minor}"}),
+                    encoding="utf-8",
+                )
         return start_host(app_root, distribution_root=distribution)
 
     monkeypatch.setattr(sys.modules[__name__], "_start_host", start)
@@ -233,8 +233,9 @@ def _start_host(
     process = subprocess.Popen(
         [
             sys.executable,
-            "-m",
-            "app.core_host",
+            "-c",
+            "import runpy,sys; sys.path.insert(0,sys.argv.pop(1)); runpy.run_module('app.core_host',run_name='__main__')",
+            str(REPO_ROOT),
             "--distribution-root",
             str(distribution_root),
             "--user-root",
@@ -1671,7 +1672,7 @@ def test_real_core_local_provider_completed_projection_and_history(tmp_path: Pat
             ),
         )
         assert history_page["ok"] is True
-        assert history_page["payload"] == {
+        expected_page = {
             "schemaVersion": 1,
             "coreGenerationId": GENERATION_ID,
             "characterId": "sakura",
@@ -1707,8 +1708,16 @@ def test_real_core_local_provider_completed_projection_and_history(tmp_path: Pat
                 },
             ],
             "beforeCursor": None,
-            "hasMore": False,
+            "afterCursor": None,
         }
+        expected_page["entries"].sort(key=lambda entry: datetime.fromisoformat(entry["createdAt"]))
+        assert history_page["payload"] == expected_page
+        usage = _exchange(process, _request("usage", "usage.statistics.get", {"period": "all"}))
+        assert usage["ok"] is True
+        assert usage["payload"]["summary"]["calls"] == len(_ProviderHandler.requests)
+        assert usage["payload"]["conversation"]["turns"] == 1
+        assert {row["id"] for row in usage["payload"]["categories"]} == {"conversation"}
+        assert {row["id"] for row in usage["payload"]["plugins"]} == {"sakura.assistant.default"}
         shutdown = _exchange(process, _request("shutdown", "system.shutdown", {"appExiting": True}))
         assert shutdown["payload"] == {"accepted": True}
         assert process.wait(timeout=5) == 0
@@ -1720,68 +1729,6 @@ def test_real_core_local_provider_completed_projection_and_history(tmp_path: Pat
         assert process.stderr is not None
         stderr = _stderr_text(process)
         assert "LOCAL_TEST_KEY" not in stderr
-    finally:
-        _stop(process)
-        _stop_provider(server, provider_thread)
-
-
-def test_real_next_turn_reads_imported_legacy_timeline(tmp_path: Path) -> None:
-    server, provider_thread = _start_provider("complete")
-    port = server.server_address[1]
-    app_root = _configure_app_root(tmp_path, port)
-    legacy = tmp_path / "legacy"
-    history_root = legacy / "data" / "chat_history"
-    history_root.mkdir(parents=True)
-    records = [
-        {
-            "created_at": "2026-01-01T00:00:00+08:00",
-            "role": "user",
-            "content": "LEGACY_CONTEXT_USER_8F21",
-        },
-        {
-            "created_at": "2026-01-01T00:00:01+08:00",
-            "role": "assistant",
-            "content": "LEGACY_CONTEXT_REPLY_4A17",
-            "translation": "",
-            "tone": "中性",
-            "portrait": "neutral",
-        },
-    ]
-    (history_root / "sakura.jsonl").write_text(
-        "".join(json.dumps(record) + "\n" for record in records), encoding="utf-8"
-    )
-    import_history(legacy, app_root, character_ids=("sakura",))
-
-    process = _start_host(app_root)
-    try:
-        _wait_ready(process)
-        _send(
-            process,
-            _request(
-                "chat-after-import",
-                "chat.send",
-                {"message": "continue", "operationId": "chat-after-import"},
-            ),
-        )
-        frames = [_read(process), _read(process), _read(process)]
-        assert not any(frame.get("name") == "chat.failed" for frame in frames)
-        serialized_request = json.dumps(_ProviderHandler.requests, ensure_ascii=False)
-        assert "LEGACY_CONTEXT_USER_8F21" in serialized_request
-        assert "LEGACY_CONTEXT_REPLY_4A17" in serialized_request
-        assert all(record["created_at"] in serialized_request for record in records)
-        entries = TimelineStore(app_root / "data/chat_history/timeline.sqlite3").read_all("sakura")
-        assert [entry.kind for entry in entries] == [
-            TimelineKind.HUMAN,
-            TimelineKind.ASSISTANT,
-            TimelineKind.SYSTEM,
-            TimelineKind.HUMAN,
-            TimelineKind.ASSISTANT,
-        ]
-        assert entries[2].origin == "host"
-        assert entries[2].payload["eventType"] == "app.started"
-        assert entries[2].payload["text"] in serialized_request
-        assert entries[2].created_at in serialized_request
-        _exchange(process, _request("shutdown-after-import", "system.shutdown", {}))
     finally:
         _stop(process)
         _stop_provider(server, provider_thread)
@@ -1927,8 +1874,8 @@ def test_invalid_structured_reply_is_failed_not_legacy_fallback(tmp_path: Path) 
             "retryable": False,
             "details": failure["error"]["details"],
         }
-        assert "响应格式无效" in failure["error"]["message"]
-        assert "remained invalid after repair" in diagnostics["diagnostic"]
+        assert "segments" in failure["error"]["message"]
+        assert "segments" in diagnostics["diagnostic"]
         assert len(_ProviderHandler.requests) == 2
         _exchange(process, _request("shutdown", "system.shutdown", {}))
         assert process.wait(timeout=5) == 0
@@ -2002,9 +1949,9 @@ def test_provider_parameter_compatibility_fallback_completes(tmp_path: Path) -> 
         )
         frames = [_read(process), _read(process), _read(process)]
         assert any(frame.get("name") == "chat.completed" for frame in frames)
-        assert len(_ProviderHandler.requests) == 2
-        assert "response_format" in _ProviderHandler.requests[0]
-        assert "response_format" not in _ProviderHandler.requests[1]
+        assert [request.get("response_format", {}).get("type") for request in _ProviderHandler.requests] == [
+            "json_schema", "json_object", None,
+        ]
         _exchange(process, _request("shutdown", "system.shutdown", {}))
         assert process.wait(timeout=5) == 0
     finally:
@@ -2241,6 +2188,52 @@ def test_studio_publish_updates_live_character_without_restarting_core_or_plugin
         _exchange(process, _request("shutdown-after-save", "system.shutdown", {}))
         process.wait(timeout=5)
         drain.join(2)
+    finally:
+        _stop(process)
+        _stop_provider(server, provider_thread)
+
+
+def test_failed_local_assistant_update_reports_error_and_reinstall_restores_chat(tmp_path):
+    import yaml
+    from app.plugins.installer import LocalPluginInstaller
+    from app.storage.runtime_roots import RuntimeRoots
+    from tools.release.package_optional_plugin import build
+
+    server, provider_thread = _start_provider("complete")
+    app_root = _configure_app_root(tmp_path, server.server_address[1])
+    shutil.copyfile(REPO_ROOT / "desktop/frontend/prototypes/asr/assets/navi.png",
+                    app_root / "characters/sakura/portraits/neutral.txt")
+    distribution = tmp_path / "host-distribution"
+    (distribution / "plugins/builtin/sakura_assistant").mkdir(parents=True)
+    LocalPluginInstaller(RuntimeRoots(distribution, app_root)).install(
+        REPO_ROOT / "plugins/builtin/sakura_assistant", "folder", initial_enabled=True)
+    candidate = tmp_path / "candidate"
+    candidate.mkdir()
+    manifest = yaml.safe_load((REPO_ROOT / "plugins/builtin/sakura_assistant/plugin.yaml").read_text(encoding="utf-8"))
+    manifest["version"] = "0.1.1"
+    (candidate / "plugin.yaml").write_text(yaml.safe_dump(manifest), encoding="utf-8")
+    (candidate / "plugin.py").write_text('class AssistantPlugin:\n    def setup(self, context):\n        raise RuntimeError("candidate setup failed")\n')
+    archive = tmp_path / "candidate.zip"
+    build(candidate, archive)
+    process = _start_host(app_root, distribution_root=distribution)
+    try:
+        _wait_ready(process, ["transport.concurrent-router", "assistant.plugins-v1"])
+        result = _exchange(process, _request("update", "plugins.install", {
+            "sourceKind": "zip", "sourcePath": str(archive),
+        }))
+        assert result["ok"] is True, result
+        assert "candidate setup failed" in result["payload"]["warning"]["detail"]
+        assistant = next(p for p in result["payload"]["plugins"] if p["pluginId"] == manifest["id"])
+        assert assistant["version"] == "0.1.1"
+        assert assistant["enabled"] is True
+        assert assistant["state"] == "failed"
+        repaired = _exchange(process, _request("repair", "plugins.install", {
+            "sourceKind": "folder", "sourcePath": str(REPO_ROOT / "plugins/builtin/sakura_assistant"),
+        }))
+        assert repaired["ok"] is True, repaired
+        _send(process, _request("after-update", "chat.send", {"message": "hello", "operationId": "after-update"}))
+        frames = [_read(process), _read(process), _read(process)]
+        assert any(frame.get("name") == "chat.completed" for frame in frames), frames
     finally:
         _stop(process)
         _stop_provider(server, provider_thread)

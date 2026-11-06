@@ -40,23 +40,6 @@ export function pendingCharacterSelection({
   return selected && selected !== committed ? selected : null;
 }
 
-export async function commitCharacterSelection({
-  committedCharacterId,
-  selectedCharacterId,
-  readLifecycle,
-  selectCharacter,
-  applyChange,
-}) {
-  const targetCharacterId = pendingCharacterSelection({
-    committedCharacterId,
-    selectedCharacterId,
-  });
-  if (!targetCharacterId) return null;
-  const previousLifecycle = await readLifecycle();
-  const receipt = await selectCharacter(targetCharacterId);
-  return applyChange(receipt, previousLifecycle);
-}
-
 export async function applyCharacterCatalogChange({
   generationId = "",
   readLifecycle,

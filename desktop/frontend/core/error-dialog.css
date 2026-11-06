@@ -65,6 +65,6 @@
 .sakura-error-actions > .sakura-error-copy { color: var(--error-text); background: transparent; border-color: var(--error-border); }
 .sakura-error-actions > .sakura-error-copy:hover { background: var(--error-panel); }
 .sakura-error-actions > button:disabled { opacity: .6; cursor: default; }
-.sakura-error-dialog :focus-visible { outline: 3px solid color-mix(in srgb, var(--error-primary) 35%, transparent); outline-offset: 2px; }
+.sakura-error-dialog :focus-visible { outline: none; }
 @keyframes sakura-error-arrive { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
 @media (prefers-reduced-motion: reduce) { .sakura-error-dialog[open], .sakura-error-dialog * { animation: none; transition: none; } }

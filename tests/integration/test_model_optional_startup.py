@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64
+import json
 import os
 from pathlib import Path
 import shutil
@@ -12,7 +13,7 @@ import sys
 REPO = Path(__file__).resolve().parents[2]
 
 
-def test_core_without_model_plugin_or_transport_dependencies_keeps_character_and_settings(tmp_path):
+def test_core_without_model_plugin_or_transport_dependencies_keeps_character_and_settings(tmp_path, assistant_dependencies):
     user, distribution = tmp_path / "user", tmp_path / "distribution"
     shutil.copytree(REPO / "tests/fixtures/runtime_v2/wp_3_01/ready", user)
     (user / "characters/sakura/portraits/neutral.txt").write_bytes(base64.b64decode(
@@ -20,6 +21,11 @@ def test_core_without_model_plugin_or_transport_dependencies_keeps_character_and
     for name in ("sakura_assistant", "sakura_portrait"):
         shutil.copytree(REPO / "plugins/builtin" / name, distribution / "plugins/builtin" / name,
                         ignore=shutil.ignore_patterns("__pycache__"))
+    dependencies = distribution / "plugins/dependencies/sakura.assistant.default"
+    shutil.copytree(assistant_dependencies, dependencies, copy_function=os.link)
+    (dependencies / ".sakura-dependencies.json").write_text(
+        json.dumps({"schemaVersion": 1, "kind": "requirements.txt", "python": f"{sys.version_info.major}.{sys.version_info.minor}"}), encoding="utf-8",
+    )
     script = '''
 import importlib.abc, sys
 from pathlib import Path

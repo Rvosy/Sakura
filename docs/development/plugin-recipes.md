@@ -36,9 +36,28 @@ finally:
 
 请求使用 `messages`，可带 `tools`、`toolChoice`、`responseFormat`、`parameters`、`stream`。消息含 `role/content`，工具消息可带 `toolCalls/toolCallId`；content 可以是文本或文字、图片内容列表。工具定义为 `{name, description, parameters}`，parameters 是 JSON Schema。结果为 `{message, usage, finishReason, diagnostics?}`；工具调用为 `{id, name, arguments}`，arguments 保持 JSON 字符串。提供方附带的 `providerData` 作为不透明数据保留。
 
+### 记录用量
+
+普通模型调用在创建客户端时标记功能即可：`ModelClient(context, reference, usage_category="memory_curation")`。自定义功能可传 `usage_category="summary", usage_label="摘要生成"`。客户端会自动记录响应中的 usage。
+
+自行请求外部模型的插件可写入同一统计库：
+
+```python
+usage = context.get("sakura.host.usage")
+usage.record({
+    "recordId": response_id,
+    "model": model_id,
+    "category": "summary",
+    "categoryLabel": "摘要生成",
+    "usage": provider_response["usage"],
+})
+```
+
+`response_id` 在重发同一记录时保持不变。字段约定与分类规则见[用量统计接口](plugin-sdk.md#用量统计)。
+
 ### 实现模型提供方
 
-提供方暴露独立服务，并用 `register_provider({serviceKey, label}, catalog=...)` 登记。目录返回 `{profileId, label, models: [{modelId, label}]}` 列表，只读取本地已保存配置；刷新远端模型由用户明确发起。
+提供方暴露独立服务，并用 `register_provider({serviceKey, label}, catalog=...)` 登记。目录返回 `{profileId, label, models: [{modelId, label}]}` 列表，只读取本地已保存配置。远端模型可由明确的获取操作刷新，也可作为账号登录流程的一部分自动同步。
 
 | 导出方法 | 输入与结果 |
 |---|---|
@@ -52,6 +71,10 @@ finally:
 | `release(operationId)` | 回收任务和交付资源 |
 
 failure 保留 `code/message/diagnostics`。同一操作的配置在开始时固定，修改连接只影响后续操作；多个消费者的任务互不干扰。HTTP 成功但响应体包含服务错误仍是失败。只有明确拒绝某个可选请求参数时才做对应兼容处理，不因普通故障自动重复请求。参考[远程模型插件](../../plugins/builtin/sakura_model_openai_compatible/plugin.py)。
+
+HTTP 提供方可继承 [`sakura_model_provider.ModelProvider`](../../app/plugin_sdk/sakura_model_provider.py)，在 `setup` 中传入 `profiles`、`service_key` 和 `label`，实现 `execute(settings, request, cancel_checker, progress, operation)`。`profiles` 提供目录、描述、请求配置快照和设置注册；任务、取消与 Artifact 交付由基类维护。使用不同凭据结构时实现 `diagnostic_secrets(settings)`，返回本次请求需要清洗的凭据。
+
+Responses 适配可复用 [`sakura_openai_responses`](../../app/plugin_sdk/sakura_openai_responses.py) 的 `build_request` 和异步 `complete`，后者使用插件传入的 HTTP 客户端与连接设置。认证、模型目录与订阅限制由供应商决定，见 [Codex 插件](../../plugins/optional/sakura_codex/README.md)。
 
 ## 实现 Assistant
 

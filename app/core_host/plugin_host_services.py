@@ -10,6 +10,7 @@ import secrets
 import shutil
 import threading
 from dataclasses import asdict, dataclass
+from copy import deepcopy
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
@@ -17,23 +18,31 @@ from app.plugin_sdk.sakura_tools import Tool
 from app.core.runtime_log import log_event, log_message
 from app.core.diagnostics import exception_diagnostics
 from . import settings_ui
-from app.plugins.host_services import HOST_CALLER, HOST_CALLER_LOG_METADATA, HOST_CALLER_SCOPE, HOST_LOGGING_SERVICE
-from app.plugin_sdk.sakura_context import ContextFragment, ContextRequest
-from app.plugins.models import ContextProviderContribution
+from .plugin_hooks import HookHostService
+from app.plugins.host_services import (
+    HOST_ARTIFACTS_SERVICE,
+    HOST_CALLER,
+    HOST_CALLER_LOG_METADATA,
+    HOST_CALLER_SCOPE,
+    HOST_CHARACTER_SERVICE,
+    HOST_COMPOSER_TOOLS_V0_SERVICE,
+    HOST_CONTEXT_SERVICE,
+    HOST_DIAGNOSTICS_SERVICE,
+    HOST_HOOKS_SERVICE,
+    HOST_LOGGING_SERVICE,
+    HOST_MODEL_SLOTS_SERVICE,
+    HOST_SETTINGS_COLLECTION_V0_SERVICE,
+    HOST_SETTINGS_SERVICE,
+    HOST_SETTINGS_SURFACE_V0_SERVICE,
+    HOST_STORAGE_SERVICE,
+    HOST_TIMELINE_SERVICE,
+    HOST_TOOLS_SERVICE,
+    HOST_USAGE_SERVICE,
+)
+from app.plugin_sdk.sakura_context import ContextFragment
+from app.storage.timeline import TimelineEntry
 
 
-HOST_CONTEXT_SERVICE = "sakura.host.context"
-HOST_DIAGNOSTICS_SERVICE = "sakura.host.diagnostics"
-HOST_ARTIFACTS_SERVICE = "sakura.host.artifacts"
-HOST_CHARACTER_SERVICE = "sakura.host.character"
-HOST_MODEL_SLOTS_SERVICE = "sakura.host.model_slots.v2"
-HOST_SETTINGS_SERVICE = "sakura.host.settings"
-HOST_SETTINGS_COLLECTION_V0_SERVICE = "sakura.host.settings.collection-v0"
-HOST_SETTINGS_SURFACE_V0_SERVICE = "sakura.host.settings.surface-v0"
-HOST_STORAGE_SERVICE = "sakura.host.storage"
-HOST_TOOLS_SERVICE = "sakura.host.tools"
-HOST_COMPOSER_TOOLS_V0_SERVICE = "sakura.host.ui.composer-tools-v0"
-HOST_TIMELINE_SERVICE = "sakura.host.timeline"
 _TIMELINE_RESPONSE_ENTRY_BYTES = 700 * 1024
 _TOOL_NAME = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 _IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,199}$")
@@ -116,6 +125,23 @@ class _LoggingHostService:
                 component=channel, plugin_id=plugin_id, plugin_name=plugin_name or None)
         # Core owns downstream loss accounting; the SDK counts transport loss only.
         return {"accepted": True}
+
+
+class _UsageHostService:
+    def __init__(self, store):
+        self.store = store
+
+    def call(self, method, args):
+        from app.plugin_sdk.sakura_usage import CATEGORIES
+        if method == "describe" and not args:
+            return {"categories": [{"id": key, "label": label} for key, label in CATEGORIES.items()]}
+        if method != "record" or len(args) != 1:
+            raise HostServiceError("HOST_METHOD_INVALID")
+        plugin_id = HOST_CALLER.get()
+        if plugin_id is None:
+            raise HostServiceError("USAGE_CALLER_REQUIRED")
+        return self.store.record(_mapping(args[0], "USAGE_RECORD_INVALID"),
+                                 plugin_id=plugin_id, plugin_name=HOST_CALLER_LOG_METADATA.get()[0])
 
 
 class _TimelineHostService:
@@ -612,10 +638,12 @@ class _ToolsHostService:
         tool_registry: object,
         invoke_callback: Callable[..., Any],
         consume_result: Callable[..., object] | None = None,
+        hooks: HookHostService | None = None,
     ) -> None:
         self._tool_registry = tool_registry
         self._invoke_callback = invoke_callback
         self._consume_result = consume_result or (lambda value, **_kwargs: value)
+        self._hooks = hooks
         self._registrations: dict[str, _ToolRegistration] = {}
 
     def call(self, method: str, args: Sequence[Any]) -> object:
@@ -631,7 +659,23 @@ class _ToolsHostService:
             if tool is None or tool.registration_id != registration_id:
                 raise HostServiceError("TOOL_REGISTRATION_EXPIRED")
             # Execute the captured object; a concurrent same-name replacement cannot be substituted.
-            return self._tool_registry.execute(name, dict(arguments), expected=tool).to_dict()
+            metadata = {"toolName": name, "callerId": HOST_CALLER.get()}
+            if self._hooks is not None:
+                from app.plugin_sdk.sakura_hooks import HookError
+                try:
+                    arguments = self._hooks.run("tool.before_execute", {"arguments": dict(arguments)}, metadata)["arguments"]
+                except HookError as error:
+                    if error.code != "HOOK_ABORTED":
+                        raise
+                    return {"tool_name": name, "success": False, "content": "",
+                            "error": str(error), "reason_code": error.code}
+                if self._tool_registry.get(name) is not tool:
+                    raise HostServiceError("TOOL_REGISTRATION_EXPIRED")
+            result = self._tool_registry.execute(name, dict(arguments), expected=tool).to_dict()
+            if self._hooks is not None:
+                result["content"] = self._hooks.run("tool.after_execute", {"content": result["content"]},
+                    {**metadata, "success": result["success"], "error": result.get("error", "")})["content"]
+            return result
         if method == "register" and len(args) == 2:
             return self._register(args[0], args[1])
         if method == "unregister" and len(args) == 1:
@@ -712,14 +756,16 @@ class _ToolsHostService:
         for registration_id in list(self._registrations):
             self._unregister(registration_id)
 
-    @property
-    def count(self) -> int:
-        return len(self._registrations)
-
 
 @dataclass
 class _ContextRegistration:
-    contribution: ContextProviderContribution
+    provider_id: str
+    description: str
+    order: float
+    enabled: bool
+    scope: str
+    failure_policy: str
+    plugin_id: str
     callback_handle: str
 
 
@@ -727,20 +773,16 @@ class _ContextHostService:
     def __init__(
         self,
         invoke_callback: Callable[..., Any],
-        encode_request: Callable[[ContextRequest], dict[str, Any]],
-        on_change: Callable[[list[ContextProviderContribution]], None],
     ) -> None:
         self._invoke_callback = invoke_callback
-        self._encode_request = encode_request
-        self._on_change = on_change
         self._registrations: dict[str, _ContextRegistration] = {}
 
     def call(self, method: str, args: Sequence[Any]) -> object:
         if method == "catalog" and not args:
-            return [{"registrationId": key, "providerId": item.contribution.provider_id,
-                     "description": item.contribution.description, "order": item.contribution.order,
-                     "enabled": item.contribution.enabled, "scope": item.contribution.scope,
-                     "failurePolicy": item.contribution.failure_policy, "pluginId": item.contribution.plugin_id}
+            return [{"registrationId": key, "providerId": item.provider_id,
+                     "description": item.description, "order": item.order,
+                     "enabled": item.enabled, "scope": item.scope,
+                     "failurePolicy": item.failure_policy, "pluginId": item.plugin_id}
                     for key, item in self._registrations.items()]
         if method == "collect" and len(args) == 2:
             registration = self._registrations.get(_registration_id(args[0]))
@@ -750,7 +792,7 @@ class _ContextHostService:
                                             dict(_mapping(args[1], "CONTEXT_REQUEST_INVALID")))
             if not isinstance(payload, list):
                 raise HostServiceError("CONTEXT_RESULT_INVALID")
-            return [asdict(_context_fragment(item, index, scope=registration.contribution.scope))
+            return [asdict(_context_fragment(item, index, scope=registration.scope))
                     for index, item in enumerate(payload)]
         if method == "describe" and not args:
             return {
@@ -787,56 +829,29 @@ class _ContextHostService:
         ):
             raise HostServiceError("CONTEXT_DESCRIPTOR_INVALID")
         if any(
-            item.contribution.provider_id == provider_id
+            item.provider_id == provider_id
             for item in self._registrations.values()
         ):
             raise HostServiceError("CONTEXT_PROVIDER_CONFLICT")
 
-        def build_context(request: ContextRequest) -> Sequence[ContextFragment]:
-            payload = self._invoke_callback(
-                handle,
-                "context.contributor",
-                self._encode_request(request),
-            )
-            if not isinstance(payload, list):
-                raise HostServiceError("CONTEXT_RESULT_INVALID")
-            return tuple(
-                _context_fragment(item, index, scope=scope)
-                for index, item in enumerate(payload)
-            )
-
-        contribution = ContextProviderContribution(
+        registration_id = _new_registration_id(self._registrations)
+        self._registrations[registration_id] = _ContextRegistration(
             provider_id=provider_id,
             description=description,
-            build_context=build_context,
             order=float(order),
             enabled=enabled,
             scope=scope,
             failure_policy=failure_policy,
             plugin_id=HOST_CALLER.get() or "",
+            callback_handle=handle,
         )
-        registration_id = _new_registration_id(self._registrations)
-        self._registrations[registration_id] = _ContextRegistration(contribution, handle)
-        self._publish()
         return {"registrationId": registration_id}
 
     def _unregister(self, registration_id: str) -> bool:
-        removed = self._registrations.pop(registration_id, None) is not None
-        if removed:
-            self._publish()
-        return removed
-
-    def providers(self) -> list[ContextProviderContribution]:
-        return [item.contribution for item in self._registrations.values()]
+        return self._registrations.pop(registration_id, None) is not None
 
     def clear(self) -> None:
-        if not self._registrations:
-            return
         self._registrations.clear()
-        self._publish()
-
-    def _publish(self) -> None:
-        self._on_change(self.providers())
 
 
 @dataclass
@@ -1053,11 +1068,6 @@ class _ModelSlotsHostService:
         )
         _application_state(result)
         return result
-
-    @property
-    def count(self) -> int:
-        with self._lock:
-            return len(self._registrations)
 
     def clear(self) -> None:
         with self._lock:
@@ -1749,11 +1759,6 @@ class _SettingsHostService:
             self._ui_registrations.clear()
             self._collection_registrations.clear()
 
-    @property
-    def count(self) -> int:
-        with self._lock:
-            return len(self._registrations)
-
 
 class _SettingsSurfaceV0HostService:
     def __init__(self, settings: _SettingsHostService) -> None:
@@ -1942,14 +1947,16 @@ class PluginHostServices:
         timeline_store: object,
         current_character_id: Callable[[], str | None],
         invoke_callback: Callable[..., Any],
-        encode_context_request: Callable[[ContextRequest], dict[str, Any]],
-        on_context_change: Callable[[list[ContextProviderContribution]], None],
         storage_root: Path | None = None,
         model_resolver: Callable[[Mapping[str, Any]], dict[str, object]] | None = None,
         active_model_resolver: Callable[[], dict[str, object]] | None = None,
         commit_plugin_scope: Callable[..., Any] | None = None,
     ) -> None:
         self._artifacts = _ArtifactsHostService(artifact_store, commit_plugin_scope)
+        from app.storage.usage import UsageStore
+        usage_store = UsageStore(storage_root) if storage_root is not None else None
+        self.hooks = HookHostService(invoke_callback, self._artifacts, commit_plugin_scope,
+                                     usage_store=usage_store)
         self._diagnostics = _DiagnosticsHostService()
         self._character = _CharacterHostService(character_store)
         self._timeline = _TimelineHostService(timeline_store, current_character_id, artifact_store)
@@ -1957,12 +1964,9 @@ class PluginHostServices:
             tool_registry,
             invoke_callback,
             self._artifacts.consume_tool_result,
+            self.hooks,
         )
-        self._context = _ContextHostService(
-            invoke_callback,
-            encode_context_request,
-            on_context_change,
-        )
+        self._context = _ContextHostService(invoke_callback)
         self._settings = _SettingsHostService(invoke_callback)
         self._settings_surface_v0 = _SettingsSurfaceV0HostService(self._settings)
         self._settings_collection_v0 = _SettingsCollectionV0HostService(self._settings)
@@ -1982,6 +1986,7 @@ class PluginHostServices:
             HOST_CHARACTER_SERVICE: self._character,
             HOST_TOOLS_SERVICE: self._tools,
             HOST_CONTEXT_SERVICE: self._context,
+            HOST_HOOKS_SERVICE: self.hooks,
             HOST_MODEL_SLOTS_SERVICE: self._model_slots,
             HOST_SETTINGS_SERVICE: self._settings,
             HOST_SETTINGS_SURFACE_V0_SERVICE: self._settings_surface_v0,
@@ -1991,6 +1996,7 @@ class PluginHostServices:
         }
         if self._storage is not None:
             self._services[HOST_STORAGE_SERVICE] = self._storage
+            self._services[HOST_USAGE_SERVICE] = _UsageHostService(usage_store)
 
     @property
     def available_keys(self) -> tuple[str, ...]:
@@ -2002,9 +2008,6 @@ class PluginHostServices:
             raise HostServiceError("HOST_SERVICE_UNAVAILABLE")
         return service.call(method, args)
 
-    def context_providers(self) -> list[ContextProviderContribution]:
-        return self._context.providers()
-
     def model_catalog(self):
         return self._model_slots.catalog()
 
@@ -2015,24 +2018,17 @@ class PluginHostServices:
         self._timeline.revoke(history_token)
 
     def decorate_settings_snapshot(self, snapshot: Mapping[str, Any]) -> dict[str, Any]:
-        result = json.loads(json.dumps(dict(snapshot), ensure_ascii=False))
-        plugins = result.get("plugins")
-        if not isinstance(plugins, list):
-            raise HostServiceError("SETTINGS_SNAPSHOT_INVALID")
-        for plugin in plugins:
-            if not isinstance(plugin, dict) or not isinstance(plugin.get("pluginId"), str):
-                continue
-            if plugin.get("state") != "active":
-                continue
-            sections = plugin.get("sections")
-            if not isinstance(sections, list):
-                sections = []
-            plugin["pages"] = self._settings.pages_for_plugin(plugin["pluginId"])
-            plugin["sections"] = [
-                *sections,
-                *self._settings.sections_for_plugin(plugin["pluginId"]),
-            ]
-        return result
+        return {
+            **snapshot,
+            "plugins": [
+                {
+                    **plugin,
+                    "pages": self._settings.pages_for_plugin(plugin["pluginId"]),
+                    "sections": self._settings.sections_for_plugin(plugin["pluginId"]),
+                } if plugin["state"] == "active" else plugin
+                for plugin in snapshot["plugins"]
+            ],
+        }
 
     def settings_save(
         self,
@@ -2114,22 +2110,11 @@ class PluginHostServices:
             callback(plugin_id)
 
     @property
-    def tool_count(self) -> int:
-        return self._tools.count
-
-    @property
-    def settings_count(self) -> int:
-        return self._settings.count
-
-    @property
-    def model_slot_count(self) -> int:
-        return self._model_slots.count
-
-    @property
     def artifact_count(self) -> int:
         return self._artifacts.count
 
     def clear(self) -> None:
+        self.hooks.clear()
         self._artifacts.clear()
         self._character.clear()
         self._tools.clear()
@@ -2926,20 +2911,15 @@ def _json_compatible(value: object) -> bool:
     return True
 
 
-def _timeline_entry_mapping(entry: object) -> dict[str, Any]:
-    kind = getattr(entry, "kind")
-    kind_value = getattr(kind, "value", kind)
-    payload = getattr(entry, "payload")
-    if not isinstance(payload, Mapping):
-        raise HostServiceError("TIMELINE_READ_FAILED")
+def _timeline_entry_mapping(entry: TimelineEntry) -> dict[str, Any]:
     return {
-        "entryId": str(getattr(entry, "entry_id")),
-        "turnId": str(getattr(entry, "turn_id")),
-        "characterId": str(getattr(entry, "character_id")),
-        "kind": str(kind_value),
-        "origin": str(getattr(entry, "origin")),
-        "createdAt": str(getattr(entry, "created_at")),
-        "payload": json.loads(json.dumps(dict(payload), ensure_ascii=False)),
+        "entryId": entry.entry_id,
+        "turnId": entry.turn_id,
+        "characterId": entry.character_id,
+        "kind": entry.kind.value,
+        "origin": entry.origin,
+        "createdAt": entry.created_at,
+        "payload": deepcopy(entry.payload),
     }
 
 

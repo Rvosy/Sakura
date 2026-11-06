@@ -331,7 +331,6 @@ def validate_layout(stage: Path, target: str, *, portable: bool) -> None:
         python_executable(stage / "python", target),
         site_packages(stage / "python", target),
         stage / "core/app/core_host/__main__.py",
-        stage / "core/app/legacy_import/__main__.py",
         stage / "plugins/builtin/__init__.py",
         stage / "python/tools" / ("uv.exe" if target == "windows-x64" else "uv"),
         stage / "python/tools" / ("uvx.exe" if target == "windows-x64" else "uvx"),
@@ -404,7 +403,7 @@ def smoke(stage: Path, target: str) -> None:
         f"sys.path[:0]=[{str(stage / 'core')!r},{str(stage)!r}];"
         f"[importlib.import_module(name) for name in [{modules}]];"
         f"assert all(importlib.util.find_spec(name) is None for name in [{plugin_only}]);"
-        "import app.core_host,app.legacy_import,plugins.builtin"
+        "import app.core_host,plugins.builtin"
     )
     subprocess.run([str(executable), "-I", "-B", "-c", script], check=True)
     smoke_bundled_entries(stage, target)

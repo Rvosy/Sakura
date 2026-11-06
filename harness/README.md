@@ -15,6 +15,8 @@ runtime\python.exe -m harness run journey-plugins --report temp/harness/plugins.
 
 先选择受影响业务的窄测试或 profile；具体文件也可以直接用 pytest、Node 或 Cargo 执行。相关检查通过后，仅在新改动、失败或尚未覆盖的问题出现时扩大范围。`docs` 只检查文档中的本地链接。
 
+Python 测试依赖见 [requirements-dev.txt](../tools/requirements-dev.txt)。完整 Python 套件还会启动 MCP 私有进程，需要在 `plugins/dependencies/sakura.mcp` 准备依赖及就绪标记；命令见 [Test 工作流](../.github/workflows/test.yml) 的 `Prepare private MCP test dependencies` 步骤。新工作树需单独准备该目录。
+
 需要浏览器的旅程依赖 Playwright，Windows 默认使用已安装的 Edge。真实窗口、音频设备和平台体验需在对应环境验证，模拟桥接通过不代表设备验证通过。
 
 ## 结果与隔离

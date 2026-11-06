@@ -5,6 +5,7 @@ import json
 import os
 import re
 import shutil
+from time import perf_counter
 from pathlib import Path
 
 from app.core.runtime_log import diagnostic_attributes, log_event
@@ -30,6 +31,9 @@ def _clear_transaction(transaction: Path) -> None:
 def recover(transaction: Path, code: Path, dependencies: Path, state: dict) -> str | None:
     """发现和加载插件前恢复未完成的切换。"""
     if not state["committed"]:
+        log_event("Plugin", "正在恢复插件更新前的文件", {
+            "plugin_id": state["pluginId"], "path": str(code),
+        }, event="plugin.update.rollback_started")
         for name, target in (("code", code), ("dependencies", dependencies)):
             saved = transaction / ("old-" + name)
             if saved.exists():
@@ -41,47 +45,88 @@ def recover(transaction: Path, code: Path, dependencies: Path, state: dict) -> s
         # 恢复完成后只允许继续清理，避免下次启动撤销后来的更新。
         state = {**state, "committed": True}
         atomic_write_text(transaction / "transaction.json", json.dumps(state))
+        log_event("Plugin", "插件更新前的文件已恢复", {
+            "plugin_id": state["pluginId"], "path": str(code),
+        }, event="plugin.update.rollback_completed")
     try:
         _clear_transaction(transaction)
     except OSError as error:
-        log_event("Plugin", "插件更新备份清理失败", diagnostic_attributes(
-            error, reason_code="PLUGIN_UPDATE_CLEANUP_FAILED", stage="update_cleanup"),
+        log_event("Plugin", "插件更新备份清理失败", {
+            "plugin_id": state["pluginId"], "path": str(transaction),
+            **diagnostic_attributes(error, reason_code="PLUGIN_UPDATE_CLEANUP_FAILED", stage="update_cleanup")},
             event="plugin.update.cleanup_failed", severity="warning")
         return str(error)
     return None
 
 
-def recover_installed_plugins(roots: RuntimeRoots) -> dict[str, dict]:
+def update_journals(roots: RuntimeRoots, plugin_id: str | None = None) -> list[Path]:
+    journals = sorted(StoragePaths(roots.user_root).user_plugins_dir.glob(".update-*/transaction.json"))
+    return [journal for journal in journals if plugin_id is None or _plugin_id(journal) == plugin_id]
+
+
+def _plugin_id(journal: Path) -> str:
+    return re.sub(r"--[0-9a-f]{32}$", "", journal.parent.name.removeprefix(".update-"))
+
+
+def recover_installed_plugins(
+    roots: RuntimeRoots, plugin_id: str | None = None, *, replace_invalid: bool = False,
+) -> dict[str, dict]:
     """恢复插件市场更新留下的事务，保留已提交的版本。"""
     from app.plugins.inventory import PLUGIN_ID_PATTERN
 
     paths = StoragePaths(roots.user_root)
     failures = {}
-    for journal in sorted(paths.user_plugins_dir.glob(".update-*/transaction.json")):
+    for journal in update_journals(roots, plugin_id):
         transaction = journal.parent
-        plugin_id = re.sub(r"--[0-9a-f]{32}$", "", transaction.name.removeprefix(".update-"))
+        recovering_id = _plugin_id(journal)
+        directory_name = recovering_id
+        started = perf_counter()
+        log_event("Plugin", "正在处理未完成的插件更新", {
+            "plugin_id": recovering_id, "path": str(transaction),
+        }, event="plugin.update.recovery_started")
         try:
-            state = json.loads(journal.read_text(encoding="utf-8"))
-            directory = state["directory"]
-            if (not PLUGIN_ID_PATTERN.fullmatch(plugin_id) or state["pluginId"] != plugin_id
-                    or transaction.is_symlink() or journal.is_symlink()
-                    or not isinstance(directory, str) or not directory or directory in {".", ".."}
-                    or "/" in directory or "\\" in directory or ":" in directory
-                    or directory.startswith(".update-")
-                    or not isinstance(state["committed"], bool)
-                    or set(state["existed"]) != {"code", "dependencies"}
-                    or any(not isinstance(value, bool) for value in state["existed"].values())):
-                raise ValueError("PLUGIN_UPDATE_STATE_INVALID")
+            try:
+                state = json.loads(journal.read_text(encoding="utf-8"))
+                directory = state["directory"]
+                if (not PLUGIN_ID_PATTERN.fullmatch(recovering_id) or state["pluginId"] != recovering_id
+                        or transaction.is_symlink() or journal.is_symlink()
+                        or not isinstance(directory, str) or not directory or directory in {".", ".."}
+                        or "/" in directory or "\\" in directory or ":" in directory
+                        or directory.startswith(".update-")
+                        or not isinstance(state["committed"], bool)
+                        or not isinstance(state["existed"], dict)
+                        or any(not isinstance(state["existed"].get(name), bool) for name in ("code", "dependencies"))):
+                    raise ValueError("PLUGIN_UPDATE_STATE_INVALID")
+            except (ValueError, TypeError, KeyError) as error:
+                if not replace_invalid:
+                    raise
+                # 新包已验证，保留坏记录和旧文件后重新安装，避免反复重放坏事务。
+                saved = transaction.with_name(".failed-" + transaction.name.removeprefix("."))
+                os.replace(transaction, saved)
+                log_event("Plugin", "已保留损坏的更新记录，继续重新安装", {
+                    "plugin_id": recovering_id, "path": str(saved),
+                    **diagnostic_attributes(error, reason_code="PLUGIN_UPDATE_STATE_INVALID", stage="update_recovery"),
+                }, event="plugin.update.recovery_skipped", severity="warning")
+                continue
+            directory_name = directory
             code = paths.user_plugins_dir / directory
-            dependencies = paths.plugin_dependency_root_for(plugin_id)
+            dependencies = paths.plugin_dependency_root_for(recovering_id)
             if code.is_symlink() or dependencies.is_symlink():
                 raise ValueError("PLUGIN_UPDATE_STATE_INVALID")
-            recover(transaction, code, dependencies, state)
+            warning = recover(transaction, code, dependencies, state)
+            log_event("Plugin", "插件更新恢复处理完成", {
+                "plugin_id": recovering_id, "path": str(code),
+                "elapsed_ms": round((perf_counter() - started) * 1000), "diagnostic": warning,
+            }, event="plugin.update.recovery_completed")
         except Exception as error:
-            log_event("Plugin", "插件更新恢复失败", diagnostic_attributes(
-                error, reason_code="PLUGIN_UPDATE_RECOVERY_FAILED", stage="update_recovery"),
+            log_event("Plugin", "插件更新恢复失败", {
+                "plugin_id": recovering_id, "path": str(transaction),
+                **diagnostic_attributes(error, reason_code="PLUGIN_UPDATE_RECOVERY_FAILED", stage="update_recovery")},
                 event="plugin.update.failed", severity="error")
-            failures[plugin_id] = {
+            if not PLUGIN_ID_PATTERN.fullmatch(recovering_id):
+                continue
+            failures[recovering_id] = {
+                "directoryName": directory_name,
                 "reasonCode": "PLUGIN_UPDATE_RECOVERY_FAILED",
                 "diagnostics": diagnostic_attributes(error, reason_code="PLUGIN_UPDATE_RECOVERY_FAILED",
                                                        stage="update_recovery"),

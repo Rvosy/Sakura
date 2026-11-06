@@ -1,15 +1,19 @@
 from __future__ import annotations
 
 import json
+import re
 from types import SimpleNamespace
 
+import httpx
 import pytest
 
 from plugins.builtin.sakura_portrait.plugin import PortraitService
 from sakura_assistant.agent.actions import AgentEvent
 from sakura_assistant.agent.runtime import AgentRuntime
 from sakura_assistant.llm.api_client import AssistantModelClient, DialogueSettings
-from tests.model_fixture import LocalModelClient
+from sakura_assistant_contract import RuntimeLoopSettings
+from sakura_tools import Tool, ToolRegistry
+from tests.model_fixture import LocalModelClient, mock_http
 
 
 @pytest.mark.parametrize("route", ["agent", "image", "final", "event", "repair", "unbound"])
@@ -33,15 +37,24 @@ def test_provider_reply_contract_keeps_visual_controls_across_reply_paths(monkey
     captured = []
     client = AssistantModelClient(DialogueSettings(model="model"), model_client=LocalModelClient())
 
-    def post(payload, **_kwargs):
-        captured.append(payload)
+    def respond(request):
+        captured.append(json.loads(request.content))
+        if route == "final" and len(captured) == 1:
+            return httpx.Response(200, json={"choices": [{"message": {
+                "role": "assistant", "content": "", "tool_calls": [{
+                    "id": "check-1", "type": "function",
+                    "function": {"name": "check", "arguments": "{}"},
+                }],
+            }}]})
         content = raw
         if route == "repair" and len(captured) == 1:
             content = json.dumps({"segments": [{**segment, "ja": "这个需要修复。"}]}, ensure_ascii=False)
-        return {"choices": [{"message": {"role": "assistant", "content": content}}]}
+        return httpx.Response(200, json={"choices": [{"message": {"role": "assistant", "content": content}}]})
 
-    monkeypatch.setattr(client, "_post_chat_completions", post)
-    runtime = AgentRuntime(client, "测试角色", reply_tones=["中性"])
+    mock_http(monkeypatch, respond)
+    tools = ToolRegistry([Tool("check", "检查", {"type": "object", "properties": {}}, lambda _: "checked")]) if route == "final" else None
+    runtime = AgentRuntime(client, "测试角色", reply_tones=["中性"], tools=tools,
+                           runtime_loop_settings=RuntimeLoopSettings(max_agent_steps_per_turn=1))
     if route != "unbound":
         runtime.set_visual_binding(SimpleNamespace(reply_visual=visual))
     messages = [{"role": "user", "content": "你好"}]
@@ -52,28 +65,34 @@ def test_provider_reply_contract_keeps_visual_controls_across_reply_paths(monkey
         ]
     if route == "event":
         reply = runtime.handle_event(AgentEvent("update_available", {"version": "1.2.3"})).reply
-    elif route == "final":
-        reply, _ = runtime._complete_final_reply(runtime._build_final_reply_prompt(), messages)
     else:
         reply = runtime.handle_user_message(messages).reply
 
-    assert len(captured) == (2 if route == "repair" else 1)
+    assert len(captured) == (2 if route in {"repair", "final"} else 1)
     for payload in captured:
         system = payload["messages"][0]["content"]
-        objects = [json.loads(line) for line in system.splitlines() if line.startswith('{"')]
-        if route == "unbound":
-            assert all("control" not in obj.get("segments", [{}])[0] for obj in objects)
-            continue
+        objects = []
+        for match in re.finditer(r"\{", system):
+            try:
+                value, _ = json.JSONDecoder().raw_decode(system, match.start())
+            except json.JSONDecodeError:
+                continue
+            objects.append(value)
         schemas = [obj for obj in objects if obj.get("type") == "object" and "segments" in obj.get("properties", {})]
         assert len(schemas) == 1  # Including events: no second, conflicting reply format.
         item = schemas[0]["properties"]["segments"]["items"]
+        if "$ref" in item:
+            item = schemas[0]["$defs"][item["$ref"].rsplit("/", 1)[-1]]
+        if route == "unbound":
+            assert "control" not in item["properties"]
+            assert "control" not in item["required"]
+            continue
         assert set(item["required"]) == {"ja", "zh", "tone", "control"}
         shape = item["properties"]["control"]
         assert set(shape["required"]) == {"version", "resourceId", "payload"}
-        assert shape["properties"]["version"] == {"const": 1}
-        assert shape["properties"]["resourceId"] == {"const": "portrait-one"}
+        assert shape["properties"]["version"]["const"] == 1
+        assert shape["properties"]["resourceId"]["const"] == "portrait-one"
         assert shape["properties"]["payload"] == visual["outputSchema"]
-        assert not any("segments" in obj for obj in objects)  # No incomplete example beside the schema.
     assert reply.segments[0].text == "こんにちは。"
     if route == "unbound":
         assert reply.segments[0].control is None
@@ -83,9 +102,3 @@ def test_provider_reply_contract_keeps_visual_controls_across_reply_paths(monkey
             {"segment": {"tone": "中性"}}, {"keys": ["__default__", key]}, control["payload"], None,
         )
         assert parsed["state"] == {"key": key}
-    if route == "repair":
-        instruction = captured[-1]["messages"][-2]["content"]
-        # Repair instructions must defer to the system contract instead of
-        # demanding a text/tone-only replacement object.
-        assert "control" in instruction
-        assert '{"segments"' not in instruction

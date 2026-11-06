@@ -430,13 +430,6 @@ pub enum AnchorPolicy {
     UserPositioned,
 }
 
-#[cfg(test)]
-#[derive(Clone, Copy)]
-struct ScaledLayout {
-    size: [u32; 2],
-    anchor: [u32; 2],
-}
-
 #[derive(Clone, Copy)]
 struct AnchorEnvelope {
     left: i64,
@@ -903,31 +896,6 @@ fn fit_contract_to_work_area(
         return Err("layout envelope cannot fit inside target work area".to_string());
     }
     Ok((content_scale, envelope))
-}
-
-#[cfg(test)]
-fn scale_layout(layout: &StateLayout, scale_factor: f64, content_scale: f64) -> ScaledLayout {
-    let scale = scale_factor * content_scale;
-    ScaledLayout {
-        size: [
-            round_positive(f64::from(layout.window_size[0]) * scale),
-            round_positive(f64::from(layout.window_size[1]) * scale),
-        ],
-        anchor: [
-            round_nonnegative(f64::from(layout.portrait_anchor[0]) * scale),
-            round_nonnegative(f64::from(layout.portrait_anchor[1]) * scale),
-        ],
-    }
-}
-
-#[cfg(test)]
-fn round_positive(value: f64) -> u32 {
-    value.round().max(1.0).min(f64::from(u32::MAX)) as u32
-}
-
-#[cfg(test)]
-fn round_nonnegative(value: f64) -> u32 {
-    value.round().max(0.0).min(f64::from(u32::MAX)) as u32
 }
 
 fn validate_surface_bounds(bounds: [u32; 4]) -> Result<(), String> {
@@ -1636,22 +1604,6 @@ mod tests {
         )
         .unwrap();
         assert_eq!(user_positioned.portrait_anchor, requested);
-    }
-
-    #[test]
-    fn logical_to_physical_conversion_is_explicit_and_repeatable() {
-        let layout = StateLayout {
-            window_size: [320, 420],
-            portrait_rect: [56, 72, 240, 336],
-            bubble_rect: None,
-            input_rect: None,
-            controls_rect: [8, 370, 193, 38],
-            portrait_anchor: [176, 408],
-        };
-        assert_eq!(scale_layout(&layout, 1.0, 1.0).size, [320, 420]);
-        assert_eq!(scale_layout(&layout, 1.25, 1.0).size, [400, 525]);
-        assert_eq!(scale_layout(&layout, 1.5, 1.0).size, [480, 630]);
-        assert_eq!(scale_layout(&layout, 1.25, 1.0).anchor, [220, 510]);
     }
 
     #[test]

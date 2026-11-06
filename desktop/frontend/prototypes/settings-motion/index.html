@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Sakura 设置动效预览</title>
+  <link rel="stylesheet" href="../../assets/fonts/fonts.css">
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; height: 100vh; display: flex; flex-direction: column; background: #f8fcfe; color: #27445a; font: 13px "Sakura Noto Sans SC", sans-serif; }
+    header { display: flex; align-items: center; flex-wrap: wrap; gap: 16px; padding: 12px 20px; border-bottom: 1px solid #d8e5ed; background: #fff; }
+    strong { font-weight: 600; }
+    .controls { display: flex; align-items: center; gap: 8px; margin-left: auto; }
+    button, select { font: inherit; color: inherit; background: #fff; border: 1px solid #cbdde7; border-radius: 6px; padding: 7px 11px; cursor: pointer; }
+    button[aria-pressed="true"] { background: #e6f3fa; border-color: #4b9ac4; color: #287da9; }
+    .note { color: #607989; font-size: 12px; }
+    iframe { border: 0; flex: 1; width: 100%; min-height: 0; }
+    #loadError { padding: 24px; color: #a43d4d; }
+  </style>
+</head>
+<body>
+  <header>
+    <strong>设置动效预览</strong>
+    <span class="note">模型请求模拟 · 语音读取实际麦克风音量</span>
+    <div class="controls" role="group" aria-label="演示选项">
+      <button id="original" aria-pressed="false">原有动效</button>
+      <button id="enhanced" aria-pressed="true">补充动效</button>
+      <select id="demoIndex" aria-label="逐项查看动效">
+        <option value="">逐项查看动效</option>
+        <option value="connection">1. 连接测试状态图标</option>
+        <option value="apply">2. 应用状态图标</option>
+        <option value="advanced">3. 高级设置展开收起</option>
+        <option value="voice">4. 语音实时音量波形</option>
+        <option value="navigation">5. 补齐导航图标动作</option>
+        <option value="select">6. 下拉框打开过渡</option>
+      </select>
+      <select id="outcome" aria-label="连接测试结果"><option value="success">连接成功</option><option value="failure">连接失败</option></select>
+    </div>
+  </header>
+  <p id="loadError" role="alert" hidden></p>
+  <iframe id="settings" title="Sakura 正式设置页预览" allow="microphone" sandbox="allow-scripts allow-same-origin allow-forms allow-modals"></iframe>
+  <script type="module" src="./app.js"></script>
+</body>
+</html>

@@ -12,7 +12,6 @@ from pathlib import Path
 
 import pytest
 
-from app.plugins.discovery import PluginDiscovery
 from app.plugins.inventory import PluginDesiredStateStore, PluginInventory
 from app.plugins.installer import LocalPluginInstaller, PluginInstallError
 from app.plugins.runtime_v4 import PluginRuntimeManager
@@ -99,7 +98,6 @@ def test_resource_plugin_installs_without_file_size_or_inventory_quotas(tmp_path
     with (installed.code_dir / "resource.bin").open("rb") as stream:
         stream.seek(17 * 1024 * 1024)
         assert stream.read() == b"resource end"
-    assert (installed.code_dir / "imported.marker").read_text(encoding="utf-8") == "imported"
     assert len(PluginInventory(app_root).scan().records) == 65
 
 
@@ -150,11 +148,10 @@ def test_install_uses_bundled_uv_with_no_path(tmp_path: Path, monkeypatch: pytes
 
     assert uv.with_name("invoked").is_file()
     assert (dependency_root / "fixture_dependency.py").read_text() == "VALUE = 42\n"
-    assert (installed.code_dir / "imported.marker").is_file()
 
 
 @pytest.mark.parametrize("broken", ["missing_marker", "python", "kind", "import"])
-def test_reuse_rebuilds_invalid_dependency_root_before_switching(
+def test_install_rebuilds_orphan_dependency_root_before_switching(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, broken: str,
 ) -> None:
     installer, source, dependency_root, uv = _dependency_install_fixture(tmp_path, monkeypatch)
@@ -166,15 +163,7 @@ def test_reuse_rebuilds_invalid_dependency_root_before_switching(
         marker[broken] = "obsolete"
     if broken != "missing_marker":
         (dependency_root / ".sakura-dependencies.json").write_text(json.dumps(marker), encoding="utf-8")
-    original_validate = installer._dependencies._validate_entry
-
-    def validate(plugin_id: str, plugin_root: Path, root: Path | None, entry: str) -> None:
-        assert (dependency_root / "original.txt").read_text() == "preserve until ready"
-        original_validate(plugin_id, plugin_root, root, entry)
-
-    monkeypatch.setattr(installer._dependencies, "_validate_entry", validate)
-
-    installed = installer.install(source, "folder", reuse_dependencies=True)
+    installed = installer.install(source, "folder")
 
     assert uv.with_name("invoked").is_file()
     assert (dependency_root / "fixture_dependency.py").read_text() == "VALUE = 42\n"
@@ -199,7 +188,7 @@ def test_dependency_repair_failure_preserves_previous_root_and_config(
         original_replace = installer._replace_path
 
         def replace(source_path: Path, target: Path) -> None:
-            if source_path.name == "folder":
+            if target == StoragePaths(tmp_path / "user").user_plugins_dir / "com.example.local":
                 raise OSError("code promotion failure")
             original_replace(source_path, target)
 
@@ -207,7 +196,7 @@ def test_dependency_repair_failure_preserves_previous_root_and_config(
 
     expected_error = "PLUGIN_DEPENDENCY_INSTALL_FAILED" if failure == "build" else "PLUGIN_INSTALL_IO_FAILED"
     with pytest.raises(PluginInstallError, match=expected_error):
-        installer.install(source, "folder", reuse_dependencies=True)
+        installer.install(source, "folder")
 
     assert list(dependency_root.iterdir()) == [dependency_root / "original.txt"]
     assert (dependency_root / "original.txt").read_text() == "previous dependencies"
@@ -243,12 +232,9 @@ class _BoundaryWorker:
     def plugin_update(self, _plugin_id):
         return nullcontext([])
 
-    def restore_update_dependents(self, _plugin_ids):
-        pass
-
     def settings_snapshot(self) -> dict[str, object]:
         plugins = []
-        for spec in PluginDiscovery(self.app_root).discover():
+        for spec in PluginInventory(self.app_root).scan().runtime_specs:
             source = spec.source if spec.source in {"bundled", "user"} else "bundled"
             required = bool(spec.required and source != "user")
             invalid_user_required = source == "user" and spec.required
@@ -278,6 +264,12 @@ class _BoundaryWorker:
             )
         return {"plugins": plugins}
 
+    def check_plugin_update_idle(self):
+        pass
+
+    def recover_plugin_update(self, _plugin_id, *, replace_invalid=False):
+        pass
+
     def public_snapshot(self) -> dict[str, object]:
         return self.settings_snapshot()
 
@@ -303,11 +295,11 @@ def test_folder_install_is_disabled_until_enabled_and_uninstall_keeps_data(
     installed = installer.install(source, "folder")
     assert installed.plugin_id == "com.example.local"
     assert installed.code_dir.parent == StoragePaths(app_root).user_plugins_dir
-    assert (installed.code_dir / "imported.marker").is_file()
     assert not (installed.code_dir / "setup.marker").exists()
-    spec = next(item for item in PluginDiscovery(app_root).discover() if item.plugin_id == installed.plugin_id)
+    spec = next(item for item in PluginInventory(app_root).scan().runtime_specs if item.plugin_id == installed.plugin_id)
     assert spec.source == "user"
     assert spec.enabled is False
+    assert not (installed.code_dir / "imported.marker").exists()
 
     runtime = PluginRuntimeManager(
         app_root,
@@ -328,6 +320,7 @@ def test_folder_install_is_disabled_until_enabled_and_uninstall_keeps_data(
         )
         enabled = runtime.start()
         assert enabled["plugins"][0]["state"] == "active"
+        assert (installed.code_dir / "imported.marker").read_text(encoding="utf-8") == "imported"
         assert (installed.code_dir / "setup.marker").is_file()
         assert runtime.call_service("com.example.local", "ping") == "pong"
     finally:
@@ -340,7 +333,7 @@ def test_folder_install_is_disabled_until_enabled_and_uninstall_keeps_data(
     assert not installed.code_dir.exists()
     assert private_data.read_text(encoding="utf-8") == "keep"
     assert installed.plugin_id not in {
-        item.plugin_id for item in PluginDiscovery(app_root).discover()
+        item.plugin_id for item in PluginInventory(app_root).scan().runtime_specs
     }
     assert installed.plugin_id not in StoragePaths(app_root).plugins_config().read_text(
         encoding="utf-8"
@@ -352,7 +345,6 @@ def test_core_boundary_applies_local_lifecycle_and_never_returns_source_path(tmp
     source = _plugin_folder(tmp_path / "source")
     worker = _BoundaryWorker(app_root)
     boundary = _plugin_boundary(app_root, worker)
-    revision = boundary.snapshot()["revision"]
 
     response = boundary.handle(
         {
@@ -361,7 +353,6 @@ def test_core_boundary_applies_local_lifecycle_and_never_returns_source_path(tmp
             "generationId": "generation-local-install",
             "generationCredential": "credential",
             "payload": {
-                "revision": revision,
                 "sourceKind": "folder",
                 "sourcePath": str(source.resolve()),
             },
@@ -378,28 +369,28 @@ def test_core_boundary_applies_local_lifecycle_and_never_returns_source_path(tmp
     private_data = StoragePaths(app_root).plugin_data_for("com.example.local") / "keep.txt"
     private_data.parent.mkdir(parents=True, exist_ok=True)
     private_data.write_text("keep", encoding="utf-8")
-    uninstalled = boundary.uninstall(installed["revision"], installed["installId"])
+    uninstalled = boundary.uninstall(installed["installId"])
     assert uninstalled["managementAction"] == "uninstalled"
     assert worker.lifecycle_count == 2
     assert private_data.read_text(encoding="utf-8") == "keep"
 
 
-def test_core_boundary_rejects_revision_conflict_and_bundled_uninstall(tmp_path: Path) -> None:
+def test_core_boundary_installs_after_unrelated_change_and_rejects_bundled_uninstall(tmp_path: Path) -> None:
     from app.core_host.plugin_settings import PluginSettingsError
 
     app_root = tmp_path / "app"
     source = _plugin_folder(tmp_path / "source")
     worker = _BoundaryWorker(app_root)
     boundary = _plugin_boundary(app_root, worker)
-    stale_revision = boundary.snapshot()["revision"]
+
     config = StoragePaths(app_root).plugins_config()
     config.parent.mkdir(parents=True, exist_ok=True)
     config.write_text("- id: example.changed\n  enabled: false\n", encoding="utf-8")
-    with pytest.raises(PluginSettingsError) as conflict:
-        boundary.install(stale_revision, "folder", str(source.resolve()))
-    assert conflict.value.code == "CONFIG_REVISION_CONFLICT"
-    assert worker.lifecycle_count == 0
-    assert not StoragePaths(app_root).user_plugins_dir.exists()
+    result = boundary.install("folder", str(source.resolve()))
+    assert result["managementAction"] == "installed"
+    assert PluginDesiredStateStore(app_root).read()["example.changed"] is False
+    boundary.uninstall(result["installId"])
+    lifecycle_count = worker.lifecycle_count
 
     bundled = app_root / "plugins" / "builtin" / "bundled"
     bundled.mkdir(parents=True)
@@ -410,9 +401,9 @@ def test_core_boundary_rejects_revision_conflict_and_bundled_uninstall(tmp_path:
             item for item in boundary.snapshot()["plugins"]
             if item["pluginId"] == "com.example.local"
         )
-        boundary.uninstall(boundary.snapshot()["revision"], bundled_record["installId"])
+        boundary.uninstall(bundled_record["installId"])
     assert locked.value.code == "BUNDLED_PLUGIN_LOCKED"
-    assert worker.lifecycle_count == 0
+    assert worker.lifecycle_count == lifecycle_count
 
 
 def test_core_boundary_rolls_back_code_when_plugin_lifecycle_fails(tmp_path: Path) -> None:
@@ -423,11 +414,11 @@ def test_core_boundary_rolls_back_code_when_plugin_lifecycle_fails(tmp_path: Pat
     worker = _BoundaryWorker(app_root, fail_lifecycles=1)
     boundary = _plugin_boundary(app_root, worker)
     with pytest.raises(PluginSettingsError) as failed:
-        boundary.install(boundary.snapshot()["revision"], "folder", str(source.resolve()))
+        boundary.install("folder", str(source.resolve()))
     assert failed.value.code == "PLUGIN_INSTALL_APPLY_FAILED"
     assert worker.lifecycle_count == 2
     assert "com.example.local" not in {
-        spec.plugin_id for spec in PluginDiscovery(app_root).discover()
+        spec.plugin_id for spec in PluginInventory(app_root).scan().runtime_specs
     }
     config = StoragePaths(app_root).plugins_config()
     assert not config.is_file() or "com.example.local" not in config.read_text(encoding="utf-8")
@@ -503,15 +494,15 @@ def test_failed_install_keeps_disabled_guard_when_code_removal_fails(
         staticmethod(fail_code_removal),
     )
     with pytest.raises(PluginSettingsError) as failed:
-        boundary.install(boundary.snapshot()["revision"], "folder", str(source.resolve()))
+        boundary.install("folder", str(source.resolve()))
     assert failed.value.code == "PLUGIN_INSTALL_ROLLBACK_FAILED"
     spec = next(
         item
-        for item in PluginDiscovery(app_root).discover()
+        for item in PluginInventory(app_root).scan().runtime_specs
         if item.plugin_id == "com.example.local"
     )
     assert spec.enabled is False
-    assert not (spec.plugin_root / "setup.marker").exists()
+    assert not (StoragePaths(app_root).user_plugins_dir / spec.directory_name / "setup.marker").exists()
 
 
 def test_core_boundary_rolls_back_uninstall_when_plugin_lifecycle_fails(tmp_path: Path) -> None:
@@ -522,7 +513,6 @@ def test_core_boundary_rolls_back_uninstall_when_plugin_lifecycle_fails(tmp_path
     worker = _BoundaryWorker(app_root)
     boundary = _plugin_boundary(app_root, worker)
     installed = boundary.install(
-        boundary.snapshot()["revision"],
         "folder",
         str(source.resolve()),
     )
@@ -532,13 +522,13 @@ def test_core_boundary_rolls_back_uninstall_when_plugin_lifecycle_fails(tmp_path
     worker.fail_lifecycles = 1
 
     with pytest.raises(PluginSettingsError) as failed:
-        boundary.uninstall(installed["revision"], installed["installId"])
+        boundary.uninstall(installed["installId"])
     assert failed.value.code == "PLUGIN_UNINSTALL_APPLY_FAILED"
     assert worker.lifecycle_count == 2
     assert code_dir.is_dir()
     assert config.read_text(encoding="utf-8") == config_before
     assert "com.example.local" in {
-        spec.plugin_id for spec in PluginDiscovery(app_root).discover()
+        spec.plugin_id for spec in PluginInventory(app_root).scan().runtime_specs
     }
 
 
@@ -553,7 +543,6 @@ def test_uninstall_cleanup_failure_is_not_reported_as_success(
     worker = _BoundaryWorker(app_root)
     boundary = _plugin_boundary(app_root, worker)
     installed = boundary.install(
-        boundary.snapshot()["revision"],
         "folder",
         str(source.resolve()),
     )
@@ -570,10 +559,10 @@ def test_uninstall_cleanup_failure_is_not_reported_as_success(
         staticmethod(fail_cleanup),
     )
     with pytest.raises(PluginSettingsError) as failed:
-        boundary.uninstall(installed["revision"], installed["installId"])
+        boundary.uninstall(installed["installId"])
     assert failed.value.code == "PLUGIN_UNINSTALL_CLEANUP_FAILED"
     assert "com.example.local" not in {
-        spec.plugin_id for spec in PluginDiscovery(app_root).discover()
+        spec.plugin_id for spec in PluginInventory(app_root).scan().runtime_specs
     }
     assert list(StoragePaths(app_root).user_plugins_dir.glob(".uninstall-*/code"))
 
@@ -589,7 +578,6 @@ def test_uninstall_rollback_keeps_quarantine_when_code_restore_fails(
     worker = _BoundaryWorker(app_root)
     boundary = _plugin_boundary(app_root, worker)
     installed = boundary.install(
-        boundary.snapshot()["revision"],
         "folder",
         str(source.resolve()),
     )
@@ -607,7 +595,7 @@ def test_uninstall_rollback_keeps_quarantine_when_code_restore_fails(
         staticmethod(fail_restore),
     )
     with pytest.raises(PluginSettingsError) as failed:
-        boundary.uninstall(installed["revision"], installed["installId"])
+        boundary.uninstall(installed["installId"])
     assert failed.value.code == "PLUGIN_UNINSTALL_ROLLBACK_FAILED"
     assert not (StoragePaths(app_root).user_plugins_dir / "com.example.local").exists()
     assert list(StoragePaths(app_root).user_plugins_dir.glob(".uninstall-*/code"))
@@ -737,6 +725,28 @@ def test_install_rejects_invalid_existing_plugin_config(tmp_path: Path) -> None:
     assert not user_root.exists() or not any(user_root.iterdir())
 
 
+def test_install_preserves_an_existing_plugin_with_a_missing_entry(tmp_path: Path) -> None:
+    app_root = tmp_path / "app"
+    existing = _plugin_folder(
+        StoragePaths(app_root).user_plugins_dir,
+        manifest=MANIFEST.replace("entry: plugin:LocalPlugin\n", ""),
+    )
+    manifest = (existing / "plugin.yaml").read_bytes()
+    desired = PluginDesiredStateStore(app_root)
+    desired.set("com.example.local", True)
+    config = desired.path.read_bytes()
+    source = _plugin_folder(tmp_path / "source")
+
+    with pytest.raises(PluginInstallError, match="PLUGIN_ID_CONFLICT"):
+        LocalPluginInstaller(app_root).install(source, "folder")
+
+    assert (existing / "plugin.yaml").read_bytes() == manifest
+    assert desired.path.read_bytes() == config
+    snapshot = PluginInventory(app_root).scan()
+    assert len(snapshot.records) == 1
+    assert snapshot.records[0].reason_code == "PLUGIN_MANIFEST_INVALID"
+
+
 def test_install_rejects_malformed_manifest_field_types(
     tmp_path: Path,
 ) -> None:
@@ -799,7 +809,7 @@ def test_marketplace_install_checks_identity_before_writing(tmp_path):
     installer = LocalPluginInstaller(root)
     with pytest.raises(PluginInstallError, match="PLUGIN_PACKAGE_IDENTITY_MISMATCH"):
         installer.install(package, "zip", expected=("other.plugin", "1.0.0"))
-    assert not PluginDiscovery(root).discover()
+    assert not PluginInventory(root).scan().runtime_specs
     assert not StoragePaths(root).plugins_config().exists()
 
 
@@ -809,19 +819,20 @@ def test_marketplace_update_preserves_settings_and_rolls_back_invalid_package(tm
     worker = _BoundaryWorker(root)
     boundary = _plugin_boundary(root, worker)
     old = _plugin_zip(tmp_path / "old.zip")
-    boundary.install(boundary.snapshot()["revision"], "zip", str(old))
+    boundary.install("zip", str(old))
     config = StoragePaths(root).plugins_config()
     original_config = config.read_text(encoding="utf-8")
     new = _plugin_zip(tmp_path / "new.zip", manifest=MANIFEST.replace("1.0.0", "1.1.0"))
-    request = {"revision": boundary.snapshot()["revision"], "sourcePath": str(new), "pluginId": "com.example.local", "version": "1.1.0"}
+    request = {"sourcePath": str(new), "pluginId": "com.example.local", "version": "1.1.0"}
     result = boundary.marketplace_install(request)
     assert result["managementAction"] == "updated"
-    spec = PluginDiscovery(root).discover()[0]
+    spec = PluginInventory(root).scan().runtime_specs[0]
     assert spec.version == "1.1.0" and not spec.enabled
     assert config.read_text(encoding="utf-8") == original_config
-    with pytest.raises(PluginSettingsError, match="插件更新失败"):
-        boundary.marketplace_install({**request, "revision": boundary.snapshot()["revision"], "version": "2.0.0"})
-    assert PluginDiscovery(root).discover()[0].version == "1.1.0"
+    with pytest.raises(PluginSettingsError) as invalid_package:
+        boundary.marketplace_install({**request, "version": "2.0.0"})
+    assert invalid_package.value.code == "PLUGIN_PACKAGE_IDENTITY_MISMATCH"
+    assert PluginInventory(root).scan().runtime_specs[0].version == "1.1.0"
     assert config.read_text(encoding="utf-8") == original_config
 
 
@@ -831,7 +842,7 @@ def test_marketplace_update_rolls_back_runtime_failure(tmp_path):
     worker = _BoundaryWorker(root)
     boundary = _plugin_boundary(root, worker)
     old = _plugin_zip(tmp_path / "old.zip")
-    boundary.install(boundary.snapshot()["revision"], "zip", str(old))
+    boundary.install("zip", str(old))
     new = _plugin_zip(tmp_path / "new.zip", manifest=MANIFEST.replace("1.0.0", "1.1.0"))
     original = worker.install_plugin
     attempts = []
@@ -842,6 +853,6 @@ def test_marketplace_update_rolls_back_runtime_failure(tmp_path):
         return original(install_id)
     worker.install_plugin = fail_once
     with pytest.raises(PluginSettingsError):
-        boundary.marketplace_install({"revision": boundary.snapshot()["revision"], "sourcePath": str(new), "pluginId": "com.example.local", "version": "1.1.0"})
+        boundary.marketplace_install({"sourcePath": str(new), "pluginId": "com.example.local", "version": "1.1.0"})
     assert len(attempts) == 2
-    assert PluginDiscovery(root).discover()[0].version == "1.0.0"
+    assert PluginInventory(root).scan().runtime_specs[0].version == "1.0.0"

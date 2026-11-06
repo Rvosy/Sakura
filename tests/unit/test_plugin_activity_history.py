@@ -43,7 +43,7 @@ def test_activity_is_saved_while_chat_busy_and_reopens_through_reloaded_plugin(t
         host.register_record_opener("old-handle")
         saved = host.record_activity(request)
     history = HistoryBoundary("generation", "credential", tmp_path,
-        session_provider=lambda: session, application_provider=lambda: SimpleNamespace(chat=host))
+        character_provider=lambda: session.character.id, application_provider=lambda: SimpleNamespace(chat=host))
     envelope = {"generationId": "generation", "generationCredential": "credential", "id": "history",
         "name": "ui.history.page", "payload": {"expectedCharacterId": "pet", "beforeCursor": None, "limit": 50}}
     page = history.handle(envelope)

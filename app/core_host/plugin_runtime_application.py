@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import threading
 from contextlib import contextmanager, nullcontext
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
 
 from app.core_host.plugin_artifacts import PluginArtifactStore
@@ -20,14 +20,15 @@ from app.core_host.speech_host import SpeechHostService
 from app.core_host.chat_host import ChatHost, HOST_CHAT_SERVICE
 from app.core_host.visual_control_host import HostVisualService, HOST_VISUAL_SERVICE
 from app.core_host.screen_host import ScreenHost, HOST_SCREEN_SERVICE, migrate_legacy_screen_settings
-from app.plugin_sdk.sakura_context import ContextRequest
 from app.plugins.host_services import (
     HOST_ARTIFACTS_SERVICE,
     HOST_CHARACTER_SERVICE,
     HOST_COMPOSER_TOOLS_V0_SERVICE,
     HOST_CONTEXT_SERVICE,
+    HOST_HOOKS_SERVICE,
     HOST_DIAGNOSTICS_SERVICE,
     HOST_LOGGING_SERVICE,
+    HOST_USAGE_SERVICE,
     HOST_MODEL_SLOTS_SERVICE,
     HOST_CONVERSATION_SERVICE,
     HOST_SPEECH_SERVICE,
@@ -52,12 +53,14 @@ from app.storage.timeline import TimelineStore
 
 
 _HOST_EXPORTS = {
+    HOST_USAGE_SERVICE: ("describe", "record"),
     HOST_LOGGING_SERVICE: ("emit",),
     HOST_ARTIFACTS_SERVICE: ("allocate", "commit", "release", "resolve", "release_received", "deliver", "release_delivered"),
     HOST_DIAGNOSTICS_SERVICE: ("emit",),
     HOST_CHARACTER_SERVICE: ("current", "list", "presentation", "get", "update", "resolve_resource", "declare_resources"),
     HOST_TOOLS_SERVICE: ("register", "unregister", "catalog", "execute"),
     HOST_CONTEXT_SERVICE: ("register", "unregister", "describe", "catalog", "collect"),
+    HOST_HOOKS_SERVICE: ("register", "unregister", "describe", "catalog", "run"),
     HOST_MODEL_SLOTS_SERVICE: ("register", "unregister", "catalog", "resolve", "active", "register_provider", "unregister_provider"),
     HOST_STORAGE_SERVICE: ("resolve",),
     HOST_SETTINGS_SERVICE: ("register", "unregister"),
@@ -142,6 +145,20 @@ class PluginRuntimeApplication:
             log_event("Plugin", "模型配置迁移失败", diagnostics, event="model.configuration.failed", severity="error")
         self._inventory = PluginInventory(roots, recovery_failures=recovery_failures)
         self._inventory_snapshot = self._inventory.scan()
+        for plugin_id, directory in self._inventory_snapshot.retired_bundled:
+            users = [record for record in self._inventory_snapshot.records
+                     if record.source == "user" and (record.plugin_id == plugin_id or record.directory_name == plugin_id)]
+            log_event("Plugin", "已忽略升级残留的内置插件", {
+                "plugin_id": plugin_id, "path": str(roots.distribution_root / "plugins/builtin" / directory),
+                "diagnostic": "; ".join(f"{record.directory_name}: {record.reason_code}" for record in users) or "未发现用户版，可从市场或本地包安装。",
+                "action": "load_user_plugin" if any(record.runtime_eligible for record in users) else "install_or_repair_user_plugin",
+            }, event="plugin.upgrade.retired_bundled_ignored")
+        for record in self._inventory_snapshot.records:
+            if record.reason_code == "PLUGIN_MANIFEST_INVALID":
+                log_event("Plugin", "插件清单无法读取", {
+                    "installId": record.install_id, "directoryName": record.directory_name,
+                    **record.diagnostics,
+                }, event="plugin.manifest.failed", severity="error")
         self._manager = PluginRuntimeManager(
             roots,
             generation_id,
@@ -167,8 +184,6 @@ class PluginRuntimeApplication:
             timeline_store=TimelineStore(StoragePaths(roots.user_root).timeline_database()),
             current_character_id=self._current_character_id,
             invoke_callback=self._manager.invoke_callback,
-            encode_context_request=_context_request_mapping,
-            on_context_change=self._host_context_changed,
             storage_root=roots.user_root,
             model_resolver=self._resolve_model,
             active_model_resolver=self.active_models,
@@ -463,6 +478,9 @@ class PluginRuntimeApplication:
             self._assistant_inputs[descriptor["artifactId"]] = (dict(identity), grant["historyToken"])
         return descriptor
 
+    def run_hook(self, name, data, metadata=None, *, cancel_checker=None):
+        return self._host_services.hooks.run(name, data, metadata, cancel_checker=cancel_checker)
+
     def read_assistant_result(self, descriptor):
         import json
         artifact = self._host_services.resolve_committed_artifact(descriptor["artifactId"])
@@ -694,16 +712,15 @@ class PluginRuntimeApplication:
             with self._manager.pause_plugins(ids) as errors:
                 yield errors
 
+    def check_plugin_update_idle(self) -> None:
+        if self._chat_boundary is not None:
+            self._chat_boundary.apply_runtime_update(lambda: None)
+
     @contextmanager
     def plugin_update(self, plugin_id: str):
         guard = self._chat_boundary.idle_runtime_update() if self._chat_boundary is not None else nullcontext()
         with guard, self._manager.plugin_update(plugin_id) as dependents:
             yield dependents
-
-    def restore_update_dependents(self, plugin_ids: list[str]) -> None:
-        self._manager.restore_update_dependents(plugin_ids)
-        for plugin_id in plugin_ids:
-            self._refresh_visual_provider(plugin_id)
 
     def set_plugin_enabled(self, plugin_id: str, enabled: bool) -> dict[str, Any]:
         result = self._manager.set_enabled(plugin_id, enabled)
@@ -855,15 +872,8 @@ class PluginRuntimeApplication:
         character_id = getattr(getattr(self._session, "character", None), "id", None)
         return character_id if isinstance(character_id, str) and character_id else None
 
-    def _host_context_changed(self, providers):
-        # Each Assistant freezes the public catalog when accepting a turn.
-        return None
-
-    def _model_catalog(self) -> list[dict[str, object]]:
+    def model_catalog(self) -> list[dict[str, object]]:
         return self._host_services.model_catalog()
-
-    def model_catalog(self):
-        return self._model_catalog()
 
     def active_models(self):
         try:
@@ -883,12 +893,6 @@ class PluginRuntimeApplication:
     def _resolve_model(self, selection: Mapping[str, Any]) -> dict[str, object]:
         reference = model_reference(selection)
         return reference if reference["serviceKey"] else dict(self.active_models()["chat"] or EMPTY_REFERENCE)
-
-
-def _context_request_mapping(request: ContextRequest) -> dict[str, Any]:
-    value = asdict(request)
-    value["recent_messages"] = [dict(item) for item in value.get("recent_messages", [])]
-    return value
 
 
 __all__ = ["PluginRuntimeApplication"]

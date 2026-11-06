@@ -179,7 +179,7 @@ def run():
               });
               const before = model.dataset.waves || '0';
               const reducer = createChatPresentationReducer({initialMessage:'你好'});
-              reducer.reduce({type:'lifecycle',generationId:'g',generationNumber:1,revision:1,status:'ready'});
+              reducer.reduce({type:'lifecycle',generationId:'g',generationNumber:1,status:'ready'});
               host.begin('chat');
               await host.play(controls[0], 'chat', 0);
               await host.play(controls[0], 'chat', 0);

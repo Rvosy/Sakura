@@ -29,7 +29,9 @@ def test_release_mapping_keeps_paths_and_sizes_with_unique_build_ids(tmp_path, m
     resources = inventory(stage, "windows-x64")
     assert resources["schemaVersion"] == 2
     assert resources["uncompressedBytes"] == 14
-    assert all(set(entry) == {"path", "size"} for entry in resources["files"])
+    assert {entry["path"]: entry["size"] for entry in resources["files"]} == {
+        "VERSION": 6, "resource.bin": 8,
+    }
     first = diagnostic_build.write_mapping(repo, stage, "windows-x64", resources)
     second = diagnostic_build.write_mapping(repo, stage, "windows-x64", resources)
     assert first["buildId"] != second["buildId"]
@@ -41,7 +43,7 @@ def test_release_mapping_keeps_paths_and_sizes_with_unique_build_ids(tmp_path, m
     assert (stage / "diagnostic-build-id.txt").read_text().strip() == second["buildId"]
 
 
-def test_runtime_tar_download_parses_archive_without_digest(tmp_path, monkeypatch):
+def test_runtime_tar_download_preserves_archive_contents(tmp_path, monkeypatch):
     buffer = io.BytesIO()
     with tarfile.open(fileobj=buffer, mode="w:gz") as bundle:
         entry = tarfile.TarInfo("python/bin/python3")

@@ -27,12 +27,8 @@ CAPABILITIES = [
     "core.initialize",
     "core.snapshot",
 ]
-LIFECYCLE_GOLDEN = json.loads(
-    (REPO_ROOT / "tests/fixtures/runtime_v2/wp_1c_04/lifecycle-golden.json").read_text(
-        encoding="utf-8"
-    )
-)
-REQUEST_TIMEOUT = LIFECYCLE_GOLDEN["deadlinesMs"]["request"] / 1000
+REQUEST_TIMEOUT = 3
+READINESS_TIMEOUT = 30
 READY_FIXTURE_ROOT = REPO_ROOT / "tests/fixtures/runtime_v2/wp_3_01/ready"
 
 
@@ -83,13 +79,14 @@ def _isolated_lifecycle_distribution(tmp_path, assistant_dependencies, monkeypat
                     ignore=shutil.ignore_patterns("__pycache__"),
                 )
             shutil.copy2(REPO_ROOT / "VERSION", distribution / "VERSION")
-            dependencies = distribution / "plugins/dependencies/sakura.model.openai_compatible"
-            shutil.copytree(assistant_dependencies, dependencies, copy_function=os.link)
-            (dependencies / ".sakura-dependencies.json").write_text(
-                json.dumps({"schemaVersion": 1, "kind": "requirements.txt",
-                            "python": f"{sys.version_info.major}.{sys.version_info.minor}"}),
-                encoding="utf-8",
-            )
+            for plugin_id in ("sakura.assistant.default", "sakura.model.openai_compatible"):
+                dependencies = distribution / "plugins/dependencies" / plugin_id
+                shutil.copytree(assistant_dependencies, dependencies, copy_function=os.link)
+                (dependencies / ".sakura-dependencies.json").write_text(
+                    json.dumps({"schemaVersion": 1, "kind": "requirements.txt",
+                                "python": f"{sys.version_info.major}.{sys.version_info.minor}"}),
+                    encoding="utf-8",
+                )
         return original_start(app_root, generation_id, distribution_root=distribution)
 
     monkeypatch.setattr(sys.modules[__name__], "start_host", start)
@@ -104,8 +101,9 @@ def start_host(
     process = subprocess.Popen(
         [
             sys.executable,
-            "-m",
-            "app.core_host",
+            "-c",
+            "import runpy,sys; sys.path.insert(0,sys.argv.pop(1)); runpy.run_module('app.core_host',run_name='__main__')",
+            str(REPO_ROOT),
             "--distribution-root",
             str(distribution_root),
             "--user-root",
@@ -370,7 +368,7 @@ def test_real_host_initializes_in_background_and_returns_python_snapshot(tmp_pat
         assert time.monotonic() - started < 0.5
         assert initialize["payload"]["readiness"] == "initializing"
 
-        deadline = time.monotonic() + LIFECYCLE_GOLDEN["deadlinesMs"]["readinessWatchdog"] / 1000
+        deadline = time.monotonic() + READINESS_TIMEOUT
         revisions = []
         while True:
             snapshot = exchange(process, request("snapshot", "core.snapshot"))["payload"]
@@ -447,7 +445,7 @@ def test_real_host_keeps_character_visible_while_provider_setup_is_required(
         assert hello["ok"] is True
         assert exchange(process, request("initialize", "core.initialize"))["ok"] is True
 
-        deadline = time.monotonic() + LIFECYCLE_GOLDEN["deadlinesMs"]["readinessWatchdog"] / 1000
+        deadline = time.monotonic() + READINESS_TIMEOUT
         while True:
             snapshot = exchange(process, request("snapshot", "core.snapshot"))["payload"]
             if snapshot["readiness"] == "setup_required":
@@ -530,10 +528,7 @@ def test_real_host_failed_readiness_still_cleans_init_and_writer_threads(tmp_pat
             request("initialize-failed", "core.initialize", {}),
         )
         assert initialize["payload"]["readiness"] == "initializing"
-        deadline = (
-            time.monotonic()
-            + LIFECYCLE_GOLDEN["deadlinesMs"]["readinessWatchdog"] / 1000
-        )
+        deadline = time.monotonic() + READINESS_TIMEOUT
         while True:
             snapshot = exchange(process, request("snapshot-failed", "core.snapshot"))["payload"]
             if snapshot["readiness"] == "failed":
@@ -542,10 +537,7 @@ def test_real_host_failed_readiness_still_cleans_init_and_writer_threads(tmp_pat
         health = exchange(process, request("health-failed", "system.health"))
         assert health["payload"] == {"hostState": "failed", "status": "healthy"}
         assert exchange(process, request("shutdown-failed", "system.shutdown"))["ok"] is True
-        assert (
-            process.wait(timeout=LIFECYCLE_GOLDEN["deadlinesMs"]["treeStop"] / 1000)
-            == 0
-        )
+        assert process.wait(timeout=5) == 0
         assert process.stdout is not None
         assert process.stdout.read() == b""
     finally:

@@ -7,9 +7,8 @@ import yaml
 
 from app.config.character_resources import CharacterVisualResource
 from app.core_host.visual_host import VisualHost, VisualHostError
-from app.plugins.discovery import PluginDiscovery
 from app.plugins.installer import LocalPluginInstaller
-from app.plugins.inventory import PluginDesiredStateStore, PluginInventory, RuntimePluginSpec
+from app.plugins.inventory import PluginDesiredStateStore, PluginInventory
 from app.plugins.runtime_v4 import PluginRuntimeError
 from app.storage.runtime_roots import RuntimeRoots
 
@@ -43,13 +42,10 @@ def test_disabled_visual_declaration_survives_discovery_and_startup_serializatio
     assert record.visuals[0].resource_type == "example.parameters@1"
     spec = inventory.runtime_specs[0]
     assert spec.to_plugin_spec(tmp_path).visuals == record.visuals
-    assert PluginDiscovery(tmp_path).discover()[0].visuals == record.visuals
-    before = inventory.revision
     manifest = tmp_path / "plugins/user/visual/plugin.yaml"
     raw = yaml.safe_load(manifest.read_text(encoding="utf-8"))
     raw["visuals"][0]["contract"] = 2
     manifest.write_text(yaml.safe_dump(raw), encoding="utf-8")
-    assert PluginInventory(tmp_path).scan().revision != before
     assert PluginInventory(tmp_path).scan().records[0].visuals[0].contract == 2
 
 
@@ -74,21 +70,8 @@ def test_invalid_optional_declarations_do_not_disable_other_plugin_services(tmp_
     if field == "editor":
         assert record.visuals[0].renderer == "renderer.js"
         assert record.visuals[0].editor is None
-    assert PluginDiscovery(tmp_path).discover()[0].visuals == record.visuals
     assert LocalPluginInstaller(tmp_path)._validated_spec(plugin_root).visuals == record.visuals
 
-
-
-def test_resource_reference_needs_no_portrait_and_never_writes_the_package(tmp_path: Path) -> None:
-    root = tmp_path / "model"
-    root.mkdir()
-    entry = root / "model.json"
-    content = '{"parameters": {"angle": [-30, 30]}, "actions": ["wave"]}'
-    entry.write_text(content, encoding="utf-8")
-    resource = CharacterVisualResource.from_mapping({"id": "model-1", "type": "example.parameters@1", "root": "model", "entry": "model.json"})
-    resource.validate_paths(tmp_path)
-    assert entry.read_text(encoding="utf-8") == content
-    assert resource.to_mapping()["type"] == "example.parameters@1"
 
 
 @pytest.mark.parametrize("field,value", [

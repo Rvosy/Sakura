@@ -932,17 +932,26 @@ class PluginRuntimeManager:
                 dependents = list(reversed(self._hard_dependents_locked(plugin_id))) if plugin_id in self._records else []
             yield dependents
 
-    def restore_update_dependents(self, plugin_ids: list[str]) -> None:
+    def restore_waiting_dependents(self, provider_id: str) -> list[str]:
+        """恢复因这个提供者缺失而未能启动的消费者。"""
+        restored = []
+        attempted = set()
         with self._operation_lock:
-            for plugin_id in plugin_ids:
+            provided = set(self._records[provider_id].spec.provides)
+            while True:
                 with self._lock:
-                    record = self._records[plugin_id]
-                    if record.state == "active":
-                        continue
-                    if not record.spec.enabled or any(key not in self._services for key in record.spec.requires):
-                        raise PluginRuntimeError("DEPENDENCY_FAILED", plugin_id=plugin_id)
+                    record = next((item for item in self._records.values()
+                        if item.spec.enabled and item.state == "failed" and item.spec.plugin_id not in attempted
+                        and item.reason_code in {"MISSING_SERVICE", "DEPENDENCY_FAILED"}
+                        and provided.intersection(item.spec.requires)
+                        and all(key in self._services for key in item.spec.requires)), None)
+                if record is None:
+                    return restored
+                attempted.add(record.spec.plugin_id)
                 if not self._start_one(record):
-                    raise PluginRuntimeError(record.reason_code, plugin_id=plugin_id)
+                    continue
+                restored.append(record.spec.plugin_id)
+                provided.update(record.spec.provides)
 
     def set_enabled(self, plugin_id: str, enabled: bool) -> dict[str, Any]:
         with self._operation_lock:
@@ -1422,6 +1431,7 @@ class PluginRuntimeManager:
 
     def _start_one_impl(self, record: _RuntimeRecord, diagnostics: dict[str, object], *, only_unstarted: bool = False) -> bool | None:
         from app.core.diagnostics import exception_diagnostics
+        from app.core.runtime_log import log_message
 
         spec = record.spec
         assert spec.plugin_root is not None
@@ -1454,6 +1464,9 @@ class PluginRuntimeManager:
                 record.reason_code = "MISSING_SERVICE"
                 return False
         stage = "prepare"
+        log_message("info", "开始启动插件", component="plugin",
+            plugin_id=spec.plugin_id, plugin_name=spec.name,
+            fields={"event": "plugin.start.started", "stage": stage})
         try:
             if self._before_start is not None:
                 self._before_start(spec)
@@ -1700,9 +1713,11 @@ class PluginRuntimeManager:
             draining = self._draining_processes.get(caller_id)
             caller_record = self._records.get(caller_id)
             provider_record = self._records.get(binding.provider_id) if binding is not None else None
-            draining_log = (binding is not None
+            # Dependencies can still emit logs while an earlier worker drains.
+            # Keep their log channel open until their own process is stopped.
+            shutdown_log = (binding is not None
                 and getattr(binding.host_service, "allow_during_shutdown", False) is True
-                and draining is not None)
+                and (draining is not None or (caller_record is not None and caller_record.process is not None)))
             # A closing worker must be able to release its own registrations
             # before Core performs the final scope sweep.
             draining_unregister = (binding is not None and binding.host_service is not None
@@ -1726,7 +1741,7 @@ class PluginRuntimeManager:
                 and provider_record is not None and provider_record.state == "active"
                 and provider_record.process is binding.process
             )
-            if self._closed and not (draining_log or draining_unregister or draining_dependency or draining_host_cleanup):
+            if self._closed and not (shutdown_log or draining_unregister or draining_dependency or draining_host_cleanup):
                 raise PluginRuntimeError("GENERATION_INVALIDATED")
             if draining_dependency or draining_host_cleanup:
                 remaining = draining.deadline - time.monotonic()

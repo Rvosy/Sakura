@@ -23,8 +23,7 @@ def model_reference(value: object) -> dict[str, str]:
     if not isinstance(value, Mapping) or set(value) - set(EMPTY_REFERENCE):
         raise ValueError("MODEL_SLOT_SELECTION_INVALID")
     result = {key: value.get(key, "") for key in EMPTY_REFERENCE}
-    if any(not isinstance(item, str) or "\x00" in item or len(item) > (256 if key == "modelId" else 200)
-           for key, item in result.items()):
+    if any(not isinstance(item, str) or "\x00" in item for item in result.values()):
         raise ValueError("MODEL_SLOT_SELECTION_INVALID")
     result = {key: item.strip() for key, item in result.items()}
     if len({bool(item) for item in result.values()}) != 1:
@@ -33,9 +32,10 @@ def model_reference(value: object) -> dict[str, str]:
 
 
 def _read(path: Path) -> dict:
-    if not path.exists():
+    try:
+        value = json.loads(path.read_text(encoding="utf-8-sig"))
+    except FileNotFoundError:
         return {}
-    value = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(value, dict):
         raise ValueError("CONFIG_DATA_INVALID")
     return value

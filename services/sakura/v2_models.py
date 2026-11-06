@@ -15,6 +15,7 @@ from models import (
 )
 
 Millis = Annotated[int, Field(strict=True, ge=0, le=2**53 - 1)]
+Measurement = Annotated[float, Field(strict=True, ge=0, allow_inf_nan=False)]
 
 
 class DiagnosticContext(StrictModel):
@@ -82,6 +83,19 @@ class DiagnosticDetail(StrictModel):
     gpu_name: Annotated[str, Field(strict=True, max_length=128)] | None = Field(default=None, alias="gpuName")
     gpu_driver: Annotated[str, Field(strict=True, max_length=128)] | None = Field(default=None, alias="gpuDriver")
     gpu_memory_mib: Millis | None = Field(default=None, alias="gpuMemoryMib")
+    queue_ms: Measurement | None = Field(default=None, alias="queueMs")
+    request_ms: Measurement | None = Field(default=None, alias="requestMs")
+    engine_total_ms: Measurement | None = Field(default=None, alias="engineTotalMs")
+    inference_ms: Measurement | None = Field(default=None, alias="inferenceMs")
+    reference_ms: Measurement | None = Field(default=None, alias="referenceMs")
+    frontend_ms: Measurement | None = Field(default=None, alias="frontendMs")
+    gpt_ms: Measurement | None = Field(default=None, alias="gptMs")
+    sovits_ms: Measurement | None = Field(default=None, alias="sovitsMs")
+    audio_seconds: Measurement | None = Field(default=None, alias="audioSeconds")
+    text_chars: Millis | None = Field(default=None, alias="textChars")
+    language: SafeToken | None = None
+    reference_cache: Literal["memory", "disk", "package", "miss"] | None = Field(default=None, alias="referenceCache")
+    synthesis_status: Literal["completed", "stopped_at_limit"] | None = Field(default=None, alias="synthesisStatus")
 
     @model_validator(mode="after")
     def location_requires_file(self):
@@ -132,6 +146,7 @@ class ErrorReportV2(ErrorReport):
 
 
 class EventItemV2(TelemetryEventItem):
+    # Released 1.x clients can still send migration events using this protocol.
     event: Literal[
         "app.started",
         "app.ready",

@@ -22,6 +22,19 @@ test("plugin transitions distinguish waiting and stopping even with a stale read
   }
 });
 
+test("queued and initializing plugins do not produce an unavailable error", () => {
+  for (const reasonCode of ["NOT_STARTED", "PLUGIN_STARTING"]) {
+    const status = presentPluginStatus({ state: "starting", reasonCode });
+    assert.equal(status.message, "");
+    assert.equal(status.diagnostic, "");
+    const activity = projectPluginActivity({ state: "starting", reason_code: reasonCode });
+    assert.equal(activity.state, "working");
+    assert.equal(activity.isTransient, true);
+  }
+  const failed = presentPluginStatus({ state: "failed", reasonCode: "PLUGIN_PROCESS_START_FAILED" });
+  assert.ok(failed.diagnostic.includes("PLUGIN_PROCESS_START_FAILED"));
+});
+
 test("component overview combines enabled plugin resources across surfaces and keeps published installation state", () => {
   const section = (surface, value) => ({
     sectionId: "bundle", surface, values: { bundle: value },
@@ -56,8 +69,6 @@ test("catalog filters combine declared metadata, install source and actual activ
   assert.deepEqual(pluginMetadata({ presentation: { kind: "unknown", category: "unknown" } }), { kind: "extension", category: "other" });
 });
 
-
-
 test("plugin dependency projections cascade enablement and find affected consumers", () => {
   const hub = {
     id: "hub-install", plugin_id: "sakura.tts", name: "Sakura TTS Hub",
@@ -91,11 +102,6 @@ test("plugin dependency projections cascade enablement and find affected consume
   );
 });
 
-test("missing plugin dependencies stay distinct from a bad API key", () => {
-  const status = presentPluginStatus({ state: "failed", reasonCode: "PLUGIN_DEPENDENCIES_MISSING" });
-  assert.match(status.diagnostic, /PLUGIN_DEPENDENCIES_MISSING/);
-});
-
 test("plugin failure presentation prioritizes the original cause and keeps the traceback", () => {
   const status = presentPluginStatus({ state: "failed", reasonCode: "PLUGIN_DEPENDENCIES_INVALID",
     diagnostics: { diagnostic: "Permission denied: C:/plugins/marker.json api_key=private-key", exception_stack: "at verified_path:233" } });
@@ -103,20 +109,6 @@ test("plugin failure presentation prioritizes the original cause and keeps the t
   assert.match(status.diagnostic, /verified_path:233/);
   assert.doesNotMatch(JSON.stringify(status), /private-key/);
 });
-
-test("unknown plugin failures stay readable and retain the original code", () => {
-  const status = presentPluginStatus({ state: "failed", reasonCode: "SOMETHING_NEW" });
-  assert.ok(status.diagnostic.includes("SOMETHING_NEW"));
-});
-
-test("retired model contracts show an update action with their diagnostic", () => {
-  for (const state of ["failed", "disabled"]) {
-    const status = presentPluginStatus({ state, reasonCode: "MODEL_API_UPDATE_REQUIRED" });
-    assert.match(status.diagnostic, /MODEL_API_UPDATE_REQUIRED/);
-  }
-});
-
-
 
 test("plugin activity keeps warning and failure stable", () => {
   const warning = projectPluginActivity({

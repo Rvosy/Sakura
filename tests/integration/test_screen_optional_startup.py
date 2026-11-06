@@ -117,14 +117,14 @@ def test_screen_migration_io_failure_preserves_config_and_management_can_disable
         assert f"screen {stage.split('-and-')[0]} denied" in failure["diagnostic"]
         if stage == "replace-and-cleanup":
             assert "screen cleanup denied" in failure["recovery_diagnostic"]
-        disabled = boundary.set_enabled(snapshot["revision"], screen["installId"], False)
+        disabled = boundary.set_enabled(screen["installId"], False)
         assert disabled["applicationState"] == "applied"
         assert attempted == [stage.split("-and-")[0]], "disable must not retry migration"
         healthy = rows["fixture.healthy"]
-        assert boundary.set_enabled(boundary.snapshot()["revision"], healthy["installId"], False)["applicationState"] == "applied"
-        assert boundary.set_enabled(boundary.snapshot()["revision"], healthy["installId"], True)["applicationState"] == "applied"
+        assert boundary.set_enabled(healthy["installId"], False)["applicationState"] == "applied"
+        assert boundary.set_enabled(healthy["installId"], True)["applicationState"] == "applied"
         active[0] = False
-        restored = boundary.set_enabled(boundary.snapshot()["revision"], screen["installId"], True)
+        restored = boundary.set_enabled(screen["installId"], True)
         assert restored["applicationState"] == "applied"
         restored_screen = next(row for row in restored["plugins"] if row["pluginId"] == "sakura.screen_awareness")
         assert restored_screen["state"] == "active"

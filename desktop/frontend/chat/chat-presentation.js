@@ -29,7 +29,6 @@ function initialState() {
   return freezeState({
     generationId: null,
     generationNumber: 0,
-    revision: 0,
     lifecycle: "startup",
     lifecycleLabel: "startup",
     lifecycleHeadline: "Sakura 正在启动",
@@ -121,8 +120,6 @@ export function createChatPresentationReducer({ initialMessage, initialMessageTr
       if (!event || !acceptGeneration(event)) return result(false);
       if (event.type === "lifecycle") {
         if (!Object.hasOwn(LIFECYCLE_COPY, event.status)) return result(false);
-        if (!Number.isSafeInteger(event.revision) || event.revision < 0) return result(false);
-        if (event.generationNumber === state.generationNumber && event.revision < state.revision) return result(false);
         const generationChanged = event.generationNumber > state.generationNumber;
         const establishedPresentation = hasReachedReady || greetingStarted;
         const initialStartup = !establishedPresentation && ["startup", "initializing"].includes(event.status);
@@ -146,7 +143,6 @@ export function createChatPresentationReducer({ initialMessage, initialMessageTr
           ...state,
           generationId: event.generationId,
           generationNumber: event.generationNumber,
-          revision: event.revision,
           lifecycle: event.status,
           lifecycleLabel,
           lifecycleHeadline,

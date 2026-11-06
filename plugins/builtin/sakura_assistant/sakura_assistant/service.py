@@ -17,6 +17,7 @@ from sakura_model import ApiConfigError, ApiRequestError, ModelClient, ModelErro
 from sakura_tools import Tool, ToolExecutionResult, ToolRegistry
 from . import diagnostics
 from .agent.actions import AgentEvent
+from .agent.context_orchestrator import ContextProviderContribution
 from .agent.runtime import AgentRuntime
 from .agent.trace import AgentTraceRecorder, traced_message
 from .agent.screen_observation import (
@@ -78,6 +79,8 @@ class RemoteTools(ToolRegistry):
             code = str(getattr(error, "code", ""))
             if not re.fullmatch(r"[A-Z0-9_]{1,80}", code):
                 code = "PLUGIN_TOOL_EXECUTION_FAILED"
+            if code == "HOOK_ABORTED":
+                return ToolExecutionResult(name, False, "", str(error), code)
             attributes = {**diagnostics.diagnostic_attributes(error),
                           **getattr(error, "diagnostics", {}), "tool_name": name, "reason_code": code}
             diagnostics.log_event("ToolRegistry", "工具执行失败", attributes,
@@ -137,8 +140,10 @@ class AssistantPlugin:
             return _read_generation(self.context.config.get().get("generation", {}))
         def save(request):
             values = request.get("values", request)
-            result = {}
+            result = dict(self.context.config.get().get("generation", {}))
             for field in fields:
+                if field["key"] not in values:
+                    continue
                 value = values.get(field["key"])
                 if value is not None and (isinstance(value, bool) or not isinstance(value, (int, float)) or not field["minimum"] <= value <= field["maximum"] or (field["type"] == "integer" and not isinstance(value, int))):
                     raise ApiConfigError("生成参数无效。")
@@ -336,7 +341,7 @@ class AssistantPlugin:
                 def collect(context_request, registration_id=row["registrationId"]):
                     operation.check()
                     return tuple(ContextFragment(**item) for item in contexts.collect(registration_id, asdict(context_request)))
-                providers.append(SimpleNamespace(provider_id=row["providerId"], description=row["description"], order=row["order"],
+                providers.append(ContextProviderContribution(provider_id=row["providerId"], description=row["description"], order=row["order"],
                     enabled=row["enabled"], scope=row["scope"], failure_policy=row["failurePolicy"], plugin_id=row["pluginId"], build_context=collect))
             runtime = AgentRuntime(client, with_desktop_pet_context(character["systemPrompt"]),
                 reply_tones=character["replyTones"], character_id=character["id"], character_name=character["displayName"],
@@ -406,6 +411,8 @@ def classify_failure(error):
     from .llm.prompts.runtime import ContextWindowExceededError
     from sakura_provider_errors import provider_http_status, public_provider_http_message
     code = getattr(error, "code", "")
+    if code == "HOOK_ABORTED":
+        return {"code": code, "message": str(error), "retryable": False}
     if isinstance(error, OperationCancelled):
         return {"code": "OPERATION_CANCELLED", "message": "对话已取消。", "retryable": False}
     if isinstance(error, (ContextContributionError, ContextWindowExceededError)):
@@ -421,7 +428,7 @@ def classify_failure(error):
                 # The Provider owns protocol decoding and credential removal.
                 # A successful HTTP status does not make a malformed reply valid.
                 status = cause.status_code
-                invalid = cause.code == "MODEL_RESPONSE_INVALID"
+                invalid = cause.code in {"MODEL_RESPONSE_INVALID", "MODEL_OUTPUT_TRUNCATED", "MODEL_OUTPUT_REFUSED"}
                 return {"code": "PROVIDER_RESPONSE_INVALID" if invalid else "PROVIDER_REQUEST_FAILED",
                         "message": str(cause),
                         "retryable": not invalid and (status is None or status == 429 or status >= 500),
@@ -432,7 +439,7 @@ def classify_failure(error):
             return {"code": "PROVIDER_REQUEST_FAILED", "message": public_provider_http_message(error, status),
                     "retryable": status == 429 or status >= 500, "attributes": {"http_status": status}}
         text = str(error).lower()
-        if any(item in text for item in ("格式无法解析", "invalid json", "remained invalid", "missing", "empty response")):
-            return {"code": "PROVIDER_RESPONSE_INVALID", "message": "模型服务响应格式无效：回复结构不符合协议。", "retryable": False}
+        if any(item in text for item in ("格式无法解析", "修复后仍不符合结构", "invalid json", "remained invalid", "missing", "empty response")):
+            return {"code": "PROVIDER_RESPONSE_INVALID", "message": str(error), "retryable": False}
         return {"code": "PROVIDER_REQUEST_FAILED", "message": "模型请求失败。", "retryable": True}
     return {"code": code or "CHAT_EXECUTION_FAILED", "message": "对话处理失败。", "retryable": False}

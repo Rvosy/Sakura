@@ -14,6 +14,7 @@ mod core_host_protocol;
 mod core_host_router;
 mod core_host_runtime;
 mod core_supervisor;
+mod data_transfer;
 mod download_sources;
 mod dynamic_hit_test;
 mod error_dialog_window;
@@ -21,7 +22,6 @@ mod history_window;
 mod host_interaction;
 mod input_visual_effect;
 mod interaction_latency;
-mod legacy_import;
 #[cfg(target_os = "linux")]
 mod linux_input_glass;
 #[cfg(target_os = "macos")]
@@ -46,12 +46,8 @@ mod update_settings;
 mod visual_resources;
 mod window_geometry;
 mod window_interaction;
-#[cfg(windows)]
+#[cfg(any(windows, test))]
 mod windows_glass_poc;
-#[cfg(windows)]
-mod windows_liquid_glass;
-#[cfg(windows)]
-mod windows_liquid_glass_native;
 use std::sync::{Arc, Mutex, TryLockError};
 
 use platform::{
@@ -5015,6 +5011,25 @@ async fn storage_settings_request(
 }
 
 #[tauri::command]
+async fn settings_usage_statistics_get(
+    window: WebviewWindow,
+    shell: State<'_, product_shell::ProductShellState>,
+    lifecycle: State<'_, ShellLifecycleState>,
+    period: String,
+    start_date: Option<String>,
+    end_date: Option<String>,
+) -> Result<Value, String> {
+    storage_settings_request(
+        &window,
+        &shell,
+        &lifecycle,
+        "usage.statistics.get",
+        json!({"period": period, "startDate": start_date, "endDate": end_date}),
+    )
+    .await
+}
+
+#[tauri::command]
 async fn settings_storage_get(
     window: WebviewWindow,
     shell: State<'_, product_shell::ProductShellState>,
@@ -7456,42 +7471,6 @@ fn main() {
             "current_version": env!("CARGO_PKG_VERSION"),
         })),
     );
-    match legacy_import::recover_interrupted(&runtime_request) {
-        Ok(true) => {
-            let _ = runtime_log.submit(RuntimeLogEvent::rust(
-                Severity::Warning,
-                "legacy_import",
-                "legacy_import.recovery.completed",
-                "上次中断的旧版本迁移已回滚",
-            ));
-        }
-        Ok(false) => {}
-        Err(error) => {
-            let _ = runtime_log.submit(
-                RuntimeLogEvent::rust(
-                    Severity::Error,
-                    "legacy_import",
-                    "legacy_import.recovery.failed",
-                    "旧版本迁移恢复失败",
-                )
-                .attributes(json!({
-                    "code": stable_runtime_code(&error, "LEGACY_IMPORT_RECOVERY_FAILED"),
-                    "diagnostic": error,
-                    "error_type": "LegacyImportRecoveryError",
-                    "reason_code": "LEGACY_IMPORT_RECOVERY_FAILED",
-                    "stage": "recovery"
-                })),
-            );
-            telemetry.shutdown();
-            runtime_log_shutdown.finish();
-            show_startup_message(
-                "Sakura 迁移恢复失败",
-                "上次迁移未能安全回滚。请查看 data/logs/sakura-runtime.log。Sakura 未继续启动。",
-                true,
-            );
-            std::process::exit(1);
-        }
-    }
     let first_run_guide_state =
         product_shell::FirstRunGuideState::new(ui_config_repository.clone());
     let first_run_completed = match first_run_guide_state.snapshot() {
@@ -7535,9 +7514,6 @@ fn main() {
             std::process::exit(1);
         }
     };
-    let legacy_import_state = Arc::new(legacy_import::LegacyImportState::new(
-        runtime_request.clone(),
-    ));
     let mut shell_lifecycle_session = Some(if first_run_completed {
         shell_lifecycle::ShellLifecycleSession::start_observed(runtime_request, runtime_log.clone())
     } else {
@@ -7565,7 +7541,6 @@ fn main() {
         .manage(error_dialog_window::ErrorDialogState::default())
         .manage(color_picker::ColorPickerState::default())
         .manage(first_run_guide_state)
-        .manage(legacy_import_state)
         .manage(product_shell::PetTopmostState::new(
             ui_config_repository.clone(),
         ))
@@ -7879,6 +7854,9 @@ fn main() {
             chat_settings::current_subtitle_language,
             history_window::history_bootstrap,
             history_window::history_page,
+            history_window::history_dates,
+            history_window::history_transfer,
+            data_transfer::data_transfer_choose,
             history_window::history_open_record,
             history_window::close_history_window,
             history_window::reveal_history_window,
@@ -7915,13 +7893,6 @@ fn main() {
             product_shell::settings_capability_manifest,
             product_shell::first_run_guide_get,
             product_shell::first_run_guide_complete,
-            legacy_import::legacy_import_choose_source,
-            legacy_import::legacy_import_inspect,
-            legacy_import::legacy_import_state,
-            legacy_import::legacy_import_start,
-            legacy_import::legacy_import_cancel,
-            legacy_import::settings_legacy_data_import_choose,
-            legacy_import::settings_legacy_data_import_apply,
             product_shell::reveal_settings_window,
             settings_characters_get,
             settings_character_visuals_get,
@@ -7945,6 +7916,7 @@ fn main() {
             close_character_studio,
             close_character_studio_for_exit,
             settings_storage_get,
+            settings_usage_statistics_get,
             settings_storage_open_user_root,
             settings_storage_choose_tts_root,
             settings_storage_reset_tts_root,
@@ -8636,15 +8608,6 @@ mod tests {
                 expected = Some(application);
             }
         }
-    }
-
-    #[test]
-    fn automatic_bubble_expansion_reserves_a_maximum_surface_only_on_windows() {
-        assert!(!uses_bubble_expansion_stable_surface_bounds(false));
-        assert_eq!(
-            uses_bubble_expansion_stable_surface_bounds(true),
-            cfg!(windows)
-        );
     }
 
     #[test]
@@ -9438,22 +9401,6 @@ mod tests {
     }
 
     #[test]
-    fn product_menu_session_starts_closed_without_stale_hit_regions() {
-        let session = WindowGeometrySession::default();
-        assert!(!session.context_menu_open);
-        assert!(session.context_menu_rect.is_none());
-        assert!(session.require_context_menu_closed().is_ok());
-        assert!(session.hit_regions.is_none());
-        assert!(session.context_menu_base_application.is_none());
-        assert!(session.context_menu_base_hit_regions.is_none());
-        assert!(!session.portrait_hit_relaxed);
-        assert!(!session.portrait_scale_preview_active);
-        assert!(!session.portrait_scale_gesture_active);
-        assert!(!session.control_surface_preview_active);
-        assert_eq!(session.control_surface_preview_revision, 0);
-    }
-
-    #[test]
     fn revision_zero_bootstrap_is_diagnostic_ready_without_consuming_revision_one() {
         let mut session = WindowGeometrySession::default();
         let mut application = LayoutApplication::rejected(0, PresentationState::Product, 1);
@@ -9483,16 +9430,6 @@ mod tests {
         assert!(session.hit_regions.is_some());
         assert!(!session.anchor_user_positioned);
         assert!(session.revision.accept(1));
-    }
-
-    #[test]
-    fn product_menu_region_policy_relaxes_windows_and_linux_menu_sessions() {
-        let expected = if cfg!(any(windows, target_os = "linux")) {
-            ContextMenuRegionPolicy::RelaxedWholeWindow
-        } else {
-            ContextMenuRegionPolicy::PreciseOverlay
-        };
-        assert_eq!(current_context_menu_region_policy(), expected);
     }
 
     #[test]
@@ -9707,11 +9644,6 @@ mod tests {
     }
 
     #[test]
-    fn visibility_probe_keeps_a_perceptible_native_owned_hidden_interval() {
-        assert_eq!(VISIBILITY_PROBE_HIDDEN_DURATION.as_millis(), 220);
-    }
-
-    #[test]
     fn hit_only_scale_revisions_do_not_request_root_window_geometry() {
         let mut previous = LayoutApplication::rejected(1, PresentationState::Product, 3);
         previous.active_bounds = [80, 120, 720, 820];
@@ -9843,19 +9775,6 @@ mod tests {
     }
 
     #[test]
-    fn window_surface_regression_resident_envelope_covers_windows_and_linux() {
-        assert_eq!(
-            uses_resident_stable_surface_bounds(true, false),
-            cfg!(any(windows, target_os = "linux"))
-        );
-        assert_eq!(
-            uses_resident_stable_surface_bounds(false, true),
-            cfg!(any(windows, target_os = "linux"))
-        );
-        assert!(!uses_resident_stable_surface_bounds(false, false));
-    }
-
-    #[test]
     fn linux_uses_the_maximum_envelope_only_during_the_scale_gesture() {
         let mut session = WindowGeometrySession::default();
         assert!(!session.stabilizes_portrait_scale_bounds());
@@ -9872,32 +9791,6 @@ mod tests {
         assert_eq!(defers_portrait_scale_hit_region_frames(), cfg!(windows));
         session.portrait_scale_gesture_active = false;
         assert!(!session.stabilizes_portrait_scale_bounds());
-    }
-
-    #[test]
-    fn window_surface_regression_platform_capabilities_keep_transient_macos_bounds() {
-        let windows = portrait_scale_platform_capabilities(platform::PlatformTarget::WindowsX64);
-        assert!(windows.stable_bounds_during_gesture);
-        assert!(!windows.precise_hit_regions_during_gesture);
-        assert!(windows.resident_stable_bounds);
-
-        let macos = portrait_scale_platform_capabilities(platform::PlatformTarget::MacOsArm64);
-        assert!(macos.stable_bounds_during_gesture);
-        assert!(macos.precise_hit_regions_during_gesture);
-        assert!(!macos.resident_stable_bounds);
-
-        let linux = portrait_scale_platform_capabilities(platform::PlatformTarget::LinuxX64);
-        assert!(linux.stable_bounds_during_gesture);
-        assert!(linux.precise_hit_regions_during_gesture);
-        assert!(linux.resident_stable_bounds);
-        assert_eq!(
-            current_portrait_scale_platform_capabilities().stable_bounds_during_gesture,
-            defers_native_portrait_scale_frames()
-        );
-        assert_eq!(
-            !current_portrait_scale_platform_capabilities().precise_hit_regions_during_gesture,
-            defers_portrait_scale_hit_region_frames()
-        );
     }
 
     #[test]

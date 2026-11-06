@@ -782,13 +782,13 @@ class ReadinessController:
                 if callable(bind_presentation):
                     bind_presentation(str(presentation["characterId"]))
         except BaseException as error:  # noqa: BLE001 - publish a stable, sanitized readiness
-            from .assistant_adapter import report_assistant_failure
-
-            report_assistant_failure(error, stage=stage, code="ASSISTANT_INITIALIZATION_FAILED")
             with self._lock:
                 if self._closed:
                     claimed = self._claim_initializer_close_locked()
                 else:
+                    from .assistant_adapter import report_assistant_failure
+
+                    report_assistant_failure(error, stage=stage, code="ASSISTANT_INITIALIZATION_FAILED")
                     self._readiness = "failed"
                     self._component = {
                         "state": "failed",
@@ -1536,6 +1536,7 @@ def run_host(
     from .plugin_settings import PLUGIN_SETTINGS_REQUEST_NAMES, PluginSettingsBoundary
     from .provider_settings import ProviderSettingsBoundary, SETTINGS_REQUEST_NAMES
     from .storage_settings import STORAGE_SETTINGS_REQUEST_NAMES, StorageSettingsBoundary
+    from .usage_statistics import UsageStatisticsBoundary
     from .tool_settings import TOOL_SETTINGS_REQUEST_NAMES, ToolSettingsBoundary
     from .tts_boundary import TTSBoundary, TTS_REQUEST_NAMES
     from .asr_boundary import ASRBoundary, ASR_REQUEST_NAMES
@@ -1657,11 +1658,12 @@ def run_host(
             config.generation_credential,
             config.user_root,
         )
+        usage_statistics = UsageStatisticsBoundary(config.generation_id, config.generation_credential, config.user_root)
         history = HistoryBoundary(
             config.generation_id,
             config.generation_credential,
             config.user_root,
-            session_provider=getattr(dispatcher, "published_session", lambda: None),
+            character_provider=lambda: (dispatcher.published_character_presentation() or {}).get("characterId"),
             application_provider=getattr(dispatcher, "published_plugin_application", lambda: None),
         )
         attach_provider_boundary = getattr(
@@ -1773,11 +1775,17 @@ def run_host(
                             ),
                         )
                     result = plugin_settings.handle(request)
-                    if (result.get("ok") or request.get("name") == "plugins.marketplace.install") and request.get("name") in {
+                    # 失败后的回滚也可能重启插件，聊天需绑定恢复后的实例。
+                    if request.get("name") in {
                         "plugins.settings.save", "plugins.enabled.set", "plugins.settings.action",
                         "plugins.install", "plugins.uninstall", "plugins.marketplace.install",
                     }:
-                        dispatcher.refresh_assistant_binding()
+                        try:
+                            dispatcher.refresh_assistant_binding()
+                        except Exception:
+                            # 绑定失败已由会话层记录，保留原操作的失败原因。
+                            if result.get("ok"):
+                                raise
                     return result
                 if request.get("name") in COMPOSER_TOOL_REQUEST_NAMES:
                     if PLUGINS_CAPABILITY not in dispatcher._negotiated_capabilities:
@@ -1811,6 +1819,8 @@ def run_host(
                     return character_studio.handle(request)
                 if request.get("name") in STORAGE_SETTINGS_REQUEST_NAMES:
                     return storage_settings.handle(request)
+                if request.get("name") == "usage.statistics.get":
+                    return usage_statistics.handle(request)
                 if request.get("name") in HISTORY_REQUEST_NAMES:
                     return history.handle(request)
                 return provider_settings.handle(request)
@@ -1849,6 +1859,7 @@ def run_host(
                     *CHARACTER_SETTINGS_REQUEST_NAMES,
                     *CHARACTER_STUDIO_REQUEST_NAMES,
                     *STORAGE_SETTINGS_REQUEST_NAMES,
+                    "usage.statistics.get",
                     *HISTORY_REQUEST_NAMES,
                 }
             ),

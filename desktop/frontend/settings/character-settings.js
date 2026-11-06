@@ -217,7 +217,6 @@ export function createCharacterSettingsFeature({
     if (
       publication?.schemaVersion !== 1
       || !Number.isSafeInteger(publication.windowGeneration)
-      || !Number.isSafeInteger(publication.revision)
       || appearance?.coreGenerationId !== presentation?.generationId
       || appearance?.characterId !== presentation?.characterId
     ) throw new Error("CHARACTER_VISUAL_PREVIEW_INVALID");
@@ -245,7 +244,6 @@ export function createCharacterSettingsFeature({
       if (
         revision !== runtimeCharacterVisualPreviewRevision
         || characterId !== runtimeCharacterDraftId
-        || publication?.revision !== revision
         || publication?.presentation?.characterId !== characterId
       ) return;
       applyPreviewTheme(runtimeVisualPreviewTheme(publication));

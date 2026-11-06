@@ -621,7 +621,6 @@ impl TelemetryService {
             | "tts.synthesis.failed"
             | "tts.synthesis.cancelled" => Some("tts.finished"),
             "reply.repair.finished" => Some("reply.repair.finished"),
-            "legacy_import.recovery.failed" => Some("migration.recovery"),
             _ => None,
         };
         if let Some(name) = runtime_event {
@@ -649,24 +648,6 @@ impl TelemetryService {
 
         if let Some(feature) = feature_for_event(event) {
             self.submit_feature_once(feature);
-        }
-        if event == "legacy_import.completed" {
-            self.submit_runtime_event("migration.completed", None, None, None, None, None);
-        } else if matches!(
-            event,
-            "legacy_import.failed"
-                | "legacy_import.result_invalid"
-                | "legacy_import.core_validation_failed"
-                | "legacy_import.recovery.failed"
-        ) {
-            self.submit_runtime_event(
-                "migration.failed",
-                None,
-                None,
-                None,
-                stable_attribute(attributes, "code"),
-                None,
-            );
         }
         // Cancellation still contributes its business terminal and breadcrumb,
         // but must not fall through to the generic diagnostic error collector.
@@ -1222,8 +1203,6 @@ impl TelemetryService {
                 "chat.finished"
                     | "tts.finished"
                     | "tts.operation.finished"
-                    | "migration.failed"
-                    | "migration.recovery"
                     | "diagnostics.summary"
                     | "error.repeated"
             ),
@@ -1780,6 +1759,23 @@ fn valid_code(value: &str) -> bool {
 }
 
 pub(crate) fn validate_detail(detail: &DiagnosticDetail) -> bool {
+    if [
+        detail.queue_ms,
+        detail.request_ms,
+        detail.engine_total_ms,
+        detail.inference_ms,
+        detail.reference_ms,
+        detail.frontend_ms,
+        detail.gpt_ms,
+        detail.sovits_ms,
+        detail.audio_seconds,
+    ]
+    .into_iter()
+    .flatten()
+    .any(|value| !value.is_finite() || value < 0.0)
+    {
+        return false;
+    }
     let Ok(Value::Object(fields)) = serde_json::to_value(detail) else {
         return false;
     };
@@ -1826,6 +1822,8 @@ pub(crate) fn validate_detail(detail: &DiagnosticDetail) -> bool {
                 "recoveryOutcome" => &["success", "failed", "skipped", "unknown"],
                 "outcome" => &["success", "failed", "cancelled", "degraded", "skipped"],
                 "repairOutcome" => &["valid", "invalid", "request_failed", "cancelled"],
+                "referenceCache" => &["memory", "disk", "package", "miss"],
+                "synthesisStatus" => &["completed", "stopped_at_limit"],
                 _ => &[],
             };
             if !choices.is_empty() && !choices.contains(&value) {
@@ -1958,6 +1956,21 @@ fn details_from_attributes(severity: &str, attributes: Option<&Value>) -> Diagno
         .and_then(Value::as_str)
         .map(|s| crate::runtime_log::sanitize_diagnostic(s, &[], 128));
     detail.gpu_memory_mib = integer_attribute(attributes, "gpu_memory_mib");
+    detail.queue_ms = number_attribute(attributes, "queue_ms");
+    detail.request_ms = number_attribute(attributes, "request_ms");
+    detail.engine_total_ms = number_attribute(attributes, "engine_total_ms");
+    detail.inference_ms = number_attribute(attributes, "inference_ms");
+    detail.reference_ms = number_attribute(attributes, "reference_ms");
+    detail.frontend_ms = number_attribute(attributes, "frontend_ms");
+    detail.gpt_ms = number_attribute(attributes, "gpt_ms");
+    detail.sovits_ms = number_attribute(attributes, "sovits_ms");
+    detail.audio_seconds = number_attribute(attributes, "audio_seconds");
+    detail.text_chars = integer_attribute(attributes, "text_chars");
+    token!(language, "language");
+    detail.reference_cache = stable_token_attribute(attributes, "reference_cache", 128)
+        .filter(|value| matches!(value.as_str(), "memory" | "disk" | "package" | "miss"));
+    detail.synthesis_status = stable_token_attribute(attributes, "synthesis_status", 128)
+        .filter(|value| matches!(value.as_str(), "completed" | "stopped_at_limit"));
     detail.exit_code = attributes
         .and_then(|a| a.get("exit_code").or_else(|| a.get("return_code")))
         .and_then(Value::as_i64);
@@ -2089,6 +2102,13 @@ fn breadcrumb_diagnostic(operation_id: Option<&str>, attributes: Option<&Value>)
     Some(crate::runtime_log::sanitize_diagnostic(&text, &[], 512))
 }
 
+fn number_attribute(attributes: Option<&Value>, key: &str) -> Option<f64> {
+    attributes
+        .and_then(|map| map.get(key))
+        .and_then(Value::as_f64)
+        .filter(|value| value.is_finite() && *value >= 0.0)
+}
+
 fn integer_attribute(attributes: Option<&Value>, key: &str) -> Option<u64> {
     attributes
         .and_then(Value::as_object)
@@ -2194,17 +2214,7 @@ fn allowlisted_runtime_error(
                 )
             })
             .map(|code| ("webview", code.to_string())),
-        "legacy_import.recovery.failed" => {
-            Some(("rust", "LEGACY_IMPORT_RECOVERY_FAILED".to_string()))
-        }
         "first_run.state.failed" => Some(("rust", "FIRST_RUN_STATE_FAILED".to_string())),
-        "legacy_import.failed" => stable_attribute(attributes, "code").map(|code| ("rust", code)),
-        "legacy_import.core_validation_failed" => {
-            stable_attribute(attributes, "code").map(|code| ("rust", code))
-        }
-        "legacy_import.result_invalid" => {
-            stable_attribute(attributes, "code").map(|code| ("rust", code))
-        }
         "core.spawn.failed" if source == "rust" => match token_attribute(
             attributes,
             "category",
@@ -3519,7 +3529,12 @@ mod tests {
                     "event": "tts.operation.finished", "stage": "synthesis", "outcome": outcome,
                     "provider_id": plugin_id, "bundle_version": "1.0.0",
                     "backend": "cuda", "gpu_name": "NVIDIA GeForce RTX 4060", "gpu_memory_mib": 8192,
-                    "elapsed_ms": 125, "diagnostic": "fixture result"
+                    "elapsed_ms": 125, "diagnostic": "fixture result",
+                    "queue_ms": 10.5, "request_ms": 110.25, "engine_total_ms": 100.125,
+                    "inference_ms": 90.75, "reference_ms": 10.25, "frontend_ms": 1.5,
+                    "gpt_ms": 60.25, "sovits_ms": 18.75, "audio_seconds": 0.125,
+                    "text_chars": 10, "language": "ja", "reference_cache": "memory",
+                    "synthesis_status": "completed", "text": "private utterance"
                 }
             });
             assert!(log.submit_core_bridge(&wire.to_string(), &context).unwrap());
@@ -3528,6 +3543,21 @@ mod tests {
             let body: Value = serde_json::from_slice(&bytes).unwrap();
             assert_eq!(body["items"][0]["event"], "tts.operation.finished");
             assert_eq!(body["items"][0]["details"]["outcome"], outcome);
+            let details = &body["items"][0]["details"];
+            assert_eq!(details["requestMs"], 110.25);
+            assert_eq!(details["engineTotalMs"], 100.125);
+            assert_eq!(details["inferenceMs"], 90.75);
+            assert_eq!(details["audioSeconds"], 0.125);
+            assert_eq!(details["queueMs"], 10.5);
+            assert_eq!(details["referenceMs"], 10.25);
+            assert_eq!(details["frontendMs"], 1.5);
+            assert_eq!(details["gptMs"], 60.25);
+            assert_eq!(details["sovitsMs"], 18.75);
+            assert_eq!(details["textChars"], 10);
+            assert_eq!(details["language"], "ja");
+            assert_eq!(details["referenceCache"], "memory");
+            assert_eq!(details["synthesisStatus"], "completed");
+            assert!(!body.to_string().contains("private utterance"));
             assert_eq!(
                 body["items"][0]["details"]["gpuName"],
                 "NVIDIA GeForce RTX 4060"
@@ -3545,6 +3575,31 @@ mod tests {
         service.shutdown();
         assert!(wait_for_sender_exit(&service));
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn tts_performance_ignores_invalid_numbers_without_losing_context() {
+        let detail = details_from_attributes(
+            "info",
+            Some(&json!({
+                "outcome": "success", "stage": "synthesis", "backend": "cuda",
+                "request_ms": -1, "audio_seconds": "10", "gpt_ms": true, "reference_ms": 0.25
+            })),
+        );
+        assert_eq!(detail.stage.as_deref(), Some("synthesis"));
+        assert_eq!(detail.backend.as_deref(), Some("cuda"));
+        assert_eq!(detail.reference_ms, Some(0.25));
+        assert!(
+            detail.request_ms.is_none()
+                && detail.audio_seconds.is_none()
+                && detail.gpt_ms.is_none()
+        );
+        for value in [-1.0, f64::NAN, f64::INFINITY] {
+            assert!(!validate_detail(&DiagnosticDetail {
+                audio_seconds: Some(value),
+                ..Default::default()
+            }));
+        }
     }
 
     #[test]
@@ -3656,15 +3711,15 @@ mod tests {
             log.submit(
                 RuntimeLogEvent::rust(
                     Severity::Warning,
-                    "migration",
-                    "migration.import.failed",
-                    "Import failed",
+                    "plugin",
+                    "plugin.storage.failed",
+                    "Plugin storage failed",
                 )
                 .attributes(json!({
-                    "code": "LEGACY_IMPORT_INTERNAL", "diagnostic": message,
-                    "exception_chain": format!("RuntimeError: import failed\nCaused by: {message}"),
-                    "exception_stack": "at migration::import_rows:42",
-                    "source_file": "desktop/src-tauri/src/migration.rs", "source_line": 42,
+                    "code": "PLUGIN_STORAGE_FAILED", "diagnostic": message,
+                    "exception_chain": format!("RuntimeError: storage failed\nCaused by: {message}"),
+                    "exception_stack": "at storage::write_rows:42",
+                    "source_file": "desktop/src-tauri/src/storage.rs", "source_line": 42,
                     "path": "C:\\Users\\测试 用户\\Sakura\\data\\memory.db",
                     "endpoint": "https://example.test/v1?token=test-secret&model=demo",
                     "repair_reason": "duplicate_rows", "repair_outcome": "invalid",

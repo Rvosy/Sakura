@@ -1,8 +1,9 @@
 export function createConnectionEditor({ document, window, read, write, probe, cancel, createIcon,
-  onError: setError, notify, onCatalogChanged = () => {} }) {
+  onError: setError, notify, onCatalogChanged = () => {}, modelServices = () => [], modelServicePresets = () => [] }) {
   let disposed = false;
   let apiView = { profiles: [] };
   let lastValue = "";
+  let selectedService = null;
   const overlays = new Set();
   const modelDiscoveries = new Map();
   const root = document.createElement("div"); root.className = "admin-page connection-editor";
@@ -39,8 +40,7 @@ export function createConnectionEditor({ document, window, read, write, probe, c
     return `profile-${Date.now()}`;
   }
 
-  // 模型服务页改为状态驱动的主从结构：providerState.profiles 是唯一数据源，
-  // 「模型服务」页与「模型」页的槽位都从它派生。
+  // API 连接保存为草稿，插件账号服务保留各自的配置和登录生命周期。
   const providerState = { profiles: [], selectedId: "", search: "" };
   const PROVIDER_FIELD_PLACEHOLDERS = {
     base_url: "通常以 /v1 结尾",
@@ -75,6 +75,7 @@ export function createConnectionEditor({ document, window, read, write, probe, c
       configured: Boolean(profile.configured),
       credential_action: profile.credential_action || (profile.configured ? "keep" : "keep"),
       timeout_seconds: profile.timeout_seconds,
+      createdAt: profile.createdAt || 0,
       models: Array.isArray(profile.models) ? profile.models.map(String) : [],
     }));
     providerState.selectedId = providerState.profiles[0]?.id || "";
@@ -102,16 +103,36 @@ export function createConnectionEditor({ document, window, read, write, probe, c
   }
 
   function filteredProviders() {
+    const profiles = allProviders();
     const query = providerState.search.trim().toLowerCase();
     if (!query) {
-      return providerState.profiles;
+      return profiles;
     }
-    return providerState.profiles.filter((profile) =>
-      [profile.alias, profile.base_url, ...(profile.models || [])]
+    return profiles.filter((profile) =>
+      [profile.alias, profile.description, profile.base_url, ...(profile.models || [])]
         .join(" ")
         .toLowerCase()
         .includes(query),
     );
+  }
+
+  function allProviders() {
+    return [...providerState.profiles, ...modelServices().map(service => ({
+      ...service, alias: service.label, service,
+    }))].sort((left, right) => (left.createdAt || 0) - (right.createdAt || 0));
+  }
+
+  function nextCreatedAt() {
+    return Math.max(Date.now(), ...allProviders().map(profile => (profile.createdAt || 0) + 1));
+  }
+
+  function selectProvider(id) {
+    if (id !== providerState.selectedId) {
+      invalidateModelDiscoveries();
+      void cancel();
+    }
+    providerState.selectedId = id;
+    renderProviderPage();
   }
 
   function renderProviderPage() {
@@ -122,10 +143,9 @@ export function createConnectionEditor({ document, window, read, write, probe, c
   }
 
   function renderProviderStatus() {
-    const items = providerState.profiles;
+    const items = allProviders();
     const configured = items.filter(
-      (profile) => (profile.base_url || "").trim()
-        && profile.models.length,
+      (profile) => profile.service ? profile.configured : (profile.base_url || "").trim() && profile.models.length,
     ).length;
     const totalModels = items.reduce((sum, profile) => sum + (profile.models || []).length, 0);
     renderStrip(fields.providerStatusStrip, [
@@ -135,11 +155,14 @@ export function createConnectionEditor({ document, window, read, write, probe, c
     ]);
   }
 
-  // 填充头像：优先用图标资源（如 DeepSeek SVG），其次 emoji，最后名称首字母。
-  function applyAvatar(avatar, { iconUrl, icon, initial } = {}) {
+  // 服务图标缺省时使用名称首字母。
+  function applyAvatar(avatar, { iconUrl, iconName, icon, initial } = {}) {
+    avatar.setAttribute("aria-hidden", "true");
     avatar.textContent = "";
     avatar.classList.remove("is-initial");
-    if (iconUrl) {
+    if (iconName) {
+      avatar.append(createIcon(document, iconName));
+    } else if (iconUrl) {
       const img = document.createElement("img");
       img.className = "provider-avatar-img";
       img.src = iconUrl;
@@ -156,9 +179,10 @@ export function createConnectionEditor({ document, window, read, write, probe, c
   function providerAvatar(profile) {
     const avatar = document.createElement("span");
     avatar.className = "provider-avatar";
-    const preset = presetForProfile(profile);
+    const preset = profile.service || presetForProfile(profile);
     applyAvatar(avatar, {
       iconUrl: preset?.iconUrl,
+      iconName: preset?.iconName,
       icon: preset?.icon,
       initial: profile.alias || "?",
     });
@@ -171,7 +195,7 @@ export function createConnectionEditor({ document, window, read, write, probe, c
     if (!profiles.length) {
       const empty = document.createElement("div");
       empty.className = "empty-state";
-      if (providerState.profiles.length) {
+      if (allProviders().length) {
         empty.textContent = "没有匹配的模型服务。";
       } else {
         const text = document.createElement("p");
@@ -188,12 +212,12 @@ export function createConnectionEditor({ document, window, read, write, probe, c
       return;
     }
     profiles.forEach((profile) => {
-      const card = document.createElement("div");
+      const card = document.createElement("button");
+      card.type = "button";
       card.className = "provider-card";
       card.classList.toggle("is-selected", profile.id === providerState.selectedId);
       card.addEventListener("click", () => {
-        providerState.selectedId = profile.id;
-        renderProviderPage();
+        selectProvider(profile.id);
       });
       const body = document.createElement("div");
       body.className = "provider-card-body";
@@ -201,7 +225,7 @@ export function createConnectionEditor({ document, window, read, write, probe, c
       title.textContent = profile.alias || profile.id;
       const meta = document.createElement("span");
       meta.className = "card-meta";
-      meta.textContent = providerHost(profile.base_url) || "未设置 API 地址";
+      meta.textContent = profile.description || providerHost(profile.base_url) || "未设置 API 地址";
       body.append(title, meta);
       const count = document.createElement("span");
       count.className = "provider-count";
@@ -213,8 +237,16 @@ export function createConnectionEditor({ document, window, read, write, probe, c
 
   function renderProviderDetail() {
     const detail = fields.providerDetail;
+    const profile = allProviders().find((item) => item.id === providerState.selectedId);
+    const service = profile?.service || null;
+    if (selectedService?.element !== service?.element) {
+      if (selectedService) void Promise.resolve(selectedService.cancel()).catch(setError);
+      selectedService = service;
+      if (service?.select) void Promise.resolve(service.select()).catch(setError);
+    }
+    if (service && detail.firstChild === service.element) return;
     detail.textContent = "";
-    const profile = providerState.profiles.find((item) => item.id === providerState.selectedId);
+    if (service) { detail.append(service.element); return; }
     if (!profile) {
       const empty = document.createElement("p");
       empty.className = "empty-state";
@@ -519,15 +551,15 @@ export function createConnectionEditor({ document, window, read, write, probe, c
       api_key: "",
       configured: false,
       credential_action: "keep",
+      createdAt: nextCreatedAt(),
       models: [],
     };
     providerState.profiles.push(profile);
-    providerState.selectedId = profile.id;
     providerState.search = "";
     if (fields.providerSearch) {
       fields.providerSearch.value = "";
     }
-    renderProviderPage();
+    selectProvider(profile.id);
     refreshDirty();
   }
 
@@ -567,6 +599,23 @@ export function createConnectionEditor({ document, window, read, write, probe, c
       option.append(icon, label);
       grid.append(option);
     });
+    for (const service of modelServicePresets()) {
+      const option = makeModalButton("", "provider-preset-option", async () => {
+        option.disabled = true;
+        try {
+          const id = await service.add({ createdAt: nextCreatedAt() });
+          if (disposed || !overlays.has(overlay)) return;
+          providerState.search = ""; fields.providerSearch.value = "";
+          selectProvider(id);
+          close();
+        } catch (error) { if (!disposed) setError(error); }
+        finally { option.disabled = false; }
+      });
+      const icon = node("span", "provider-avatar");
+      applyAvatar(icon, { ...service, initial: service.label });
+      const label = node("span", ""); label.textContent = service.label;
+      option.append(icon, label); grid.append(option);
+    }
     const custom = makeModalButton("", "provider-preset-option", () => {
       addProvider(null);
       close();
@@ -682,11 +731,21 @@ export function createConnectionEditor({ document, window, read, write, probe, c
       if (JSON.stringify(value) === lastValue) return;
       const selected = providerState.selectedId;
       apiView = { profiles: value }; initializeProviderState();
-      if (providerState.profiles.some(p => p.id === selected)) providerState.selectedId = selected;
+      if (allProviders().some(p => p.id === selected)) providerState.selectedId = selected;
       lastValue = JSON.stringify(value); renderProviderPage();
+    },
+    updateContributions() {
+      if (disposed) return;
+      if (!allProviders().some(p => p.id === providerState.selectedId)) {
+        providerState.selectedId = allProviders()[0]?.id || "";
+      }
+      renderProviderStatus(); renderProviderList();
+      // 目录更新不重建正在编辑的 API 表单。
+      if (selectedService || !providerState.profiles.some(p => p.id === providerState.selectedId)) renderProviderDetail();
     },
     dispose() {
       if (disposed) return; disposed = true; void cancel();
+      if (selectedService) void Promise.resolve(selectedService.cancel()).catch(setError);
       invalidateModelDiscoveries(); overlays.forEach(o => o.remove()); overlays.clear();
       document.removeEventListener("keydown", escape); root.remove();
     },
@@ -695,7 +754,7 @@ export function createConnectionEditor({ document, window, read, write, probe, c
 
 export function mount(context) {
   const { document, window, read, write, action, readSection, isCurrent, onError,
-    notify, onCatalogChanged, createIcon, signal } = context;
+    notify, onCatalogChanged, createIcon, signal, modelServices, modelServicePresets } = context;
   let request = null;
   let revision = 0;
   const cancel = async () => {
@@ -707,7 +766,7 @@ export function mount(context) {
   };
   const editor = createConnectionEditor({ document, window, createIcon,
     read: () => read("connections"), write: value => write("connections", value),
-    onError, notify, onCatalogChanged, cancel: () => cancel().catch(onError),
+    onError, notify, onCatalogChanged, modelServices, modelServicePresets, cancel: () => cancel().catch(onError),
     async probe(operation, values) {
       if (request) throw new Error("MODEL_PROBE_BUSY");
       const ticket = ++revision;

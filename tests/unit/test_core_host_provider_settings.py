@@ -42,6 +42,21 @@ def test_model_settings_exposes_only_references_and_public_catalog(tmp_path):
     assert "api_key" not in repr(payload)
 
 
+def test_long_model_identity_can_be_selected_and_reloaded(tmp_path):
+    reference = {**REF, "modelId": "vendor/" + "custom-model-" * 30}
+    catalog = [{"serviceKey": REF["serviceKey"], "profiles": [
+        {"profileId": REF["profileId"], "models": [{"modelId": reference["modelId"]}]}]}]
+    application = SimpleNamespace(model_catalog=lambda: catalog, model_slots=lambda: [])
+    boundary = _boundary(tmp_path, application=application)
+    draft = _draft(boundary)
+    draft["model_slots"]["core:chat"] = reference
+    assert boundary.handle(_request("save", {"draft": draft}))["ok"]
+    assert ModelReferenceRepository(tmp_path).active()["chat"] == reference
+    snapshot = boundary.handle(_request("get"))["payload"]
+    assert snapshot["model_slots"][0]["selection"] == reference
+    assert snapshot["setup_complete"]
+
+
 def test_save_before_configuration_handoff_cannot_erase_legacy_selection(tmp_path):
     config = tmp_path / "config"
     config.mkdir()

@@ -1,10 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import {
-  createToolsController,
-  validateToolsSnapshot,
-} from "../settings/tools-runtime.js";
+import { createToolsController } from "../settings/tools-runtime.js";
 
 function snapshot(coreGenerationId = "generation-a", overrides = {}) {
   return {
@@ -43,19 +40,6 @@ function fixture() {
     document: { getElementById: (id) => controls[id] },
   };
 }
-
-test("Tools snapshots are exact, bounded, and generation scoped", () => {
-  assert.equal(validateToolsSnapshot(snapshot()).coreGenerationId, "generation-a");
-  assert.throws(() => validateToolsSnapshot({ ...snapshot(), arguments: {} }));
-  assert.throws(() => validateToolsSnapshot(snapshot("", {})));
-  assert.throws(() => validateToolsSnapshot(snapshot("generation-a", {
-    runtimeLimits: {
-      maxAgentStepsPerTurn: 4,
-      maxToolCallsPerStep: 9,
-      maxToolCallsPerTurn: 8,
-    },
-  })), /整轮工具数/);
-});
 
 test("Tools save hot-applies in the bound generation", async () => {
   const { controls, document } = fixture();

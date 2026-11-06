@@ -75,22 +75,29 @@ def test_interrupted_handoff_resumes_without_overwriting_saved_destinations(tmp_
     assert ModelReferenceRepository(tmp_path).active()["chat"] == REF
 
 
-def test_existing_plugin_fields_win_and_unrelated_data_survives(tmp_path):
+@pytest.mark.parametrize("encoding", ["utf-8", "utf-8-sig"])
+def test_existing_plugin_fields_win_and_unrelated_data_survives(tmp_path, encoding):
     _legacy(tmp_path)
     module._write(_provider(tmp_path), {"profiles": [], "custom": "keep"})
     module._write(_assistant(tmp_path), {"generation": {"temperature": 1}, "custom": "keep"})
+    for path in (_provider(tmp_path), _assistant(tmp_path)):
+        path.write_text(path.read_text(encoding="utf-8"), encoding=encoding)
     migrate_legacy_model_configuration(tmp_path)
-    assert json.loads(_provider(tmp_path).read_text(encoding="utf-8")) == {"profiles": [], "custom": "keep"}
-    assert json.loads(_assistant(tmp_path).read_text(encoding="utf-8"))["generation"] == {"temperature": 1}
+    assert json.loads(_provider(tmp_path).read_text(encoding="utf-8-sig")) == {"profiles": [], "custom": "keep"}
+    assert json.loads(_assistant(tmp_path).read_text(encoding="utf-8-sig"))["generation"] == {"temperature": 1}
     assert ModelReferenceRepository(tmp_path).load()["chat"] == REF
 
 
-def test_reference_identity_keeps_provider_key_and_optional_vision_inherits_chat(tmp_path):
+@pytest.mark.parametrize("encoding", ["utf-8", "utf-8-sig"])
+def test_reference_identity_keeps_provider_key_and_optional_vision_inherits_chat(tmp_path, encoding):
     repository = ModelReferenceRepository(tmp_path)
     other = {**REF, "serviceKey": "vendor.other"}
     repository.save({"chat": other, "vision_chat": EMPTY_REFERENCE})
+    repository.path.write_text(repository.path.read_text(encoding="utf-8"), encoding=encoding)
     assert repository.active() == {"chat": other, "vision_chat": other}
     assert repository.load()["vision_chat"] == EMPTY_REFERENCE
+    repository.save({"chat": REF, "vision_chat": EMPTY_REFERENCE})
+    assert repository.active() == {"chat": REF, "vision_chat": REF}
 
 
 @pytest.mark.parametrize("value", [{"profileId": "fixture", "modelId": "x"}, {**REF, "apiKey": SECRET}, {**REF, "modelId": 3}, {**REF, "serviceKey": ""}])
@@ -159,28 +166,6 @@ def test_handoff_keeps_legacy_generation_defaults_and_explicit_zero(tmp_path, ge
     legacy.write_text(yaml.safe_dump(raw), encoding="utf-8")
     migrate_legacy_model_configuration(tmp_path)
     assert module._read(_assistant(tmp_path))["generation"] == expected
-
-
-def test_legacy_import_validation_discards_partial_handoff_before_optional_config_skip(tmp_path, monkeypatch):
-    from app.legacy_import.importer import _validate_current_settings
-    from app.legacy_import.errors import LegacyImportError
-    legacy = _legacy(tmp_path)
-    original = legacy.read_bytes()
-    module._write(_provider(tmp_path), {"custom": "keep"})
-    prior_provider = _provider(tmp_path).read_bytes()
-    write = module._write
-    def fail_assistant(path, value):
-        if path == _assistant(tmp_path):
-            raise OSError("fixture write failed")
-        write(path, value)
-    monkeypatch.setattr(module, "_write", fail_assistant)
-    with pytest.raises(LegacyImportError) as error:
-        _validate_current_settings(tmp_path)
-    assert error.value.code == "LEGACY_SETTINGS_VALIDATION_FAILED"
-    assert _provider(tmp_path).read_bytes() == prior_provider
-    assert not _assistant(tmp_path).exists()
-    assert not ModelReferenceRepository(tmp_path).path.exists()
-    assert legacy.read_bytes() == original
 
 
 def test_earlier_plugin_chat_budget_is_adopted_once_without_overwriting_clear(tmp_path):

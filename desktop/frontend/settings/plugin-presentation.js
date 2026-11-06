@@ -75,20 +75,38 @@ function result(label, message = "", reasonCode = "", unavailable = []) {
 
 function pluginStatus({ state = "", reasonCode = "", unavailable = [] } = {}) {
 
+  if (reasonCode === "PLUGIN_ID_CONFLICT") {
+    return result("重复安装", "请按版本和安装目录选择要保留的副本，卸载其余副本后再更新。", reasonCode);
+  }
   if (reasonCode === "MODEL_API_UPDATE_REQUIRED") {
     return result("需要更新", "模型接口已更新，请安装这个插件的兼容版本。", reasonCode);
   }
   if (NORMAL_REASONS.has(reasonCode) || state === "active") {
-    return result("运行正常");
+    return result("已就绪");
   }
   if (reasonCode === "PLUGIN_DISABLED" || state === "disabled") {
     return result("已停用");
+  }
+  if (state === "stopping") {
+    return result("正在停止");
+  }
+  if (state === "waiting" || reasonCode === "NOT_STARTED") {
+    return result("等待启动");
+  }
+  if (state === "starting" || reasonCode === "PLUGIN_STARTING") {
+    return result("正在启动");
   }
   if (reasonCode === "PLUGIN_APPLICATION_NOT_READY") {
     return result("正在启动");
   }
   if (reasonCode === "PLUGIN_APPLICATION_FAILED") {
     return result("启动失败", "请查看运行日志中的启动错误，处理后重新启动 Sakura。", reasonCode);
+  }
+  if (reasonCode === "APP_VERSION_UNSUPPORTED") {
+    return result("需要升级 Sakura", "请升级 Sakura 主程序后启用插件。", reasonCode);
+  }
+  if (reasonCode === "APP_VERSION_UNAVAILABLE") {
+    return result("无法检查版本", "无法读取 Sakura 主程序版本，请检查安装。", reasonCode);
   }
   if (reasonCode === "API_VERSION_UNSUPPORTED") {
     return result(
@@ -276,7 +294,8 @@ export function projectPluginActivity(plugin = {}) {
   if (["starting", "waiting", "stopping"].includes(outerState)) {
     return Object.freeze({
       state: "working",
-      label: { starting: "正在启动", waiting: "等待启动", stopping: "正在停止" }[outerState],
+      label: outerState === "starting" && outerReason === "NOT_STARTED" ? "等待启动"
+        : { starting: "正在启动", waiting: "等待启动", stopping: "正在停止" }[outerState],
       message: "",
       hasRunningResource: false,
       isTransient: true,

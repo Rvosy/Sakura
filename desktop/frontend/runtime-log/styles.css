@@ -49,8 +49,7 @@ button:focus-visible,
 input:focus-visible,
 .log-record:focus-visible,
 .record-disclosure > summary:focus-visible {
-  outline: 3px solid var(--focus-ring);
-  outline-offset: 2px;
+  outline: none;
 }
 
 .log-shell {
@@ -112,12 +111,13 @@ h1 {
 .custom-select.is-open .custom-select__caret { transform: rotate(180deg); }
 .custom-select__trigger:hover, .custom-select.is-open .custom-select__trigger { border-color: var(--primary); }
 .custom-select__menu {
-  display: none; position: fixed; z-index: 2200; max-height: 260px; overflow-y: auto; scrollbar-gutter: stable;
+  display: none; position: fixed; z-index: 2200; max-height: 260px; overflow-y: auto;
   padding: 5px; border: 1px solid var(--border); border-radius: 9px;
-  background: var(--input-background); color: var(--text); scrollbar-width: thin;
+  background: var(--input-background); color: var(--text); scrollbar-width: none;
   box-shadow: 0 5px 18px color-mix(in srgb, var(--text) 12%, transparent);
 }
 .custom-select__menu[popover] { margin: 0; inset: auto; }
+.custom-select__menu::-webkit-scrollbar { display: none; }
 .custom-select__menu.is-open { display: block; }
 .custom-select__option {
   padding: 7px 10px; border-radius: 6px; font-size: 12px; cursor: pointer;
@@ -441,7 +441,7 @@ h1 {
   background: var(--primary);
 }
 .auto-scroll-control input:checked + .auto-scroll-track::after { transform: translateX(14px); }
-.auto-scroll-control input:focus-visible + .auto-scroll-track { box-shadow: 0 0 0 3px var(--focus-ring); }
+.auto-scroll-control input:focus-visible + .auto-scroll-track { box-shadow: none; }
 .button {
   min-width: 82px;
   border: 1px solid var(--hairline);

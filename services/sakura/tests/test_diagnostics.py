@@ -112,6 +112,40 @@ def test_v1_v2_compatibility_time_and_atomic_validation(client):
     assert client.get("/admin/api/v2/records/errors").json()["total"] == 1
 
 
+@pytest.mark.parametrize("schema", [1, 2, 3])
+def test_released_1x_clients_can_report_their_original_installation_kind(client, schema):
+    payload = report(schema=schema, context={"installKind": "legacy_import"})
+    if schema == 1:
+        for key in ("diagnostics", "details", "fingerprintVersion"):
+            payload.pop(key)
+    elif schema == 3:
+        payload.update(fingerprintVersion=3, evidence={"diagnostic": "fixture failure"})
+
+    assert client.post(f"/v{schema}/errors", json=payload).status_code == 202
+    assert client.get("/admin/api/v2/records/errors").json()["total"] == 1
+
+
+@pytest.mark.parametrize("schema", [1, 2])
+def test_released_1x_migration_events_remain_accepted(client, schema):
+    events = ["migration.completed", "migration.failed"]
+    if schema == 2:
+        events.append("migration.recovery")
+    items = []
+    for event in events:
+        item = {
+            "installationId": "550e8400-e29b-41d4-a716-446655440000",
+            "runId": "run-1", "appVersion": "1.2.0", "platform": "windows",
+            "event": event,
+        }
+        if schema == 2:
+            item["diagnostics"] = report()["diagnostics"]
+        items.append(item)
+
+    response = client.post(f"/v{schema}/events", json={"schema": schema, "items": items})
+    assert response.status_code == 202
+    assert response.json()["accepted"] == len(events)
+
+
 def test_full_pagination_and_run_scoping(client):
     for i in range(205):
         r = report(runId="old-run" if i < 204 else "new-run")
@@ -377,3 +411,49 @@ def test_tts_results_denominator_environment_and_filters(client):
     assert result['items'][0]['gpuMemoryMib'] == 8192
     assert client.get('/admin/api/v2/tts?backend=cpu').json()['items'] == []
     assert client.get('/admin/api/v2/tts?includeTest=true').json()['stages'][0]['failed'] == 2
+
+
+def test_tts_performance_survives_ingestion_and_uses_complete_measured_results(client):
+    context = dict(stage='synthesis', providerId='sakura.tts.sakuratts', backend='cuda',
+                   outcome='success', synthesisStatus='completed', queueMs=100.25,
+                   referenceMs=200.125, frontendMs=10.5, gptMs=600.25, sovitsMs=189.5,
+                   textChars=20, language='ja', referenceCache='memory')
+    samples = [dict(context, requestMs=request, inferenceMs=request - 200,
+                    engineTotalMs=request - 100, elapsedMs=int(request + 500), audioSeconds=audio)
+               for request, audio in [(1000.5, 10), (2000.25, 5), (9000.75, 10)]]
+    # Missing stage timings are unknown, and must not lower a measured mean.
+    samples[-1].pop('referenceMs')
+    samples.extend([
+        dict(samples[0], outcome='failed'), dict(samples[0], outcome='cancelled'),
+        dict(samples[0], synthesisStatus='stopped_at_limit'),
+        dict(samples[0], audioSeconds=0),
+        dict(stage='synthesis', providerId='sakura.tts.sakuratts', backend='cuda', outcome='success', elapsedMs=50),
+    ])
+    items = [event(report(), 'tts.operation.finished', detail) for detail in samples]
+    acceptance = report()
+    acceptance['diagnostics']['environment'] = 'acceptance'
+    items.append(event(acceptance, 'tts.operation.finished', dict(samples[0], requestMs=90000)))
+    assert client.post('/v2/events', json={'schema': 2, 'items': items}).status_code == 202
+    rows = client.get('/admin/api/v2/records/events').json()['items']
+    assert any(row['details'].get('referenceMs') == 200.125 for row in rows)
+    result = client.get('/admin/api/v2/tts?backend=cuda&version=1.1.0').json()
+    for row in (result['stages'][0], result['items'][0]):
+        assert (row['attempts'], row['succeeded'], row['failed'], row['cancelled']) == (8, 6, 1, 1)
+        assert row['performanceSamples'] == row['inferenceSamples'] == 3
+        assert row['averageReferenceMs'] == 200.125
+        assert row['p50RequestMs'] == 2000.25 and row['p95RequestMs'] == 9000.75
+        assert row['p95EndToEndMs'] == 9600.25
+        assert row['p50Rtf'] == pytest.approx(.40005)
+        assert row['p95Rtf'] == pytest.approx(.900075)
+        assert row['p50InferenceRtf'] == pytest.approx(.36005)
+        assert row['weightedRtf'] == pytest.approx(12001.5 / 25000)
+        assert row['totalAudioSeconds'] == 25
+    assert client.get('/admin/api/v2/tts?backend=cpu').json()['items'] == []
+    assert client.get('/admin/api/v2/tts?includeTest=true').json()['stages'][0]['performanceSamples'] == 4
+
+
+@pytest.mark.parametrize('bad', [-1, '12', True])
+def test_tts_performance_rejects_invalid_measurements(client, bad):
+    item = event(report(), 'tts.operation.finished', {'stage': 'synthesis', 'requestMs': bad})
+    assert client.post('/v2/events', json={'schema': 2, 'items': [item]}).status_code == 400
+    assert client.get('/admin/api/v2/records/events').json()['total'] == 0

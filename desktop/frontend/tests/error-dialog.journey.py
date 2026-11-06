@@ -34,11 +34,9 @@ window.__TAURI__ = {
 };
 """
 
-
 class Handler(http.server.SimpleHTTPRequestHandler):
     def log_message(self, *_args):
         pass
-
 
 def check_details(page):
     dialog = page.get_by_role('dialog')
@@ -54,7 +52,6 @@ def check_details(page):
     assert dialog.evaluate('el => el.scrollWidth <= el.clientWidth')
     expect(dialog.get_by_role('button', name='关闭', exact=True)).to_be_in_viewport()
     return dialog, diagnostic
-
 
 def run():
     server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), functools.partial(Handler, directory=str(ROOT)))
@@ -125,7 +122,6 @@ def run():
         server.server_close()
         thread.join()
     print('Error dialog: expanded diagnostics, full copy, disclosure, native and inline layouts passed.')
-
 
 if __name__ == '__main__':
     run()

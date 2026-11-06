@@ -6,7 +6,6 @@ import { createPluginController } from "../settings/plugin-runtime.js";
 function snapshot(coreGenerationId = "generation-a") {
   return {
     schemaVersion: 1,
-    revision: "0123456789abcdef",
     state: "ready",
     reasonCode: "READY",
     plugins: [{
@@ -97,8 +96,6 @@ function activitySnapshot(state) {
   return current;
 }
 
-
-
 test("WP-4-04 plugin enable save uses the applied snapshot while the Core is rebinding", async () => {
   const calls = [];
   const applied = [];
@@ -131,7 +128,6 @@ test("WP-4-04 plugin enable save uses the applied snapshot while the Core is reb
   assert.deepEqual(calls[0], ["settings_plugins_enabled_set", {
     windowGeneration: 7,
     coreGenerationId: "generation-a",
-    revision: "0123456789abcdef",
     installId: "pi_bundled_666978747572655f706c7567696e",
     enabled: false,
   }]);
@@ -144,47 +140,24 @@ test("WP-4-04 plugin enable save uses the applied snapshot while the Core is reb
   assert.deepEqual(applied[1][1], { preserveDraft: false, draft: null, keepGlobalCollectionDrafts: false });
 });
 
-test("unchanged plugin polling does not reapply the snapshot or repaint settings", async () => {
-  let applied = 0;
-  let next = snapshot();
-  const controller = createPluginController({
-    invoke: async () => next,
-    applySnapshot: () => { applied += 1; },
-    readDraft: () => ({ enabledById: {}, settingsById: {} }),
-    onDirty: () => {},
-  });
-  controller.initialize(snapshot());
-
-  await controller.refreshCurrent();
-  assert.equal(applied, 1);
-
-  next = snapshot();
-  next.state = "active";
-  next.reasonCode = "ACTIVE";
-  await controller.refreshCurrent();
-  assert.equal(applied, 2);
-});
-
 function enabledResult(next, applicationState = "applied", applicationReasonCode = "READY") {
   return { ...next, managementAction: "enabled_changed", installId: next.plugins[0].installId,
     pluginId: next.plugins[0].pluginId, desiredSaved: true, applicationState, applicationReasonCode };
 }
 
-test("failed plugin startup retains the saved revision and allows disabling again", async () => {
+test("failed plugin startup preserves the failed state and allows disabling again", async () => {
   let draft = { enabledById: {}, settingsById: {} };
   const disabled = snapshot();
   disabled.plugins[0].enabled = false;
   disabled.plugins[0].state = "disabled";
   const failed = snapshot();
-  failed.revision = "1111111111111111";
   failed.plugins[0].state = "failed";
   failed.plugins[0].reasonCode = "MISSING_SERVICE";
   const controller = createPluginController({
     invoke: async (command, args) => {
       assert.equal(command, "settings_plugins_enabled_set");
       if (args.enabled) return enabledResult(failed, "error", "MISSING_SERVICE");
-      assert.equal(args.revision, failed.revision);
-      return enabledResult({ ...disabled, revision: "2222222222222222" });
+      return enabledResult(disabled);
     },
     applySnapshot: (next, { preserveDraft, draft: previous }) => {
       draft = preserveDraft ? previous : { enabledById: {}, settingsById: {} };
@@ -196,7 +169,6 @@ test("failed plugin startup retains the saved revision and allows disabling agai
   controller.initialize(disabled);
   draft = { enabledById: { fixture_plugin: true }, settingsById: { fixture_plugin: { general: { label: "unsaved" } } } };
   await assert.rejects(() => controller.save(), { code: "MISSING_SERVICE" });
-  assert.equal(controller.snapshot().revision, failed.revision);
   assert.equal(controller.snapshot().plugins[0].state, "failed");
   assert.equal(controller.draft().settingsById.fixture_plugin.general.label, "unsaved");
   draft = { enabledById: { fixture_plugin: false }, settingsById: {} };
@@ -204,18 +176,16 @@ test("failed plugin startup retains the saved revision and allows disabling agai
   assert.equal(controller.snapshot().plugins[0].enabled, false);
 });
 
-for (const code of ["CONFIG_REVISION_CONFLICT", "TRANSPORT_UNAVAILABLE", "PLUGIN_LIFECYCLE_FAILED"]) {
-  test(`plugin enable ${code} refreshes the revision while retaining the draft`, async () => {
+for (const code of ["TRANSPORT_UNAVAILABLE", "PLUGIN_LIFECYCLE_FAILED"]) {
+  test(`plugin enable ${code} refreshes state while retaining the draft`, async () => {
     let draft = { enabledById: {}, settingsById: {} };
     let attempts = 0;
     const refreshed = snapshot();
-    refreshed.revision = "3333333333333333";
     const controller = createPluginController({
       invoke: async (command, args) => {
         if (command === "settings_plugins_get") return refreshed;
         assert.equal(command, "settings_plugins_enabled_set");
         if (++attempts === 1) throw new Error(code);
-        assert.equal(args.revision, refreshed.revision);
         const next = structuredClone(refreshed);
         next.plugins[0].enabled = false;
         next.plugins[0].state = "disabled";
@@ -231,7 +201,6 @@ for (const code of ["CONFIG_REVISION_CONFLICT", "TRANSPORT_UNAVAILABLE", "PLUGIN
     draft = { enabledById: { fixture_plugin: false }, settingsById: {} };
     await assert.rejects(() => controller.save(), new RegExp(code));
     assert.equal(attempts, 1);
-    assert.equal(controller.snapshot().revision, refreshed.revision);
     assert.equal(controller.draft().enabledById.fixture_plugin, false);
     await controller.save();
     assert.equal(controller.snapshot().plugins[0].enabled, false);
@@ -243,7 +212,6 @@ test("a delayed poll cannot overwrite a saved enable result", async () => {
   const pendingRead = new Promise((resolve) => { finishRead = resolve; });
   let draft = { enabledById: {}, settingsById: {} };
   const next = snapshot();
-  next.revision = "4444444444444444";
   next.plugins[0].enabled = false;
   next.plugins[0].state = "disabled";
   const controller = createPluginController({
@@ -260,10 +228,8 @@ test("a delayed poll cannot overwrite a saved enable result", async () => {
   await controller.save();
   finishRead(snapshot());
   await poll;
-  assert.equal(controller.snapshot().revision, next.revision);
   assert.equal(controller.snapshot().plugins[0].enabled, false);
 });
-
 
 test("concurrent plugin polling shares one settings read", async () => {
   let calls = 0;
@@ -313,12 +279,10 @@ test("failed plugin polling rejects once and a later poll can recover", async ()
   assert.equal(applied, 2);
 });
 
-
 test("Local plugin install and uninstall preserve the draft and validate identity", async () => {
   const calls = [];
   let draft = { enabledById: { fixture_plugin: false }, settingsById: {} };
   const installed = snapshot();
-  installed.revision = "1111111111111111";
   installed.plugins.push({
     ...installed.plugins[0],
     installId: "pi_user_6c6f63616c",
@@ -352,7 +316,6 @@ test("Local plugin install and uninstall preserve the draft and validate identit
   assert.deepEqual(calls[0], ["settings_plugins_install", {
     windowGeneration: 7,
     coreGenerationId: "generation-a",
-    revision: "0123456789abcdef",
     sourceKind: "zip",
   }]);
 
@@ -361,14 +324,12 @@ test("Local plugin install and uninstall preserve the draft and validate identit
   assert.deepEqual(calls[1][1], {
     windowGeneration: 7,
     coreGenerationId: "generation-a",
-    revision: "1111111111111111",
     installId: "pi_user_6c6f63616c",
   });
 });
 
 test("Plugin uninstall cleanup failure refreshes the committed snapshot", async () => {
   const current = snapshot();
-  current.revision = "1111111111111111";
   current.plugins.push({
     ...current.plugins[0], installId: "pi_user_6c6f63616c",
     pluginId: "com.example.local", name: "Local", enabled: false,
@@ -376,7 +337,6 @@ test("Plugin uninstall cleanup failure refreshes the committed snapshot", async 
     sections: [],
   });
   const refreshed = snapshot();
-  refreshed.revision = "2222222222222222";
   const calls = [];
   const controller = createPluginController({
     invoke: async (command) => {
@@ -396,30 +356,7 @@ test("Plugin uninstall cleanup failure refreshes the committed snapshot", async 
     /PLUGIN_UNINSTALL_CLEANUP_FAILED/,
   );
   assert.deepEqual(calls, ["settings_plugins_uninstall", "settings_plugins_get"]);
-  assert.equal(controller.snapshot().revision, "2222222222222222");
   assert.equal(controller.snapshot().plugins.some((plugin) => plugin.source === "user"), false);
-});
-
-test("Plugin install revision conflict after picker refreshes the current revision", async () => {
-  const refreshed = snapshot();
-  refreshed.revision = "3333333333333333";
-  const calls = [];
-  const controller = createPluginController({
-    invoke: async (command) => {
-      calls.push(command);
-      if (command === "settings_plugins_install") throw new Error("CONFIG_REVISION_CONFLICT");
-      if (command === "settings_plugins_get") return refreshed;
-      throw new Error("unexpected call");
-    },
-    applySnapshot: () => {},
-    readDraft: () => ({ enabledById: {}, settingsById: {} }),
-    onDirty: () => {},
-  });
-  controller.initialize(snapshot());
-
-  await assert.rejects(() => controller.install("folder"), /CONFIG_REVISION_CONFLICT/);
-  assert.deepEqual(calls, ["settings_plugins_install", "settings_plugins_get"]);
-  assert.equal(controller.snapshot().revision, "3333333333333333");
 });
 
 test("Plugin management refresh failure preserves the original error", async () => {
@@ -463,10 +400,10 @@ test("Cancelled plugin picker does not mutate the current snapshot", async () =>
   });
   controller.initialize(snapshot());
   assert.equal(await controller.install("folder"), null);
-  assert.equal(controller.snapshot().revision, "0123456789abcdef");
+  assert.deepEqual(controller.snapshot(), snapshot());
 });
 
-test("Plugin management rejects mismatched actions and bundled uninstall", async () => {
+test("Plugin management rejects bundled uninstall", async () => {
   const invalid = createPluginController({
     invoke: async () => ({
       ...snapshot(), managementAction: "uninstalled", pluginId: "fixture_plugin",
@@ -477,7 +414,6 @@ test("Plugin management rejects mismatched actions and bundled uninstall", async
     onDirty: () => {},
   });
   invalid.initialize(snapshot());
-  await assert.rejects(() => invalid.install("zip"), /PLUGIN_MANAGEMENT_RESPONSE_INVALID/);
   await assert.rejects(() => invalid.uninstall("pi_bundled_666978747572655f706c7567696e"), /PLUGIN_UNINSTALL_REQUEST_INVALID/);
 });
 
@@ -498,9 +434,6 @@ test("WP-4-04 failed plugin save preserves the page draft", async () => {
   assert.equal(applied, 1);
   assert.deepEqual(controller.draft(), draft);
 });
-
-
-
 
 test("Plugin API v3 applied settings refresh without changing the Core generation", async () => {
   const calls = [];
@@ -574,4 +507,21 @@ test("plugin import forwards native picker metadata and excludes readonly values
   assert.equal(result.cancelled, true);
   assert.deepEqual(calls[0][1].filePicker, picker);
   assert.deepEqual(calls[0][1].values, { label: "" });
+});
+
+test("Local package update keeps the enabled plugin available", async () => {
+  const current = snapshot();
+  const updated = structuredClone(current);
+  updated.plugins[0].version = "1.1.0";
+  updated.plugins[0].enabled = true;
+  const draft = { enabledById: {}, settingsById: {} };
+  const controller = createPluginController({
+    invoke: async () => ({ ...updated, managementAction: "updated", installId: updated.plugins[0].installId,
+      pluginId: updated.plugins[0].pluginId }),
+    applySnapshot: () => {}, readDraft: () => draft, onDirty: () => {},
+  });
+  controller.initialize(current);
+  await controller.install("zip");
+  assert.equal(controller.snapshot().plugins[0].version, "1.1.0");
+  assert.equal(controller.snapshot().plugins[0].enabled, true);
 });

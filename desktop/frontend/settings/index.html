@@ -5,15 +5,20 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Sakura 设置</title>
     <link rel="stylesheet" href="./styles.css" />
+    <link rel="stylesheet" href="../core/data-transfer.css" />
     <script type="module" src="../core/tooltip.js"></script>
   </head>
-  <body data-icon-motion="click">
+  <body class="settings-window" data-icon-motion="click">
     <main class="settings-shell">
       <aside class="nav-card" aria-label="设置分类" data-submission-lock>
-        <div class="nav-brand">
+        <div class="nav-brand" data-window-drag>
+          <img class="nav-brand-icon" src="../assets/sakura-icon.png" alt="" draggable="false" />
           <span class="nav-brand-text">Sakura</span>
+          <button id="sidebarToggle" class="nav-toggle" type="button" aria-label="收起侧栏" aria-expanded="true" aria-controls="settingsNavigation">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m11 17-5-5 5-5m7 10-5-5 5-5" /></svg>
+          </button>
         </div>
-        <nav class="nav-list">
+        <nav id="settingsNavigation" class="nav-list">
           <div class="nav-group" role="group" aria-labelledby="navgrp-character">
             <p class="nav-group-label" id="navgrp-character">角色</p>
             <button class="nav-item is-active" type="button" data-page="character" aria-current="page">
@@ -61,6 +66,10 @@
               <span class="nav-item-icon" aria-hidden="true"><span class="sakura-icon icon-puzzle" aria-hidden="true"></span></span>
               <span class="nav-item-label">插件</span>
             </button>
+            <button class="nav-item" type="button" data-page="statistics">
+              <span class="nav-item-icon" aria-hidden="true"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 3v17h17M8 16v-5m5 5V6m5 10V9"/></svg></span>
+              <span class="nav-item-label">使用统计</span>
+            </button>
             <button class="nav-item" type="button" data-page="system">
               <span class="nav-item-icon" aria-hidden="true"><span class="sakura-icon icon-settings-2" aria-hidden="true"></span></span>
               <span class="nav-item-label">系统</span>
@@ -75,12 +84,40 @@
             </button>
           </div>
         </nav>
+        <div class="nav-footer"><span id="sidebarVersion"></span></div>
       </aside>
 
       <section class="detail-card">
-        <header class="page-head">
-          <h1 id="pageTitle" class="page-title">角色与布局</h1>
-          <p id="pageSubtitle" class="page-subtitle" hidden></p>
+        <header class="page-head" data-window-drag>
+          <div class="page-heading-content">
+            <span id="pageIcon" class="page-heading-icon" aria-hidden="true"><span class="sakura-icon icon-user-round"></span></span>
+            <h1 id="pageTitle" class="page-title">角色与布局</h1>
+            <p id="pageSubtitle" class="page-subtitle" hidden></p>
+          </div>
+          <div id="pluginPageActions" data-submission-lock>
+            <div id="pluginInstallMenuRoot" class="plugin-install-menu">
+              <button id="pluginInstallMenuButton" aria-label="更多插件操作" class="secondary-button plugin-install-menu__trigger" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="pluginInstallMenu">
+                <span class="sakura-icon icon-ellipsis" aria-hidden="true"></span>
+              </button>
+              <div id="pluginInstallMenu" class="plugin-install-menu__panel" role="menu" hidden>
+                <div class="plugin-menu-label">从本地安装</div>
+                <button id="pluginInstallZipButton" type="button" role="menuitem">从 ZIP 安装…</button>
+                <button id="pluginInstallFolderButton" type="button" role="menuitem">从文件夹安装…</button>
+              </div>
+            </div>
+          </div>
+          <div id="windowControls" class="window-controls" aria-label="窗口控制" hidden>
+            <button id="windowMinimize" type="button" aria-label="最小化">
+              <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 8h10" /></svg>
+            </button>
+            <button id="windowMaximize" type="button" aria-label="最大化">
+              <svg class="window-maximize-icon" viewBox="0 0 16 16" aria-hidden="true"><rect x="3.5" y="3.5" width="9" height="9" rx=".5" /></svg>
+              <svg class="window-restore-icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M5.5 5.5v-3h8v8h-3" /><rect x="2.5" y="5.5" width="8" height="8" rx=".5" /></svg>
+            </button>
+            <button id="windowClose" type="button" aria-label="关闭窗口">
+              <svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4 4 8 8M12 4l-8 8" /></svg>
+            </button>
+          </div>
         </header>
 
         <div class="page-scroll" data-submission-lock>
@@ -237,22 +274,9 @@
         </section>
 
         <section id="page-plugins" class="settings-page admin-page">
-          <div class="plugin-page-heading"><div><h2>插件 <span id="pluginTotal" class="plugin-count" hidden></span></h2></div>
-            <div id="pluginInstallMenuRoot" class="plugin-install-menu">
-              <button id="pluginInstallMenuButton" aria-label="更多插件操作" class="secondary-button plugin-install-menu__trigger" type="button" aria-haspopup="menu" aria-expanded="false">
-                <span>更多</span>
-                <span class="sakura-icon icon-chevron-down" aria-hidden="true"></span>
-              </button>
-              <div id="pluginInstallMenu" class="plugin-install-menu__panel" role="menu" hidden>
-                <div class="plugin-menu-label">从本地安装</div>
-                <button id="pluginInstallZipButton" type="button" role="menuitem">从 ZIP 安装…</button>
-                <button id="pluginInstallFolderButton" type="button" role="menuitem">从文件夹安装…</button>
-              </div>
-            </div>
-          </div>
           <div class="admin-toolbar plugin-toolbar">
             <div id="pluginRoleTabs" class="plugin-role-tabs" role="tablist" aria-label="插件类型"></div>
-            <input id="pluginSearch" class="admin-search" type="search" aria-label="搜索插件" placeholder="搜索名称、作者、ID 或描述…" />
+            <input id="pluginSearch" class="admin-search" type="search" aria-label="搜索插件" placeholder="搜索名称、作者、ID 或描述…" autocomplete="off" spellcheck="false" />
           </div>
           <div class="admin-workbench plugin-workbench">
             <section class="plugin-list-shell" aria-label="插件列表"><div id="pluginList" class="admin-list"></div></section>
@@ -261,6 +285,7 @@
         </section>
 
         <section id="page-providers" class="settings-page admin-page">
+          <div id="modelSelectionWarnings" class="model-selection-warnings" role="status" hidden></div>
           <div id="modelProviderSurface" class="plugin-surface"></div>
         </section>
 
@@ -290,7 +315,7 @@
                 </label>
                 <div class="voice-engine-controls">
                   <select id="ttsProvider"></select>
-                  <button id="ttsPluginSettings" type="button" class="voice-engine-settings" aria-label="打开角色语音插件设置" data-tooltip="插件设置" disabled><span class="sakura-icon icon-settings" aria-hidden="true"></span></button>
+                  <button id="ttsPluginSettings" type="button" class="voice-engine-settings" aria-label="打开角色语音插件设置" disabled><span class="sakura-icon icon-settings" aria-hidden="true"></span></button>
                 </div>
               </div>
             </fieldset>
@@ -304,7 +329,7 @@
               </label>
               <div class="voice-engine-controls">
                 <select id="asrProvider"></select>
-                <button id="asrPluginSettings" type="button" class="voice-engine-settings" aria-label="打开语音输入插件设置" data-tooltip="插件设置" disabled><span class="sakura-icon icon-settings" aria-hidden="true"></span></button>
+                <button id="asrPluginSettings" type="button" class="voice-engine-settings" aria-label="打开语音输入插件设置" disabled><span class="sakura-icon icon-settings" aria-hidden="true"></span></button>
               </div>
             </div>
             <p id="asrLocation" class="setting-desc"></p>
@@ -351,7 +376,7 @@
             </div>
             <div class="setting-row">
               <div class="inline-actions">
-                <button id="themeAiButton" class="secondary-button" type="button" data-tooltip="参考角色默认立绘生成配色">AI 生成配色</button>
+                <button id="themeAiButton" class="secondary-button" type="button">AI 生成配色</button>
                 <button id="resetThemeButton" class="secondary-button" type="button">恢复默认配色</button>
               </div>
             </div>
@@ -400,6 +425,8 @@
 
           <div id="screenAwarenessSurface"></div>
         </section>
+
+        <section id="page-statistics" class="settings-page"></section>
 
         <section id="page-system" class="settings-page">
           <fieldset class="settings-group" data-settings-feature="telemetry.anonymous_statistics">
@@ -463,14 +490,7 @@
                 <span class="setting-title">数据目录</span>
                 <code id="storageUserRoot" class="path-value"></code>
               </div>
-              <button id="storageOpenUserRoot" type="button" class="secondary-button" data-tooltip="包含配置、聊天记录、角色和插件">打开数据目录</button>
-            </div>
-            <div class="setting-row">
-              <div class="setting-row-text">
-                <span class="setting-title">迁移角色和数据</span>
-                <span id="legacyRoleDataImportStatus" class="setting-desc" role="status"></span>
-              </div>
-              <button id="legacyRoleDataImportButton" type="button" class="secondary-button" disabled>迁移旧数据</button>
+              <button id="storageOpenUserRoot" type="button" class="secondary-button">打开数据目录</button>
             </div>
           </fieldset>
           <fieldset class="settings-group">

@@ -1188,6 +1188,40 @@ def test_existing_memory_snapshot_failure_aborts_curation_before_write() -> None
     assert writes == 0
 
 
+def test_imported_history_is_skipped_without_losing_new_local_curation(tmp_path, monkeypatch):
+    root = _root(tmp_path)
+    timeline = _timeline(root, turns=0)
+    timeline.store.import_records("sakura", [{
+        "entry_id": "imported-human", "turn_id": "imported-turn", "kind": "human",
+        "origin": "chat", "created_at": "2026-08-25T12:00:00+08:00",
+        "payload": {"text": "导入的旧对话"},
+    }], preview=False)
+    boundary = _boundary(root, FakeMemoryStore(), config={"triggerTurns": 1, "curationModelRef": MODEL_REF})
+    processed = []
+
+    class Curator:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def curate_entries(self, entries, *, cancel_checker=None):
+            processed.extend(entry.entry_id for entry in entries)
+            return MemoryCurationResult(processed_entries=len(entries))
+
+    monkeypatch.setattr("plugins.optional.sakura_mem0.boundary.MemoryCurator", Curator)
+    monkeypatch.setattr(boundary._curation_threads, "spawn", lambda target, **_kwargs: target())
+    try:
+        boundary.note_timeline_changed(timeline)
+        assert processed == []
+        _append_timeline_turn(timeline, 1)
+        boundary.note_timeline_changed(timeline)
+        assert processed == ["human-1", "assistant-1"]
+        assert len(timeline.store.read_all("sakura")) == 3
+        boundary.note_timeline_changed(timeline)
+        assert processed == ["human-1", "assistant-1"]
+    finally:
+        boundary.close()
+
+
 def test_backend_write_failure_does_not_advance_curation_cursor(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1306,7 +1340,14 @@ def test_curation_preserves_completed_page_cursor_and_retries_only_failed_page(
         boundary.close()
 
 
+@pytest.mark.parametrize("invalid", [
+    "not-json", "{}", '{"facts":["test fact"]}', '{"operations":[42]}',
+    '{"operations":[{"op":"add"}]}', '{"operations":[{"op":"update","content":"新偏好"}]}',
+    '{"operations":[{"op":"delete"}]}', '{"operations":[{"op":"unknown"}]}',
+    '{"operations":[{"op":"delete","id":"owned"},42]}',
+])
 def test_failed_repair_stops_current_job_and_later_event_can_retry(
+    invalid: str,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1321,7 +1362,7 @@ def test_failed_repair_stops_current_job_and_later_event_can_retry(
             calls += 1
             if calls == 1:
                 boundary.note_timeline_changed(timeline)
-            return "not-json" if calls <= 2 else '{"operations":[]}'
+            return invalid if calls <= 2 else '{"operations":[],"summary":"无需新增记忆"}'
 
         def close(self) -> None:
             pass
@@ -1349,8 +1390,9 @@ def test_failed_repair_stops_current_job_and_later_event_can_retry(
     try:
         boundary.note_timeline_changed(timeline)
 
-        assert calls == 2
         assert boundary._curation_state.curation_cursor() == ""  # noqa: SLF001
+        assert "owned" in boundary._store.memories  # noqa: SLF001
+        assert calls == 2
 
         boundary.note_timeline_changed(timeline)
         assert calls == 3
@@ -1640,3 +1682,89 @@ def test_missing_model_provider_does_not_disable_memory_crud_or_recall(tmp_path)
         assert boundary.delete({"id": "created"})["alreadyMissing"] is False
     finally:
         boundary.close()
+
+
+@pytest.mark.parametrize("action", ["close", "reload"])
+@pytest.mark.parametrize("outcome", ["success", "failure"])
+def test_late_memory_load_leaves_closed_or_new_loading_state_untouched(tmp_path, monkeypatch, action, outcome):
+    store = memory_module.MemoryStore(base_dir=tmp_path)
+    tasks, events, closed = [], [], []
+    monkeypatch.setattr(store._thread_group, "spawn", lambda target, **kwargs: tasks.append(target) or object())
+    monkeypatch.setattr(memory_module, "_embedding_model_cached", lambda *args, **kwargs: True)
+    class Client:
+        def close(self):
+            closed.append(True)
+    def create(_generation):
+        if outcome == "failure":
+            raise RuntimeError("late backend failure")
+        return Client()
+    monkeypatch.setattr(store, "_create_memory_client", create)
+    store.add_status_listener(lambda status, message: events.append((status, message)))
+    try:
+        store.preload(wait=False)
+        old_load = tasks.pop()
+        if action == "close":
+            store.close()
+        else:
+            store.reset_runtime()
+            store.preload(wait=False)
+        diagnostic = store.load_diagnostic()
+        events.clear()
+        old_load()
+        assert store.load_diagnostic() == diagnostic
+        assert events == []
+        assert not store.is_ready()
+        if action == "close":
+            assert store._status == "stopped"
+        else:
+            assert store._loading
+            monkeypatch.setattr(store, "_create_memory_client", lambda _generation: Client())
+            tasks.pop()()
+            assert store.is_ready()
+        assert bool(closed) is (outcome == "success")
+    finally:
+        store.close()
+
+
+def test_current_memory_load_failure_keeps_original_reason(tmp_path, monkeypatch):
+    store = memory_module.MemoryStore(base_dir=tmp_path)
+    tasks, events = [], []
+    monkeypatch.setattr(store._thread_group, "spawn", lambda target, **kwargs: tasks.append(target) or object())
+    monkeypatch.setattr(memory_module, "_embedding_model_cached", lambda *args, **kwargs: True)
+    def fail(_generation):
+        raise RuntimeError("database permission denied")
+    monkeypatch.setattr(store, "_create_memory_client", fail)
+    store.add_status_listener(lambda status, message: events.append((status, message)))
+    try:
+        store.preload(wait=False)
+        tasks.pop()()
+        assert events[-1][0] == "failed"
+        assert "database permission denied" in events[-1][1]
+        assert store.load_diagnostic()["outcome"] == "failed"
+        assert not store._loading
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("action", ["close", "reload"])
+def test_retired_memory_backend_diagnostics_do_not_change_current_status(tmp_path, action):
+    store = memory_module.MemoryStore(base_dir=tmp_path)
+    class Client:
+        def set_diagnostic_listener(self, callback):
+            self.diagnostic = callback
+        def close(self):
+            self.diagnostic({"event": "mem0_request_failed", "outcome": "failed"})
+    client = Client()
+    store._register_active_embedder(client, store._reload_generation)
+    try:
+        if action == "close":
+            store.close()
+        else:
+            store.reset_runtime()
+        diagnostic = store.load_diagnostic()
+        status = store._status
+        client.diagnostic({"event": "mem0_request_failed", "outcome": "failed"})
+        assert store._status == status
+        assert store.load_diagnostic() == diagnostic
+    finally:
+        store.close()

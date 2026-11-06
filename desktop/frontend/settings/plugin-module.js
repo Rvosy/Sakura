@@ -20,6 +20,7 @@ export function createPluginModule({ document, source, context, onError, onReady
     }
     component = mounted;
     element.replaceChildren(component.element);
+    element.hidden = component.element.hidden;
     component.update?.();
     onReady();
   }).catch(error => {
@@ -38,6 +39,7 @@ export function createPluginModule({ document, source, context, onError, onReady
       component.validate?.();
     },
     contributions: () => component?.contributions?.(),
+    updateContributions: () => component?.updateContributions?.(),
     cancel: () => component?.cancel?.(),
     dispose() {
       if (disposed) return;

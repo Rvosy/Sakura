@@ -57,7 +57,7 @@ if [ -n "${GPT_SOVITS_MINIFORGE_URL:-}" ]; then
     MINIFORGE_URLS=("$MINIFORGE_URL")
 else
     MINIFORGE_URLS=(
-        "https://gitproxy.mrhjx.cn/$MINIFORGE_URL"
+        "https://gh-proxy.com/$MINIFORGE_URL"
         "https://ghproxy.vip/$MINIFORGE_URL"
         "$MINIFORGE_URL"
     )
@@ -65,7 +65,7 @@ fi
 if [ -n "${GPT_SOVITS_REPO:-}" ]; then
     GPT_REPO_URLS=("$GPT_REPO")
 else
-    GPT_REPO_URLS=("https://gitproxy.mrhjx.cn/$GPT_REPO" "$GPT_REPO")
+    GPT_REPO_URLS=("https://gh-proxy.com/$GPT_REPO" "$GPT_REPO")
 fi
 
 # Keep caller overrides and upstream device-specific wheel indexes.

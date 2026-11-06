@@ -180,6 +180,44 @@ def test_failed_model_metric_keeps_estimate_and_unknown_usage(monkeypatch, tmp_p
     assert SENTINELS["exception"] not in json.dumps(metric, sort_keys=True)
 
 
+@pytest.mark.parametrize("outcome", ["success", "failed"])
+def test_provider_diagnostics_do_not_drop_model_metrics_or_enter_statistics(tmp_path, outcome):
+    from sakura_model import ModelError
+
+    stream = io.BytesIO()
+    bridge = install_runtime_logging(stream)
+    recorder = AgentTraceRecorder(tmp_path)
+    model = MagicMock()
+    details = {"httpStatus": 429 if outcome == "failed" else 200, "attemptCount": 1,
+               "responseFormat": "json_schema", "diagnostic": SENTINELS["exception"],
+               "exception_stack": SENTINELS["absolute_path"], "error_type": "APIStatusError"}
+    if outcome == "failed":
+        details.update(faultDomain="rate_limit", stage="request")
+        model.complete.side_effect = ModelError("MODEL_RATE_LIMITED", "limited", diagnostics=details)
+    else:
+        model.complete.return_value = {"message": {"content": "ok"}, "diagnostics": details}
+    client = AssistantModelClient(DialogueSettings(model="fixture"), model_client=model,
+                                  agent_trace_recorder=recorder)
+    try:
+        with recorder.operation("provider-metric", finalize_external=True):
+            if outcome == "failed":
+                with pytest.raises(ApiRequestError, match="limited"):
+                    client.complete_raw("system", [{"role": "user", "content": "hello"}])
+            else:
+                assert client.complete_raw("system", [{"role": "user", "content": "hello"}]) == "ok"
+    finally:
+        bridge.close()
+
+    metric, = [payload["modelCall"] for payload in _telemetry_payloads(stream)]
+    assert metric["outcome"] == outcome
+    expected = {"httpStatus": details["httpStatus"], "attemptCount": 1}
+    if outcome == "failed":
+        expected.update(faultDomain="rate_limit", stage="request", reasonCode="MODEL_RATE_LIMITED")
+    assert metric["request"] == expected
+    assert SENTINELS["exception"] not in json.dumps(metric)
+    assert SENTINELS["absolute_path"] not in json.dumps(metric)
+
+
 def test_provider_compatibility_is_reported_in_one_semantic_model_call(monkeypatch, tmp_path) -> None:  # type: ignore[no-untyped-def]
     stream = io.BytesIO()
     bridge = install_runtime_logging(stream)

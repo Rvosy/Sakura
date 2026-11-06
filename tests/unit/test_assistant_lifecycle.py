@@ -92,6 +92,8 @@ def test_prior_generation_handoff_remains_usable_without_rewriting_configuration
     plugin.release(operation.operation_id, "completed")
     assert settings["save"]({"temperature": 1, "top_p": 0.5, "max_tokens": 32}) == {"applicationState": "restart_required"}
     assert settings["load"]() == {"temperature": 1, "top_p": 0.5, "max_tokens": 32}
+    settings["save"]({"temperature": 0.6})
+    assert settings["load"]() == {"temperature": 0.6, "top_p": 0.5, "max_tokens": 32}
     assert plugin.generation == expected
     assert json.loads(path.read_text(encoding="utf-8"))["custom"] == "keep"
     plugin.close()

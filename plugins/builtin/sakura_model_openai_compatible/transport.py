@@ -11,7 +11,7 @@ import httpx
 from openai import APIConnectionError, APIStatusError, APITimeoutError, AsyncOpenAI, Omit
 from openai.resources.chat import AsyncChat  # Resolve lazy imports before serving jobs.
 
-from sakura_cancellation import check_cancelled
+from sakura_cancellation import await_cancellable, check_cancelled
 from sakura_http import proxy_for_url
 from sakura_model import ModelError
 from sakura_provider_errors import public_provider_http_message, sanitize_provider_diagnostic
@@ -27,19 +27,19 @@ def normalize_base_url(value):
 
 
 def _unsupported(error, parameter):
-    if not isinstance(error, APIStatusError) or error.status_code not in {400, 422}:
+    if error.status_code not in {400, 422}:
         return False
     text = error.response.text.lower()
-    if parameter not in text and not (parameter == "response_format" and "json_object" in text):
+    if parameter not in text and not (parameter == "response_format" and any(name in text for name in ("json_object", "json_schema"))):
         return False
-    if any(marker in text for marker in ("between", "range", "minimum", "maximum", "less than", "greater than", "<=", ">=")):
+    if any(marker in text for marker in ("invalid schema", "additionalproperties", "required property", "between", "range", "minimum", "maximum", "less than", "greater than", "<=", ">=")):
         return False
-    return any(marker in text for marker in ("unsupported", "not support", "does not support", "only support", "only the default", "default value", "not allowed", "cannot be", "not configurable"))
+    if parameter == "temperature" and "only 1 is allowed" in text:
+        return True
+    return any(marker in text for marker in ("unsupported", "unavailable", "not support", "does not support", "only support", "only the default", "default value", "not allowed", "cannot be", "not configurable"))
 
 
 def _message(value):
-    if not isinstance(value, dict) or value.get("role") not in {"system", "developer", "user", "assistant", "tool"}:
-        raise ModelError("MODEL_REQUEST_INVALID", "模型消息格式无效。")
     message = {**deepcopy(value.get("providerData") or {}), "role": value["role"], "content": value.get("content")}
     if isinstance(message["content"], list):
         message["content"] = [({"type": "image_url", "image_url": {"url": part["dataUrl"], "detail": part.get("detail", "auto")}}
@@ -106,13 +106,9 @@ def execute(settings, request, *, cancel_checker, progress, operation="generate"
     base_url = normalize_base_url(settings["base_url"])
     key = settings["api_key"]
     if operation == "generate":
-        if not isinstance(request, dict) or not isinstance(request.get("messages"), list) or not request["messages"]:
-            raise ModelError("MODEL_REQUEST_INVALID", "模型请求缺少消息。")
         parameters = request.get("parameters") or {}
-        allowed = {"temperature", "top_p", "max_tokens", "max_completion_tokens", "presence_penalty", "frequency_penalty", "seed", "stop"}
-        if not isinstance(parameters, dict) or set(parameters) - allowed:
-            raise ModelError("MODEL_REQUEST_INVALID", "模型生成参数无效。")
-        payload = {**parameters, "model": settings["model"], "messages": [_message(item) for item in request["messages"]]}
+        extra_body = parameters.pop("extra_body", None) or {}
+        payload = {**parameters, **extra_body, "model": settings["model"], "messages": [_message(item) for item in request["messages"]]}
         if request.get("responseFormat") is not None:
             payload["response_format"] = request["responseFormat"]
         if request.get("tools"):
@@ -121,6 +117,11 @@ def execute(settings, request, *, cancel_checker, progress, operation="generate"
             payload["tool_choice"] = request["toolChoice"]
     else:
         payload = {"model": settings["model"], "messages": [{"role": "user", "content": "Reply with only OK."}]}
+    if urlparse(base_url).hostname == "api.deepseek.com" and payload.get("response_format", {}).get("type") == "json_schema":
+        if payload.get("tools"):
+            payload.pop("response_format")
+        else:
+            payload["response_format"] = {"type": "json_object"}
     diagnostics = {}
 
     def decode_response(response):
@@ -160,10 +161,12 @@ def execute(settings, request, *, cancel_checker, progress, operation="generate"
                     if operation == "list_models":
                         response = await sdk.models.with_raw_response.list(extra_headers=headers)
                         return decode_response(response.http_response)
+                    options = {"model": payload["model"], "messages": payload["messages"], "extra_headers": headers,
+                               "extra_body": {name: value for name, value in payload.items() if name not in {"model", "messages"}}}
                     # Streaming is optional. The complete reply remains authoritative;
                     # batched deltas never enter the Assistant's segmented reply policy.
                     if request.get("stream"):
-                        stream = await sdk.chat.completions.create(**payload, stream=True, stream_options={"include_usage": True}, extra_headers=headers)
+                        stream = await sdk.chat.completions.create(**options, stream=True, stream_options={"include_usage": True})
                         diagnostics["httpStatus"] = stream.response.status_code
                         content, calls, usage, finish = [], {}, {}, None
                         metadata = {}
@@ -207,38 +210,30 @@ def execute(settings, request, *, cancel_checker, progress, operation="generate"
                         if pending:
                             progress({"type": "text_delta", "text": pending})
                         return {"choices": [{"message": {**metadata, "content": "".join(content), "tool_calls": [calls[index] for index in sorted(calls)]}, "finish_reason": finish}], "usage": usage}
-                    response = await sdk.chat.completions.with_raw_response.create(**payload, extra_headers=headers)
+                    response = await sdk.chat.completions.with_raw_response.create(**options)
                     return decode_response(response.http_response)
 
-                async def guarded():
-                    task = asyncio.create_task(send())
-                    try:
-                        while not task.done():
-                            await asyncio.wait({task}, timeout=.05)
-                            check_cancelled(cancel_checker)
-                        return await task
-                    finally:
-                        if not task.done():
-                            task.cancel()
-                        await asyncio.gather(task, return_exceptions=True)
                 fallbacks = []
-                for attempt in range(1, 4):
+                while True:
                     check_cancelled(cancel_checker)
-                    diagnostics["attemptCount"] = attempt
+                    diagnostics["attemptCount"] = len(fallbacks) + 1
                     try:
-                        data = await guarded()
+                        data = await await_cancellable(send(), cancel_checker)
                         if operation == "list_models":
                             return {"models": _model_ids(data)}
                         result = _response(data)
-                        result["diagnostics"] = {**diagnostics, "compatibilityFallbacks": fallbacks}
+                        result["diagnostics"] = {**diagnostics, "compatibilityFallbacks": fallbacks, "responseFormat": (payload.get("response_format") or {}).get("type", "text")}
                         return result
                     except APIStatusError as error:
                         parameter = next((name for name in ("response_format", "temperature") if name in payload and _unsupported(error, name)), None)
-                        if parameter is None or request.get("stream") or attempt == 3:
+                        if parameter is None or request.get("stream"):
                             raise
-                        payload.pop(parameter)
+                        # 带工具时不降到 JSON mode，避免兼容服务把工具调用写进正文。
+                        if (parameter == "response_format" and payload[parameter].get("type") == "json_schema" and not payload.get("tools")):
+                            payload[parameter] = {"type": "json_object"}
+                        else:
+                            payload.pop(parameter)
                         fallbacks.append(parameter)
-                raise AssertionError("compatibility attempts exhausted")
     try:
         with asyncio.Runner() as runner:
             return runner.run(run())

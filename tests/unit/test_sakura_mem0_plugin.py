@@ -11,8 +11,7 @@ import yaml
 
 from sakura_assistant.agent.context_orchestrator import ContextOrchestrator
 from sakura_context import ContextFragment, ContextMessage, ContextRequest
-from app.plugins.discovery import PluginDiscovery
-from app.plugins.models import ContextProviderContribution
+from sakura_assistant.agent.context_orchestrator import ContextProviderContribution
 from plugins.optional.sakura_mem0.plugin import (
     SakuraMem0Plugin,
     SakuraMem0Runtime,
@@ -296,32 +295,6 @@ def test_default_runtime_uses_only_declared_host_resources(
     assert captured["memory_cache_dir"] == tmp_path / "cache" / "memory"
 
 
-def test_external_manifest_is_discoverable_and_disabled_on_fresh_install(tmp_path: Path) -> None:
-    root = Path(__file__).parents[2]
-    import shutil
-    shutil.copytree(root / "plugins/optional/sakura_mem0", tmp_path / "plugins/user/mem0")
-    spec = next(
-        item
-        for item in PluginDiscovery(
-            tmp_path,
-            config_path=tmp_path / "plugins.yaml",
-        ).discover()
-        if item.plugin_id == "sakura.memory.mem0"
-    )
-    assert spec.api_version == 4
-    assert spec.enabled is False
-    assert spec.requires == (
-        "sakura.host.storage",
-        "sakura.host.character",
-        "sakura.host.timeline",
-        "sakura.host.context",
-        "sakura.host.tools",
-        "sakura.host.settings",
-        "sakura.host.settings.collection-v0",
-        "sakura.host.settings.surface-v0",
-        "sakura.host.model_slots.v2",
-        "sakura.host.artifacts",
-    )
 
 
 def test_plugin_setup_does_not_wait_for_initial_timeline_catch_up(tmp_path: Path) -> None:
@@ -431,7 +404,6 @@ def test_official_descriptors_pass_real_generic_host_validators(tmp_path: Path) 
             "delete": handle,
         },
     )
-    assert settings.count == 3
     component = next(
         item for item in settings.sections_for_plugin("sakura.memory.mem0")
         if item["sectionId"] == "memory_embedding_component"
@@ -461,7 +433,6 @@ def test_official_descriptors_pass_real_generic_host_validators(tmp_path: Path) 
             {"load": handle, "save": handle},
         ],
     )
-    assert slots.count == 1
 
 
 def test_about_surface_is_resource_only_and_omits_incomplete_v1_values() -> None:

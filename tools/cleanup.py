@@ -7,15 +7,14 @@
 
 清理范围（白名单制，逐项列出后才删）：
 1. TTS 音频缓存残留          data/cache/tts/*
-2. 旧版过期迁移备份          data/migration_backup/*（默认 30 天前，--backup-days 可调）
-3. TTS 整合包安装半成品      TTS 资源目录下的 tmp/，以及安装目录和 tts/ 下的 .migrating/
-4. Python 字节码缓存         app/ plugins/ 下的 __pycache__（可再生）
+2. TTS 整合包安装半成品      TTS 资源目录下的 tmp/
+3. Python 字节码缓存         app/ plugins/ 下的 __pycache__（可再生）
 
 缺少对应 .py 源码的 .pyc 文件会单独列出；执行清理时，
 它们会随所在的 __pycache__ 目录一并删除。
 
 绝不触碰：角色卡（characters/）、聊天记录、语音包、长期记忆、笔记、
-用户配置（config/、旧版 data/config/）、插件源码。
+用户配置、备份与插件源码。
 """
 
 from __future__ import annotations
@@ -23,7 +22,6 @@ from __future__ import annotations
 import argparse
 import shutil
 import sys
-import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -32,7 +30,6 @@ sys.path.insert(0, str(REPO_ROOT))
 
 from app.storage.paths import StoragePaths  # noqa: E402
 
-DEFAULT_BACKUP_RETENTION_DAYS = 30
 _PYCACHE_SCAN_ROOTS = ("app", "plugins")
 
 
@@ -75,35 +72,12 @@ def collect_tts_cache(paths: StoragePaths) -> list[CleanupItem]:
     ]
 
 
-def collect_expired_backups(paths: StoragePaths, retention_days: int) -> list[CleanupItem]:
-    # 只处理旧版备份目录；当前迁移事务的备份由各自的恢复流程管理。
-    backup_dir = paths.user_root / "data" / "migration_backup"
-    if not backup_dir.is_dir():
+def collect_bundle_leftovers(paths: StoragePaths) -> list[CleanupItem]:
+    """TTS 整合包安装的临时目录。"""
+    candidate = paths.tts_bundles_dir / "tmp"
+    if not candidate.is_dir():
         return []
-    cutoff = time.time() - retention_days * 86400
-    items: list[CleanupItem] = []
-    for entry in sorted(backup_dir.iterdir()):
-        try:
-            if entry.stat().st_mtime >= cutoff:
-                continue
-        except OSError:
-            continue
-        size = _dir_size(entry) if entry.is_dir() else _file_size(entry)
-        items.append(CleanupItem("expired_backup", entry, size))
-    return items
-
-
-def collect_bundle_leftovers(base_dir: Path, paths: StoragePaths) -> list[CleanupItem]:
-    """TTS 整合包安装/迁移的半成品目录（中断后残留，重装/重迁会重建）。"""
-    items: list[CleanupItem] = []
-    for candidate in (
-        paths.tts_bundles_dir / "tmp",
-        base_dir / ".migrating",
-        base_dir / "tts" / ".migrating",
-    ):
-        if candidate.is_dir():
-            items.append(CleanupItem("bundle_leftover", candidate, _dir_size(candidate)))
-    return items
+    return [CleanupItem("bundle_leftover", candidate, _dir_size(candidate))]
 
 
 def collect_pycache(base_dir: Path) -> list[CleanupItem]:
@@ -137,15 +111,13 @@ def run_cleanup(
     base_dir: Path,
     *,
     apply: bool,
-    backup_retention_days: int = DEFAULT_BACKUP_RETENTION_DAYS,
     out=print,
 ) -> list[CleanupItem]:
     """执行（或预览）清理；返回纳入清理范围的条目列表。"""
     paths = StoragePaths(base_dir)
     items: list[CleanupItem] = [
         *collect_tts_cache(paths),
-        *collect_expired_backups(paths, backup_retention_days),
-        *collect_bundle_leftovers(base_dir, paths),
+        *collect_bundle_leftovers(paths),
         *collect_pycache(base_dir),
     ]
 
@@ -190,18 +162,11 @@ def main(argv: list[str] | None = None) -> int:
         pass
     parser = argparse.ArgumentParser(description="Sakura 安全清理工具（默认 dry-run）")
     parser.add_argument("--apply", action="store_true", help="实际执行删除（默认只预览）")
-    parser.add_argument(
-        "--backup-days",
-        type=int,
-        default=DEFAULT_BACKUP_RETENTION_DAYS,
-        help=f"旧版迁移备份保留天数（默认 {DEFAULT_BACKUP_RETENTION_DAYS}）",
-    )
     parser.add_argument("--base-dir", type=Path, default=REPO_ROOT, help="Sakura 安装目录")
     args = parser.parse_args(argv)
     run_cleanup(
         args.base_dir,
         apply=args.apply,
-        backup_retention_days=args.backup_days,
     )
     return 0
 

@@ -436,6 +436,13 @@ class RealChatBoundary:
                     history_status = "degraded"
                     raise _BoundaryFailure("TIMELINE_WRITE_FAILED", "Chat input could not be saved", False) from error
             execution.cancel.throw_if_cancelled()
+            run_hook = getattr(plugin_application, "run_hook", None)
+            hook_context = {"operationId": operation_id, "turnId": turn_id,
+                            "characterId": str(character.id), "sourcePluginId": source_plugin_id}
+            if run_hook is not None:
+                stage = "chat.before_assistant"
+                message = run_hook(stage, {"message": message}, hook_context,
+                                   cancel_checker=execution.cancel.throw_if_cancelled)["message"]
             stage = "assistant"
             assistant_invoked = True
             if plugin_application is not None and not is_update_event and source_plugin_id is None:
@@ -455,6 +462,13 @@ class RealChatBoundary:
                 cancel_checker=execution.cancel.throw_if_cancelled)
             stage = "reply_processing"
             from app.core_host.assistant_adapter import AssistantFailure, apply_visual_reply
+            if run_hook is not None:
+                from app.plugin_sdk.sakura_assistant_contract import ChatReply, ChatSegment
+                stage = "chat.before_commit"
+                value = run_hook(stage, {"segments": [asdict(segment) for segment in result.reply.segments]},
+                                 hook_context, cancel_checker=execution.cancel.throw_if_cancelled)
+                result.reply = ChatReply([ChatSegment(**segment) for segment in value["segments"]])
+                stage = "reply_processing"
             result.reply = apply_visual_reply(result.reply, visual_binding)
             execution.cancel.throw_if_cancelled()
             allowed_action_types = {"tool_call", "event"} if is_update_event else {"tool_call"}
@@ -1350,6 +1364,9 @@ def _classify_error(error: BaseException) -> tuple[str, str, bool]:
     from app.core_host.assistant_adapter import AssistantFailure
     if isinstance(error, AssistantFailure):
         return error.code, error.public_message, error.retryable
+    from app.plugin_sdk.sakura_hooks import HookError
+    if isinstance(error, HookError):
+        return error.code, str(error), False
     from app.plugin_sdk.sakura_model import ApiConfigError, ApiRequestError
 
     message = str(exception_diagnostics(error, reason_code="CHAT_EXECUTION_FAILED", stage="chat")["diagnostic"])
@@ -1382,6 +1399,11 @@ def _classify_error(error: BaseException) -> tuple[str, str, bool]:
 
 
 def _safe_diagnostic(error: BaseException, *, code: str, stage: str, operation_id: str) -> None:
+    if code == "HOOK_ABORTED":
+        from app.core.runtime_log import log_event
+        log_event("Plugin", str(error), {"operation_id": operation_id, "stage": stage},
+                  event="plugin.hook.aborted", severity="info")
+        return
     try:
         from app.core.runtime_log import external_runtime_sink_active, log_event, diagnostic_attributes
 

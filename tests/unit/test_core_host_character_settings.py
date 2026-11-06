@@ -403,6 +403,8 @@ def test_delete_inactive_character_keeps_current_selection(tmp_path: Path) -> No
     config = tmp_path / "config" / "characters.yaml"
     saved = yaml.safe_load(config.read_text())
     saved["visual_selections"] = {"alpha": "default", "beta": "default"}
+    saved["seed_import_exclusions"] = ["previously-removed"]
+    saved["other"] = {"keep": True}
     config.write_text(yaml.safe_dump(saved), encoding="utf-8")
     memory = tmp_path / "data" / "memory" / "beta"
     memory.mkdir(parents=True)
@@ -436,6 +438,8 @@ def test_delete_inactive_character_keeps_current_selection(tmp_path: Path) -> No
     saved = yaml.safe_load(config.read_text())
     assert saved["current_character_id"] == "alpha"
     assert saved.get("visual_selections") == {"alpha": "default"}
+    assert saved["seed_import_exclusions"] == ["beta", "previously-removed"]
+    assert saved["other"] == {"keep": True}
 
 
 def test_delete_current_character_restarts_to_remaining_or_empty(tmp_path: Path) -> None:

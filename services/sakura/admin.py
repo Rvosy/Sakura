@@ -369,12 +369,13 @@ def report(request: Request, report_id: str) -> dict[str, Any]:
     if row is None:
         _not_found()
     data = dict(row)
+    raw_report = json.loads(data["report_json"]) if data.get("report_json") else None
     return {
         "details": json.loads(data["details_json"])
         if data.get("details_json")
         else None,
-        "evidence": json.loads(data["report_json"]).get("evidence") if data.get("report_json") else None,
-        "rawReport": json.loads(data["report_json"]) if data.get("report_json") else None,
+        "evidence": raw_report.get("evidence") if raw_report else None,
+        "rawReport": raw_report,
         "generation": data.get("generation"),
         "schema": data.get("schema_version"),
         "receivedAt": data["received_at"],
@@ -406,8 +407,8 @@ def report(request: Request, report_id: str) -> dict[str, Any]:
             "installKind": data["install_kind"],
             "upgradedFrom": data["upgraded_from"],
         },
-        "stack": _safe_json(data["stack_json"]),
-        "breadcrumbs": _safe_json(data["breadcrumbs_json"]),
+        "stack": _safe_json(data["stack_json"]) if data["stack_json"] is not None else (raw_report or {}).get("stack", []),
+        "breadcrumbs": _safe_json(data["breadcrumbs_json"]) if data["breadcrumbs_json"] is not None else (raw_report or {}).get("breadcrumbs", []),
     }
 
 

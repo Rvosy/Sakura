@@ -95,7 +95,7 @@ def test_model_settings_enable_and_reload_do_not_wait_for_cold_sdk(tmp_path, ini
         assert record["state"] == ("active" if initially_enabled else "disabled"), record
         if not initially_enabled:
             for enabled in (True, False, True):
-                current = boundary.set_enabled(current["revision"], record["installId"], enabled)
+                current = boundary.set_enabled(record["installId"], enabled)
                 assert current["applicationState"] == "applied", current
                 assert current["applicationReasonCode"] == "READY"
                 assert current["plugins"][0]["state"] == ("active" if enabled else "disabled")

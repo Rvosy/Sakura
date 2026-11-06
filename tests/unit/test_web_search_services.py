@@ -7,7 +7,7 @@ import httpx
 import pytest
 
 from plugins.builtin.sakura_web import search, web
-from plugins.builtin.sakura_web.plugin import WebPlugin, _execute_handler
+from plugins.builtin.sakura_web.plugin import WebPlugin, _handler
 from app.plugins.sakura_plugin_sdk import PluginContext
 
 
@@ -22,6 +22,22 @@ def draft_plugin():
     # No config capability is supplied: draft tests must not load or save it.
     plugin.context = SimpleNamespace(get=get, exception_diagnostics=PluginContext.exception_diagnostics)
     return plugin
+
+
+@pytest.mark.parametrize("saved_key,saved_depth", [
+    ("saved-key", "advanced"),
+    ("invalid\nkey", "advanced"),
+    ("saved-key", "invalid-depth"),
+])
+def test_save_changes_only_submitted_search_settings(saved_key, saved_depth):
+    values = {"provider": "tavily", "tavily_api_key": saved_key, "tavily_depth": saved_depth}
+    plugin = WebPlugin()
+    plugin.context = SimpleNamespace(config=SimpleNamespace(
+        get=lambda: dict(values), update=lambda patch: values.update(patch) or "applied"))
+    assert plugin.save({"provider": "bing"}) == "applied"
+    assert values == {"provider": "bing", "tavily_api_key": saved_key, "tavily_depth": saved_depth}
+    plugin.context.config.update = lambda _patch: "error"
+    assert plugin.save({"provider": "tavily"}) == "error"
 
 
 @pytest.mark.parametrize('provider,markup,title,url', [
@@ -75,14 +91,14 @@ def test_tavily_authorization_depth_and_result_mapping(monkeypatch):
 ])
 def test_tavily_errors_do_not_echo_response_or_key(monkeypatch, status, payload, code):
     tavily_transport(monkeypatch, status, payload)
-    result = _execute_handler('web_search', lambda: {'provider': 'tavily', 'tavily_api_key': 'test-key'})({'query': 'query'})
+    result = _handler('web_search', lambda: {'provider': 'tavily', 'tavily_api_key': 'test-key'})({'query': 'query'})
     assert result['reasonCode'] == code
     assert 'test-key' not in str(result)
 
 
 def test_missing_tavily_key_does_not_send_request(monkeypatch):
     monkeypatch.setattr(httpx, 'Client', lambda **kwargs: pytest.fail('must not connect'))
-    result = _execute_handler('web_search', lambda: {'provider': 'tavily'})({'query': 'query'})
+    result = _handler('web_search', lambda: {'provider': 'tavily'})({'query': 'query'})
     assert result['reasonCode'] == 'WEB_API_KEY_MISSING'
 
 
@@ -141,7 +157,7 @@ def test_baidu_summary_comes_from_result_not_sidebar(monkeypatch):
 
 def test_tavily_extract_routes_fetch_tool_and_marks_truncation(monkeypatch):
     requests = tavily_transport(monkeypatch, 200, {'results': [{'url': 'https://example.com/character', 'raw_content': '角色正文' * 500}]})
-    result = _execute_handler('fetch_url', lambda: {'provider': 'tavily', 'tavily_api_key': 'test-key', 'tavily_depth': 'advanced'})({'url': 'https://example.com/character', 'max_chars': 500})
+    result = _handler('fetch_url', lambda: {'provider': 'tavily', 'tavily_api_key': 'test-key', 'tavily_depth': 'advanced'})({'url': 'https://example.com/character', 'max_chars': 500})
     assert not result.get('isError')
     assert result['source'] == 'Tavily'
     assert len(result['text']) == 500 and result['truncated']
@@ -156,14 +172,14 @@ def test_tavily_extract_routes_fetch_tool_and_marks_truncation(monkeypatch):
 ])
 def test_tavily_extract_failures_are_not_empty_success(monkeypatch, payload, code):
     tavily_transport(monkeypatch, 200, payload)
-    result = _execute_handler('fetch_url', lambda: {'provider': 'tavily', 'tavily_api_key': 'test-key'})({'url': 'https://example.com'})
+    result = _handler('fetch_url', lambda: {'provider': 'tavily', 'tavily_api_key': 'test-key'})({'url': 'https://example.com'})
     assert result['reasonCode'] == code
     assert 'test-key' not in str(result)
 
 
 def test_tavily_extract_rejects_local_address_before_api_request(monkeypatch):
     monkeypatch.setattr(httpx, 'Client', lambda **kwargs: pytest.fail('must not connect'))
-    result = _execute_handler('fetch_url', lambda: {'provider': 'tavily', 'tavily_api_key': 'test-key'})({'url': 'http://127.0.0.1/'})
+    result = _handler('fetch_url', lambda: {'provider': 'tavily', 'tavily_api_key': 'test-key'})({'url': 'http://127.0.0.1/'})
     assert result['reasonCode'] == 'WEB_INVALID_REQUEST'
 
 

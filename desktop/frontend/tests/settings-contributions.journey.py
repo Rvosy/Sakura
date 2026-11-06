@@ -36,17 +36,17 @@ function showPage(id) {
   document.querySelectorAll('.nav-item').forEach(b=>b.classList.toggle('is-active',b.dataset.page===id));
   document.getElementById('pageTitle').textContent = document.querySelector(`[data-page="${id}"] .nav-item-label`)?.textContent || id;
   feature?.onPageChanged(id);
+  models?.onPageChanged(id);
 }
 function dirty(){document.getElementById('applyButton').disabled=!(feature?.isDirty()||models?.isDirty());}
 feature=createPluginSettingsFeature({document,window,invoke:window.nativeInvoke,onDirty:dirty,onError:(error,message)=>{window.lastError=message;if(error)errorDialog.show({error,message});else errorDialog.close();},notify:()=>{},confirmAction:async()=>true,enhanceSelect,refreshSelect,closeSelects,focusSelect,replayMotion:()=>{},removeOverlayAfterExit:async e=>e.remove(),showPage,isCharacterTransitioning:()=>false,hasPendingCharacterSelection:()=>false,onModelCatalogChanged:()=>models?.refreshChoices()});
-models=createProviderSettingsFeature({document,invoke:window.nativeInvoke,onDirty:dirty,onError:e=>{throw e;},enhanceSelect,getProviderCatalog:()=>feature.providerCatalog()});
+models=createProviderSettingsFeature({document,invoke:window.nativeInvoke,onDirty:dirty,onError:e=>{throw e;},enhanceSelect,focusSelect,showPage,getProviderCatalog:()=>feature.providerCatalog()});
 feature.initialize(await window.nativeInvoke('settings_plugins_get')); await models.initialize();
 window.feature=feature; window.models=models; window.showPage=showPage;
 document.querySelectorAll('.nav-item').forEach(b=>b.onclick=()=>showPage(b.dataset.page));
-document.getElementById('applyButton').onclick=async()=>{try {await feature.save();await models.save();dirty();}catch(e){window.lastError=String(e);}};
+document.getElementById('applyButton').onclick=async()=>{const surfaces=document.querySelectorAll('[data-submission-lock]');surfaces.forEach(e=>e.inert=true);try {if(models.isDirty())models.validate();await feature.save();await models.refreshCurrent({preserveDraft:true});if(models.isDirty())await models.save();dirty();}catch(e){if(!models.handleValidationError(e))window.lastError=String(e);}finally{surfaces.forEach(e=>e.inert=false);}};
 showPage('providers');document.body.dataset.ready='true';
 """
-
 
 def run():
     requests = []
@@ -79,15 +79,19 @@ def run():
             config = roots.user_root/'data/plugins'/OPENAI_SERVICE/'config.json'; config.parent.mkdir(parents=True)
             config.write_text(json.dumps({'profiles':[{'profileId':'fixture','label':'测试服务','base_url':origin+'/v1','api_key':'fixture-saved-key','timeout_seconds':60,'models':[{'modelId':'fixture-model','contextWindowTokens':96000}]}]}))
             ModelReferenceRepository(roots.user_root).save({'chat':{'serviceKey':OPENAI_SERVICE,'profileId':'fixture','modelId':'fixture-model'},'vision_chat':{'serviceKey':'','profileId':'','modelId':''}})
-            deps = DistributionPaths(roots.distribution_root).plugin_dependency_root_for(OPENAI_SERVICE)
-            deps.mkdir(parents=True)
-            for name in ("openai", "httpx", "httpcore", "h11", "anyio", "sniffio", "idna", "certifi", "pydantic", "pydantic_core", "typing_extensions", "annotated_types", "typing_inspection", "jiter", "distro", "tqdm", "socksio", "colorama"):
-                spec=importlib.util.find_spec(name)
-                if spec is None: continue
-                source=Path(next(iter(spec.submodule_search_locations))) if spec.submodule_search_locations else Path(spec.origin)
-                if source.is_dir(): shutil.copytree(source,deps/source.name,ignore=shutil.ignore_patterns('__pycache__'))
-                else: shutil.copy2(source,deps/source.name)
-            (deps/'.sakura-dependencies.json').write_text(json.dumps({'schemaVersion':1,'kind':'requirements.txt','python':f'{sys.version_info.major}.{sys.version_info.minor}'}))
+            common = ("pydantic", "pydantic_core", "typing_extensions", "annotated_types", "typing_inspection")
+            for plugin_id, modules in (
+                (OPENAI_SERVICE, common + ("openai", "httpx", "httpcore", "h11", "anyio", "sniffio", "idna", "certifi", "jiter", "distro", "tqdm", "socksio", "colorama")),
+                ("sakura.assistant.default", common + ("json_repair",)),
+            ):
+                deps = DistributionPaths(roots.distribution_root).plugin_dependency_root_for(plugin_id)
+                deps.mkdir(parents=True)
+                for name in modules:
+                    spec = importlib.util.find_spec(name)
+                    source = Path(next(iter(spec.submodule_search_locations))) if spec.submodule_search_locations else Path(spec.origin)
+                    if source.is_dir(): shutil.copytree(source, deps/source.name, ignore=shutil.ignore_patterns('__pycache__'))
+                    else: shutil.copy2(source, deps/source.name)
+                (deps/'.sakura-dependencies.json').write_text(json.dumps({'schemaVersion':1,'kind':'requirements.txt','python':f'{sys.version_info.major}.{sys.version_info.minor}'}))
             app = PluginApplicationHost(roots, 'journey', ToolRegistry())
             try:
                 app.start(); assert app.wait_until_loaded(timeout=10)
@@ -115,6 +119,22 @@ def run():
                 page.route('**/settings/', lambda route: route.fulfill(content_type='text/html',
                     headers={'Content-Security-Policy': csp}, body=(ROOT/'desktop/frontend/settings/index.html').read_text(encoding="utf-8")))
                 page.goto(origin+'/desktop/frontend/settings/');page.wait_for_selector('body[data-ready="true"]')
+                # 滚动到控件后立即打开菜单，随后仍能选中模型；再次滚动才关闭。
+                page.evaluate("""async () => {
+                  const {enhanceSelect}=await import('./select-control.js');
+                  const container=document.createElement('div'); container.id='scroll-select-fixture';
+                  container.style.cssText='position:fixed;top:100px;left:100px;width:300px;height:160px;overflow:auto;z-index:9999';
+                  container.innerHTML='<div></div><select aria-label="滚动后选择模型"><option value="first">模型一</option><option value="second">模型二</option></select><div></div>';
+                  for (const spacer of container.querySelectorAll(':scope > div')) spacer.style.height='250px';
+                  document.body.append(container); enhanceSelect(container.querySelector('select'));
+                  container.scrollTop=200; container.querySelector('button').click();
+                }""")
+                page.get_by_role('option',name='模型二',exact=True).click()
+                expect(page.locator('#scroll-select-fixture select')).to_have_value('second')
+                page.get_by_role('combobox',name='滚动后选择模型',exact=True).click()
+                page.locator('#scroll-select-fixture').evaluate('element=>element.scrollTop=210')
+                expect(page.get_by_role('combobox',name='滚动后选择模型',exact=True)).to_have_attribute('aria-expanded','false')
+                page.locator('#scroll-select-fixture').evaluate('element=>element.remove()')
                 expect(page.locator('[data-provider-field="api_key"]')).to_have_value('')
                 page.screenshot(animations="disabled", path=str(output/'providers.png'))
                 original=config.read_bytes()
@@ -217,6 +237,39 @@ def run():
                 assert [m['modelId'] for m in saved['models']]==['fixture-model','discovered-model','manual-model']
                 assert saved['models'][0]['contextWindowTokens']==96000
                 assert page.evaluate('numericValues.decimal') == 0.375
+                page.evaluate("showPage('model')")
+                page.locator('[data-slot-model="core:chat"]').select_option('manual-model', force=True)
+                page.evaluate("showPage('providers')")
+                page.get_by_role('button', name='移除 manual-model', exact=True).click()
+                warning = page.locator('#modelSelectionWarnings')
+                expect(warning).to_be_visible()
+                expect(warning).to_contain_text('manual-model')
+                expect(warning).to_contain_text('对话模型')
+                page.screenshot(animations="disabled", path=str(output/'removed-model.png'))
+                previous_writes = len(writes)
+                page.locator('#applyButton').click()
+                expect(page.locator('#page-model')).to_be_visible()
+                expect(page.get_by_role('combobox', name='对话模型', exact=True)).to_be_focused()
+                expect(page.locator('#page-model .model-slot-issue')).to_contain_text('manual-model')
+                assert len(writes) == previous_writes
+                assert not page.evaluate('window.lastError'), page.evaluate('window.lastError')
+                page.screenshot(animations="disabled", path=str(output/'model-selection-recovery.png'))
+                page.locator('[data-slot-model="core:chat"]').select_option('discovered-model', force=True)
+                page.locator('#applyButton').click()
+                expect(page.locator('#applyButton')).to_be_disabled()
+                assert model_boundary._snapshot()['model_slots'][0]['selection']['modelId'] == 'discovered-model'
+                saved = json.loads(config.read_text(encoding='utf-8'))['profiles'][0]
+                assert [m['modelId'] for m in saved['models']] == ['fixture-model', 'discovered-model']
+                assert saved['api_key'] == 'fixture-draft-key'
+                page.evaluate("showPage('providers')")
+                page.get_by_role('button', name='移除 discovered-model', exact=True).click()
+                expect(warning).to_be_visible()
+                warning.get_by_role('button').click()
+                expect(page.get_by_role('combobox', name='对话模型', exact=True)).to_be_focused()
+                page.locator('#applyButton').click()
+                expect(page.locator('#applyButton')).to_be_disabled()
+                assert model_boundary._snapshot()['model_slots'][0]['selection']['modelId'] == 'discovered-model'
+                assert not page.evaluate('window.lastError'), page.evaluate('window.lastError')
                 page.evaluate("""async () => {
                   const {importPluginModule} = await import('../core/plugin-module-loader.js');
                   const playback = await importPluginModule(await (await fetch('/plugins/builtin/sakura_tts_hub/frontend/playback.mjs')).text());

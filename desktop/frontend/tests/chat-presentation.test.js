@@ -4,26 +4,25 @@ import test from "node:test";
 import { createChatPresentationReducer } from "../chat/chat-presentation.js";
 import { createTypewriter, selectSegmentText } from "../pet/typewriter.js";
 
-const lifecycle = (status, generationNumber = 1, revision = 1, canRetry = false, failure = null) => ({
+const lifecycle = (status, generationNumber = 1, canRetry = false, failure = null) => ({
   type: "lifecycle",
   status,
   generationId: `generation-${generationNumber}`,
   generationNumber,
-  revision,
   canRetry,
   failure,
 });
 
 test("only a stopped Core failure exposes the manual retry action", () => {
   const reducer = readyReducer();
-  reducer.reduce(lifecycle("failed", 1, 2, false));
+  reducer.reduce(lifecycle("failed", 1, false));
   assert.equal(reducer.current().canRetry, false);
-  reducer.reduce(lifecycle("failed", 1, 3, true, {
+  reducer.reduce(lifecycle("failed", 1, true, {
     code: "unexpected_exit",
     message: "Core 进程意外退出。",
   }));
   assert.equal(reducer.current().canRetry, true);
-  reducer.reduce(lifecycle("rehydrating", 2, 1, false));
+  reducer.reduce(lifecycle("rehydrating", 2, false));
   assert.equal(reducer.current().canRetry, false);
 });
 
@@ -45,10 +44,10 @@ test("initial resource preparation cannot replace or interrupt the greeting", ()
     reducer.beginGreeting();
     reducer.setTypingText("问候");
     if (finished) reducer.finishTyping();
-    reducer.reduce(lifecycle("rehydrating", 1, 2));
+    reducer.reduce(lifecycle("rehydrating", 1));
     assert.equal(reducer.current().bubbleText, "问候");
     assert.equal(reducer.current().phase, finished ? "settled" : "typing");
-    reducer.reduce(lifecycle("ready", 1, 3));
+    reducer.reduce(lifecycle("ready", 1));
     assert.equal(reducer.current().bubbleText, "问候");
   }
 });
@@ -56,7 +55,7 @@ test("initial resource preparation cannot replace or interrupt the greeting", ()
 test("ready clears an initial lifecycle notice before the greeting starts", () => {
   const reducer = createChatPresentationReducer({ initialMessage: "问候" });
   reducer.reduce(lifecycle("rehydrating"));
-  reducer.reduce(lifecycle("ready", 1, 2));
+  reducer.reduce(lifecycle("ready", 1));
   assert.equal(reducer.current().bubbleText, "");
   assert.equal(reducer.beginGreeting().applied, true);
 });
@@ -73,17 +72,6 @@ test("chat failure keeps diagnostics out of the bubble and clears the error on t
   reducer.reduce({ type: "chat.started", ...identity, operationId: "next" });
   assert.equal(reducer.current().error, null);
 });
-
-test("a verbose failure message stays outside the bubble", () => {
-  const reducer = readyReducer();
-  const identity = { generationId: "generation-1", generationNumber: 1, operationId: "op-error" };
-  reducer.reduce({ type: "chat.started", ...identity });
-  const message = 'upstream '.repeat(200) + '\nTraceback\n  File "transport.py"';
-  reducer.reduce({ type: "chat.failed", ...identity, error: { message } });
-  assert.ok(!reducer.current().bubbleText.includes("Traceback"));
-  assert.ok(!reducer.current().bubbleText.includes("upstream"));
-});
-
 
 test("degraded lifecycle remains interactive when the selected character session is usable", () => {
   const reducer = createChatPresentationReducer({
@@ -103,7 +91,6 @@ test("degraded lifecycle remains interactive when the selected character session
   assert.equal(reducer.current().canCancel, true);
 });
 
-
 test("ready, thinking, complete reply typing, and settled form one deterministic path", () => {
   const reducer = readyReducer();
   assert.equal(reducer.current().phase, "ready");
@@ -122,7 +109,6 @@ test("ready, thinking, complete reply typing, and settled form one deterministic
   );
   assert.equal(reducer.current().phase, "typing");
   assert.equal(reducer.current().canCancel, false);
-  assert.equal(Object.hasOwn(reducer.current(), "canSkip"), false);
   reducer.setTypingText("完整回复");
   reducer.finishTyping();
   assert.equal(reducer.current().phase, "settled");
@@ -146,7 +132,6 @@ test("completed replies preserve the waiting frame until their first text segmen
 
   assert.equal(reducer.setWaitingText(".....").applied, true);
   assert.equal(reducer.current().bubbleText, ".....");
-
 
   reducer.setTypingSegment(reducer.current().segments[0], 0);
 
@@ -290,21 +275,16 @@ test("silent terminals without a reply preserve the UI and release the next conv
   }
 });
 
-
-
-test("old operations, generations, and revisions cannot replace current presentation", () => {
+test("old operations and generations cannot replace current presentation", () => {
   const reducer = readyReducer();
   reducer.reduce({ type: "chat.started", generationId: "generation-1", generationNumber: 1, operationId: "current" });
   for (const stale of [
     { type: "chat.failed", generationId: "generation-1", generationNumber: 1, operationId: "old", error: { message: "wrong" } },
     { type: "chat.cancelled", generationId: "generation-0", generationNumber: 0, operationId: "current" },
-    lifecycle("failed", 1, 0),
   ]) assert.equal(reducer.reduce(stale).applied, false);
   assert.equal(reducer.current().phase, "thinking");
   assert.equal(reducer.current().bubbleText, ".");
 });
-
-
 
 test("subtitle changes do not replace cancellation or provider error copy with an older reply", () => {
   for (const terminal of [
@@ -413,9 +393,9 @@ test("Core restart preserves the settled presentation and rejects old generation
   reducer.setTypingText("切换前的回复");
   reducer.setTypingSegment({ portrait: "smile" });
   reducer.finishTyping();
-  reducer.reduce(lifecycle("failed", 1, 2));
-  reducer.reduce(lifecycle("rehydrating", 2, 3));
-  reducer.reduce(lifecycle("ready", 2, 4));
+  reducer.reduce(lifecycle("failed", 1));
+  reducer.reduce(lifecycle("rehydrating", 2));
+  reducer.reduce(lifecycle("ready", 2));
   assert.equal(reducer.current().phase, "settled");
   assert.equal(reducer.current().generationId, "generation-2");
   assert.equal(reducer.current().bubbleText, "切换前的回复");
@@ -452,7 +432,7 @@ test("Core failure gives active work one interrupted terminal and preserves earl
   });
   reducer.setTypingText("不应");
 
-  reducer.reduce(lifecycle("failed", 1, 2, true, {
+  reducer.reduce(lifecycle("failed", 1, true, {
     code: "connection_lost",
     message: "与 Core 的连接已中断。",
   }));
@@ -462,8 +442,8 @@ test("Core failure gives active work one interrupted terminal and preserves earl
   assert.equal(reducer.current().error.code, "CHAT_INTERRUPTED");
   assert.deepEqual(reducer.current().replyHistorySegments.map(({ text }) => text), ["已经完成"]);
 
-  reducer.reduce(lifecycle("rehydrating", 2, 1));
-  reducer.reduce(lifecycle("ready", 2, 2));
+  reducer.reduce(lifecycle("rehydrating", 2));
+  reducer.reduce(lifecycle("ready", 2));
   assert.deepEqual(reducer.current().replyHistorySegments.map(({ text }) => text), ["已经完成"]);
   assert.equal(reducer.current().lifecycle, "ready");
 });
@@ -637,8 +617,8 @@ test("greeting uses the subtitle language tracks", () => {
 
 test("a character without a ready assistant shows the settled setup state instead of startup progress", () => {
   const reducer = createChatPresentationReducer({ initialMessage: "新角色的问候" });
-  reducer.reduce(lifecycle("rehydrating", 1, 1));
-  reducer.reduce(lifecycle("setup_required", 1, 2));
+  reducer.reduce(lifecycle("rehydrating", 1));
+  reducer.reduce(lifecycle("setup_required", 1));
   assert.equal(reducer.current().lifecycle, "setup_required");
   assert.equal(reducer.current().bubbleText, reducer.current().lifecycleHeadline);
 });

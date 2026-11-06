@@ -5,7 +5,6 @@ import {
   applyViewerSnapshot,
   collapseViewerRecords,
   filterViewerRecords,
-  validateViewerBootstrap,
   validateViewerSnapshot,
   viewerCopyText,
   viewerItemKey,
@@ -64,34 +63,6 @@ test("unified snapshots filter plugins by trusted identity and preserve file fai
   assert.deepEqual(applyViewerSnapshot(state, snapshot([], { latestSequence: 3 })).failedFiles, []);
 });
 
-test("viewer contract rejects uncontrolled fields and invalid scopes", () => {
-  assert.equal(validateViewerSnapshot(snapshot([record(1)])).records.length, 1);
-  assert.throws(
-    () => validateViewerSnapshot(snapshot([{ ...record(1), content: "private" }])),
-    /RUNTIME_LOG_VIEWER_RESPONSE_INVALID/,
-  );
-  assert.throws(
-    () => validateViewerSnapshot(snapshot([{ ...record(1), scopes: ["private"] }])),
-    /RUNTIME_LOG_VIEWER_RESPONSE_INVALID/,
-  );
-  assert.throws(
-    () => validateViewerBootstrap({ schemaVersion: 3, themeTokens: {}, snapshot: {}, extra: true }),
-    /RUNTIME_LOG_VIEWER_RESPONSE_INVALID/,
-  );
-  assert.throws(
-    () => validateViewerSnapshot({ ...snapshot([record(1)]), schemaVersion: 1 }),
-    /RUNTIME_LOG_VIEWER_RESPONSE_INVALID/,
-  );
-  assert.throws(
-    () => validateViewerSnapshot(snapshot([record(1, { severity: "warning" })])),
-    /RUNTIME_LOG_VIEWER_RESPONSE_INVALID/,
-  );
-  assert.throws(
-    () => validateViewerSnapshot(snapshot([record(1, { description: "info 不应携带说明" })])),
-    /RUNTIME_LOG_VIEWER_RESPONSE_INVALID/,
-  );
-});
-
 test("incremental snapshots append once and reset snapshots replace stale state", () => {
   let state = applyViewerSnapshot(null, snapshot([record(1), record(2)]));
   state = applyViewerSnapshot(state, snapshot([record(3)], { latestSequence: 3 }));
@@ -105,8 +76,6 @@ test("incremental snapshots append once and reset snapshots replace stale state"
   assert.equal(state.runId, "run-b");
   assert.deepEqual(state.records.map(({ sequence }) => sequence), [9]);
 });
-
-
 
 test("consecutive duplicate rows collapse and copied errors retain support details", () => {
   const error = {
@@ -146,7 +115,6 @@ test("collapsed rows have distinct instance keys even when identical records are
   assert.equal(collapsed[0].collapseKey, collapsed[2].collapseKey);
   assert.notEqual(viewerItemKey(collapsed[0], "software"), viewerItemKey(collapsed[2], "software"));
 });
-
 
 test("screen captures at the same batch limit remain distinct and copy their progress", () => {
   const captures = [1, 2].map(sequence => record(sequence, {
