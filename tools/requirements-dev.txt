@@ -9,7 +9,6 @@
 -r ../plugins/optional/playwright_browser/requirements.txt
 
 pytest>=8.0.0
-pytest-mock
 pytest-env
 pytest-timeout
 psutil>=5.9.0

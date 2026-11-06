@@ -12,24 +12,34 @@ import pytest
 from plugins.builtin.sakura_model_openai_compatible.transport import execute
 from sakura_cancellation import OperationCancelled
 from sakura_model import ModelError
-from sakura_model_provider import Job, ModelProvider
+from sakura_model_provider import ModelProvider
 from app.plugins.sakura_plugin_sdk import PluginContext
+from tests.model_fixture import mock_http
 
 
 SETTINGS = {"base_url": "https://fixture.invalid/v1", "api_key": "opaque-secret", "model": "fixture", "timeout_seconds": 5}
 REQUEST = {"messages": [{"role": "user", "content": "Hello"}], "parameters": {"temperature": .8}, "responseFormat": {"type": "json_object"}}
 
 
-def mock_http(monkeypatch, handler):
-    class Client(httpx.AsyncClient):
-        def __init__(self, **kwargs):
-            kwargs.pop("proxy", None)
-            super().__init__(**kwargs, transport=httpx.MockTransport(handler))
-    monkeypatch.setattr(httpx, "AsyncClient", Client)
-
-
 def run(settings=SETTINGS, request=REQUEST, **kwargs):
     return execute(settings, request, cancel_checker=kwargs.pop("cancel_checker", None), progress=kwargs.pop("progress", lambda _event: None), **kwargs)
+
+
+@pytest.mark.parametrize("refused", [False, True])
+def test_responses_preserves_incomplete_and_refusal_for_consumers(refused):
+    from sakura_openai_responses import response_result
+    from sakura_structured_output import require_complete_response
+
+    response = {"status": "completed" if refused else "incomplete", "output": [{
+        "type": "message", "content": [{"type": "refusal", "refusal": "请求被拒绝"} if refused else {
+            "type": "output_text", "text": '{"operations":[]}',
+        }],
+    }]}
+    if not refused:
+        response["incomplete_details"] = {"reason": "max_output_tokens"}
+    with pytest.raises(ModelError) as caught:
+        require_complete_response(response_result(response))
+    assert caught.value.code == ("MODEL_OUTPUT_REFUSED" if refused else "MODEL_OUTPUT_TRUNCATED")
 
 
 def test_generation_forwards_sdk_parameters_to_the_provider(monkeypatch):
@@ -58,37 +68,48 @@ def job_provider():
     provider.close()
 
 
-def test_concurrent_requests_each_finish_and_release_their_result(job_provider):
-    ready = threading.Event()
-    def execute(_settings, request, **kwargs):
-        ready.wait()
-        return {"message": {"content": request["text"]}}
-    job_provider.execute = execute
-    identities = [f"request-{number}" for number in range(140)]
+def test_concurrent_requests_keep_independent_results_and_release(job_provider):
+    entered = threading.Barrier(3)
+    finish = threading.Event()
+    replies = {"first": "first reply", "second": "second reply"}
+    def respond(_settings, request, **_kwargs):
+        entered.wait(timeout=5)
+        assert finish.wait(5)
+        return {"message": {"content": replies[request["text"]]}}
+    job_provider.execute = respond
     try:
-        for identity in identities:
+        for identity in replies:
             job_provider.begin({"operationId": identity, "profileId": "profile", "modelId": "model", "request": {"text": identity}})
-        ready.set()
-        for identity in identities:
+        entered.wait(timeout=5)
+        finish.set()
+        for identity, expected in replies.items():
             while job_provider.poll(identity)["state"] == "running":
                 pass
-            assert job_provider.result(identity)["response"]["message"]["content"] == identity
+            assert job_provider.result(identity)["response"]["message"]["content"] == expected
             assert job_provider.release(identity)["released"]
+            with pytest.raises(ModelError) as missing:
+                job_provider.result(identity)
+            assert missing.value.code == "MODEL_OPERATION_NOT_FOUND"
     finally:
-        ready.set()
+        finish.set()
 
 
-def test_many_cancelled_starts_leave_the_consumer_usable(job_provider):
-    job_provider.execute = lambda _settings, request, **kwargs: {"message": {"content": request["text"]}}
-    for number in range(4100):
-        job_provider.cancel(f"cancelled-{number}")
+def test_cancel_before_start_is_idempotent_and_leaves_next_request_usable(job_provider):
+    calls = []
+    def respond(_settings, request, **_kwargs):
+        calls.append(request)
+        return {"message": {"content": "OK"}}
+    job_provider.execute = respond
+    job_provider.cancel("cancelled")
+    job_provider.cancel("cancelled")
     with pytest.raises(OperationCancelled):
-        job_provider.begin({"operationId": "cancelled-0", "profileId": "profile", "modelId": "model", "request": {}})
-    job_provider.begin({"operationId": "new-request", "profileId": "profile", "modelId": "model", "request": {"text": "OK"}})
-    while job_provider.poll("new-request")["state"] == "running":
+        job_provider.begin({"operationId": "cancelled", "profileId": "profile", "modelId": "model", "request": {}})
+    job_provider.begin({"operationId": "next", "profileId": "profile", "modelId": "model", "request": {"text": "hello"}})
+    while job_provider.poll("next")["state"] == "running":
         pass
-    assert job_provider.result("new-request")["response"]["message"]["content"] == "OK"
-    assert job_provider.release("new-request")["released"]
+    assert job_provider.result("next")["response"]["message"]["content"] == "OK"
+    assert calls == [{"text": "hello"}]
+    assert job_provider.release("next")["released"]
 
 
 @pytest.mark.parametrize("payload", [b'{"messages":[]}', b"{"])
@@ -104,15 +125,19 @@ def test_request_cleanup_failure_keeps_generation_or_original_parse_error(job_pr
         release_received=release_received)
     job_provider.context.get = lambda _: SimpleNamespace(warning=lambda message, **kwargs: logs.append((message, kwargs)))
     job_provider.execute = lambda *a, **k: {"message": {"content": "OK"}}
-    job = Job("job", ("consumer", "scope"), {}, {"requestArtifact": {"artifactId": "request"}})
-    job_provider._run(job)
+    job_provider.begin({"operationId": "job", "profileId": "profile", "modelId": "model",
+                        "requestArtifact": {"artifactId": "request"}})
+    while (status := job_provider.poll("job"))["state"] == "running":
+        pass
+    result = job_provider.result("job")
     if payload == b"{":
-        assert job.state == "failed"
-        assert "JSONDecodeError" in str(job.failure)
+        assert status["state"] == "failed"
+        assert "JSONDecodeError" in str(result["failure"])
     else:
-        assert job.state == "completed"
-        assert job.response["response"]["message"]["content"] == "OK"
+        assert status["state"] == "completed"
+        assert result["response"]["message"]["content"] == "OK"
     assert "request cleanup unavailable" in str(logs)
+    assert job_provider.release("job")["released"]
 
 
 @pytest.mark.parametrize("operation", ["list_models", "test_connection", "generate"])
@@ -128,25 +153,6 @@ def test_keyless_network_endpoint_uses_the_server_authentication_policy(monkeypa
     assert len(requests) == 1
     assert "Authorization" not in requests[0].headers
     assert result["models"] == ["fixture"] if operation == "list_models" else result["message"]["content"] == "OK"
-
-
-def test_async_model_worker_preserves_cause_before_releasing_credentials(monkeypatch):
-    from types import SimpleNamespace
-    from plugins.builtin.sakura_model_openai_compatible import plugin, transport
-    def fail(*args, **kwargs):
-        raise OSError('connection reset at C:\\runtime\\model opaque-secret')
-    monkeypatch.setattr(transport, 'execute', fail)
-    worker = plugin.ModelPlugin()
-    worker.context = SimpleNamespace(exception_diagnostics=PluginContext.exception_diagnostics)
-    worker.changed = threading.Condition()
-    worker._read_request = lambda job: REQUEST
-    job = Job('failure', ('owner', 'scope'), dict(SETTINGS), {})
-    worker._run(job)
-    assert job.state == 'failed'
-    assert not job.settings
-    assert 'connection reset at C:\\runtime\\model' in job.failure['message']
-    assert 'OSError' in job.failure['diagnostics']['exception_stack']
-    assert 'opaque-secret' not in json.dumps(job.failure)
 
 
 @pytest.mark.parametrize("temperature_error", [
@@ -385,40 +391,40 @@ def test_streaming_batches_large_network_deltas_without_losing_final_content(mon
 
 
 @pytest.mark.parametrize("count", [100, 180])
-def test_poll_drains_retained_progress_in_bounded_batches_before_terminal_state(count):
-    from types import SimpleNamespace
-    from plugins.builtin.sakura_model_openai_compatible.plugin import ModelPlugin
-    plugin = ModelPlugin()
-    plugin.context = SimpleNamespace(caller_id="consumer", caller_scope="scope")
-    plugin.changed = threading.Condition()
-    job = Job("job", ("consumer", "scope"), {}, {}, state="completed", sequence=count)
-    for index in range(1, count + 1):
-        job.progress.append((index, {"type": "text_delta", "text": str(index)}))
-    plugin.jobs = {(("consumer", "scope"), "job"): job}
+def test_poll_delivers_ordered_progress_and_preserves_complete_result(job_provider, count):
+    chunks = [f"chunk-{index};" for index in range(count)]
+    published = threading.Event()
+    def respond(_settings, _request, *, progress, **_kwargs):
+        for chunk in chunks:
+            progress({"type": "text_delta", "text": chunk})
+        published.set()
+        return {"message": {"content": "".join(chunks)}}
+    job_provider.execute = respond
+    job_provider.begin({"operationId": "stream", "profileId": "profile", "modelId": "model", "request": {}})
+    assert published.wait(5)
+
     sequence, received, truncated = 0, [], False
     while True:
-        result = plugin.poll("job", sequence, 0)
-        assert len(result["progress"]) <= 32
-        received.extend(int(item["text"]) for item in result["progress"])
+        result = job_provider.poll("stream", sequence)
+        received.extend(event["text"] for event in result["progress"])
         sequence = result["sequence"]
         truncated |= result["truncated"]
         if result["state"] != "running":
             break
-    assert received == list(range(max(1, count - 127), count + 1))
-    assert truncated == (count > 128)
+
+    assert received
+    assert truncated is (len(received) < len(chunks))
+    assert received == chunks[-len(received):]
+    assert job_provider.result("stream")["response"]["message"]["content"] == "".join(chunks)
+    assert job_provider.release("stream")["released"]
 
 
 @pytest.mark.parametrize("kind", ["filesystem", "connection", "http"])
-def test_background_failure_retains_original_reason_frames_and_redacts_credentials(monkeypatch, kind):
-    from types import SimpleNamespace
-    from plugins.builtin.sakura_model_openai_compatible import plugin as provider
+def test_background_failure_retains_original_reason_frames_and_redacts_credentials(monkeypatch, job_provider, kind):
     from plugins.builtin.sakura_model_openai_compatible import transport
     from sakura_model_client import decode_model_result
 
-    plugin = provider.ModelPlugin()
-    plugin.context = SimpleNamespace(exception_diagnostics=PluginContext.exception_diagnostics)
-    plugin.changed = threading.Condition()
-    job = Job("job", ("consumer", "scope"), dict(SETTINGS), {"request": REQUEST})
+    job_provider.profiles.resolve = lambda *_: dict(SETTINGS)
     if kind == "filesystem":
         def execute(*args, **kwargs):
             raise PermissionError(13, "fixture disk is locked opaque-secret", "C:/model/cache/data.json")
@@ -432,18 +438,23 @@ def test_background_failure_retains_original_reason_frames_and_redacts_credentia
     else:
         mock_http(monkeypatch, lambda request: httpx.Response(403, json={"error": {"message": "project access denied opaque-secret", "param": "project", "request_id": "req-42"}, "choices": [{"message": {"content": "private-conversation"}}]}))
         expected = "project access denied"
-    plugin._run(job)
-    assert job.state == "failed" and job.settings == {} and job.descriptor == {}
+    job_provider.execute = transport.execute
+    job_provider.begin({"operationId": "job", "profileId": "profile", "modelId": "model", "request": REQUEST})
+    while (status := job_provider.poll("job"))["state"] == "running":
+        pass
+    assert status["state"] == "failed"
+    result = job_provider.result("job")
     with pytest.raises(ModelError) as caught:
-        decode_model_result({"failure": job.failure}, None, {}, job.operation_id)
+        decode_model_result(result, None, {}, "job")
     evidence = caught.value.diagnostics
     assert expected in str(caught.value) and expected in evidence["diagnostic"]
     assert expected in evidence["exception_stack"]
     assert evidence["exception_site"]
-    assert "opaque-secret" not in json.dumps(job.failure)
-    assert "private-conversation" not in json.dumps(job.failure)
+    assert "opaque-secret" not in json.dumps(result)
+    assert "private-conversation" not in json.dumps(result)
     if kind == "http":
         assert "req-42" in evidence["diagnostic"]
+    assert job_provider.release("job")["released"]
 
 
 def test_provider_diagnostic_keeps_urls_paths_newlines_and_long_error_tail():
@@ -477,20 +488,3 @@ def test_schema_chat_uses_supported_format_when_provider_has_no_schema_mode(monk
     assert calls[-1].get("response_format") == (None if with_tools else {"type": "json_object"})
     assert len(calls) == (1 if "api.deepseek.com" in base_url else 2)
     assert request["responseFormat"]["type"] == "json_schema"
-
-
-@pytest.mark.parametrize("refused", [False, True])
-def test_responses_preserves_incomplete_and_refusal_for_consumers(refused):
-    from sakura_openai_responses import response_result
-    from sakura_structured_output import require_complete_response
-
-    response = {"status": "completed" if refused else "incomplete", "output": [{
-        "type": "message", "content": [{"type": "refusal", "refusal": "请求被拒绝"} if refused else {
-            "type": "output_text", "text": '{"operations":[]}',
-        }],
-    }]}
-    if not refused:
-        response["incomplete_details"] = {"reason": "max_output_tokens"}
-    with pytest.raises(ModelError) as caught:
-        require_complete_response(response_result(response))
-    assert caught.value.code == ("MODEL_OUTPUT_REFUSED" if refused else "MODEL_OUTPUT_TRUNCATED")

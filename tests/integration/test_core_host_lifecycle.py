@@ -27,12 +27,8 @@ CAPABILITIES = [
     "core.initialize",
     "core.snapshot",
 ]
-LIFECYCLE_GOLDEN = json.loads(
-    (REPO_ROOT / "tests/fixtures/runtime_v2/wp_1c_04/lifecycle-golden.json").read_text(
-        encoding="utf-8"
-    )
-)
-REQUEST_TIMEOUT = LIFECYCLE_GOLDEN["deadlinesMs"]["request"] / 1000
+REQUEST_TIMEOUT = 3
+READINESS_TIMEOUT = 30
 READY_FIXTURE_ROOT = REPO_ROOT / "tests/fixtures/runtime_v2/wp_3_01/ready"
 
 
@@ -372,7 +368,7 @@ def test_real_host_initializes_in_background_and_returns_python_snapshot(tmp_pat
         assert time.monotonic() - started < 0.5
         assert initialize["payload"]["readiness"] == "initializing"
 
-        deadline = time.monotonic() + LIFECYCLE_GOLDEN["deadlinesMs"]["readinessWatchdog"] / 1000
+        deadline = time.monotonic() + READINESS_TIMEOUT
         revisions = []
         while True:
             snapshot = exchange(process, request("snapshot", "core.snapshot"))["payload"]
@@ -449,7 +445,7 @@ def test_real_host_keeps_character_visible_while_provider_setup_is_required(
         assert hello["ok"] is True
         assert exchange(process, request("initialize", "core.initialize"))["ok"] is True
 
-        deadline = time.monotonic() + LIFECYCLE_GOLDEN["deadlinesMs"]["readinessWatchdog"] / 1000
+        deadline = time.monotonic() + READINESS_TIMEOUT
         while True:
             snapshot = exchange(process, request("snapshot", "core.snapshot"))["payload"]
             if snapshot["readiness"] == "setup_required":
@@ -532,10 +528,7 @@ def test_real_host_failed_readiness_still_cleans_init_and_writer_threads(tmp_pat
             request("initialize-failed", "core.initialize", {}),
         )
         assert initialize["payload"]["readiness"] == "initializing"
-        deadline = (
-            time.monotonic()
-            + LIFECYCLE_GOLDEN["deadlinesMs"]["readinessWatchdog"] / 1000
-        )
+        deadline = time.monotonic() + READINESS_TIMEOUT
         while True:
             snapshot = exchange(process, request("snapshot-failed", "core.snapshot"))["payload"]
             if snapshot["readiness"] == "failed":
@@ -544,10 +537,7 @@ def test_real_host_failed_readiness_still_cleans_init_and_writer_threads(tmp_pat
         health = exchange(process, request("health-failed", "system.health"))
         assert health["payload"] == {"hostState": "failed", "status": "healthy"}
         assert exchange(process, request("shutdown-failed", "system.shutdown"))["ok"] is True
-        assert (
-            process.wait(timeout=LIFECYCLE_GOLDEN["deadlinesMs"]["treeStop"] / 1000)
-            == 0
-        )
+        assert process.wait(timeout=5) == 0
         assert process.stdout is not None
         assert process.stdout.read() == b""
     finally:

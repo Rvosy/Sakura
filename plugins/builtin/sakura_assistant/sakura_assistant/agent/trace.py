@@ -1574,11 +1574,6 @@ def _sanitize_text(text: str, secrets: Sequence[str]) -> str:
     return output
 
 
-def _looks_structured(content: str) -> bool:
-    stripped = content.lstrip()
-    return stripped.startswith(("{", "[", "```json")) or '"segments"' in content
-
-
 __all__ = [
     "AgentTraceRecorder",
     "MessageProvenance",

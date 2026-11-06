@@ -14,7 +14,6 @@ from .errors import LegacyImportError
 
 
 CancelChecker = Callable[[], bool]
-Progress = Callable[[str, int, str], None]
 CopyDiagnostic = Callable[[str, Mapping[str, object]], None]
 CopyByteProgress = Callable[[int, int], None]
 SkippedSymlink = Callable[[], None]
@@ -43,13 +42,6 @@ def is_link_or_junction(path: Path) -> bool:
         return bool(checker and checker())
     except OSError:
         return True
-
-
-def safe_relative(path: Path, root: Path) -> str:
-    try:
-        return path.relative_to(root).as_posix()
-    except ValueError as exc:
-        raise LegacyImportError("LEGACY_PATH_ESCAPE", "inspect") from exc
 
 
 def tree_stats(root: Path, *, follow_root_link: bool = False, skip_noise: bool = False) -> tuple[int, int]:

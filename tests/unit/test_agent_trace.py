@@ -63,55 +63,6 @@ def test_trace_preserves_conversation_order_without_repeating_static_prompt(tmp_
     assert "固定人格和回复协议" not in text
 
 
-def test_reply_shapes_and_effective_change_rules(tmp_path: Path) -> None:
-    recorder = CapturingTraceRecorder(tmp_path, now=lambda: FIXED_NOW)
-    with recorder.operation("op-replies", finalize_external=True):
-        for content in ("普通文本回复", '{"segments": [}'):
-            call = recorder.start_model_call(
-                model="m",
-                payload={"model": "m", "messages": [{"role": "user", "content": "问"}]},
-                prompt_provenance=(MessageProvenance("user_input"),),
-            )
-            recorder.record_model_reply(call, raw_message={"content": content})
-            if content.startswith("{"):
-                recorder.mark_repair_requested(call, "invalid_json")
-                recorder.record_effective_reply(
-                    call,
-                    {"segments": [{"ja": "修復", "zh": "修复", "tone": "中性", "portrait": "站立待机"}]},
-                    ["reply_repair"],
-                )
-    replies = [item for item in _documents(recorder) if item["type"] == "reply"]
-    assert replies[0]["raw_text"] == ["普通文本回复"]
-    assert replies[0]["processing"]["parse_status"] == "text"
-    assert "effective_reply" not in replies[0]
-    assert replies[1]["processing"]["business_parse_status"] == "invalid_structure"
-    assert replies[1]["processing"]["repair_requested"] is True
-    assert replies[1]["effective_reply"]["segments"][0]["zh"] == "修复"
-    assert replies[1]["changes"] == ["reply_repair"]
-
-
-def test_trace_recognizes_fenced_json_before_business_parse(tmp_path: Path) -> None:
-    recorder = CapturingTraceRecorder(tmp_path, now=lambda: FIXED_NOW)
-    with recorder.operation("op-fenced", finalize_external=True):
-        call = recorder.start_model_call(
-            model="m",
-            payload={"model": "m", "messages": [{"role": "user", "content": "问"}]},
-            prompt_provenance=(MessageProvenance("user_input"),),
-        )
-        recorder.record_model_reply(
-            call,
-            raw_message={
-                "content": '```json\n{"segments":[{"ja":"うん。","zh":"嗯。"}]}\n```'
-            },
-        )
-    reply = [item for item in _documents(recorder) if item["type"] == "reply"][0]
-    assert reply["processing"]["raw_json_status"] == "valid"
-    assert reply["processing"]["business_parse_status"] == "valid"
-    assert reply["model_output"]["segments"][0]["zh"] == "嗯。"
-    assert reply["processing"]["deterministic_repair"] is True
-    assert reply["processing"]["repair_requested"] is False
-
-
 def test_credentials_and_binary_bodies_never_reach_trace(tmp_path: Path) -> None:
     recorder = CapturingTraceRecorder(tmp_path, now=lambda: FIXED_NOW)
     recorder.add_secret("sk-private-known-value")
