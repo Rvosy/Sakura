@@ -34,7 +34,7 @@ def _wait_until(predicate, timeout: float = 8.0) -> None:
     raise AssertionError("condition did not become true before the deadline")
 
 
-def test_plugin_reads_history_range_for_current_character(tmp_path: Path) -> None:
+def test_plugin_reads_recent_history_for_current_character(tmp_path: Path) -> None:
     from app.core_host.plugin_application import PluginApplicationHost
     from app.plugin_sdk.sakura_tools import ToolRegistry
     from app.storage.paths import StoragePaths
@@ -53,18 +53,18 @@ class Plugin:
         context.provide("fixture.history", self, exports=("read",))
 
     def read(self, request):
-        return self.timeline.read_range(request)
+        return self.timeline.read_recent(request)
 ''', encoding="utf-8")
     timeline = TimelineStore(StoragePaths(tmp_path).timeline_database())
     timeline.initialize()
     for identity, character, date in (
+        ("older", "sakura", "2026-10-01"),
         ("selected", "sakura", "2026-10-02"),
-        ("outside-range", "sakura", "2026-10-01"),
         ("other-character", "other", "2026-10-02"),
     ):
         timeline.append(NewTimelineEntry(identity, identity, character, TimelineKind.HUMAN,
             "chat", date + "T12:00:00Z", {"text": identity}))
-    application = PluginApplicationHost(tmp_path, "history-range", ToolRegistry())
+    application = PluginApplicationHost(tmp_path, "recent-history", ToolRegistry())
     try:
         application.start()
         assert application.wait_until_loaded(timeout=5)
@@ -74,10 +74,9 @@ class Plugin:
                 character=CharacterProfile(character, character, tmp_path, tmp_path / "card.md", ""),
             ))
             page = application.call_service("fixture.history", "read", {
-                "startDate": "2026-10-02", "endDate": "2026-10-02",
+                "limit": 1,
             })
             assert [entry["entryId"] for entry in page["entries"]] == [expected]
-            assert page["total"] == 1 and not page["hasMore"]
     finally:
         application.close()
 
