@@ -25,6 +25,23 @@ def run(settings=SETTINGS, request=REQUEST, **kwargs):
     return execute(settings, request, cancel_checker=kwargs.pop("cancel_checker", None), progress=kwargs.pop("progress", lambda _event: None), **kwargs)
 
 
+@pytest.mark.parametrize("refused", [False, True])
+def test_responses_preserves_incomplete_and_refusal_for_consumers(refused):
+    from sakura_openai_responses import response_result
+    from sakura_structured_output import require_complete_response
+
+    response = {"status": "completed" if refused else "incomplete", "output": [{
+        "type": "message", "content": [{"type": "refusal", "refusal": "请求被拒绝"} if refused else {
+            "type": "output_text", "text": '{"operations":[]}',
+        }],
+    }]}
+    if not refused:
+        response["incomplete_details"] = {"reason": "max_output_tokens"}
+    with pytest.raises(ModelError) as caught:
+        require_complete_response(response_result(response))
+    assert caught.value.code == ("MODEL_OUTPUT_REFUSED" if refused else "MODEL_OUTPUT_TRUNCATED")
+
+
 def test_generation_forwards_sdk_parameters_to_the_provider(monkeypatch):
     received = []
     def handler(request):

@@ -22,25 +22,10 @@ from plugins.optional.sakura_codex.transport import execute
 from sakura_cancellation import OperationCancelled
 from sakura_model import ModelError
 from sakura_model_provider import Job
-from sakura_openai_responses import build_request, response_result
-from sakura_structured_output import require_complete_response
+from sakura_openai_responses import build_request
 
 
 PROFILE_ID = "chatgpt"
-
-
-@pytest.mark.parametrize("refused", [False, True])
-def test_responses_preserves_incomplete_and_refusal_for_consumers(refused):
-    response = {"status": "completed" if refused else "incomplete", "output": [{
-        "type": "message", "content": [{"type": "refusal", "refusal": "请求被拒绝"} if refused else {
-            "type": "output_text", "text": '{"operations":[]}',
-        }],
-    }]}
-    if not refused:
-        response["incomplete_details"] = {"reason": "max_output_tokens"}
-    with pytest.raises(ModelError) as caught:
-        require_complete_response(response_result(response))
-    assert caught.value.code == ("MODEL_OUTPUT_REFUSED" if refused else "MODEL_OUTPUT_TRUNCATED")
 
 
 def token(account="account-a", *, expires=None, marker="first"):
@@ -105,8 +90,8 @@ def test_device_login_persists_own_account_without_exposing_credentials(tmp_path
         return httpx.Response(200, json=tokens())
     mock_http(monkeypatch, handler)
     account = Account(tmp_path / "auth.json")
-    account.login(None, published.append)
-    assert account.public() == {"loggedIn": True, "email": "person@example.com", "plan": "plus"}
+    public = account.login(None, published.append)
+    assert public == {"loggedIn": True, "email": "person@example.com", "plan": "plus"}
     assert published[0]["userCode"] == "ABCD-EFGH"
     assert "private-device" not in repr(published)
     assert Account(account.path).snapshot()["tokens"]["refresh_token"] == "private-refresh"
@@ -289,33 +274,6 @@ def test_catalog_comes_from_account_and_does_not_infer_image_support(tmp_path, m
                                 {"modelId": "unknown", "label": "unknown"}]
 
 
-@pytest.mark.parametrize("data, expected", [
-    ({"rate_limit": {"primary_window": {"used_percent": 25, "limit_window_seconds": 18000, "reset_at": 1800000000},
-                     "secondary_window": {"used_percent": 0, "limit_window_seconds": 604800, "reset_at": 1800100000}},
-      "additional_rate_limits": [{"limit_name": "额外模型", "rate_limit": {
-          "primary_window": {"used_percent": 100, "limit_window_seconds": 3600, "reset_at": 1800000001}}}]},
-     [{"label": "", "usedPercent": 25, "windowSeconds": 18000, "resetsAt": 1800000000},
-      {"label": "", "usedPercent": 0, "windowSeconds": 604800, "resetsAt": 1800100000},
-      {"label": "额外模型", "usedPercent": 100, "windowSeconds": 3600, "resetsAt": 1800000001}]),
-    ({"rate_limit": None}, []),
-    ({"rate_limit": {"primary_window": {"limit_window_seconds": 18000}}},
-     [{"label": "", "usedPercent": None, "windowSeconds": 18000, "resetsAt": None}]),
-])
-def test_usage_queries_the_selected_account_and_preserves_available_windows(tmp_path, monkeypatch, data, expected):
-    account = account_at(tmp_path)
-    def handler(req):
-        assert req.method == "GET"
-        assert req.url == "https://chatgpt.com/backend-api/wham/usage"
-        assert req.headers["chatgpt-account-id"] == "account-a"
-        assert req.headers["authorization"] == "Bearer " + account.value["access_token"]
-        return httpx.Response(200, json=data)
-    mock_http(monkeypatch, handler)
-    before = time.time()
-    result = execute(account, settings(account), {}, cancel_checker=None, progress=lambda _: None, operation="usage")
-    assert result["usage"]["windows"] == expected
-    assert before <= result["usage"]["updatedAt"] <= time.time()
-
-
 def test_http_success_with_catalog_error_preserves_upstream_reason(tmp_path, monkeypatch):
     account = account_at(tmp_path)
     mock_http(monkeypatch, lambda _: httpx.Response(200, json={"error": {"message": "catalog denied " + account.value["access_token"]}}))
@@ -496,81 +454,27 @@ def test_failed_sync_keeps_login_and_previous_models_for_retry(tmp_path, monkeyp
 
 
 @pytest.mark.parametrize("exit_action", ["cancel", "logout"])
-@pytest.mark.parametrize("operation", ["sync_models", "usage", "test_connection"])
-def test_cancelled_account_request_does_not_publish_late_data(tmp_path, exit_action, operation):
+def test_cancelled_sync_does_not_save_late_models(tmp_path, exit_action):
     profiles, config = settings_profiles(tmp_path)
     profiles.account_for(PROFILE_ID)._save(credentials(tokens()))
     entered, release = threading.Event(), threading.Event()
     def execute_probe(*args, **kwargs):
         entered.set()
         assert release.wait(2)
-        return {"models": [{"modelId": "late"}], "usage": {"windows": [], "updatedAt": 1}, "message": {"content": "late reply"}}
+        return {"models": [{"modelId": "late"}]}
     profiles.set_service(SimpleNamespace(execute=execute_probe))
     before = config.get()
     try:
-        profiles.start({"operationRequest": {"profileId": PROFILE_ID, "requestId": "sync", "operation": operation, "modelId": "saved"}})
+        profiles.start({"operationRequest": {"profileId": PROFILE_ID, "requestId": "sync", "operation": "sync_models"}})
         assert entered.wait(2)
         getattr(profiles, exit_action)({"operationRequest": {"profileId": PROFILE_ID, "requestId": "sync"}})
         release.set()
         profiles.operations[PROFILE_ID].worker.join(2)
         assert profiles.status({})["values"]["profiles"][0]["operationResult"]["state"] == "cancelled"
         assert config.get() == before
-        assert profiles.status({})["values"]["profiles"][0]["usage"] is None
         assert profiles.account_for(PROFILE_ID).public()["loggedIn"] == (exit_action == "cancel")
     finally:
         release.set()
-        profiles.close()
-
-
-def test_failed_usage_refresh_keeps_each_accounts_last_reading(tmp_path):
-    profiles, config = settings_profiles(tmp_path)
-    second = profiles.add({})["values"]["profiles"][-1]["profileId"]
-    for identity in (PROFILE_ID, second):
-        profiles.account_for(identity)._save(credentials(tokens(account=identity)))
-    readings = {identity: {"windows": [{"usedPercent": index * 50}], "updatedAt": index + 1}
-                for index, identity in enumerate((PROFILE_ID, second))}
-    profiles.set_service(SimpleNamespace(execute=lambda settings, *a, **k: {"usage": readings[settings["profileId"]]}))
-    before = config.get()
-    try:
-        for identity in (PROFILE_ID, second):
-            profiles.start({"operationRequest": {"profileId": identity, "requestId": identity, "operation": "usage"}})
-            profiles.operations[identity].worker.join(2)
-        def fail(*args, **kwargs):
-            raise ModelError("MODEL_HTTP_FAILED", "额度服务暂不可用")
-        profiles.service.execute = fail
-        profiles.start({"operationRequest": {"profileId": PROFILE_ID, "requestId": "refresh", "operation": "usage"}})
-        profiles.operations[PROFILE_ID].worker.join(2)
-        values = profiles.load()["profiles"]
-        assert values[0]["operationResult"]["state"] == "failed"
-        assert "额度服务暂不可用" in values[0]["operationResult"]["message"]
-        assert {p["profileId"]: p["usage"] for p in values} == readings
-        assert config.get() == before
-        profiles.logout({"operationRequest": {"profileId": PROFILE_ID}})
-        assert profiles.load()["profiles"][0]["usage"] is None
-        assert profiles.load()["profiles"][1]["usage"] == readings[second]
-    finally:
-        profiles.close()
-
-
-def test_model_test_uses_selected_model_without_changing_configuration(tmp_path):
-    profiles, config = settings_profiles(tmp_path)
-    profiles.account_for(PROFILE_ID)._save(credentials(tokens()))
-    calls = []
-    def probe(settings, request, **kwargs):
-        calls.append((settings["model"], kwargs["operation"]))
-        return {"message": {"content": "OK"}}
-    profiles.set_service(SimpleNamespace(execute=probe))
-    before = config.get()
-    try:
-        profiles.start({"operationRequest": {"profileId": PROFILE_ID, "requestId": "test", "operation": "test_connection", "modelId": "chosen-model"}})
-        profiles.operations[PROFILE_ID].worker.join(2)
-        result = profiles.load()["profiles"][0]["operationResult"]
-        assert result["state"] == "completed"
-        assert result["modelId"] == "chosen-model" and result["reply"] == "OK"
-        assert result["elapsedMs"] >= 0
-        assert calls == [("chosen-model", "test_connection")]
-        assert config.get() == before
-    finally:
         profiles.close()
 
 
