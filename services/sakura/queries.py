@@ -2,6 +2,7 @@
 
 import base64
 import json
+import math
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timezone, timedelta
@@ -70,6 +71,22 @@ class TtsFilters(Filters):
     gpu: str | None = Field(default=None, max_length=128)
 
 
+class Percentile:
+    """SQLite aggregate using the nearest rank of measured samples."""
+    def __init__(self):
+        self.values = []
+
+    def step(self, value, fraction):
+        if value is not None:
+            self.values.append(value)
+            self.fraction = fraction
+
+    def finalize(self):
+        if self.values:
+            self.values.sort()
+            return self.values[math.ceil(len(self.values) * self.fraction) - 1]
+
+
 def tts_summary(filters):
     condition, args = where(filters, "telemetry_events")
     for field, name in (("backend", "backend"), ("bundle", "bundleVersion"), ("gpu", "gpuName")):
@@ -79,20 +96,38 @@ def tts_summary(filters):
             args.append(value)
     context_fields = ("stage", "providerId", "bundleVersion", "bundleSourceCommit", "requestedBackend",
                       "backend", "profile", "runtimeMode", "gpuName", "gpuMemoryMib", "gpuDriver")
-    projection = ",".join(f"json_extract(details_json,'$.{key}') AS {key}" for key in context_fields)
-    base = f"""WITH samples AS (
+    measurements = ("queueMs", "requestMs", "engineTotalMs", "inferenceMs", "referenceMs", "frontendMs",
+                    "gptMs", "sovitsMs", "audioSeconds", "textChars", "synthesisStatus")
+    projection = ",".join(f"json_extract(details_json,'$.{key}') AS {key}" for key in context_fields + measurements)
+    base = f"""WITH received AS (
         SELECT installation_id, platform, arch, app_version, {projection},
             json_extract(details_json,'$.outcome') AS outcome,
             json_extract(details_json,'$.elapsedMs') AS elapsed
         FROM telemetry_events WHERE {condition} AND event='tts.operation.finished'
+    ), samples AS (
+        SELECT *, coalesce(stage='synthesis' AND outcome='success' AND synthesisStatus='completed'
+            AND audioSeconds>0 AND requestMs IS NOT NULL,0) AS measured FROM received
     ) """
     counts = """count(*) AS attempts, count(DISTINCT installation_id) AS installations,
         sum(outcome='success') AS succeeded, sum(outcome='failed') AS failed,
         sum(outcome='cancelled') AS cancelled,
         100.0*sum(outcome='failed')/nullif(sum(outcome IN ('success','failed')),0) AS failureRate,
-        avg(elapsed) AS averageMs"""
+        avg(elapsed) AS averageMs,
+        sum(measured) AS performanceSamples,
+        count(CASE WHEN measured THEN inferenceMs END) AS inferenceSamples,
+        sum(CASE WHEN measured THEN audioSeconds END) AS totalAudioSeconds,
+        sum(CASE WHEN measured THEN requestMs END)/
+            (1000.0*sum(CASE WHEN measured THEN audioSeconds END)) AS weightedRtf"""
+    for expression, name in (("requestMs", "RequestMs"), ("elapsed+queueMs", "EndToEndMs"),
+                             ("requestMs/(1000.0*audioSeconds)", "Rtf"),
+                             ("inferenceMs/(1000.0*audioSeconds)", "InferenceRtf")):
+        for percentile in (50, 95):
+            counts += f",percentile(CASE WHEN measured THEN {expression} END,{percentile / 100}) AS p{percentile}{name}"
+    for key in measurements[:-1]:
+        counts += f",avg(CASE WHEN measured THEN {key} END) AS average{key[0].upper() + key[1:]}"
     dimensions = "platform,arch,app_version," + ",".join(context_fields)
     with connection() as c:
+        c.create_aggregate("percentile", 2, Percentile)
         c.execute("BEGIN")
         stages = [dict(row) for row in c.execute(base + f"SELECT stage,{counts} FROM samples GROUP BY stage", args)]
         items = [dict(row) for row in c.execute(base + f"SELECT {dimensions},{counts} FROM samples GROUP BY {dimensions} ORDER BY failed DESC,attempts DESC", args)]

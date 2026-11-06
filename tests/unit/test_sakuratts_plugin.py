@@ -183,7 +183,7 @@ def test_background_synthesis_reuses_only_loaded_models_without_auto_sleep(tmp_p
     calls = []
     monkeypatch.setattr(p.runtime, 'status', lambda: 'awake' if state == 'other-character' else state)
     monkeypatch.setattr(p.runtime, 'start', lambda *_: calls.append('start'))
-    monkeypatch.setattr(p.runtime, 'request', lambda *_: calls.append('tts') or b'audio')
+    monkeypatch.setattr(p.runtime, 'request', lambda *_args, **_kwargs: calls.append('tts') or b'audio')
     try:
         job = p.begin({'characterId': 'character', 'text': 'history', 'options': {'background': True}})
         p.executor.submit(lambda: None).result(3)
@@ -273,7 +273,7 @@ def test_cancel_stops_writer_before_releasing_artifact_without_poll(tmp_path, mo
     p, released = provider(tmp_path, monkeypatch)
     writing, stop = threading.Event(), threading.Event()
     monkeypatch.setattr(p.runtime, 'start', lambda *_: None)
-    def request(*_):
+    def request(*_args, **_kwargs):
         writing.set()
         assert stop.wait(3)
         return b'audio'
@@ -653,6 +653,45 @@ def test_synthesis_metrics_use_host_tts_log_without_text_or_prompt(tmp_path, mon
     assert 'private' not in json.dumps(records)
 
 
+@pytest.mark.parametrize('with_headers', [True, False])
+def test_synthesis_result_carries_available_performance_without_content(tmp_path, monkeypatch, with_headers):
+    p, _ = provider(tmp_path, monkeypatch)
+    records = []
+    p.logger.info = lambda message, fields: records.append(fields)
+    monkeypatch.setattr(p.runtime, 'start', lambda *_: None)
+    p.runtime.url, p.runtime.backend = 'http://127.0.0.1', 'cuda'
+    response = io.BytesIO(b'wav-fixture')
+    response.headers = {
+        'X-SakuraTTS-Total-Ms': '1250.25', 'X-SakuraTTS-Request-Ms': '1200.5',
+        'X-SakuraTTS-Audio-Seconds': '11.5', 'X-SakuraTTS-Reference-Ms': '200.125',
+        'X-SakuraTTS-Frontend-Ms': 'nan', 'X-SakuraTTS-Semantic-Ms': '-1',
+        'X-SakuraTTS-Acoustic-Ms': 'inf', 'X-SakuraTTS-Status': 'completed',
+        'X-SakuraTTS-Reference-Cache': 'memory',
+    } if with_headers else {}
+    monkeypatch.setattr('plugins.builtin.sakura_sakuratts._runtime.urlopen_direct_for_loopback', lambda *_args, **_kwargs: response)
+    try:
+        job = p.begin({'characterId': 'character', 'text': 'private speech'})
+        p.executor.submit(lambda: None).result(3)
+        assert p.poll(job)['state'] == 'succeeded'
+        terminals = [row for row in records if row.get('event') == 'tts.operation.finished']
+        assert len(terminals) == 1
+        fields = terminals[0]
+        assert fields['outcome'] == 'success'
+        assert fields['request_ms'] >= 0 and fields['elapsed_ms'] >= 0 and fields['queue_ms'] >= 0
+        assert fields['text_chars'] == len('private speech') and fields['language'] == 'ja'
+        if with_headers:
+            assert fields['engine_total_ms'] == 1250.25 and fields['inference_ms'] == 1200.5
+            assert fields['audio_seconds'] == 11.5 and fields['reference_ms'] == 200.125
+            assert fields['reference_cache'] == 'memory' and fields['synthesis_status'] == 'completed'
+        else:
+            assert 'audio_seconds' not in fields and 'inference_ms' not in fields
+        assert not {'frontend_ms', 'gpt_ms', 'sovits_ms'} & fields.keys()
+        assert 'private speech' not in json.dumps(records)
+        assert not {'text', 'prompt_text', 'ref_audio_path'} & fields.keys()
+    finally:
+        p.close()
+
+
 @pytest.fixture
 def online_repo(tmp_path, monkeypatch):
     from functools import partial
@@ -914,7 +953,7 @@ def test_configuration_restarts_only_for_runtime_options(tmp_path, monkeypatch, 
     started, finish = threading.Event(), threading.Event()
     monkeypatch.setattr(p.runtime, 'start', lambda *_: None)
     monkeypatch.setattr(p.runtime, 'stop', lambda: stopped.append(True))
-    def synthesize(*_):
+    def synthesize(*_args, **_kwargs):
         started.set()
         assert finish.wait(3)
         return b'audio'
