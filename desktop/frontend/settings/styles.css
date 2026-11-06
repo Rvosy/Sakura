@@ -44,10 +44,10 @@
   --ease: cubic-bezier(0.22, 0.61, 0.36, 1);
   --motion-fast: 0.12s;
   --motion-base: 0.18s;
+  --motion-page: 0.2s;
   --motion-medium: 0.26s;
   --motion-slow: 0.45s;
   --motion-theme: 0.82s;
-  --motion-stagger: 42ms;
 
   /*
    * 设置窗口允许缩小到 900px，默认宽度为 1200px。结构尺寸在 900–1040px
@@ -149,6 +149,23 @@ html.is-theme-view-transition::view-transition-new(root) {
   box-shadow: none;
 }
 
+.settings-window {
+  --settings-shell-gap: 0px;
+  --settings-shell-inset: 0px;
+  --settings-nav-width: clamp(184px, calc(81.143px + 11.429vw), 200px);
+  --settings-titlebar-height: 56px;
+}
+
+.settings-window .settings-shell { animation: none; transition: grid-template-columns var(--motion-medium) var(--ease); }
+
+.settings-window .nav-card,
+.settings-window .detail-card {
+  border: 0;
+  border-radius: 0;
+}
+
+.settings-window .detail-card { background: var(--sakura-page-bg); }
+
 /* ---------- 侧边导航 ---------- */
 
 .nav-card {
@@ -162,8 +179,8 @@ html.is-theme-view-transition::view-transition-new(root) {
 .nav-brand {
   display: flex;
   align-items: center;
+  justify-content: center;
   padding: 4px 8px 10px;
-  border-bottom: 1px solid var(--hairline);
 }
 
 .about-mark img {
@@ -179,6 +196,31 @@ html.is-theme-view-transition::view-transition-new(root) {
   letter-spacing: 0.08em;
   color: var(--sakura-text);
 }
+
+.settings-window .nav-card { min-width: 0; gap: 0; padding: 0; border-right: 1px solid var(--hairline); }
+.settings-window .nav-brand { position: relative; justify-content: flex-start; gap: 9px; min-height: var(--settings-titlebar-height); flex-shrink: 0; padding: 0 48px 0 20px; overflow: hidden; }
+.settings-window .nav-brand-text { flex: 1; min-width: 0; white-space: nowrap; }
+.settings-window .nav-brand-icon,
+.settings-window .nav-brand-text,
+.settings-window .nav-item-label { transition: opacity var(--motion-fast) var(--ease); }
+.settings-window .nav-list { flex: 1; padding: 12px 10px 18px; }
+.settings-window .nav-item { min-width: 0; padding-inline: 16px; }
+.settings-window .nav-group-label { max-height: 24px; overflow: hidden; white-space: nowrap; transition: max-height var(--motion-medium) var(--ease), padding var(--motion-medium) var(--ease), opacity var(--motion-fast) var(--ease); }
+.nav-brand-icon { width: 24px; height: 24px; object-fit: contain; flex-shrink: 0; }
+.nav-toggle { position: absolute; right: 12px; top: calc((var(--settings-titlebar-height) - 28px) / 2); display: grid; place-items: center; width: 28px; height: 28px; min-width: 0; min-height: 0; padding: 0; border: 0; border-radius: 6px; background: transparent; color: var(--sakura-secondary-text); box-shadow: none; transition: right var(--motion-medium) var(--ease), background-color var(--motion-base) var(--ease); }
+.nav-toggle:hover:not(:disabled) { background: var(--tint-soft); color: var(--sakura-text); transform: none; box-shadow: none; }
+.nav-toggle svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round; }
+.nav-footer { flex: none; min-height: 48px; padding: 14px 20px; overflow: hidden; color: var(--sakura-muted-text); font-size: 12px; line-height: 20px; white-space: nowrap; }
+.settings-window.is-sidebar-collapsed { --settings-nav-width: 72px; }
+.is-sidebar-collapsed .nav-brand-icon,
+.is-sidebar-collapsed .nav-brand-text,
+.is-sidebar-collapsed .nav-item-label { opacity: 0; }
+.is-sidebar-collapsed .nav-toggle { right: calc(50% - 14px); }
+.is-sidebar-collapsed .nav-toggle svg { transform: rotate(180deg); }
+.settings-window.is-sidebar-collapsed .nav-list { padding: 12px 10px 18px; scrollbar-gutter: auto; scrollbar-width: none; }
+.is-sidebar-collapsed .nav-list::-webkit-scrollbar { display: none; }
+.is-sidebar-collapsed .nav-item { gap: 0; }
+.settings-window.is-sidebar-collapsed .nav-group-label { max-height: 0; padding-block: 0; opacity: 0; }
 
 .nav-list {
   display: flex;
@@ -217,7 +259,7 @@ html.is-theme-view-transition::view-transition-new(root) {
   background-color: var(--sakura-primary);
 }
 
-/* 分区：用小标题 + 细分隔线把 11 个页面归成 角色 / 智能 / 行为 / 系统 四组 */
+/* 导航分组用小标题和留白区分。 */
 .nav-group {
   display: flex;
   flex-direction: column;
@@ -227,7 +269,6 @@ html.is-theme-view-transition::view-transition-new(root) {
 .nav-group + .nav-group {
   margin-top: 8px;
   padding-top: 8px;
-  border-top: 1px solid var(--hairline);
 }
 
 .nav-group-label {
@@ -294,7 +335,6 @@ html.is-theme-view-transition::view-transition-new(root) {
   background: var(--tint-soft);
   color: var(--sakura-primary);
   font-weight: var(--font-weight-semibold);
-  transform: translateX(1px);
 }
 
 .nav-item:disabled {
@@ -316,9 +356,26 @@ html.is-theme-view-transition::view-transition-new(root) {
   padding:
     clamp(16px, calc(3.143px + 1.429vw), 18px)
     var(--settings-content-gutter)
-    clamp(12px, calc(-0.857px + 1.429vw), 14px);
+    4px;
   border-bottom: 1px solid var(--hairline);
 }
+
+.settings-window .page-head { position: relative; z-index: 4; display: flex; align-items: center; gap: 14px; min-height: var(--settings-titlebar-height); padding: 0 12px 0 var(--settings-content-gutter); background: var(--surface-soft); }
+.page-heading-content { flex: 1; min-width: 0; }
+.page-heading-content .page-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.has-custom-titlebar .page-head { padding-right: 0; }
+.window-controls { display: flex; align-self: stretch; flex-shrink: 0; }
+.window-controls > button { display: grid; place-items: center; width: 44px; min-width: 0; min-height: 0; padding: 0; border: 0; border-radius: 0; background: transparent; color: var(--sakura-secondary-text); box-shadow: none; }
+.window-controls > button:focus-visible { outline-offset: -3px; }
+.window-controls > button:hover:not(:disabled) { background: var(--tint-soft); color: var(--sakura-text); transform: none; box-shadow: none; }
+.window-controls > #windowClose:hover { background: #c43a52; color: #fff; }
+.window-controls svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.3; pointer-events: none; }
+.window-restore-icon, #windowMaximize[data-maximized="true"] .window-maximize-icon { display: none; }
+#windowMaximize[data-maximized="true"] .window-restore-icon { display: block; }
+#pluginPageActions { display: none; min-width: 0; flex: 1; align-items: center; gap: 12px; }
+#pluginPageActions .plugin-install-menu { margin-left: auto; }
+body:has(#page-plugins.is-active) #pluginPageActions { display: flex; }
+body:has(#page-plugins.is-active) .page-heading-content { flex: 0 1 auto; }
 
 .onboarding-head {
   display: grid;
@@ -588,7 +645,7 @@ body.is-first-run-guide-active .settings-page.is-active > * {
 
 .page-title {
   margin: 0;
-  font-size: 19px;
+  font-size: 22px;
   font-weight: var(--font-weight-bold);
   letter-spacing: 0.02em;
   color: var(--sakura-text);
@@ -600,13 +657,9 @@ body.is-first-run-guide-active .settings-page.is-active > * {
   color: var(--sakura-muted-text);
 }
 
-.page-head.is-switching .page-title {
-  animation: page-head-in var(--motion-medium) var(--ease) both;
-}
-
+.page-head.is-switching .page-title,
 .page-head.is-switching .page-subtitle {
-  animation: page-head-in var(--motion-medium) var(--ease) both;
-  animation-delay: var(--motion-stagger);
+  animation: page-in var(--motion-page) ease-out both;
 }
 
 .page-scroll {
@@ -782,23 +835,7 @@ body.is-first-run-guide-active .settings-page.is-active > * {
 
 .settings-page.is-active {
   display: grid;
-  animation: page-in var(--motion-medium) var(--ease) both;
-}
-
-.settings-page.is-active > * {
-  animation: section-in var(--motion-medium) var(--ease) both;
-}
-
-.settings-page.is-active > :nth-child(2) {
-  animation-delay: var(--motion-stagger);
-}
-
-.settings-page.is-active > :nth-child(3) {
-  animation-delay: calc(var(--motion-stagger) * 2);
-}
-
-.settings-page.is-active > :nth-child(4) {
-  animation-delay: calc(var(--motion-stagger) * 3);
+  animation: page-in var(--motion-page) ease-out both;
 }
 
 .settings-group {
@@ -1404,7 +1441,7 @@ input[type="checkbox"]:checked:hover:not(:disabled) {
 
 input[type="checkbox"]:focus-visible {
   outline: none;
-  box-shadow: 0 0 0 3px var(--ring);
+  box-shadow: none;
 }
 
 input[type="checkbox"]:disabled {
@@ -1472,7 +1509,7 @@ select:focus,
 textarea:focus {
   outline: none;
   border-color: var(--sakura-primary);
-  box-shadow: 0 0 0 3px var(--ring);
+  box-shadow: none;
 }
 
 input[type="number"]:disabled,
@@ -1547,7 +1584,7 @@ textarea:disabled {
 .custom-select__trigger:focus-visible {
   outline: none;
   border-color: var(--sakura-primary);
-  box-shadow: 0 0 0 3px var(--ring);
+  box-shadow: none;
 }
 
 .custom-select__trigger:disabled {
@@ -1762,7 +1799,7 @@ input[type="range"].layout-slider {
 
 input[type="range"].layout-slider:focus {
   outline: none;
-  box-shadow: 0 0 0 3px var(--ring);
+  box-shadow: none;
 }
 
 input[type="range"].layout-slider::-webkit-slider-thumb {
@@ -2430,8 +2467,7 @@ input[type="checkbox"]:disabled + span {
 }
 
 .plugin-card-main:focus-visible {
-  outline: 2px solid var(--sakura-primary);
-  outline-offset: -3px;
+  outline: none;
 }
 
 .plugin-card-heading {
@@ -2561,7 +2597,7 @@ input[type="checkbox"]:disabled + span {
 }
 
 .plugin-enable-switch input:focus-visible + .plugin-enable-switch__track {
-  box-shadow: 0 0 0 3px var(--ring);
+  box-shadow: none;
 }
 
 .plugin-enable-switch input:disabled {
@@ -2651,6 +2687,22 @@ input[type="checkbox"]:disabled + span {
   margin: 0;
   color: var(--sakura-text);
   font-size: 17px;
+}
+
+.connection-editor .admin-detail > h2,
+.connection-editor .provider-account-title {
+  font-size: 20px;
+  font-weight: var(--font-weight-semibold);
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.connection-editor .admin-detail > h2 {
+  margin-bottom: 8px;
+}
+
+.connection-editor .provider-account-title {
+  margin-bottom: 4px;
 }
 
 .detail-desc {
@@ -3085,7 +3137,7 @@ body[data-settings-host="runtime-v2"] .nav-item:disabled {
 .export-kind-option:focus-visible {
   outline: none;
   border-color: var(--sakura-primary);
-  box-shadow: 0 0 0 3px var(--ring);
+  box-shadow: none;
 }
 
 .export-kind-option:disabled {
@@ -3151,6 +3203,8 @@ body[data-settings-host="runtime-v2"] .nav-item:disabled {
 /* ---------- 底栏与按钮 ---------- */
 
 footer {
+  position: relative;
+  z-index: 1;
   display: flex;
   flex: 0 0 auto;
   align-items: center;
@@ -3159,8 +3213,11 @@ footer {
   padding:
     clamp(12px, calc(-0.857px + 1.429vw), 14px)
     var(--settings-content-gutter);
-  border-top: 1px solid var(--hairline);
-  background: color-mix(in srgb, var(--sakura-panel-bg) 45%, var(--surface-raised));
+  background: inherit;
+}
+
+footer.has-content-below {
+  box-shadow: 0 -5px 12px -7px rgb(0 0 0 / 14%);
 }
 
 .footer-status {
@@ -3207,7 +3264,6 @@ button {
 
 button:hover:not(:disabled) {
   border-color: var(--sakura-primary);
-  color: var(--sakura-primary);
   transform: translateY(-1px);
   box-shadow: var(--shadow-pop);
 }
@@ -3569,7 +3625,7 @@ button:active:not(:disabled) {
 .memory-search-input:focus {
   outline: none;
   border-color: var(--sakura-primary);
-  box-shadow: 0 0 0 3px var(--ring);
+  box-shadow: none;
 }
 
 .memory-archive-toolbar > .custom-select,
@@ -3668,7 +3724,7 @@ button:active:not(:disabled) {
 .memory-record-card:focus-visible {
   outline: none;
   border-color: var(--sakura-primary);
-  box-shadow: 0 0 0 3px var(--ring);
+  box-shadow: none;
 }
 
 .memory-record-main {
@@ -3940,7 +3996,7 @@ button:active:not(:disabled) {
 .memory-dialog-field textarea:focus {
   outline: none;
   border-color: var(--sakura-primary);
-  box-shadow: 0 0 0 3px var(--ring);
+  box-shadow: none;
 }
 
 .memory-dialog-field textarea {
@@ -4083,7 +4139,7 @@ button:active:not(:disabled) {
 button:focus-visible,
 .nav-item:focus-visible {
   outline: none;
-  box-shadow: 0 0 0 3px var(--ring);
+  box-shadow: none;
 }
 
 /* 保存键在有未保存改动时点亮一个小圆点。 */
@@ -4218,8 +4274,7 @@ button:focus-visible,
   box-shadow: none;
 }
 .voice-engine-settings:focus-visible {
-  outline: 2px solid var(--sakura-primary);
-  outline-offset: 2px;
+  outline: none;
 }
 
 /* 数字输入 + 单位后缀。 */
@@ -4332,7 +4387,7 @@ input.is-invalid:hover,
 @keyframes shell-in {
   from {
     opacity: 0;
-    transform: translateY(10px) scale(0.992);
+    transform: scale(0.995);
   }
   to {
     opacity: 1;
@@ -4342,35 +4397,21 @@ input.is-invalid:hover,
 
 @keyframes page-in {
   from {
-    opacity: 0;
-    transform: translateY(10px);
+    opacity: 0.5;
   }
   to {
     opacity: 1;
-    transform: none;
   }
 }
 
-@keyframes page-head-in {
-  from {
-    opacity: 0;
-    transform: translateY(5px);
-  }
-  to {
-    opacity: 1;
-    transform: none;
-  }
-}
-
-@keyframes section-in {
-  from {
-    opacity: 0;
-    transform: translateY(7px);
-  }
-  to {
-    opacity: 1;
-    transform: none;
-  }
+@media (prefers-reduced-motion: reduce) {
+  :root { --motion-page: 0s; }
+  .settings-window .settings-shell,
+  .settings-window .nav-toggle,
+  .settings-window .nav-brand-icon,
+  .settings-window .nav-brand-text,
+  .settings-window .nav-item-label,
+  .settings-window .nav-group-label { transition: none; }
 }
 
 @keyframes overlay-in {
@@ -4389,7 +4430,7 @@ input.is-invalid:hover,
 @keyframes popover-in {
   from {
     opacity: 0;
-    transform: translateY(6px) scale(0.985);
+    transform: scale(0.985);
   }
   to {
     opacity: 1;
@@ -4400,7 +4441,7 @@ input.is-invalid:hover,
 @keyframes popover-out {
   to {
     opacity: 0;
-    transform: translateY(4px) scale(0.99);
+    transform: scale(0.99);
   }
 }
 
@@ -4513,19 +4554,12 @@ input.is-invalid:hover,
 .setting-help-button .sakura-icon { width: 18px; height: 18px; }
 
 .setting-help-button:focus-visible {
-  outline: 2px solid var(--sakura-primary);
-  outline-offset: 2px;
+  outline: none;
 }
 
 /* 插件管理：沿用主题与动效 token，列表、详情和弹窗均展示真实贡献。 */
-body:has(#page-plugins.is-active) .page-head { display: none; }
-body:has(#page-plugins.is-active) footer { border-top: 0; }
-#page-plugins { grid-template-rows: auto auto minmax(0, 1fr); gap: 14px; }
-#page-plugins > .plugin-page-heading { position: relative; z-index: 3; display: flex; align-items: center; justify-content: space-between; gap: 20px; }
+#page-plugins { grid-template-rows: auto minmax(0, 1fr); gap: 14px; }
 #page-plugins > .plugin-toolbar { z-index: 2; flex-wrap: wrap; }
-.plugin-page-heading h2 { display: flex; align-items: center; gap: 10px; margin: 0; font-size: 23px; }
-.plugin-page-heading p { margin: 6px 0 0; color: var(--sakura-muted-text); font-size: 12px; }
-.plugin-count { padding: 2px 8px; border-radius: 12px; background: var(--tint-faint); color: var(--sakura-primary); font-size: 12px; }
 .plugin-toolbar .admin-search { flex: 1 1 160px; min-width: 120px; width: auto; padding: 10px 13px; border: 1px solid var(--hairline); border-radius: var(--radius-sm); background: var(--surface-raised); color: var(--sakura-text); font: inherit; font-size: 12px; }
 .plugin-role-tabs { display: flex; flex-wrap: wrap; gap: 3px; padding: 3px; background: var(--tint-faint); border-radius: var(--radius-sm); }
 .plugin-role-tab { min-width: 0; padding: 7px 10px; border: 1px solid transparent; background: transparent; color: var(--sakura-muted-text); font-size: 11px; white-space: nowrap; }
@@ -4575,7 +4609,7 @@ body:has(#page-plugins.is-active) footer { border-top: 0; }
 .plugin-dependency .semantic-status { font-size: 10px; }
 .plugin-technical { color: var(--sakura-muted-text); font-size: 11px; overflow-wrap: anywhere; }
 .plugin-technical summary { cursor: pointer; }
-.plugin-detail-enter { animation: plugin-detail-in var(--motion-medium) var(--ease) both; }
+.plugin-detail-enter { animation: page-in var(--motion-page) ease-out both; }
 .plugin-settings-dialog { width: min(640px, calc(100vw - 36px)); max-height: calc(100dvh - 48px); padding: 0; border: 1px solid var(--hairline); border-radius: var(--radius-lg); background: var(--surface-raised); color: var(--sakura-text); overflow: hidden; animation: plugin-dialog-in var(--motion-medium) var(--ease) both; }
 .plugin-settings-dialog::backdrop { background: color-mix(in srgb, var(--sakura-text) 30%, transparent); backdrop-filter: blur(4px); animation: plugin-backdrop-in var(--motion-medium) var(--ease) both; }
 .plugin-settings-dialog > form { display: flex; flex-direction: column; max-height: calc(100dvh - 50px); margin: 0; }
@@ -4610,9 +4644,8 @@ body:has(#page-plugins.is-active) footer { border-top: 0; }
 .plugin-settings-dialog.is-closing::backdrop { animation: plugin-backdrop-out var(--motion-base) var(--ease) both; }
 .custom-select__menu[popover] { margin: 0; inset: auto; }
 .custom-select__option.is-active { background: var(--tint-faint); color: var(--sakura-primary); }
-@keyframes plugin-detail-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
-@keyframes plugin-dialog-in { from { opacity: 0; transform: translateY(10px) scale(.98); } to { opacity: 1; transform: translateY(0) scale(1); } }
-@keyframes plugin-dialog-out { from { opacity: 1; transform: translateY(0) scale(1); } to { opacity: 0; transform: translateY(8px) scale(.98); } }
+@keyframes plugin-dialog-in { from { opacity: 0; transform: scale(.98); } to { opacity: 1; transform: none; } }
+@keyframes plugin-dialog-out { from { opacity: 1; transform: none; } to { opacity: 0; transform: scale(.98); } }
 @keyframes plugin-backdrop-in { from { opacity: 0; } to { opacity: 1; } }
 @keyframes plugin-backdrop-out { from { opacity: 1; } to { opacity: 0; } }
 @media (max-width: 1000px) { #page-plugins .plugin-workbench { grid-template-columns: minmax(255px, 1fr) minmax(0, 1.2fr); } #pluginDetail { padding: 17px; } .plugin-detail-identity { gap: 9px; } .plugin-detail-identity .plugin-avatar { width: 37px; height: 37px; } .plugin-detail-title h2 { font-size: 17px; } .plugin-role-tab { padding: 7px 8px; } }
@@ -4629,7 +4662,7 @@ body:has(#page-plugins.is-active) footer { border-top: 0; }
 .plugin-configure .sakura-icon { width: 14px; height: 14px; }
 .resource-actions button:has(.sakura-icon) { display: inline-flex; align-items: center; gap: 7px; }
 .resource-actions .sakura-icon { width: 14px; height: 14px; }
-.plugin-settings-dialog .plugin-resource-card:focus-visible { outline: 2px solid var(--sakura-primary); outline-offset: 3px; }
+.plugin-settings-dialog .plugin-resource-card:focus-visible { outline: none; }
 .provider-probe-error {
   margin-top: 12px;
   font-size: 12px;

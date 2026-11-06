@@ -60,6 +60,5 @@ button.setting-help:hover:not(:disabled),
 button.setting-help:focus-visible { color: var(--sakura-primary); }
 
 button.setting-help:focus-visible {
-  outline: 1px solid var(--sakura-primary);
-  outline-offset: 1px;
+  outline: none;
 }

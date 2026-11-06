@@ -116,6 +116,19 @@ def run():
                 check_details(page)
                 if output:
                     page.screenshot(path=str(Path(output) / f'error-dialog-inline-{width}.png'))
+            close_button = page.get_by_role('dialog').get_by_role('button', name='关闭', exact=True)
+            page.mouse.move(0, 0)
+            foreground = close_button.evaluate('el => getComputedStyle(el).color')
+            background = close_button.evaluate('el => getComputedStyle(el).backgroundColor')
+            close_button.hover()
+            hovered = close_button.evaluate('''async el => {
+              getComputedStyle(el).color;
+              await Promise.all(el.getAnimations().map(animation => animation.finished));
+              const style = getComputedStyle(el);
+              return {color: style.color, background: style.backgroundColor};
+            }''')
+            assert hovered['color'] == foreground, '悬停不能把深色按钮的文字染成主题色'
+            assert hovered['background'] != background, '按钮应保留悬停反馈'
             page.get_by_role('dialog').get_by_role('button', name='关闭', exact=True).click()
             expect(page.get_by_role('dialog')).not_to_be_visible()
             assert not errors, errors

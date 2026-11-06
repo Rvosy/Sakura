@@ -14,7 +14,7 @@ HTML = """<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="stylesheet" href="/desktop/frontend/settings/styles.css"></head>
 <body><section id="page-plugins" class="is-active">
-<div class="plugin-page-heading"><div></div></div><div id="pluginInstallMenu"></div>
+<div id="pluginPageActions"></div><div id="pluginInstallMenu"></div>
 <div class="plugin-toolbar"></div><div class="plugin-workbench"></div></section>
 <script type="module">
 import { createPluginMarketplace } from '/desktop/frontend/settings/plugin-marketplace.js';

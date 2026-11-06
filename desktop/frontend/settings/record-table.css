@@ -87,7 +87,7 @@
 .record-option > input[type="radio"] { position: absolute; inset: 0; margin: 0; opacity: 0; width: 1px; height: 1px; }
 .record-option > span { display: grid; place-items: center; width: 100%; min-height: 36px; padding: 7px 6px; border: 1px solid var(--hairline); border-radius: 7px; text-align: center; color: var(--sakura-secondary-text); line-height: 1.5; }
 .record-option > input:checked + span { border-color: var(--sakura-primary); background: var(--tint-faint); color: var(--sakura-primary); font-weight: 600; box-shadow: inset 0 0 0 1px var(--sakura-primary); }
-.record-option > input:focus-visible + span { outline: 2px solid var(--sakura-primary); outline-offset: 3px; }
+.record-option > input:focus-visible + span { outline: none; }
 .record-toggle-field { grid-column: 1 / -1; display: flex; justify-content: space-between; align-items: center; padding: 14px; background: var(--surface-soft); border-radius: var(--radius-sm); }
 .record-toggle-field input[type="checkbox"] { width: 36px; min-width: 36px; height: 22px; border: 0; border-radius: 99px; background: var(--sakura-muted-text); }
 .record-toggle-field input[type="checkbox"]::after { content: ""; width: 16px; height: 16px; border-radius: 50%; background: white; transform: translateX(-7px); }

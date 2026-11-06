@@ -442,8 +442,7 @@ h1 {
 
 .entry-summary:focus-visible {
   border-radius: 4px;
-  outline: 3px solid var(--focus-ring);
-  outline-offset: 3px;
+  outline: none;
 }
 
 .history-empty {
@@ -461,7 +460,7 @@ h1 {
 .history-empty small { font-size: 12px; }
 
 button:disabled { cursor: wait; opacity: .58; }
-button:focus-visible { outline: 3px solid var(--focus-ring); outline-offset: 2px; }
+button:focus-visible { outline: none; }
 
 @media (max-width: 520px) {
   .history-shell { padding: 12px; }
