@@ -83,7 +83,7 @@ Timeline 保存实际发生的交互；Context 是本轮模型要看的材料。
 
 Context 提供者声明按 turn 或 step 收集，并声明失败时 skip 或 abort。Assistant 遵守这些声明：可跳过的记忆失败不阻断聊天；必需上下文读取失败则明确结束本轮。
 
-本轮已收集的 turn 内容保持稳定；修改便签、规则或设置影响后续对话。具体数据和来源规则见[Timeline 与记忆](timeline-memory.md)。
+本轮已收集的 turn 内容保持稳定；修改记忆或插件设置影响后续对话。具体数据和来源规则见[Timeline 与记忆](timeline-memory.md)。
 
 ## 模型预算与工具循环
 

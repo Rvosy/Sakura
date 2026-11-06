@@ -361,4 +361,4 @@ path 是宿主明确签发的临时写入位置。commit 返回 artifactId/media
 
 ## 开发参考
 
-优先复用[Playwright 工具插件](../../plugins/optional/playwright_browser/plugin.py)、[Mem0](../../plugins/optional/sakura_mem0/plugin.py)、[手机聊天](../../plugins/optional/sakura_mobile/plugin.py)和[对话规则](../../plugins/optional/context_rules/README.md)中的公开接口用法，不跨目录导入其实现。日志见[诊断接入](diagnostics.md)。验证安装、配置保存、实际业务结果及停用清理，使用隔离数据与项目 Python；运行入口见[Harness](../../harness/README.md)。
+优先复用[Playwright 工具插件](../../plugins/optional/playwright_browser/plugin.py)、[Mem0](../../plugins/optional/sakura_mem0/plugin.py)和[手机聊天](../../plugins/optional/sakura_mobile/plugin.py)中的公开接口用法，不跨目录导入其实现。日志见[诊断接入](diagnostics.md)。验证安装、配置保存、实际业务结果及停用清理，使用隔离数据与项目 Python；运行入口见[Harness](../../harness/README.md)。
