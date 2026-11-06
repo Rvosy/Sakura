@@ -10,7 +10,7 @@ except ImportError:
 
 
 class CurationOperation(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True, str_strip_whitespace=True)
+    model_config = ConfigDict(strict=True, str_strip_whitespace=True)
     reason: str = ""
 
 
@@ -34,5 +34,4 @@ class DeleteMemory(CurationOperation):
 
 
 class CurationOutput(BaseModel):
-    model_config = ConfigDict(extra="forbid")
     operations: list[AddMemory | UpdateMemory | DeleteMemory]

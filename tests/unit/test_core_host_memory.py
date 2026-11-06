@@ -1362,7 +1362,7 @@ def test_failed_repair_stops_current_job_and_later_event_can_retry(
             calls += 1
             if calls == 1:
                 boundary.note_timeline_changed(timeline)
-            return invalid if calls <= 2 else '{"operations":[]}'
+            return invalid if calls <= 2 else '{"operations":[],"summary":"无需新增记忆"}'
 
         def close(self) -> None:
             pass
