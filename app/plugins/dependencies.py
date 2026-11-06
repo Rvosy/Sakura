@@ -174,7 +174,7 @@ class PluginDependencyRoots:
         return self.verified_path(declaration, root)
 
     def verified_path(self, declaration: DependencyDeclaration | None, root: Path) -> Path | None:
-        """Check an installed dependency root, including an offline migration payload."""
+        """Check the installed dependency root for a plugin."""
         if declaration is None:
             return None
         marker_path = root / _MARKER

@@ -1108,7 +1108,7 @@ if (surfaceVisibilityCapabilities.bubbleAutoHide && surfaceVisibilityCapabilitie
       && Number.isSafeInteger(persistedBubbleSettings?.autoHideDelaySeconds)
     ) bubbleAutoHideSettings = Object.freeze(persistedBubbleSettings);
   } catch {
-    // The 0.9.x defaults remain usable when neither Runtime v2 nor legacy settings can be read.
+    // Keep the defaults when the saved visibility settings cannot be read.
   }
 
   surfaceVisibilityController = createSurfaceVisibilityController({

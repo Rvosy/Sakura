@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createIcon } from "../core/icons.js";
-import { browserFixture, settle } from "./fixtures/plugin-settings-fixture.js";
+import { browserFixture } from "./fixtures/plugin-settings-fixture.js";
 import { createConnectionEditor } from "../../../plugins/builtin/sakura_model_openai_compatible/frontend/connections.js";
 import { createCharacterVisualSettings } from "../settings/character-visual-settings.js";
 import { openDownloadSources } from "../settings/download-source-settings.js";
@@ -83,39 +83,4 @@ test("download source save failure leaves the editor open and forwards the origi
   assert.equal(dialog.open, true);
   assert.equal(save.disabled, false);
   assert.doesNotMatch(dialog.textContent, /DOWNLOAD_SOURCE_FIXTURE_FAILED/);
-});
-
-test("legacy scan failure is reported through the shared dialog and releases the import operation", async () => {
-  const { document } = browserFixture();
-  const originalDocument = globalThis.document;
-  const originalWindow = globalThis.window;
-  const createElement = document.createElement;
-  document.createElement = (tag) => {
-    const element = createElement(tag);
-    if (tag !== "dialog") return element;
-    // Stand in only for parsing the dialog's static HTML; production owns every event and state transition.
-    for (const name of ["source", "feedback", "results", "choose", "start", "cancel", "empty", "completed", "summary", "receipt"]) {
-      const control = createElement("div"); control.setAttribute(`data-${name}`, ""); element.append(control);
-    }
-    const close = createElement("button"); close.className = "legacy-import-close";
-    element.append(close, createElement("img"));
-    return element;
-  };
-  globalThis.document = document;
-  globalThis.window = { addEventListener() {} };
-  const failure = new Error("LEGACY_SCAN_FIXTURE_FAILED", { cause: new Error("scan diagnostic") });
-  const reports = [], operations = [];
-  let feature;
-  try {
-    const { openLegacyDataImport } = await import("../settings/legacy-data-import.js");
-    feature = openLegacyDataImport({ client: { legacyRoleDataImportChoose: async () => { throw failure; } },
-      setBusy: (value) => operations.push(value), onError: (error) => reports.push(error),
-    });
-    feature.dialog.querySelector("[data-choose]").onclick();
-    await settle();
-    assert.deepEqual(reports, [failure]);
-    assert.deepEqual(operations, [true, false]);
-    assert.equal(feature.dialog.querySelector("[data-start]").disabled, true);
-    assert.doesNotMatch(feature.dialog.textContent, /LEGACY_SCAN_FIXTURE_FAILED|scan diagnostic/);
-  } finally { feature?.close(); globalThis.document = originalDocument; globalThis.window = originalWindow; }
 });

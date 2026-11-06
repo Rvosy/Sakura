@@ -836,10 +836,6 @@ impl SettingsCapabilityManifest {
                         "available".to_string(),
                     ),
                     ("storage.tts_root".to_string(), "available".to_string()),
-                    (
-                        "storage.legacy_role_data_import".to_string(),
-                        "available".to_string(),
-                    ),
                 ]),
             },
         );

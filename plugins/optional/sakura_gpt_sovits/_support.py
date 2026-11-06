@@ -167,8 +167,6 @@ def _read_url(
 
 
 def terminate_process_tree(process: subprocess.Popen[Any], *, timeout: float) -> None:
-    # Core also imports this module to validate legacy configuration. Only the
-    # running plugin needs the public SDK helper on its isolated import path.
     from sakura_process import terminate_process_tree as terminate_owned_tree
 
     terminate_owned_tree(process, timeout=timeout)

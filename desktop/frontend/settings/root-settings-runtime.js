@@ -49,22 +49,6 @@ export function normalizeStorageSettingsSnapshot(snapshot) {
   });
 }
 
-export function legacyDataImportPlanHasWork(plan) {
-  const totals = plan?.totals;
-  return Boolean(
-    totals
-    && (
-      (plan.packagesNew || 0)
-      + (plan.reassociatedRecords || 0)
-      + totals.historyNew
-      + totals.memoryNew
-      + totals.historyConflicts
-      + totals.memoryConflicts
-      + totals.recoverableErrors
-    ) > 0
-  );
-}
-
 export function createRootSettingsClient({ invoke }) {
   if (typeof invoke !== "function") throw new TypeError("invoke is required");
   return Object.freeze({
@@ -104,16 +88,6 @@ export function createRootSettingsClient({ invoke }) {
     },
     async storageResetTtsRoot() {
       return normalizeStorageSettingsSnapshot(await invoke("settings_storage_reset_tts_root"));
-    },
-    async legacyRoleDataImportChoose(selectionId = null, roleMapping = {}) {
-      return invoke("settings_legacy_data_import_choose", { selectionId, roleMapping });
-    },
-    async legacyRoleDataImportApply(selectionId, planToken, overwriteConflicts) {
-      return invoke("settings_legacy_data_import_apply", {
-        selectionId,
-        planToken,
-        overwriteConflicts,
-      });
     },
     async updateGet() {
       return invoke("settings_update_get");

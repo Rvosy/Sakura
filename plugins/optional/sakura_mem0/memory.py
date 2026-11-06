@@ -551,34 +551,6 @@ class MemoryModelTaskCancelled(RuntimeError):
     """用户或当前 Core generation 取消了模型导入/下载。"""
 
 
-def normalize_existing_history_database(database: Path) -> None:
-    """Normalize a copied Mem0 history database with the runtime SQLite manager.
-
-    Packaged plugin processes import Mem0 from their private dependency root.
-    Source-tree tests deliberately do not put that root on ``sys.path``, so the
-    narrow fallback loads the same bundled storage module by file without
-    importing Mem0's heavyweight package initializer.
-    """
-
-    try:
-        from mem0.memory.storage import SQLiteManager
-    except ModuleNotFoundError as exc:
-        if exc.name != "mem0":
-            raise
-        storage_path = Path(__file__).with_name("mem0") / "memory" / "storage.py"
-        spec = importlib.util.spec_from_file_location(
-            "sakura_mem0_legacy_storage", storage_path
-        )
-        if spec is None or spec.loader is None:
-            raise RuntimeError("bundled Mem0 storage module is unavailable") from exc
-        storage_module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(storage_module)
-        SQLiteManager = storage_module.SQLiteManager
-
-    manager = SQLiteManager(str(database))
-    manager.close()
-
-
 @dataclass(frozen=True)
 class EmbeddingModelImportResult:
     """记忆嵌入模型导入结果。"""

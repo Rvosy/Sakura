@@ -752,7 +752,6 @@ export function capabilityManifest() {
       "storage.tts_root",
       "system.launch_at_login",
       "telemetry.anonymous_statistics",
-      "storage.legacy_role_data_import",
     ],
     "open-help": ["system.macos_open_help"],
     about: ["updates.manage"],

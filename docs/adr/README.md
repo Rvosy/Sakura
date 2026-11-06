@@ -13,7 +13,7 @@ ADR 说明项目当前采用的技术选择、要解决的问题，以及随之�
 | [角色资源由插件解释](composable-character-resources.md) | 表现格式耦合、分享数据与本机偏好混用 | [角色](../specs/characters.md)、[表现](../specs/window-presentation.md) |
 | [音频与临时资源归属](media-resource-ownership.md) | 合成、播放、历史与传输相互误删资源 | [语音](../specs/voice.md)、[屏幕感知](../specs/screen-awareness.md) |
 | [稳定锚点与原生命中](native-window-surface.md) | 多屏漂移、透明区域和系统交互 | [窗口与表现](../specs/window-presentation.md) |
-| [程序与用户数据分离](data-preserving-updates.md) | 升级和迁移破坏已有内容 | [发行与存储](../specs/release-storage.md) |
+| [程序与用户数据分离](data-preserving-updates.md) | 主程序和插件更新破坏已有内容 | [发行与存储](../specs/release-storage.md) |
 | [统一步骤日志与原始诊断](original-diagnostics.md) | 首因被遮盖、日志重复、Trace 用途混淆 | [诊断](../specs/diagnostics.md) |
 | [公开资料与私人管理分开](public-private-services.md) | 管理故障与权限扩散影响公开交付 | [在线服务](../specs/services.md) |
 | [拥有者负责校验](validation-ownership.md) | 重复校验和任意限制妨碍正常使用 | [插件](../specs/plugin-runtime.md)、[角色](../specs/characters.md)、[设置](../specs/settings.md) |

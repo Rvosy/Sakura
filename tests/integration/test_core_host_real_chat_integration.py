@@ -19,7 +19,6 @@ from typing import BinaryIO
 import pytest
 
 from app.core_host.protocol import encode_frame, read_frame
-from app.legacy_import.history import import_history
 from app.storage.timeline import TimelineKind, TimelineStore
 from app.core_host.real_chat import RealChatBoundary, RealChatRejection
 from app.plugin_sdk.sakura_assistant_contract import ChatReply, ChatSegment
@@ -1730,68 +1729,6 @@ def test_real_core_local_provider_completed_projection_and_history(tmp_path: Pat
         assert process.stderr is not None
         stderr = _stderr_text(process)
         assert "LOCAL_TEST_KEY" not in stderr
-    finally:
-        _stop(process)
-        _stop_provider(server, provider_thread)
-
-
-def test_real_next_turn_reads_imported_legacy_timeline(tmp_path: Path) -> None:
-    server, provider_thread = _start_provider("complete")
-    port = server.server_address[1]
-    app_root = _configure_app_root(tmp_path, port)
-    legacy = tmp_path / "legacy"
-    history_root = legacy / "data" / "chat_history"
-    history_root.mkdir(parents=True)
-    records = [
-        {
-            "created_at": "2026-01-01T00:00:00+08:00",
-            "role": "user",
-            "content": "LEGACY_CONTEXT_USER_8F21",
-        },
-        {
-            "created_at": "2026-01-01T00:00:01+08:00",
-            "role": "assistant",
-            "content": "LEGACY_CONTEXT_REPLY_4A17",
-            "translation": "",
-            "tone": "中性",
-            "portrait": "neutral",
-        },
-    ]
-    (history_root / "sakura.jsonl").write_text(
-        "".join(json.dumps(record) + "\n" for record in records), encoding="utf-8"
-    )
-    import_history(legacy, app_root, character_ids=("sakura",))
-
-    process = _start_host(app_root)
-    try:
-        _wait_ready(process)
-        _send(
-            process,
-            _request(
-                "chat-after-import",
-                "chat.send",
-                {"message": "continue", "operationId": "chat-after-import"},
-            ),
-        )
-        frames = [_read(process), _read(process), _read(process)]
-        assert not any(frame.get("name") == "chat.failed" for frame in frames)
-        serialized_request = json.dumps(_ProviderHandler.requests, ensure_ascii=False)
-        assert "LEGACY_CONTEXT_USER_8F21" in serialized_request
-        assert "LEGACY_CONTEXT_REPLY_4A17" in serialized_request
-        assert all(record["created_at"] in serialized_request for record in records)
-        entries = TimelineStore(app_root / "data/chat_history/timeline.sqlite3").read_all("sakura")
-        assert [entry.kind for entry in entries] == [
-            TimelineKind.HUMAN,
-            TimelineKind.ASSISTANT,
-            TimelineKind.SYSTEM,
-            TimelineKind.HUMAN,
-            TimelineKind.ASSISTANT,
-        ]
-        assert entries[2].origin == "host"
-        assert entries[2].payload["eventType"] == "app.started"
-        assert entries[2].payload["text"] in serialized_request
-        assert entries[2].created_at in serialized_request
-        _exchange(process, _request("shutdown-after-import", "system.shutdown", {}))
     finally:
         _stop(process)
         _stop_provider(server, provider_thread)

@@ -7,9 +7,9 @@ test("original error evidence is visible as text and copied intact", async ({
   const evidence = {
     diagnostic: "no such table: memories <img src=x onerror=alert(1)>",
     exception_chain:
-      "RuntimeError: import failed\nCaused by: OperationalError: no such table: memories",
+      "RuntimeError: storage failed\nCaused by: OperationalError: no such table: memories",
     exception_stack:
-      "at migration:import_rows:42\nC:\\Users\\测试 用户\\Sakura\\data\\memory.db",
+      "at storage:write_rows:42\nC:\\Users\\测试 用户\\Sakura\\data\\memory.db",
     endpoint: "https://provider.test/v1?model=demo&token=[REDACTED]",
   };
   const report = {
@@ -19,9 +19,9 @@ test("original error evidence is visible as text and copied intact", async ({
     installationId: "550e8400-e29b-41d4-a716-446655440000",
     runId: "run-1",
     error: {
-      code: "LEGACY_IMPORT_INTERNAL",
+      code: "PLUGIN_STORAGE_FAILED",
       component: "core",
-      event: "migration.failed",
+      event: "plugin.storage.failed",
       severity: "error",
     },
     app: { version: "1.1.0" },

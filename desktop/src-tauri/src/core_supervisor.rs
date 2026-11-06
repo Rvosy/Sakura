@@ -27,7 +27,6 @@ pub enum SupervisorState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LifecycleIntent {
     Start,
-    Stop,
     Restart,
     Retry,
     AppShutdown,
@@ -35,7 +34,6 @@ pub enum LifecycleIntent {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StopReason {
-    User,
     Restart,
     Failure,
     AppShutdown,
@@ -274,11 +272,6 @@ impl CoreSupervisor {
                     self.begin_spawn()
                 }
             }
-            LifecycleIntent::Stop => {
-                self.restart_after_stop = false;
-                self.failure = None;
-                self.begin_stop(StopReason::User)
-            }
             LifecycleIntent::Restart => {
                 if self.app_shutdown {
                     Vec::new()
@@ -499,17 +492,18 @@ mod tests {
     }
 
     #[test]
-    fn explicit_stop_overrides_a_restart_queued_during_cleanup() {
+    fn app_shutdown_overrides_a_restart_queued_during_cleanup() {
         let mut supervisor = CoreSupervisor::new(0xCAFE);
         let (generation_id, _) = running(&mut supervisor);
         assert_eq!(supervisor.submit(LifecycleIntent::Restart).len(), 1);
-        assert!(supervisor.submit(LifecycleIntent::Stop).is_empty());
+        assert!(supervisor.submit(LifecycleIntent::AppShutdown).is_empty());
 
         let finalized = supervisor.finalize_generation(generation_id);
         assert!(finalized.applied);
         assert!(finalized.actions.is_empty());
         assert_eq!(supervisor.snapshot().state, SupervisorState::Stopped);
         assert_eq!(supervisor.snapshot().failure, None);
+        assert!(supervisor.snapshot().app_shutdown);
     }
 
     #[test]

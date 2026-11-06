@@ -490,8 +490,6 @@ def _minimal_stage(root: Path, target: str) -> Path:
     stage = root / "stage"
     (stage / "core/app/core_host").mkdir(parents=True)
     (stage / "core/app/core_host/__main__.py").write_text("", encoding="utf-8")
-    (stage / "core/app/legacy_import").mkdir(parents=True)
-    (stage / "core/app/legacy_import/__main__.py").write_text("", encoding="utf-8")
     (stage / "plugins/builtin").mkdir(parents=True)
     (stage / "plugins/builtin/__init__.py").write_text("", encoding="utf-8")
     plugin_ids = {

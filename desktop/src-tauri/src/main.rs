@@ -22,7 +22,6 @@ mod history_window;
 mod host_interaction;
 mod input_visual_effect;
 mod interaction_latency;
-mod legacy_import;
 #[cfg(target_os = "macos")]
 mod macos_input_glass;
 mod macos_open_help;
@@ -7470,42 +7469,6 @@ fn main() {
             "current_version": env!("CARGO_PKG_VERSION"),
         })),
     );
-    match legacy_import::recover_interrupted(&runtime_request) {
-        Ok(true) => {
-            let _ = runtime_log.submit(RuntimeLogEvent::rust(
-                Severity::Warning,
-                "legacy_import",
-                "legacy_import.recovery.completed",
-                "上次中断的旧版本迁移已回滚",
-            ));
-        }
-        Ok(false) => {}
-        Err(error) => {
-            let _ = runtime_log.submit(
-                RuntimeLogEvent::rust(
-                    Severity::Error,
-                    "legacy_import",
-                    "legacy_import.recovery.failed",
-                    "旧版本迁移恢复失败",
-                )
-                .attributes(json!({
-                    "code": stable_runtime_code(&error, "LEGACY_IMPORT_RECOVERY_FAILED"),
-                    "diagnostic": error,
-                    "error_type": "LegacyImportRecoveryError",
-                    "reason_code": "LEGACY_IMPORT_RECOVERY_FAILED",
-                    "stage": "recovery"
-                })),
-            );
-            telemetry.shutdown();
-            runtime_log_shutdown.finish();
-            show_startup_message(
-                "Sakura 迁移恢复失败",
-                "上次迁移未能安全回滚。请查看 data/logs/sakura-runtime.log。Sakura 未继续启动。",
-                true,
-            );
-            std::process::exit(1);
-        }
-    }
     let first_run_guide_state =
         product_shell::FirstRunGuideState::new(ui_config_repository.clone());
     let first_run_completed = match first_run_guide_state.snapshot() {
@@ -7549,9 +7512,6 @@ fn main() {
             std::process::exit(1);
         }
     };
-    let legacy_import_state = Arc::new(legacy_import::LegacyImportState::new(
-        runtime_request.clone(),
-    ));
     let mut shell_lifecycle_session = Some(if first_run_completed {
         shell_lifecycle::ShellLifecycleSession::start_observed(runtime_request, runtime_log.clone())
     } else {
@@ -7579,7 +7539,6 @@ fn main() {
         .manage(error_dialog_window::ErrorDialogState::default())
         .manage(color_picker::ColorPickerState::default())
         .manage(first_run_guide_state)
-        .manage(legacy_import_state)
         .manage(product_shell::PetTopmostState::new(
             ui_config_repository.clone(),
         ))
@@ -7932,13 +7891,6 @@ fn main() {
             product_shell::settings_capability_manifest,
             product_shell::first_run_guide_get,
             product_shell::first_run_guide_complete,
-            legacy_import::legacy_import_choose_source,
-            legacy_import::legacy_import_inspect,
-            legacy_import::legacy_import_state,
-            legacy_import::legacy_import_start,
-            legacy_import::legacy_import_cancel,
-            legacy_import::settings_legacy_data_import_choose,
-            legacy_import::settings_legacy_data_import_apply,
             product_shell::reveal_settings_window,
             settings_characters_get,
             settings_character_visuals_get,

@@ -48,7 +48,7 @@ Core 与各插件使用独立进程。图中的插件调用通过服务路由完
 | 屏幕感知 | 手动截图、定时观察、主动互动和截图消费 | `app/core_host/screen_host.py`、`plugins/builtin/sakura_screen_awareness/` | [屏幕感知](../specs/screen-awareness.md) |
 | 工具与 MCP | 工具登记执行、MCP 连接、联网和浏览器能力 | `app/core_host/tools.py`、`plugins/builtin/sakura_mcp/` | [工具与 MCP](../specs/tools-mcp.md) |
 | 诊断 | 操作日志、原始错误、Trace 与远程报告 | `desktop/src-tauri/src/runtime_log.rs`、`app/core_host/runtime_logging.py` | [诊断](../specs/diagnostics.md) |
-| 发行与存储 | 程序交付、用户数据保留、更新与迁移 | `tools/release/`、`app/legacy_import/` | [发行与存储](../specs/release-storage.md) |
+| 发行与存储 | 程序交付、用户数据保留与更新 | `tools/release/`、`app/plugins/update_transaction.py` | [发行与存储](../specs/release-storage.md) |
 | 在线服务 | 公开发布资料、私人控制台、诊断接收与官网 | `services/sakura/` | [在线服务](../specs/services.md) |
 
 同类能力的提供方共用一份模块规格，插件自身的配置与特殊资源约定保留在所属 README。SakuraTTS 还需管理整合包安装和推理进程，因此另有模块规格。
