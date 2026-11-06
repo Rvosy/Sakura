@@ -67,7 +67,7 @@ _HOST_EXPORTS = {
     HOST_SETTINGS_SURFACE_V0_SERVICE: ("register", "unregister"),
     HOST_SETTINGS_COLLECTION_V0_SERVICE: ("register", "unregister"),
     HOST_COMPOSER_TOOLS_V0_SERVICE: ("register", "unregister"),
-    HOST_TIMELINE_SERVICE: ("latest_cursor", "get_entry", "read_recent", "read_since", "read_range", "read_turn_page"),
+    HOST_TIMELINE_SERVICE: ("latest_cursor", "get_entry", "read_recent", "read_since", "read_turn_page"),
 }
 
 _HOST_EVENT_NAMES = {
@@ -187,7 +187,6 @@ class PluginRuntimeApplication:
             storage_root=roots.user_root,
             model_resolver=self._resolve_model,
             active_model_resolver=self.active_models,
-            assistant_identity=lambda: self._manager.service_identity("sakura.assistant"),
             commit_plugin_scope=self._manager.commit_plugin_scope,
         )
         for service_key in self._host_services.available_keys:

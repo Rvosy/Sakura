@@ -7,7 +7,6 @@ from app.plugin_sdk.sakura_data_transfer import read_archive, write_archive
 from app.storage.paths import StoragePaths
 from app.storage.timeline import NewTimelineEntry, TimelineKind, TimelineStore, timeline_record
 from plugins.optional.sakura_mem0.boundary import _project_timeline_entries, _curation_evidence_turns
-from plugins.optional.sakura_mem0.memory import MemoryStore, MemoryRecord
 
 
 def entry(identity, date, *, turn=None, kind=TimelineKind.HUMAN):
@@ -126,26 +125,6 @@ def test_imported_history_does_not_hide_pending_local_curation():
     evidence, count = _curation_evidence_turns(_project_timeline_entries(records, "sakura"))
     assert count == 1
     assert [item.entry_id for item in evidence] == ["human", "assistant"]
-
-
-def test_memory_restore_preserves_identity_metadata_and_core_profile(tmp_path):
-    store = MemoryStore(tmp_path)
-    records = [MemoryRecord(id=identity, content=content, layer=layer, scope="sakura",
-                           created_at="2024-01-01T00:00:00Z", updated_at="2024-02-01T00:00:00Z",
-                           metadata={"source_entry_ids": ["human-1"]}).to_dict()
-               for identity, content, layer in [("memory-1", "喜欢咖啡", "semantic"),
-                                                 ("core_profile:sakura", "用户是程序员", "core_profile")]]
-    store.restore_records(records)
-    store.restore_records(records)
-    exported = {item["id"]: item for item in store.export_records()}
-    assert len(exported) == 2
-    for record in records:
-        restored = exported[record["id"]]
-        for field in ("id", "content", "layer", "source", "created_at", "updated_at"):
-            assert restored[field] == record[field]
-        assert restored["metadata"]["source_entry_ids"] == ["human-1"]
-    assert store.search_memory({"query": "咖啡"})["memories"][0]["id"] == "memory-1"
-    store.close()
 
 
 def test_import_missing_turn_start_preserves_old_snapshot_and_restores_turn_order(tmp_path):

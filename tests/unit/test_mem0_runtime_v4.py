@@ -16,11 +16,9 @@ from app.core_host.plugin_runtime_application import PluginRuntimeApplication
 from app.plugins.dependencies import PluginDependencyRoots
 from app.plugins.inventory import PluginDesiredStateStore, PluginInventory
 from app.storage.runtime_roots import RuntimeRoots
-from app.storage.paths import StoragePaths
-from app.storage.timeline import TimelineStore
 
 
-def _roots(tmp_path: Path, assistant_dependencies: Path) -> RuntimeRoots:
+def _roots(tmp_path: Path) -> RuntimeRoots:
     repository = Path(__file__).parents[2]
     distribution = tmp_path / "distribution"
     distribution.mkdir()
@@ -36,7 +34,7 @@ def _roots(tmp_path: Path, assistant_dependencies: Path) -> RuntimeRoots:
     _write_third_party_memory(user / "plugins" / "user" / "third_party_memory")
     # This runtime test uses only YAML-backed settings, not the embedding
     # engine. Migration verifies its full dependency set in separate tests.
-    _prepare_mem0_dependency_root(distribution, user, plugin_root, assistant_dependencies)
+    _prepare_mem0_dependency_root(distribution, user, plugin_root)
     return RuntimeRoots(distribution, user)
 
 
@@ -92,17 +90,14 @@ def _prepare_mem0_dependency_root(
     distribution: Path,
     user: Path,
     plugin_root: Path,
-    assistant_dependencies: Path,
 ) -> None:
     dependencies = PluginDependencyRoots(user, distribution_root=distribution)
     declaration = dependencies.declaration(plugin_root)
     assert declaration is not None
     dependency_root = user / "data/plugin-runtime/dependencies/sakura.memory.mem0"
-    shutil.copytree(assistant_dependencies, dependency_root)
+    dependency_root.mkdir(parents=True)
     yaml_package = Path(yaml.__file__).resolve().parent
     shutil.copytree(yaml_package, dependency_root / "yaml")
-    import jieba
-    shutil.copytree(Path(jieba.__file__).resolve().parent, dependency_root / "jieba")
     (dependency_root / ".sakura-dependencies.json").write_text(
         json.dumps({
             "schemaVersion": 1,
@@ -201,9 +196,8 @@ requires:
     )
 
 
-def test_mem0_v4_isolated_process_and_replaceable_contributions(tmp_path: Path, assistant_dependencies: Path) -> None:
-    roots = _roots(tmp_path, assistant_dependencies)
-    TimelineStore(StoragePaths(roots.user_root).timeline_database()).initialize()
+def test_mem0_v4_isolated_process_and_replaceable_contributions(tmp_path: Path) -> None:
+    roots = _roots(tmp_path)
     inventory = PluginInventory(roots).scan()
     records = {record.plugin_id: record for record in inventory.records}
     assert records["sakura.memory.mem0"].source == "user"
@@ -250,18 +244,17 @@ def test_mem0_v4_isolated_process_and_replaceable_contributions(tmp_path: Path, 
             if item["pluginId"] == "sakura.memory.mem0"
         )
         sections = {item["sectionId"]: item for item in mem0_snapshot["sections"]}
+        assert set(sections) == {
+            "memory",
+            "memory_embedding_component",
+            "memory_management",
+        }
         assert all(item["reasonCode"] == "READY" for item in sections.values()), sections
-        assert {"updateNow", "mergeDuplicates", "rebuildIndex"} <= {
-            action["actionId"] for section in sections.values() if section["surface"] == "memory"
-            for action in section["actions"]
-        }
         assert "PRIVATE_MODEL_SECRET" not in str(mem0_snapshot)
-        assert {item["collectionId"] for item in sections["memory_management"]["collections"]} == {
-            "memories", "profile", "knowledge", "agreements", "experiences",
-        }
-        assert all(item["scope"] == "character" for item in sections["memory_management"]["collections"])
-        update = application.settings_action("sakura.memory.mem0", "memory_management", "updateNow", {})
-        assert update["values"]["curationResult"]
+        assert [item["collectionId"] for item in sections["memory_management"]["collections"]] == [
+            "memories"
+        ]
+        assert sections["memory_management"]["collections"][0]["scope"] == "character"
         slots = application.model_slots()
         assert [(item["ownerId"], item["slotId"]) for item in slots] == [
             ("sakura.memory.mem0", "curation")
@@ -293,8 +286,8 @@ def test_mem0_v4_isolated_process_and_replaceable_contributions(tmp_path: Path, 
         application.close()
 
 
-def test_mem0_v4_starts_without_character_and_activates_after_selection(tmp_path: Path, assistant_dependencies: Path) -> None:
-    roots = _roots(tmp_path, assistant_dependencies)
+def test_mem0_v4_starts_without_character_and_activates_after_selection(tmp_path: Path) -> None:
+    roots = _roots(tmp_path)
     character_path = roots.user_root / "characters/sakura"
     saved_character = tmp_path / "saved-character"
     character_path.rename(saved_character)
@@ -324,7 +317,8 @@ def test_mem0_v4_starts_without_character_and_activates_after_selection(tmp_path
         ]
         mem0_settings = next(item for item in application.settings_snapshot()["plugins"]
                              if item["pluginId"] == "sakura.memory.mem0")
-        assert all(item["reasonCode"] == "READY" for item in mem0_settings["sections"])
-        assert any(item["collections"] for item in mem0_settings["sections"] if item["surface"] == "memory")
+        assert {item["sectionId"] for item in mem0_settings["sections"]} == {
+            "memory", "memory_embedding_component", "memory_management",
+        }
     finally:
         application.close()

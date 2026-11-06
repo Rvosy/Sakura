@@ -1,16 +1,17 @@
-"""管理当前角色的记忆存储、模型下载和后台整理任务。"""
+"""Official Mem0 plugin owner over Sakura's existing Memory data and libraries.
+
+The boundary is deliberately narrow: it owns the existing ``MemoryStore`` and
+curation resources, validates the public protocol, and projects records into a
+stable DTO.  It never imports the legacy application bootstrap or a Qt worker.
+"""
 
 from __future__ import annotations
-
-from sakura_data_transfer import read_archive, write_archive, plan_merge
 
 import threading
 import uuid
 from collections.abc import Mapping
-from copy import deepcopy
-from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Literal
 
 try:
     from .memory import (
@@ -20,7 +21,6 @@ try:
         DEFAULT_MEMORY_IMPORTANCE,
         DEFAULT_MEMORY_LAYER,
         MEMORY_LAYERS,
-        KNOWLEDGE_FIELDS,
         MemoryModelImportError,
         MemoryModelTaskCancelled,
         MemoryStore,
@@ -29,7 +29,7 @@ try:
     from .memory_curator import MemoryCurationState, MemoryCurator
     from .support import (
         OperationCancelled,
-        ThreadGroupResource,
+        ResourceRegistry,
         StoragePaths,
         interaction_context,
         log_event,
@@ -43,7 +43,6 @@ except ImportError:
         DEFAULT_MEMORY_IMPORTANCE,
         DEFAULT_MEMORY_LAYER,
         MEMORY_LAYERS,
-        KNOWLEDGE_FIELDS,
         MemoryModelImportError,
         MemoryModelTaskCancelled,
         MemoryStore,
@@ -52,7 +51,7 @@ except ImportError:
     from memory_curator import MemoryCurationState, MemoryCurator
     from support import (
         OperationCancelled,
-        ThreadGroupResource,
+        ResourceRegistry,
         StoragePaths,
         interaction_context,
         log_event,
@@ -60,6 +59,7 @@ except ImportError:
     from domain_types import ChatHistoryEntry
 
 
+MEMORY_STATUSES = frozenset({"ready", "loading", "degraded", "read_only", "failed", "stopped"})
 MAX_MEMORY_CONTENT = 16_384
 MAX_MEMORY_QUERY = 4_000
 MAX_MEMORY_TEXT_FIELD = 256
@@ -100,6 +100,7 @@ class MemoryBoundary:
         app_root: Path,
         character_id: str,
         *,
+        system_prompt: str = "",
         memory_store: MemoryStore | None = None,
         memory_dir: Path | None = None,
         memory_cache_dir: Path | None = None,
@@ -110,14 +111,16 @@ class MemoryBoundary:
     ) -> None:
         self._app_root = Path(app_root)
         self._character_id = _required_text(character_id, "character_id", 128)
+        self._system_prompt = system_prompt.strip()
         self._lock = threading.RLock()
-        self._write_lock = threading.RLock()
+        self._write_lock = threading.Lock()
         self._closed = False
+        self._status: Literal[
+            "ready", "loading", "degraded", "read_only", "failed", "stopped"
+        ] = "loading"
+        self._message = "长期记忆系统正在初始化。"
         self._curation_cancel = threading.Event()
         self._curation_active = False
-        self._curation_result: dict = {}
-        self._text_import_cancel = threading.Event()
-        self._text_import_result: dict = {"state": "idle"}
         self._pending_timeline: object | None = None
         self._model_task_active = False
         self._model_task_id = ""
@@ -127,25 +130,89 @@ class MemoryBoundary:
         self._model_catalog_getter = model_catalog_getter or (lambda: [])
         self._model_resolver = model_resolver or (lambda selection: selection)
         self._model_client_factory = model_client_factory
-        self._curation_threads = ThreadGroupResource()
+        self._preload_started = False
+        self._store_failed = False
+        self._resources = ResourceRegistry()
+        self._curation_threads = self._resources.track_thread_group(
+            cancel=self._curation_cancel.set,
+            label="runtime_v2_memory_curation",
+            shutdown_order=1100,
+        )
         paths = StoragePaths(self._app_root)
         self._memory_dir = Path(memory_dir or paths.memory_dir)
         self._memory_cache_dir = Path(memory_cache_dir or paths.memory_cache_dir)
         self._store = memory_store or MemoryStore(
             base_dir=self._app_root,
             scope_id=self._character_id,
+            resource_registry=self._resources,
             memory_dir=self._memory_dir,
             memory_cache_dir=self._memory_cache_dir,
         )
-        self._curation_state = MemoryCurationState(self._store)
-        self._start_preload()
+        self._store.add_status_listener(self._on_store_status)
+        state_name = "".join(
+            character if character.isalnum() or character in "._-" else "_"
+            for character in self._character_id
+        )
+        self._curation_state = MemoryCurationState(
+            self._memory_dir / "curation_state" / f"{state_name}.json"
+        )
+        # Missing embeddings must never cause implicit network access.  The user
+        # can explicitly start the fixed-model download from the settings page.
+        store_ready = self._store.is_ready()
+        model_cached = not self._store.needs_embedding_model_download()
+        append_memory_initialization_diagnostic(
+            self._app_root,
+            component="plugin_memory_owner",
+            event="owner_created",
+            stage="owner_create",
+            outcome="completed",
+            status="ready" if store_ready else "loading",
+            model_cached=model_cached,
+        )
+        if store_ready:
+            self._set_status("ready", "")
+        elif not model_cached:
+            self._set_status("degraded", "本地记忆模型尚未安装；聊天将继续但不会召回记忆。")
+        else:
+            self._start_preload()
 
     def _start_preload(self) -> None:
+        with self._lock:
+            if self._closed or self._preload_started:
+                return
+            self._preload_started = True
+        append_memory_initialization_diagnostic(
+            self._app_root,
+            component="plugin_memory_owner",
+            event="owner_preload_requested",
+            stage="preload",
+            outcome="started",
+            wait=False,
+            model_cached=True,
+        )
         try:
             self._store.preload(wait=False)
         except Exception as exc:
-            log_event("Memory", "向量检索准备失败，仍可使用关键词检索", {"error": str(exc)},
-                      event="memory.index.preload_failed", severity="warning")
+            append_memory_initialization_diagnostic(
+                self._app_root,
+                component="plugin_memory_owner",
+                event="owner_preload_returned",
+                stage="preload",
+                outcome="failed",
+                category="preload_call_failed",
+                error_type=exc.__class__.__name__,
+                wait=False,
+            )
+            self._set_status("degraded", "记忆暂时不可用；聊天不受影响。")
+            return
+        append_memory_initialization_diagnostic(
+            self._app_root,
+            component="plugin_memory_owner",
+            event="owner_preload_returned",
+            stage="preload",
+            outcome="scheduled",
+            wait=False,
+        )
 
     @property
     def memory_store(self) -> MemoryStore:
@@ -154,6 +221,9 @@ class MemoryBoundary:
     @property
     def character_id(self) -> str:
         return self._character_id
+
+    def __bool__(self) -> bool:
+        return True
 
     def search_memory(
         self,
@@ -167,155 +237,119 @@ class MemoryBoundary:
         embedding/Qdrant owner and never turns a miss into implicit network I/O.
         """
 
-        return self.search({"limit": 10, **arguments})
+        payload: dict[str, object] = {
+            "query": arguments.get("query", ""),
+            "limit": arguments.get("limit", 10),
+        }
+        if "layer" in arguments:
+            payload["layer"] = arguments["layer"]
+        return self.search(payload)
 
-    def profile_memories(self) -> list[dict]:
-        return [_project_memory(item, self._character_id) for item in self._store.profile_memories()]
+    def summary(self) -> str:
+        return ""
 
     def status(self) -> dict[str, str]:
-        if self._closed or not self._store.is_ready():
-            return {"status": "stopped", "message": "记忆存储已关闭。"}
-        return {"status": "ready", "message": ""}
+        promoted = False
+        with self._lock:
+            if (
+                not self._closed
+                and not self._store_failed
+                and self._status in {"loading", "degraded"}
+                and self._store.is_ready()
+            ):
+                self._status = "ready"
+                self._message = ""
+                promoted = True
+            current = {"status": self._status, "message": self._message}
+        if promoted:
+            append_memory_initialization_diagnostic(
+                self._app_root,
+                component="plugin_memory_owner",
+                event="owner_status_changed",
+                stage="store_status",
+                outcome="observed",
+                status="ready",
+            )
+        return current
+
+    def prompt_dependency_snapshot(self) -> dict[str, object]:
+        """Expose only stable, body-free startup diagnostics for prompt logging."""
+
+        snapshot: dict[str, object] = dict(self.status())
+        diagnostic_getter = getattr(self._store, "load_diagnostic", None)
+        diagnostic = diagnostic_getter() if callable(diagnostic_getter) else {}
+        if isinstance(diagnostic, Mapping):
+            for source, target in (
+                ("stage", "stage"),
+                ("category", "category"),
+                ("errorType", "error_type"),
+            ):
+                value = diagnostic.get(source)
+                if isinstance(value, str) and value.strip():
+                    snapshot[target] = value.strip()
+        return snapshot
 
     def list_memories(self, *, limit: int | None = None) -> list[dict[str, Any]]:
+        """Read manager/curation snapshots through one stable failure boundary."""
+
+        if self.status()["status"] != "ready":
+            raise MemoryBoundaryError(
+                "MEMORY_NOT_READY",
+                "记忆暂时不可用。",
+                retryable=True,
+            )
         try:
             return self._store.list_memories(limit=limit)
         except Exception as exc:
-            raise MemoryBoundaryError("MEMORY_READ_FAILED", f"记忆读取失败：{exc}", retryable=True) from exc
+            with self._lock:
+                self._store_failed = True
+            self._set_status("degraded", "记忆读取暂时不可用；聊天不受影响。")
+            raise MemoryBoundaryError(
+                "MEMORY_READ_FAILED",
+                "记忆读取暂时不可用。",
+                retryable=False,
+            ) from exc
 
     def search(self, payload: Mapping[str, object]) -> dict[str, object]:
-        _only(payload, {"query", "limit", "layer", "automatic", "excluded_turn_id", "subject", "predicate", "target"})
+        _only(payload, {"query", "limit", "layer"})
         query = _text(payload.get("query"), "query", MAX_MEMORY_QUERY)
-        limit = _bounded_int(payload.get("limit", 10), "limit", 1, MAX_MEMORY_RESULTS)
+        limit = _bounded_int(payload.get("limit"), "limit", 1, MAX_MEMORY_RESULTS)
         layer = payload.get("layer")
         if layer is not None and layer not in MEMORY_LAYERS:
             raise MemoryBoundaryError("FIELD_INVALID", "记忆分层无效。", field="layer")
+        current = self.status()
+        if current["status"] != "ready":
+            return {**current, "memories": []}
+        arguments: dict[str, Any] = {"query": query, "limit": limit}
+        if layer is not None:
+            arguments["layer"] = layer
         try:
-            result = self._store.search_memory({**payload, "query": query, "limit": limit}, wait=False)
-        except Exception as exc:
-            log_event("Memory", "记忆检索失败", {"error": str(exc)}, event="memory.search.failed", severity="error")
-            return {"status": "degraded", "message": str(exc), "memories": []}
-        return {"status": "ready", "message": "", "memories": [
-            _project_memory(item, self._character_id) for item in result["memories"]
-        ]}
-
-    def transfer(self, request: Mapping[str, object]) -> dict:
-        if request["expectedCharacterId"] != self._character_id:
-            raise ValueError("角色已变化，请重新打开导入导出。")
-        action = request["action"]
-        with self._write_lock:
-            existing = self._store.export_records()
-            if action == "export":
-                return write_archive(request["path"], kind="memory", provider="sakura.memory.mem0",
-                                     character_id=self._character_id, records=existing, format=request["format"])
-            archive = read_archive(request["path"], kind="memory", provider="sakura.memory.mem0",
-                                   character_id=self._character_id, identity_path=request.get("identityPath"))
-            records = archive["records"]
-            for item in records:
-                deleted = item.get("deleted", item.get("metadata", {}).get("deleted", False))
-                validate_content = _text if deleted else _required_text
-                validate_content(item["content"], "content", MAX_MEMORY_CONTENT)
-                if item["layer"] not in MEMORY_LAYERS:
-                    raise ValueError("记忆分类无效。")
-            additions, counts = plan_merge(records, existing)
-            if action == "import":
-                self._assert_writable()
-                self._store.restore_records(additions)
-            elif action != "preview":
-                raise ValueError("不支持的数据操作。")
-            return {**counts, "sourceCharacterId": archive["characterId"]}
-
-    def start_text_import(self, request: Mapping[str, object]) -> dict:
-        text = str(request["text"]).strip()
-        if not text:
-            raise ValueError("请先粘贴需要提取的文本。")
-        request_id = request["requestId"]
-        with self._lock:
-            self._assert_writable()
-            _, _, configured = _curation_values(self._curation_config_getter())
-            selection = _resolved_model(self._model_resolver(configured))
-            if not selection["serviceKey"] or self._model_client_factory is None:
-                raise ValueError("请先配置记忆整理模型。")
-            self._text_import_cancel.set()
-            cancel = self._text_import_cancel = threading.Event()
-            self._text_import_result = {"requestId": request_id, "state": "running", "candidates": []}
-
-        def cancelled() -> None:
-            if cancel.is_set():
-                raise OperationCancelled()
-
-        def run() -> None:
-            client = None
-            log_event("Memory", "开始从文本提取记忆", {"request_id": request_id, "scope": self._character_id},
-                      event="memory.text_import.started")
-            try:
-                cancelled()
-                client = self._model_client_factory(selection)
-                entry = ChatHistoryEntry(datetime.now(timezone.utc).isoformat(), "document", text,
-                                         entry_id="text-import:" + request_id)
-                candidates = MemoryCurator(client, self._store).preview_text(entry, cancel_checker=cancelled)
-                with self._lock:
-                    cancelled()
-                    self._text_import_result.update(state="preview", candidates=[
-                        {**item, "candidateId": str(uuid.uuid4())} for item in candidates])
-                log_event("Memory", "文本记忆候选已生成", {"request_id": request_id, "count": len(candidates)},
-                          event="memory.text_import.preview")
-            except OperationCancelled:
-                pass
-            except Exception as exc:
-                with self._lock:
-                    if not cancel.is_set():
-                        self._text_import_result.update(state="failed", error=str(exc))
-                        log_event("Memory", "文本记忆提取失败", {"request_id": request_id, "error": str(exc)},
-                                  event="memory.text_import.failed", severity="warning")
-            finally:
-                if client is not None:
-                    try:
-                        client.close()
-                    except Exception as exc:
-                        log_event("Memory", "整理模型连接关闭失败", {"error": str(exc)}, severity="debug")
-
-        if self._curation_threads.spawn(run, name="sakura-memory-text-import", daemon=True) is None:
+            result = self._store.search_memory(arguments, wait=False)
+        except Exception:
+            log_event("memory", "记忆检索失败", event="memory.search.failed", severity="error")
             with self._lock:
-                self._text_import_result.update(state="failed", error="无法启动文本提取任务。")
-        return self.text_import_status(request)
-
-    def text_import_status(self, request: Mapping[str, object]) -> dict:
-        with self._lock:
-            if request["requestId"] != self._text_import_result.get("requestId"):
-                raise ValueError("这次文本提取已结束，请重新提取。")
-            return deepcopy(self._text_import_result)
-
-    def cancel_text_import(self, request: Mapping[str, object]) -> dict:
-        with self._lock:
-            if request["requestId"] == self._text_import_result.get("requestId"):
-                self._text_import_cancel.set()
-                self._text_import_result = {"requestId": request["requestId"], "state": "cancelled"}
-        return {"state": "cancelled"}
-
-    def save_text_import(self, request: Mapping[str, object]) -> dict:
-        with self._lock:
-            self._assert_writable()
-            preview = self.text_import_status(request)
-            if preview["state"] == "saved":
-                return preview
-            if preview["state"] != "preview":
-                raise ValueError("请先完成文本提取并核对候选。")
-            candidates = {item["candidateId"]: item for item in preview["candidates"]}
-            selected = {item["candidateId"]: item for item in request["candidates"]}
-            if not selected:
-                raise ValueError("请至少选择一条记忆。")
-            with self._write_lock, self._store.transaction():
-                for identity, edits in selected.items():
-                    candidate = candidates[identity]
-                    values = {key: value for key, value in candidate.items() if key != "candidateId"}
-                    values.update({key: value for key, value in edits.items()
-                                   if key in {"content", "layer", "state", *KNOWLEDGE_FIELDS}})
-                    self.upsert({**values, "source": "manual"})
-            self._text_import_result = {"requestId": request["requestId"], "state": "saved", "saved": len(selected)}
-            log_event("Memory", "已保存用户确认的文本记忆", {"request_id": request["requestId"], "count": len(selected)},
-                      event="memory.text_import.saved")
-            return dict(self._text_import_result)
+                self._store_failed = True
+            self._set_status("degraded", "记忆检索暂时不可用；聊天不受影响。")
+            return {**self.status(), "memories": []}
+        status = str(result.get("status") or "ready")
+        if status != "ready":
+            safe_status = status if status in MEMORY_STATUSES else "degraded"
+            with self._lock:
+                self._store_failed = True
+            self._set_status(safe_status, "记忆检索暂时不可用；聊天不受影响。")
+            return {**self.status(), "memories": []}
+        memories = result.get("memories")
+        if not isinstance(memories, list):
+            with self._lock:
+                self._store_failed = True
+            self._set_status("degraded", "记忆检索暂时不可用；聊天不受影响。")
+            return {**self.status(), "memories": []}
+        projected = [
+            record
+            for item in memories
+            if isinstance(item, Mapping) and (record := _project_memory(item, self._character_id))
+        ]
+        return {"status": "ready", "message": "", "memories": projected[:limit]}
 
     def upsert(self, payload: Mapping[str, object]) -> dict[str, object]:
         _only(
@@ -326,46 +360,39 @@ class MemoryBoundary:
                 "layer",
                 "category",
                 "source",
-                *KNOWLEDGE_FIELDS,
                 "importance",
                 "confidence",
                 "source_turn_id",
                 "source_entry_ids",
                 "created_in_turn_id",
-                "evidence_kind", "evidence", "pinned", "state", "occurred_at", "revision",
+                "evidence_kind",
             },
         )
         self._assert_writable()
-        memory_id = _text(payload.get("id"), "id", 256)
-        previous = self._store.get(memory_id) if memory_id else {}
-        if memory_id and previous is None:
-            raise ValueError("记忆不存在或不属于当前角色。")
-        if previous.get("pinned") and payload.get("source") == "user_tool":
-            raise ValueError("这条记忆已固定，请在记忆管理页修改。")
-        content = _required_text(payload.get("content", previous.get("content")), "content", MAX_MEMORY_CONTENT)
-        layer = payload.get("layer", previous.get("layer", DEFAULT_MEMORY_LAYER))
+        content = _required_text(payload.get("content"), "content", MAX_MEMORY_CONTENT)
+        layer = payload.get("layer", DEFAULT_MEMORY_LAYER)
         if layer not in MEMORY_LAYERS:
             raise MemoryBoundaryError("FIELD_INVALID", "记忆分层无效。", field="layer")
         arguments: dict[str, object] = {
             "content": content,
             "layer": layer,
-            "category": _text(payload.get("category", previous.get("category")), "category", MAX_MEMORY_TEXT_FIELD),
-            "source": _text(payload.get("source", previous.get("source")), "source", MAX_MEMORY_TEXT_FIELD) or "manual",
+            "category": _text(payload.get("category"), "category", MAX_MEMORY_TEXT_FIELD),
+            "source": _text(payload.get("source"), "source", MAX_MEMORY_TEXT_FIELD) or "explicit",
             "importance": _bounded_number(
-                payload.get("importance", previous.get("importance", DEFAULT_MEMORY_IMPORTANCE)), "importance"
+                payload.get("importance", DEFAULT_MEMORY_IMPORTANCE), "importance"
             ),
             "confidence": _bounded_number(
-                payload.get("confidence", previous.get("confidence", DEFAULT_MEMORY_CONFIDENCE)), "confidence"
+                payload.get("confidence", DEFAULT_MEMORY_CONFIDENCE), "confidence"
             ),
         }
+        memory_id = _text(payload.get("id"), "id", 256)
         if memory_id:
             arguments["id"] = memory_id
-            arguments["revision"] = previous["revision"]
         for key in (
             "source_turn_id",
             "source_entry_ids",
             "created_in_turn_id",
-            "evidence_kind", "evidence", "pinned", "state", "occurred_at", "revision", *KNOWLEDGE_FIELDS,
+            "evidence_kind",
         ):
             if key in payload:
                 arguments[key] = payload[key]
@@ -380,20 +407,24 @@ class MemoryBoundary:
             raise MemoryBoundaryError("MEMORY_VALIDATION_FAILED", str(exc), field="content") from exc
         except Exception as exc:
             raise MemoryBoundaryError(
-                "MEMORY_WRITE_FAILED", f"记忆保存失败：{exc}", retryable=True
+                "MEMORY_WRITE_FAILED", "记忆保存失败，原数据保持不变。", retryable=True
             ) from exc
-        return {"status": "ready", "memory": _project_memory(result["memory"], self._character_id)}
+        memory = result.get("memory")
+        if not isinstance(memory, Mapping):
+            raise MemoryBoundaryError("MEMORY_RESPONSE_INVALID", "记忆保存响应无效。")
+        projected = _project_memory(memory, self._character_id)
+        if projected is None:
+            raise MemoryBoundaryError("MEMORY_RESPONSE_INVALID", "记忆保存响应无效。")
+        _assert_memory_round_trip(projected, arguments)
+        return {"status": "ready", "memory": projected}
 
     def delete(self, payload: Mapping[str, object]) -> dict[str, object]:
-        _only(payload, {"id", "source", "evidence"})
+        _only(payload, {"id"})
         self._assert_writable()
         memory_id = _required_text(payload.get("id"), "id", 256)
-        previous = self._store.get(memory_id)
-        if previous and previous["pinned"] and payload.get("source") == "user_tool":
-            raise ValueError("这条记忆已固定，请在记忆管理页删除。")
         try:
             with self._write_lock:
-                result = self._store.forget_memory(dict(payload), wait=True)
+                result = self._store.forget_memory({"id": memory_id}, wait=True)
         except Exception as exc:
             raise MemoryBoundaryError(
                 "MEMORY_DELETE_FAILED", "记忆删除失败，原数据保持不变。", retryable=True
@@ -431,114 +462,16 @@ class MemoryBoundary:
                 "triggerTurns": trigger,
                 "backfillLimit": backfill,
                 "available": available,
-                "running": self._curation_active,
-                "pendingTurns": self._curation_state.pending_turns(),
-                "result": self._curation_result,
             },
             "curationModelSlot": configured_slot,
             "providerChoices": catalog,
-            "backfill": self._store.get_state("backfill", default={}),
             "embedding": {
                 "model": DEFAULT_EMBEDDING_MODEL,
                 "dimensions": DEFAULT_EMBEDDING_DIMS,
                 "installed": not self._store.needs_embedding_model_download(),
-                "index": self._store.index_status(),
                 "task": None,
             },
         }
-
-    def rebuild_index(self) -> None:
-        self._assert_writable()
-        if self._store.needs_embedding_model_download():
-            raise ValueError("请先下载中文向量模型。")
-        self._store.rebuild_index()
-
-    def merge_duplicates(self) -> dict:
-        self._assert_writable()
-        with self._write_lock:
-            return self._store.merge_duplicates()
-
-    def update_now(self, timeline: object) -> None:
-        self._assert_writable()
-        self.note_timeline_changed(timeline, force=True)
-
-    def start_backfill(self, timeline: object, start_date: str, end_date: str) -> None:
-        from datetime import date
-
-        if date.fromisoformat(start_date) > date.fromisoformat(end_date):
-            raise ValueError("开始日期不能晚于结束日期。")
-        with self._lock:
-            self._assert_writable()
-            if self._curation_active:
-                raise ValueError("记忆整理正在运行。")
-            _, _, configured = _curation_values(self._curation_config_getter())
-            selection = _resolved_model(self._model_resolver(configured))
-            if not selection["serviceKey"] or self._model_client_factory is None:
-                raise ValueError("请先配置记忆整理模型。")
-            saved = self._store.get_state("backfill", default={})
-            if saved.get("startDate") != start_date or saved.get("endDate") != end_date or saved.get("status") == "completed":
-                saved = {"startDate": start_date, "endDate": end_date, "completed": 0}
-            saved.update(status="running", error="")
-            self._store.set_state("backfill", saved)
-            self._curation_cancel.clear()
-            self._curation_active = True
-
-        def run() -> None:
-            client = None
-            def finish(status: str, **values) -> None:
-                with self._lock:
-                    if not self._closed:
-                        current = self._store.get_state("backfill", default={})
-                        self._store.set_state("backfill", {**current, "status": status, **values})
-            try:
-                client = self._model_client_factory(selection)
-                curator = MemoryCurator(client, self._store)
-
-                def cancelled() -> None:
-                    if self._curation_cancel.is_set():
-                        raise OperationCancelled()
-
-                for entries, cursor, snapshot, total in _read_timeline_range(
-                    timeline, self._character_id, saved, cancelled,
-                ):
-                    cancelled()
-                    self._store.set_state("backfill", {
-                        **self._store.get_state("backfill", default={}), "snapshotCursor": snapshot, "total": total,
-                    })
-                    curator.curate_entries(_curation_evidence_turns(entries)[0],
-                                           cursor=cursor, state_key="backfill", cancel_checker=cancelled)
-                    cancelled()
-                    current = self._store.get_state("backfill", default={})
-                    current["completed"] = current.get("completed", 0) + len(entries)
-                    self._store.set_state("backfill", current)
-                    log_event("Memory", "历史记忆整理进度",
-                              {"completed": current["completed"], "total": total}, event="memory.backfill.progress")
-                finish("completed")
-            except OperationCancelled:
-                finish("cancelled")
-            except Exception as exc:
-                if not self._closed:
-                    finish("failed", error=str(exc))
-                    log_event("Memory", "历史记忆整理失败", {"error": str(exc)}, severity="warning")
-            finally:
-                if client is not None:
-                    try:
-                        client.close()
-                    except Exception as exc:
-                        log_event("Memory", "整理模型连接关闭失败", {"error": str(exc)}, severity="debug")
-                with self._lock:
-                    self._curation_active = False
-                    pending = self._pending_timeline
-                    self._pending_timeline = None
-                    if not self._closed:
-                        self._curation_cancel.clear()
-                if pending is not None:
-                    self.note_timeline_changed(pending)
-
-        self._curation_threads.spawn(run, name="sakura-memory-backfill", daemon=True)
-
-    def cancel_backfill(self) -> None:
-        self._curation_cancel.set()
 
     def model_download(
         self,
@@ -558,10 +491,12 @@ class MemoryBoundary:
         progress: Callable[[str, int], None] | None = None,
     ) -> str:
         try:
-            self._store.download_embedding_model(
-                progress=self._model_progress(progress),
-                cancel=self._model_task_cancel,
-            )
+            with self._write_lock:
+                self._store.download_embedding_model(
+                    progress=self._model_progress(progress),
+                    cancel=self._model_task_cancel,
+                )
+            self._set_status("loading", "本地记忆模型已安装，正在初始化记忆。")
             status = "completed"
         except MemoryModelTaskCancelled:
             status = "cancelled"
@@ -573,7 +508,7 @@ class MemoryBoundary:
             )
             with self._lock:
                 self._model_download_error_code = code
-            log_event("Memory", "本地向量模型下载失败", {"error": str(exc)}, severity="warning")
+            self._set_status("degraded", "本地记忆模型下载失败；原缓存保持不变。")
             append_memory_initialization_diagnostic(
                 self._app_root,
                 component="plugin_memory_owner",
@@ -601,14 +536,14 @@ class MemoryBoundary:
             return self._model_download_error_code
 
     def _begin_model_task(self, request: Mapping[str, Any] | None) -> str:
-        self._assert_writable(feature="memory.embedding_model")
+        self._assert_writable(require_ready=False, feature="memory.embedding_model")
         task_id = (
             _required_text(request.get("id"), "taskId", 256)
             if request is not None
             else f"memory-model-{uuid.uuid4().hex}"
         )
         with self._lock:
-            if self._model_task_active:
+            if self._curation_active or self._model_task_active:
                 raise MemoryBoundaryError(
                     "MEMORY_TASK_BUSY",
                     "已有记忆后台任务正在运行。",
@@ -649,13 +584,17 @@ class MemoryBoundary:
 
         return check_cancelled
 
-    def note_timeline_changed(self, timeline: object, *, force: bool = False) -> None:
+    def note_timeline_changed(self, timeline: object) -> None:
         """Catch up committed Timeline entries and schedule at most one curation job."""
 
         with self._lock:
-            if self._closed:
+            if (
+                self._closed
+                or self._store_failed
+                or self._status != "ready"
+            ):
                 return
-            if self._curation_active:
+            if self._curation_active or self._model_task_active:
                 self._pending_timeline = timeline
                 return
             try:
@@ -667,22 +606,21 @@ class MemoryBoundary:
                     backfill,
                 )
                 next_cursor = intervals[-1][1]
+                self._curation_state.mark_timeline_synced(next_cursor)
                 entries, pending = _curation_evidence_turns(
                     [entry for page, _cursor in intervals for entry in page]
                 )
                 self._curation_state.set_timeline_pending(pending)
                 if not pending:
                     self._curation_state.mark_timeline_processed(next_cursor)
-                    if force:
-                        self._curation_result = {"message": "没有待更新的对话。"}
                     return
-                if pending < trigger and not force:
+                if pending < trigger:
                     return
                 log_event(
                     "Memory",
-                    "开始处理待整理对话",
+                    "证据 Turn 达到阈值，开始记忆整理",
                     {
-                        "reason_code": "MANUAL_UPDATE" if force else "EVIDENCE_TURN_THRESHOLD",
+                        "reason_code": "EVIDENCE_TURN_THRESHOLD",
                         "eligible_turns": pending,
                         "trigger_turns": trigger,
                         "turn_ids": list(
@@ -694,8 +632,6 @@ class MemoryBoundary:
                 )
                 resolved = _resolved_model(self._model_resolver(configured_slot))
                 if not resolved["serviceKey"] or self._model_client_factory is None:
-                    if force:
-                        raise ValueError("请先在模型设置中选择记忆整理模型。")
                     return
                 selected_ids = {entry.entry_id for entry in entries}
                 intervals = [
@@ -703,11 +639,7 @@ class MemoryBoundary:
                     for page, cursor in intervals
                 ]
                 self._curation_active = True
-                self._curation_result = {}
-            except Exception as exc:
-                if force:
-                    raise
-                log_event("Memory", "读取待整理对话失败", {"error": str(exc)}, severity="warning")
+            except Exception:
                 return
 
         self._start_curation(intervals, resolved)
@@ -722,7 +654,6 @@ class MemoryBoundary:
             pending_timeline: object | None = None
             operation_id = f"memory-curation-{uuid.uuid4().hex}"
             succeeded = False
-            counts = {"created": 0, "updated": 0, "processed": 0}
             try:
                 with interaction_context(operation_id):
                     if self._curation_cancel.is_set():
@@ -734,7 +665,11 @@ class MemoryBoundary:
                         severity="debug",
                     )
                     client = self._model_client_factory(selection)
-                    curator = MemoryCurator(client, self._store)
+                    curator = MemoryCurator(
+                        client,
+                        self._store.scoped(self._character_id),
+                        system_prompt=self._system_prompt,
+                    )
 
                     def check_cancelled() -> None:
                         if self._curation_cancel.is_set():
@@ -745,14 +680,13 @@ class MemoryBoundary:
                     }
                     for entries, cursor in intervals:
                         check_cancelled()
-                        result = curator.curate_entries(entries, cancel_checker=check_cancelled, cursor=cursor)
+                        with self._write_lock:
+                            result = curator.curate_entries(entries, cancel_checker=check_cancelled)
                         check_cancelled()
-                        counts["created"] += result.created
-                        counts["updated"] += result.updated
-                        counts["processed"] += result.processed_entries
-                        self._curation_result = dict(counts)
                         remaining_turns.difference_update(entry.turn_id for entry in entries)
-                        self._curation_state.set_timeline_pending(len(remaining_turns))
+                        self._curation_state.mark_timeline_processed(
+                            cursor, pending_turns=len(remaining_turns)
+                        )
                         log_event(
                             "Memory",
                             f"记忆已更新：新增 {result.created} 条，更新 {result.updated} 条，归档 {result.archived} 条"
@@ -772,17 +706,30 @@ class MemoryBoundary:
             except Exception as exc:
                 if getattr(exc, "code", "") in {"SERVICE_BINDING_EXPIRED", "GENERATION_INVALIDATED"}:
                     return
-                self._curation_result = {**counts, "error": str(exc)}
-                # 保留已完成批次的游标和记录，下次从失败的批次继续。
+                # Keep completed page cursors and any successful writes. A later
+                # event retries the failed page; source IDs protect partial writes.
                 with interaction_context(operation_id):
-                    reason_code = str(getattr(exc, "code", "") or "CURATION_FAILED")
+                    diagnostic_getter = getattr(self._store, "load_diagnostic", None)
+                    diagnostic = (
+                        diagnostic_getter() if callable(diagnostic_getter) else {}
+                    )
+                    reason_code = str(getattr(exc, "code", ""))
+                    if reason_code not in {
+                        "MEMORY_CURATION_SNAPSHOT_FAILED",
+                        "MEMORY_CURATION_WRITE_FAILED",
+                        "CURATION_RESPONSE_INVALID",
+                    }:
+                        reason_code = "CURATION_FAILED"
                     log_event(
                         "Memory",
                         "后台记忆整理失败，后续历史更新时重试",
                         {
                             "error_type": type(exc).__name__,
-                            "error": str(exc),
                             "reason_code": reason_code,
+                            "category": str(diagnostic.get("category") or "curation_failed"),
+                            "runtime_error_type": str(
+                                diagnostic.get("errorType") or "UnknownError"
+                            ),
                         },
                         event="memory.curation.failed",
                         severity="error",
@@ -826,10 +773,12 @@ class MemoryBoundary:
                 return
             self._closed = True
             self._pending_timeline = None
+            self._status = "stopped"
+            self._message = "记忆能力已停止。"
         self._curation_cancel.set()
-        self._text_import_cancel.set()
         self._model_task_cancel.set()
-        self._curation_threads.stop(timeout_ms=10_000)
+        self._resources.stop_all(timeout_ms=10_000)
+        self._store.remove_status_listener(self._on_store_status)
         self._store.close()
         append_memory_initialization_diagnostic(
             self._app_root,
@@ -840,10 +789,58 @@ class MemoryBoundary:
             status="stopped",
         )
 
-    def _assert_writable(self, *, feature: str = "memory.manage") -> None:
-        if self.status()["status"] == "stopped":
+    def _assert_writable(
+        self,
+        *,
+        require_ready: bool = True,
+        feature: str = "memory.manage",
+    ) -> None:
+        status = self.status()["status"]
+        with self._lock:
+            task_busy = self._curation_active or self._model_task_active
+        if status in {"read_only", "failed", "stopped"}:
             raise MemoryBoundaryError(
-                "MEMORY_READ_ONLY", "记忆存储已关闭。", feature=feature
+                "MEMORY_READ_ONLY", "记忆当前不可写。", feature=feature
+            )
+        if require_ready and status != "ready":
+            raise MemoryBoundaryError(
+                "MEMORY_NOT_READY", "记忆仍在初始化。", retryable=True, feature=feature
+            )
+        if require_ready and task_busy:
+            raise MemoryBoundaryError(
+                "MEMORY_TASK_BUSY", "记忆后台任务正在运行，请稍后重试。",
+                retryable=True, feature=feature,
+            )
+
+    def _on_store_status(self, status: str, message: str) -> None:
+        projected = {
+            "idle": "loading", "reloading": "loading", "ready": "ready",
+            "failed": "degraded", "stopped": "stopped",
+        }.get(status, "degraded")
+        with self._lock:
+            if status == "ready":
+                self._store_failed = False
+            elif status in {"failed", "stopped"}:
+                self._store_failed = True
+        self._set_status(projected, _public_status_message(projected, message))
+
+    def _set_status(self, status: str, message: str) -> None:
+        safe = status if status in MEMORY_STATUSES else "degraded"
+        changed = False
+        with self._lock:
+            if self._closed and safe != "stopped":
+                return
+            changed = self._status != safe
+            self._status = safe  # type: ignore[assignment]
+            self._message = message
+        if changed:
+            append_memory_initialization_diagnostic(
+                self._app_root,
+                component="plugin_memory_owner",
+                event="owner_status_changed",
+                stage="store_status",
+                outcome="observed",
+                status=safe,
             )
 
 
@@ -898,7 +895,7 @@ def _read_timeline_since(
             return pages
 
 
-def _project_timeline_entries(value: object, character_id: str, *, include_imported: bool = False) -> list[ChatHistoryEntry]:
+def _project_timeline_entries(value: object, character_id: str) -> list[ChatHistoryEntry]:
     if not isinstance(value, list):
         raise ValueError("TIMELINE_RESPONSE_INVALID")
     projected: list[ChatHistoryEntry] = []
@@ -911,7 +908,7 @@ def _project_timeline_entries(value: object, character_id: str, *, include_impor
         origin = item.get("origin")
         kind = item.get("kind")
         payload = item.get("payload")
-        if isinstance(payload, Mapping) and payload.get("imported") and not include_imported:
+        if isinstance(payload, Mapping) and payload.get("imported"):
             continue
         if (
             not isinstance(entry_id, str)
@@ -969,27 +966,6 @@ def _project_timeline_entries(value: object, character_id: str, *, include_impor
     return projected
 
 
-def _read_timeline_range(timeline, character_id: str, saved: dict, cancelled):
-    cursor = saved.get("curation_cursor", "")
-    snapshot = saved.get("snapshotCursor", "")
-    pending = None
-    while True:
-        cancelled()
-        page = timeline.read_range({"startDate": saved["startDate"], "endDate": saved["endDate"],
-                                    "cursor": cursor, "snapshotCursor": snapshot, "limit": 200})
-        entries = _project_timeline_entries(page["entries"], character_id, include_imported=True)
-        if pending is not None:
-            if {entry.turn_id for entry in pending[0]} & {entry.turn_id for entry in entries}:
-                entries = pending[0] + entries
-            else:
-                yield pending
-        cursor, snapshot = page["nextCursor"], page["snapshotCursor"]
-        pending = (entries, cursor, snapshot, page["total"])
-        if not page["hasMore"]:
-            yield pending
-            return
-
-
 def _curation_evidence_turns(
     entries: list[ChatHistoryEntry],
 ) -> tuple[list[ChatHistoryEntry], int]:
@@ -1041,24 +1017,93 @@ def _resolved_model(value: object) -> dict[str, str]:
 
 
 def _project_memory(raw: Mapping[str, object], scope: str) -> dict[str, object] | None:
-    if raw["scope"] != scope:
+    metadata = raw.get("metadata") if isinstance(raw.get("metadata"), Mapping) else {}
+    record_scope = str(raw.get("scope") or metadata.get("scope") or scope)
+    if record_scope != scope:
         return None
+    content = str(raw.get("content") or raw.get("memory") or "").strip()
+    memory_id = str(raw.get("id") or raw.get("memory_id") or "").strip()
+    if not content or not memory_id:
+        return None
+    def field(name: str, default: object = "") -> object:
+        return raw.get(name, metadata.get(name, default))
     projected: dict[str, object] = {
-        **{key: raw[key] for key in ("id", "content", "layer", "category", "importance", "confidence", "source",
-                                    "scope", "pinned", "state", "revision", "evidence", *KNOWLEDGE_FIELDS)},
-        "createdAt": raw["created_at"],
-        "updatedAt": raw["updated_at"],
-        "lastAccessedAt": raw["last_accessed_at"],
-        "occurredAt": raw["occurred_at"],
-        "score": raw.get("score"),
-        "retrieval": raw.get("retrieval", {}),
+        "id": memory_id,
+        "content": content[:MAX_MEMORY_CONTENT],
+        "layer": str(field("layer", DEFAULT_MEMORY_LAYER)),
+        "category": str(field("category")),
+        "importance": _safe_number(field("importance", DEFAULT_MEMORY_IMPORTANCE)),
+        "confidence": _safe_number(field("confidence", DEFAULT_MEMORY_CONFIDENCE)),
+        "source": str(field("source", "inferred")),
+        "scope": scope,
+        "createdAt": str(field("created_at")),
+        "updatedAt": str(field("updated_at")),
+        "lastAccessedAt": str(field("last_accessed_at")),
+        "score": _safe_number(raw.get("score"), default=None),
     }
-    for field, key in (("source_turn_id", "sourceTurnId"), ("source_entry_ids", "sourceEntryIds"),
-                       ("created_in_turn_id", "createdInTurnId"), ("evidence_kind", "evidenceKind")):
-        if raw["metadata"].get(field):
-            projected[key] = raw["metadata"][field]
+    optional_fields = {
+        "sourceTurnId": field("source_turn_id"),
+        "sourceEntryIds": field("source_entry_ids", []),
+        "createdInTurnId": field("created_in_turn_id"),
+        "evidenceKind": field("evidence_kind"),
+    }
+    for key, value in optional_fields.items():
+        if key == "sourceEntryIds":
+            if isinstance(value, (list, tuple)) and value:
+                projected[key] = list(value)
+        elif str(value or "").strip():
+            projected[key] = str(value)
     return projected
 
+
+def _assert_memory_round_trip(
+    memory: Mapping[str, object],
+    requested: Mapping[str, object],
+) -> None:
+    fields = {
+        "layer": "layer",
+        "category": "category",
+        "source": "source",
+        "importance": "importance",
+        "confidence": "confidence",
+        "source_turn_id": "sourceTurnId",
+        "source_entry_ids": "sourceEntryIds",
+        "created_in_turn_id": "createdInTurnId",
+        "evidence_kind": "evidenceKind",
+    }
+    for request_key, memory_key in fields.items():
+        if request_key not in requested:
+            continue
+        expected = requested[request_key]
+        actual = memory.get(memory_key)
+        if request_key in {"importance", "confidence"}:
+            matches = _safe_number(actual) == _safe_number(expected)
+        elif request_key == "source_entry_ids":
+            matches = (
+                isinstance(actual, list)
+                and isinstance(expected, (list, tuple))
+                and actual == list(expected)
+            )
+        else:
+            matches = str(actual or "") == str(expected or "")
+        if not matches:
+            raise MemoryBoundaryError(
+                "MEMORY_ROUND_TRIP_MISMATCH",
+                "记忆保存后的元数据校验失败，未返回不可信的成功结果。",
+                retryable=True,
+                field=request_key,
+            )
+
+
+def _public_status_message(status: str, _internal: str) -> str:
+    return {
+        "ready": "",
+        "loading": "记忆系统正在初始化。",
+        "degraded": "记忆暂时不可用；聊天不受影响。",
+        "read_only": "记忆处于只读状态。",
+        "failed": "记忆能力不可用。",
+        "stopped": "记忆能力已停止。",
+    }[status]
 
 
 def _only(value: Mapping[str, object], allowed: set[str]) -> None:
@@ -1091,6 +1136,15 @@ def _bounded_number(value: object, field: str) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 <= float(value) <= 1:
         raise MemoryBoundaryError("FIELD_INVALID", f"{field} 超出允许范围。", field=field)
     return float(value)
+
+
+def _safe_number(value: object, *, default: float | None = 0.0) -> float | None:
+    if isinstance(value, bool):
+        return default
+    try:
+        return float(value) if value is not None else default
+    except (TypeError, ValueError):
+        return default
 
 
 __all__ = ["MemoryBoundary", "MemoryBoundaryError"]

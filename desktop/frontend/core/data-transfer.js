@@ -4,9 +4,9 @@ import { createDateRangePicker } from "./date-range-picker.js";
 let nextId = 0;
 
 export function createDataTransferMenu({ document, invoke, characterId, identityKey = characterId, isCurrent = () => true,
-  transfer, onImported = () => {}, loadDates, kind = "chat" }) {
+  transfer, onImported = () => {}, loadDates }) {
   const id = `data-transfer-${++nextId}`;
-  const subject = kind === "memory" ? "记忆" : "聊天记录";
+  const subject = "聊天记录";
   const group = document.createElement("span");
   group.className = "data-transfer-menu";
   const trigger = document.createElement("button");
@@ -36,15 +36,12 @@ export function createDataTransferMenu({ document, invoke, characterId, identity
     });
     menu.append(button);
   }
-  menu.addEventListener("toggle", event => {
+  menu.addEventListener("beforetoggle", event => {
     trigger.setAttribute("aria-expanded", String(event.newState === "open"));
     if (event.newState !== "open") return;
     const bounds = trigger.getBoundingClientRect();
     menu.style.left = `${Math.max(8, Math.min(bounds.right - 180, document.documentElement.clientWidth - 188))}px`;
-    const menuHeight = menu.getBoundingClientRect().height;
-    const top = bounds.bottom + 6 + menuHeight <= document.documentElement.clientHeight - 8
-      ? bounds.bottom + 6 : Math.max(8, bounds.top - menuHeight - 6);
-    menu.style.top = `${top}px`;
+    menu.style.top = `${bounds.bottom + 6}px`;
   });
   trigger.addEventListener("keydown", event => {
     if (!["ArrowDown", "ArrowUp"].includes(event.key)) return;
@@ -128,12 +125,10 @@ export function createDataTransferMenu({ document, invoke, characterId, identity
         formats.append(choice);
       }
       options.append(formats);
-      if (kind === "chat") {
-        dates = createDateRangePicker({ document, id, isCurrent: current, loadDates,
-          loadRange: () => transfer({ action: "range", expectedCharacterId }),
-          onChange: () => { result.textContent = ""; } });
-        options.append(dates.element);
-      }
+      dates = createDateRangePicker({ document, id, isCurrent: current, loadDates,
+        loadRange: () => transfer({ action: "range", expectedCharacterId }),
+        onChange: () => { result.textContent = ""; } });
+      options.append(dates.element);
     } else options.hidden = true;
     const initialLabel = exporting ? "选择保存位置" : "选择文件";
     run.textContent = initialLabel;
@@ -162,13 +157,13 @@ export function createDataTransferMenu({ document, invoke, characterId, identity
         const importing = !exporting && path !== null && !chooseNew;
         if (!importing) {
           const selected = await invoke("data_transfer_choose", { export: exporting, format,
-            defaultName: `${kind === "memory" ? "memory" : "history"}_${expectedCharacterId}.${format}` });
+            defaultName: `history_${expectedCharacterId}.${format}` });
           if (!selected || !current()) return;
           path = selected;
         }
         const request = { action: exporting ? "export" : importing ? "import" : "preview",
           path, format, expectedCharacterId };
-        if (exporting && dates) {
+        if (exporting) {
           Object.assign(request, dates.getValue());
         }
         preview.hidden = true;

@@ -1890,7 +1890,6 @@ async function startSettingsFrontend() {
         removeOverlayAfterExit,
         showPage,
         isCharacterTransitioning: () => runtimeCharacterFeature?.isTransitioning(),
-        currentCharacterId: () => runtimeCharacterFeature?.currentCharacterId(),
         hasPendingCharacterSelection: () => Boolean(runtimeCharacterFeature?.pendingCharacterId()),
       });
       runtimePluginController.initialize(await invoke("settings_plugins_get"));

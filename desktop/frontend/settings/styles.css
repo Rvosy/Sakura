@@ -8,7 +8,6 @@
 @import url("../assets/fonts/fonts.css");
 @import url("../core/icons.css");
 @import url("../core/selection.css");
-@import url("../core/data-transfer.css");
 @import url("./visual-settings.css");
 @import url("./legacy-data-import.css");
 @import url("./plugin-marketplace.css");
@@ -3557,309 +3556,17 @@ button:active:not(:disabled) {
   height: 100%;
 }
 
-#memorySurface {
-  --memory-muted: color-mix(in srgb, var(--sakura-text) 5%, var(--surface-raised));
-  --memory-emphasis: color-mix(in srgb, var(--sakura-primary) 55%, var(--sakura-text));
-  display: flex;
-  flex-direction: column;
-  gap: 24px;
-}
-
-.memory-maintenance {
-  flex: 1;
-  min-height: 0;
-  overflow: auto;
-}
-
-.memory-maintenance .plugin-settings {
-  display: grid;
-  gap: 16px;
-}
-
-.memory-maintenance .plugin-contribution {
-  margin: 0;
-  border: 0;
-  border-radius: 12px;
-  padding: 20px 24px;
-  background: var(--surface-raised);
-}
-
-.memory-maintenance .plugin-contribution-title {
-  margin: 0 0 8px;
-  color: var(--sakura-text);
-  font-size: 16px;
-}
-
-.memory-maintenance .plugin-contribution:has(> .memory-maintenance-copy) {
-  display: flex;
-  align-items: center;
-  gap: 24px;
-}
-
-.memory-maintenance-copy {
-  flex: 1;
-  min-width: 0;
-}
-
-.memory-maintenance .settings-form {
-  display: grid;
-  gap: 8px;
-}
-
-.memory-maintenance .setting-row {
-  display: flex;
-  flex-direction: column;
-  align-items: stretch;
-  gap: 10px;
-  padding: 0;
-}
-
-.memory-maintenance .setting-row:has(> .memory-maintenance-state, > .plugin-readonly-control) .setting-title,
-.memory-maintenance .setting-row:has(> .memory-maintenance-state, > .plugin-readonly-control) .setting-row-text:not(:has(.setting-desc)),
-.memory-maintenance .setting-row:has(.plugin-readonly-output:empty):not(:has(.setting-desc)),
-.memory-maintenance .plugin-readonly-control:has(> .plugin-readonly-output:empty) {
-  display: none;
-}
-
-.memory-maintenance .setting-desc {
-  color: var(--sakura-secondary-text);
-  font-size: 13px;
-  line-height: 1.6;
-  white-space: normal;
-}
-
-.memory-maintenance .plugin-readonly-output {
-  padding: 0;
-  color: var(--sakura-text);
-  white-space: pre-wrap;
-  line-height: 1.7;
-}
-
-.memory-maintenance .plugin-setting-actions {
-  flex: none;
-  margin: 0;
-}
-
-.memory-maintenance .plugin-setting-actions > button {
-  width: var(--settings-secondary-width);
-  padding-inline: 10px;
-}
-
-.memory-maintenance-state {
-  text-align: left;
-  font-size: 13px;
-  line-height: 1.6;
-}
-
-.memory-maintenance-state p {
-  margin: 4px 0 0;
-  color: var(--sakura-text);
-}
-
-.memory-maintenance-state progress {
-  width: min(240px, 100%);
-  height: 5px;
-  accent-color: var(--sakura-primary);
-}
-
-.memory-navigation {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 12px;
-  flex: none;
-}
-
-.memory-view-tabs button:hover {
-  background: var(--surface-raised);
-}
-
-.memory-navigation button:focus-visible {
-  outline: 2px solid var(--sakura-text);
-  outline-offset: 3px;
-}
-
-.memory-entity-head {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  margin: 4px 0;
-}
-
-.memory-entity-icon {
-  display: grid;
-  place-items: center;
-  width: 40px;
-  height: 40px;
-  border-radius: 12px;
-  background: var(--memory-muted);
-  color: var(--sakura-secondary-text);
-}
-
-.memory-archive-list.is-profile .memory-record-main {
-  display: grid;
-  grid-template-columns: 104px minmax(0, 1fr);
-  column-gap: 16px;
-}
-
-.memory-archive-list.is-profile .memory-fact-heading {
-  grid-row: span 2;
-  margin: 0;
-  font-size: 13px;
-  color: var(--sakura-secondary-text);
-  font-weight: var(--font-weight-medium);
-}
-
-.memory-archive-list.is-profile .memory-record-meta {
-  grid-column: 2;
-}
-
-.memory-view-tabs {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  flex: 1 1 340px;
-  gap: 4px;
-  padding: 4px;
-  border-radius: 12px;
-  background: var(--memory-muted);
-}
-
-.memory-view-tabs button {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  min-width: 0;
-  min-height: 44px;
-  padding: 10px 12px;
-  border: 0;
-  border-radius: 8px;
-  background: transparent;
-  box-shadow: none;
-  color: var(--sakura-text);
-  white-space: nowrap;
-}
-
-.memory-view-tabs button[aria-selected="true"] {
-  background: var(--memory-emphasis);
-  color: var(--surface-raised);
-  font-weight: var(--font-weight-semibold);
-}
-
-.memory-advanced-button {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  min-height: 44px;
-  margin-left: auto;
-  border: 0;
-  background: var(--surface-raised);
-  color: var(--sakura-secondary-text);
-}
-
-.memory-advanced-button[aria-pressed="true"] {
-  background: var(--memory-emphasis);
-  color: var(--surface-raised);
-}
-
-.memory-entity-group {
-  display: grid;
-  gap: 12px;
-  padding: 0 0 8px;
-}
-
-.memory-archive-list.is-profile {
-  scroll-snap-type: none;
-}
-
-.memory-entity-name {
-  margin: 0;
-  color: var(--sakura-text);
-  font-size: 18px;
-  font-weight: var(--font-weight-semibold);
-}
-
-.memory-entity-group .memory-record-card {
-  margin: 0;
-  padding: 16px 20px;
-}
-
-.memory-fact-heading {
-  margin-bottom: 8px;
-  color: var(--sakura-text);
-  font-size: 14px;
-  font-weight: var(--font-weight-semibold);
-}
-
-.memory-fact-heading.is-relation {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 12px;
-  margin-bottom: 14px;
-}
-
-.memory-relation-person {
-  padding: 6px 10px;
-  border-radius: 8px;
-  background: var(--memory-muted);
-}
-
-.memory-relation-name {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  color: var(--sakura-secondary-text);
-  font-weight: var(--font-weight-medium);
-}
-
-.memory-data-actions {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 20px 24px;
-  margin-top: 16px;
-  border-radius: 12px;
-  background: var(--surface-raised);
-}
-
-.memory-advanced-title {
-  margin: 0 0 12px;
-  font-size: 19px;
-}
-
-.memory-editor-details {
-  grid-column: 1 / -1;
-}
-
-.memory-editor-details > summary {
-  padding: 8px 0;
-  cursor: pointer;
-  color: var(--sakura-secondary-text);
-}
-
-.memory-editor-details[open] > summary {
-  margin-bottom: 8px;
-}
-
-.memory-archive-description {
-  margin: 8px 0 0;
-  color: var(--sakura-secondary-text);
-  font-size: 13px;
-  line-height: 1.5;
-}
-
 .memory-archive {
   display: grid;
   grid-template-rows: auto auto minmax(0, 1fr);
-  gap: 20px;
-  flex: 1 1 0;
+  gap: 14px;
+  height: 100%;
   min-height: 0;
-  padding: 0;
+  padding: clamp(14px, 2vw, 20px);
   overflow: hidden;
-  border: 0;
-  background: transparent;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-lg);
+  background: color-mix(in srgb, var(--surface-raised) 90%, var(--sakura-panel-bg));
 }
 
 .memory-archive-head {
@@ -3916,30 +3623,28 @@ button:active:not(:disabled) {
 .memory-add-button {
   flex: none;
   min-width: 112px;
-  border: 0;
-  background: var(--memory-emphasis);
-  color: var(--surface-raised);
+  box-shadow: var(--shadow-pop);
 }
 
 .memory-archive-toolbar {
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: minmax(210px, 1fr) minmax(130px, 0.32fr) auto;
   gap: 8px;
   align-items: center;
-  padding: 0;
-  border: 0;
-  background: transparent;
+  padding: 8px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--surface-raised) 82%, transparent);
 }
 
 .memory-search-input {
-  flex: 1 1 180px;
   width: 100%;
   min-width: 0;
-  min-height: 44px;
-  padding: 12px 16px;
-  border: 0;
-  border-radius: 8px;
-  background: var(--surface-raised);
+  min-height: 40px;
+  padding: 8px 11px;
+  border: 1px solid var(--sakura-border);
+  border-radius: var(--radius-sm);
+  background: var(--sakura-input-bg);
   color: var(--sakura-text);
   font: inherit;
 }
@@ -3993,11 +3698,12 @@ button:active:not(:disabled) {
   display: grid;
   grid-auto-rows: max-content;
   align-content: start;
-  gap: 16px;
+  gap: 9px;
   min-height: 0;
-  overflow: auto;
-  scrollbar-gutter: stable;
-  padding: 2px 4px 10px 2px;
+  overflow: auto; scrollbar-gutter: stable;
+  padding: 1px 4px 10px 1px;
+  scroll-padding-block: 1px 10px;
+  scroll-snap-type: y proximity;
   scrollbar-width: thin;
   scrollbar-color: var(--sakura-border) transparent;
 }
@@ -4006,17 +3712,20 @@ button:active:not(:disabled) {
   position: relative;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
-  gap: 16px;
+  gap: 12px;
   align-items: center;
   min-height: 72px;
-  padding: 20px 24px;
+  padding: 11px 12px;
   overflow: hidden;
-  border: 0;
-  border-radius: 12px;
+  border: 1px solid var(--sakura-border);
+  border-radius: var(--radius-md);
   background: var(--surface-raised);
-  box-shadow: 0 1px 3px color-mix(in srgb, var(--sakura-text) 8%, transparent);
   cursor: default;
-  transition: background var(--motion-base) var(--ease);
+  transition:
+    border-color var(--motion-base) var(--ease),
+    background var(--motion-base) var(--ease);
+  scroll-snap-align: start;
+  scroll-margin-top: 1px;
 }
 
 .memory-record-card.is-entering {
@@ -4052,8 +3761,8 @@ button:active:not(:disabled) {
 .memory-record-content {
   margin: 0;
   color: var(--sakura-text);
-  font-size: 14px;
-  line-height: 1.7;
+  font-size: 13.5px;
+  line-height: 1.55;
   overflow-wrap: anywhere;
   white-space: pre-wrap;
 }
@@ -4067,14 +3776,15 @@ button:active:not(:disabled) {
 }
 
 .memory-record-meta {
-  margin-top: 8px;
-  color: var(--sakura-secondary-text);
-  font-size: 12px;
-  min-height: 18px;
+  margin-top: 7px;
+  color: var(--sakura-muted-text);
+  font-size: 11.5px;
 }
 
 .memory-record-meta > span:not(.memory-layer-chip)::before {
-  content: none;
+  content: "·";
+  margin-right: 9px;
+  color: var(--hairline);
 }
 
 .memory-layer-chip {
@@ -4086,7 +3796,12 @@ button:active:not(:disabled) {
 }
 
 .memory-record-aside {
-  align-self: start;
+  display: grid;
+  grid-template-rows: auto 1fr;
+  align-self: stretch;
+  justify-items: end;
+  gap: 7px;
+  padding-left: 4px;
 }
 
 .memory-score-row {
@@ -4097,13 +3812,9 @@ button:active:not(:disabled) {
 }
 
 .memory-card-edit {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  height: 36px;
-  min-width: 64px;
-  padding: 6px 8px;
-  border: 0;
+  align-self: end;
+  min-height: 29px;
+  padding: 3px 11px;
 }
 
 .memory-load-more {
@@ -4220,7 +3931,7 @@ button:active:not(:disabled) {
   width: min(680px, 100%);
   max-height: calc(100vh - clamp(32px, 6vw, 64px));
   padding: clamp(18px, 3vw, 26px);
-  overflow: hidden;
+  overflow: auto; scrollbar-gutter: stable;
   border: 1px solid var(--sakura-border);
   border-radius: calc(var(--radius-lg) + 2px);
   background: var(--surface-raised);
@@ -4264,13 +3975,6 @@ button:active:not(:disabled) {
   align-items: start;
 }
 
-.memory-record-dialog > .memory-dialog-form {
-  min-height: 0;
-  overflow: auto;
-  scrollbar-gutter: stable;
-  align-content: start;
-}
-
 .memory-dialog-field {
   position: relative;
   display: grid;
@@ -4282,44 +3986,6 @@ button:active:not(:disabled) {
 
 .memory-dialog-field.is-content {
   grid-column: 1 / -1;
-}
-
-.memory-dialog-field.is-readonly {
-  grid-column: 1 / -1;
-}
-
-.memory-evidence {
-  display: block;
-  padding: 12px 14px;
-  border-left: 3px solid var(--sakura-border);
-  background: var(--surface-soft);
-  color: var(--sakura-secondary-text);
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  line-height: 1.7;
-  max-height: 180px;
-  overflow: auto;
-}
-
-.memory-dialog-field.is-toggle {
-  grid-template-columns: 1fr auto;
-  align-content: center;
-  align-items: center;
-}
-
-.memory-dialog-field.is-toggle small {
-  grid-column: 1 / -1;
-}
-
-.memory-dialog-field.is-toggle input {
-  appearance: auto;
-  -webkit-appearance: auto;
-  width: 20px;
-  min-height: 20px;
-  height: 20px;
-  padding: 0;
-  border-radius: 4px;
-  accent-color: var(--sakura-primary);
 }
 
 .memory-dialog-field input,
@@ -4478,15 +4144,12 @@ button:active:not(:disabled) {
 }
 
 @media (max-width: 940px) {
-  .memory-view-tabs button {
-    padding-inline: 6px;
-    gap: 6px;
-    font-size: 12px;
+  .memory-archive-toolbar {
+    grid-template-columns: minmax(190px, 1fr) minmax(126px, auto) auto;
   }
 
-  .memory-archive-list.is-profile .memory-record-main {
-    grid-template-columns: 80px minmax(0, 1fr);
-    column-gap: 12px;
+  .memory-record-meta > span:nth-last-child(1) {
+    display: none;
   }
 }
 

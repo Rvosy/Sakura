@@ -1,836 +1,1762 @@
 from __future__ import annotations
 
+import io
 import json
-import sqlite3
 import threading
 import time
+import zipfile
 from pathlib import Path
-from types import SimpleNamespace
+from typing import Any, Mapping
 
 import pytest
-from pydantic import ValidationError
+import yaml
 
-from app.storage.timeline import NewTimelineEntry, TimelineKind, TimelineStore
-from app.core_host.plugin_host_services import _TimelineHostService
-from plugins.optional.sakura_mem0.memory import MemoryStore
-from plugins.optional.sakura_mem0.memory_curator import MemoryCurator, MemoryCurationError
+from plugins.optional.sakura_mem0 import memory as memory_module
+from plugins.optional.sakura_mem0 import support as memory_support_module
+
+from plugins.optional.sakura_mem0.memory_curator import MemoryCurationResult, MemoryCurator
 from plugins.optional.sakura_mem0.memory_recall import MemoryRecallService
-from plugins.optional.sakura_mem0.domain_types import ContextRequest, ContextMessage, ChatHistoryEntry
-from plugins.optional.sakura_mem0.boundary import MemoryBoundary
-from plugins.optional.sakura_mem0.support import OperationCancelled
+from plugins.optional.sakura_mem0.plugin import _tool_registrations
+from plugins.optional.sakura_mem0.domain_types import ContextRequest, ChatHistoryEntry
+from plugins.optional.sakura_mem0.boundary import MemoryBoundary, MemoryBoundaryError
+from app.storage.timeline import (
+    NewTimelineEntry,
+    TimelineKind,
+    TimelineStore,
+)
 
 
-@pytest.fixture
-def store(tmp_path):
-    memory = MemoryStore(tmp_path)
-    yield memory
-    memory.close()
+class FakeMemoryStore:
+    def __init__(self, *, ready: bool = True, model_missing: bool = False) -> None:
+        self.ready = ready
+        self.model_missing = model_missing
+        self.closed = False
+        self.preload_calls: list[bool] = []
+        self.preload_error = False
+        self.block_download = False
+        self.download_started = threading.Event()
+        self.download_error = False
+        self.search_calls: list[dict[str, Any]] = []
+        self.memories: dict[str, dict[str, Any]] = {
+            "owned": {
+                "id": "owned",
+                "content": "喜欢樱花与日本语",
+                "metadata": {
+                    "scope": "sakura",
+                    "layer": "semantic",
+                    "source": "explicit",
+                    "importance": 0.8,
+                    "confidence": 0.9,
+                },
+            }
+        }
+        self.status_listener = None
+
+    def add_status_listener(self, listener, *, replay: bool = True) -> None:
+        self.status_listener = listener
+        if replay and self.ready:
+            listener("ready", "internal path must not be published")
+
+    def remove_status_listener(self, _listener) -> None:
+        self.status_listener = None
+        return None
+
+    def become_ready(self) -> None:
+        self.ready = True
+        if self.status_listener is not None:
+            self.status_listener("ready", "private ready detail")
+
+    def is_ready(self) -> bool:
+        return self.ready
+
+    def needs_embedding_model_download(self) -> bool:
+        return self.model_missing
+
+    def preload(self, *, wait: bool = False) -> None:
+        self.preload_calls.append(wait)
+        if self.preload_error:
+            raise RuntimeError("private preload failure")
+
+    def search_memory(self, arguments, *, wait: bool = False):
+        self.search_calls.append(dict(arguments))
+        return {"status": "ready", "memories": list(self.memories.values())}
+
+    def list_memories(self, *, limit=None):
+        memories = list(self.memories.values())
+        return memories if limit is None else memories[:limit]
+
+    def create_memory(self, arguments, *, wait: bool = True):
+        record = {
+            "id": "created",
+            "content": arguments["content"],
+            "metadata": {**arguments, "scope": "sakura"},
+        }
+        self.memories["created"] = record
+        return {"memory": record}
+
+    def update_memory(self, arguments, *, wait: bool = True):
+        record = {
+            "id": arguments["id"],
+            "content": arguments["content"],
+            "metadata": {**arguments, "scope": "sakura"},
+        }
+        self.memories[str(arguments["id"])] = record
+        return {"memory": record}
+
+    def forget_memory(self, arguments, *, wait: bool = True):
+        memory_id = str(arguments["id"])
+        missing = self.memories.pop(memory_id, None) is None
+        return {"already_missing": missing}
+
+    def scoped(self, _scope: str):
+        return self
+
+    def download_embedding_model(self, *, progress=None, cancel=None):
+        self.download_started.set()
+        if progress:
+            progress("connecting", 5)
+            progress("downloading", 50)
+        if self.block_download:
+            assert cancel is not None
+            cancel.wait(2)
+            if cancel.is_set():
+                raise memory_module.MemoryModelTaskCancelled("cancelled")
+        if self.download_error:
+            raise OSError("private cache path must not escape")
+        if progress:
+            progress("completed", 100)
+        return object()
+
+    def import_embedding_model_archive(self, _archive, *, progress=None, cancel=None):
+        if progress:
+            progress("completed", 100)
+        return object()
+
+    def close(self) -> None:
+        self.closed = True
 
 
-def entry(identity="u1", content="以后不用提醒我要睡觉了", role="user", date="2026-10-01T12:00:00+00:00"):
-    return ChatHistoryEntry(date, role, content, entry_id=identity, turn_id="t-" + identity,
-                            evidence_ready=role in {"user", "observation"})
+class TimelineProxy:
+    def __init__(self, store: TimelineStore, character_id: str = "sakura") -> None:
+        self.store = store
+        self.character_id = character_id
+
+    def read_recent(self, request):
+        entries, cursor = self.store.read_recent(self.character_id, request["limit"])
+        return {"entries": [_timeline_mapping(entry) for entry in entries], "cursor": cursor}
+
+    def read_since(self, request):
+        entries, cursor, has_more = self.store.read_since(
+            self.character_id, request["cursor"], request["limit"]
+        )
+        return {
+            "entries": [_timeline_mapping(entry) for entry in entries],
+            "nextCursor": cursor,
+            "hasMore": has_more,
+        }
 
 
-def add_operation(message, **values):
-    return {"op": "add", "content": message.content, "layer": "semantic",
-            "evidence": [{"entry_id": message.entry_id, "quote": message.content}], **values}
+def _timeline_mapping(entry) -> dict[str, object]:
+    return {
+        "entryId": entry.entry_id,
+        "turnId": entry.turn_id,
+        "characterId": entry.character_id,
+        "kind": entry.kind.value,
+        "origin": entry.origin,
+        "createdAt": entry.created_at,
+        "payload": entry.payload,
+    }
 
 
-class Client:
-    def __init__(self, operations):
-        self.operations = operations
-        self.requests = []
+def _timeline(root: Path, turns: int = 1) -> TimelineProxy:
+    store = TimelineStore(root / "data" / "chat_history" / "timeline.sqlite3")
+    store.initialize()
+    entries = []
+    for index in range(turns):
+        turn_id = f"turn-{index}"
+        entries.extend(
+            [
+                NewTimelineEntry(
+                    entry_id=f"human-{index}",
+                    turn_id=turn_id,
+                    character_id="sakura",
+                    kind=TimelineKind.HUMAN,
+                    origin="chat",
+                    created_at="2026-08-26T12:00:00+08:00",
+                    payload={"text": f"请记住樱花 {index}"},
+                ),
+                NewTimelineEntry(
+                    entry_id=f"assistant-{index}",
+                    turn_id=turn_id,
+                    character_id="sakura",
+                    kind=TimelineKind.ASSISTANT,
+                    origin="chat",
+                    created_at="2026-08-26T12:00:01+08:00",
+                    payload={
+                        "segments": [
+                            {
+                                "text": "好的。",
+                                "translation": "",
+                                "tone": "",
+                                "portrait": "",
+                                "suppressTts": False,
+                            }
+                        ]
+                    },
+                ),
+            ]
+        )
+    store.append_many(entries)
+    return TimelineProxy(store)
 
-    def complete(self, request, **kwargs):
-        self.requests.append((request["messages"][0]["content"], json.loads(request["messages"][1]["content"])))
-        return {"message": {"content": json.dumps({"operations": self.operations}, ensure_ascii=False)}, "finishReason": "stop"}
 
-    def close(self):
-        pass
+def _append_timeline_turn(timeline: TimelineProxy, index: int) -> None:
+    turn_id = f"turn-{index}"
+    timeline.store.append_many(
+        [
+            NewTimelineEntry(
+                entry_id=f"human-{index}",
+                turn_id=turn_id,
+                character_id="sakura",
+                kind=TimelineKind.HUMAN,
+                origin="chat",
+                created_at="2026-08-26T12:00:00+08:00",
+                payload={"text": f"请记住樱花 {index}"},
+            ),
+            NewTimelineEntry(
+                entry_id=f"assistant-{index}",
+                turn_id=turn_id,
+                character_id="sakura",
+                kind=TimelineKind.ASSISTANT,
+                origin="chat",
+                created_at="2026-08-26T12:00:01+08:00",
+                payload={
+                    "segments": [
+                        {
+                            "text": "好的。",
+                            "translation": "",
+                            "tone": "",
+                            "portrait": "",
+                            "suppressTts": False,
+                        }
+                    ]
+                },
+            ),
+        ]
+    )
 
 
-def test_offline_chinese_recall_is_independent_and_can_be_empty(store):
-    item = store.create_memory({"content": "上周排查了语音合成卡顿，改成流式播放后恢复。"})["memory"]
-    store.create_memory({"content": "那天和用户聊了天气，下午下雨了。"})
-    assert store.is_ready() and store.needs_embedding_model_download()
-    response = store.search_memory({"query": "语音合成卡顿", "automatic": True})
-    assert [hit["id"] for hit in response["memories"]] == [item["id"]]
-    assert response["memories"][0]["retrieval"]["matched_terms"]
-    assert store.search_memory({"query": "我下在 H8", "automatic": True})["memories"] == []
+def _root(tmp_path: Path) -> Path:
+    config = tmp_path / "config"
+    config.mkdir(parents=True)
+    (config / "system_config.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "config_version": 1,
+                "memory_curation": {
+                    "enabled": True,
+                    "trigger_turns": 8,
+                    "backfill_limit": 200,
+                },
+            },
+            allow_unicode=True,
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    (config / "api.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "api_profiles": [
+                    {
+                        "id": "fixture",
+                        "alias": "Fixture",
+                        "base_url": "https://example.invalid/v1",
+                        "api_key": "PRIVATE_NOT_PUBLISHED",
+                        "models": [{"name": "curator"}],
+                    }
+                ],
+                "model_slots": {},
+            },
+            allow_unicode=True,
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    (tmp_path / "data").mkdir(exist_ok=True)
+    return tmp_path
 
 
-def test_entity_attributes_and_relations_are_searchable_editable_and_transferable(store, tmp_path):
-    profile = store.create_memory({"content": "我用 RTX 4060", "layer": "core_profile", "subject": "用户",
-                                   "subject_kind": "person", "predicate": "显卡"})["memory"]
-    relation = store.create_memory({"content": "小樱是我的义女儿", "subject": "用户", "subject_kind": "person",
-                                    "predicate": "义女儿", "target": "小樱", "target_kind": "person"})["memory"]
-    found = store.search_memory({"subject": "用户", "predicate": "显卡"})["memories"]
-    assert [item["id"] for item in found] == [profile["id"]]
-    assert store.search_memory({"query": "小樱"})["memories"][0]["target"] == "小樱"
-    store.update_memory({"id": profile["id"], "content": "我换成 RTX 5060 了"})
-    exported = store.export_records()
-    store.close()
-    reopened = MemoryStore(tmp_path, "sakura")
+MODEL_REF = {"serviceKey": "sakura.model.openai_compatible", "profileId": "fixture", "modelId": "curator"}
+MODEL_CATALOG = [{"serviceKey": MODEL_REF["serviceKey"], "profiles": [{"profileId": "fixture", "label": "Fixture", "models": [{"modelId": "curator", "label": "curator"}]}]}]
+
+
+def _model_client_factory(_reference):
+    class Client:
+        def complete_raw(self, *_args, **_kwargs):
+            raise AssertionError("Unexpected model request")
+
+        def close(self):
+            pass
+    return Client()
+
+
+def _boundary(root, store, *, config=None):
+    return MemoryBoundary(
+        root, "sakura", memory_store=store,
+        curation_config_getter=lambda: dict(config or {}),
+        model_catalog_getter=lambda: MODEL_CATALOG,
+        model_resolver=lambda reference: reference,
+        model_client_factory=lambda reference: _model_client_factory(reference),
+    )
+
+
+@pytest.mark.parametrize("winerror", [5, 32])
+def test_plugin_atomic_write_retries_transient_windows_replace_lock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    winerror: int,
+) -> None:
+    target = tmp_path / "curation-state.json"
+    target.write_text("old", encoding="utf-8")
+    original_replace = memory_support_module.os.replace
+    calls = 0
+
+    class RetryableWindowsLock(OSError):
+        def __init__(self) -> None:
+            super().__init__("transient sharing violation")
+            self.winerror = winerror
+
+    def flaky_replace(source: Path, destination: Path) -> None:
+        nonlocal calls
+        calls += 1
+        if calls < 3:
+            raise RetryableWindowsLock()
+        original_replace(source, destination)
+
+    monkeypatch.setattr(memory_support_module.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(memory_support_module.os, "replace", flaky_replace)
+
+    memory_support_module.atomic_write_text(target, "new", encoding="utf-8")
+
+    assert 3 <= calls <= 5
+    assert target.read_text(encoding="utf-8") == "new"
+    assert not list(tmp_path.glob("*.tmp"))
+
+
+
+
+
+
+
+
+
+
+def test_startup_preload_failure_is_degraded_without_escaping_private_error(tmp_path: Path) -> None:
+    store = FakeMemoryStore(ready=False, model_missing=False)
+    store.preload_error = True
+    boundary = _boundary(_root(tmp_path), store)
     try:
-        assert reopened.get(profile["id"])["predicate"] == "显卡"
-        assert reopened.search_memory({"subject": "用户", "predicate": "显卡"})["memories"][0]["content"] == "我换成 RTX 5060 了"
-        other = MemoryStore(tmp_path, "other")
-        try:
-            assert other.search_memory({"target": "小樱"})["memories"] == []
-            other.restore_records(exported)
-            assert other.get(relation["id"])["target"] == "小樱"
-            other.forget_memory({"id": relation["id"]})
-            other.restore_records(exported)
-            assert other.search_memory({"target": "小樱"})["memories"] == []
-        finally:
-            other.close()
-    finally:
-        reopened.close()
-
-
-def test_invalid_evidence_keeps_sources_pending_until_successful_curation(store):
-    human = entry(content="我喝咖啡时不加糖。")
-    client = Client([add_operation(human, evidence=[{"entry_id": "u1", "quote": "咖啡不加糖"}])])
-    with pytest.raises(MemoryCurationError):
-        MemoryCurator(client, store).curate_entries([human], cursor="next")
-    assert store.unprocessed_entries([human]) == [human]
-    assert store.get_state("curation", default={}) == {}
-    assert store.list_memories() == []
-    client.operations = [add_operation(human)]
-    assert MemoryCurator(client, store).curate_entries([human], cursor="next").created == 1
-    assert store.unprocessed_entries([human]) == []
-    assert store.get_state("curation")["curation_cursor"] == "next"
-
-
-
-def test_curation_writes_relationship_with_user_evidence(store):
-    human = entry(content="小樱是我的义女儿。")
-    result = MemoryCurator(Client([add_operation(human, subject="用户", subject_kind="person",
-        predicate="义女儿", target="小樱", target_kind="person")]), store).curate_entries([human])
-    assert result.created == 1
-    relationship, = store.search_memory({"target": "小樱"})["memories"]
-    assert relationship["subject"] == "用户" and relationship["predicate"] == "义女儿"
-    assert relationship["evidence"][0]["entry_id"] == human.entry_id
-
-
-def test_existing_sqlite_records_keep_identity_evidence_and_deletions_during_upgrade(tmp_path):
-    directory = tmp_path / "data" / "memory"
-    directory.mkdir(parents=True)
-    original = {"id": "existing", "scope": "sakura", "content": "我不喜欢咖啡", "layer": "core_profile",
-                "source": "manual", "revision": 7, "state": "active", "pinned": False,
-                "created_at": "2026-01-01T00:00:00Z", "updated_at": "2026-06-01T00:00:00Z",
-                "occurred_at": "2026-01-01T00:00:00Z", "metadata": {"custom": "保留此字段"}}
-    evidence = {"entry_id": "original-entry", "role": "user", "quote": "我不喜欢咖啡"}
-    with sqlite3.connect(directory / "memory.sqlite3") as db:
-        db.execute("""CREATE TABLE memories (scope TEXT, id TEXT, document TEXT, content TEXT,
-                   layer TEXT, revision INTEGER, deleted INTEGER, point_id TEXT, vector_revision INTEGER,
-                   PRIMARY KEY(scope,id))""")
-        db.execute("CREATE TABLE evidence (scope TEXT, memory_id TEXT, entry_id TEXT, document TEXT, PRIMARY KEY(scope,memory_id,entry_id))")
-        for deleted in (False, True):
-            record = {**original, "id": "removed" if deleted else "existing", "deleted": deleted}
-            db.execute("INSERT INTO memories VALUES (?,?,?,?,?,?,?,?,?)", (
-                "sakura", record["id"], json.dumps(record), record["content"], record["layer"], 7,
-                int(deleted), "point-" + record["id"], 7))
-        db.execute("INSERT INTO evidence VALUES (?,?,?,?)", ("sakura", "existing", "original-entry", json.dumps(evidence)))
-    memory = MemoryStore(tmp_path)
-    try:
-        restored = memory.get("existing")
-        assert restored["content"] == original["content"] and restored["revision"] == 7
-        assert restored["updated_at"] == original["updated_at"]
-        assert restored["metadata"]["custom"] == "保留此字段"
-        assert restored["evidence"] == [evidence]
-        assert memory.search_memory({"subject": "用户"})["memories"][0]["id"] == "existing"
-        assert memory.get("removed") is None and memory.get("removed", include_deleted=True)["deleted"]
-        memory.update_memory({"id": "existing", "content": "现在更喜欢喝茶", "predicate": "饮食偏好"})
-        assert memory.search_memory({"subject": "用户", "predicate": "饮食偏好"})["memories"][0]["revision"] == 8
-    finally:
-        memory.close()
-
-
-def test_manual_unpinned_agreement_is_in_chat_context(store, tmp_path):
-    boundary = MemoryBoundary(tmp_path, "sakura", memory_store=store)
-    try:
-        saved = boundary.upsert({"content": "不用提醒我睡觉", "layer": "procedural", "source": "manual", "pinned": False})
-        result = MemoryRecallService(boundary).recall(ContextRequest(current_input="今天聊聊代码", character_id="sakura"))
-        assert [fragment.metadata["memory_id"] for fragment in result.fragments] == [saved["memory"]["id"]]
-        assert "不用提醒我睡觉" in result.fragments[0].content
+        assert store.preload_calls == [False]
+        assert boundary.status() == {
+            "status": "degraded",
+            "message": "记忆暂时不可用；聊天不受影响。",
+        }
+        assert "private" not in str(boundary.settings_get())
     finally:
         boundary.close()
 
 
-def test_temporary_search_failure_does_not_disable_later_reads_or_writes(store, tmp_path, monkeypatch):
-    store.create_memory({"content": "咖啡不加糖"})
-    boundary = MemoryBoundary(tmp_path, "sakura", memory_store=store)
-    original = store.search_memory
-    def fail(*args, **kwargs):
-        raise sqlite3.OperationalError("temporary read failure")
+
+
+def test_plugin_owner_diagnostic_uses_host_logger_without_legacy_file(tmp_path: Path) -> None:
+    from plugins.optional.sakura_mem0 import support
+    root = _root(tmp_path)
+    path = root / "data" / "logs" / "memory-initialization.jsonl"
+    path.parent.mkdir(parents=True)
+    path.write_text("existing history", encoding="utf-8")
+    events = []
+    class Logger:
+        def info(self, message, *, fields): events.append(fields)
+        warning = info
+    support.bind_logger(Logger())
+    store = FakeMemoryStore(ready=False, model_missing=False)
+    store.preload_error = True
+    boundary = _boundary(root, store)
     try:
-        monkeypatch.setattr(store, "search_memory", fail)
-        assert boundary.search({"query": "咖啡"})["status"] == "degraded"
-        monkeypatch.setattr(store, "search_memory", original)
-        assert boundary.search({"query": "咖啡"})["memories"][0]["content"] == "咖啡不加糖"
-        boundary.upsert({"content": "茶也不加糖"})
-        assert len(boundary.list_memories()) == 2
+        boundary.settings_get()
+        boundary.search({"query": "PRIVATE_QUERY C:/Users/owner/memory", "limit": 5})
+    finally:
+        boundary.close()
+        support.bind_logger(None)
+    assert path.read_text(encoding="utf-8") == "existing history"
+    assert events
+    text = json.dumps(events)
+    assert all(value not in text for value in ("PRIVATE_QUERY", "PRIVATE_NOT_PUBLISHED", "private preload failure", str(root)))
+    assert {event.get("component") for event in events} == {"plugin_memory_owner"}
+
+
+def test_crud_is_bounded_and_delete_is_idempotent(tmp_path: Path) -> None:
+    boundary = _boundary(_root(tmp_path), FakeMemoryStore())
+    try:
+        created = boundary.upsert(
+            {
+                "content": "中文入力と日本語入力",
+                "layer": "semantic",
+                "category": "preference",
+                "source": "explicit",
+                "importance": 0.7,
+                "confidence": 0.9,
+            }
+        )
+        assert created["memory"]["scope"] == "sakura"  # type: ignore[index]
+        assert boundary.delete({"id": "created"})["alreadyMissing"] is False
+        assert boundary.delete({"id": "created"})["alreadyMissing"] is True
+        with pytest.raises(MemoryBoundaryError, match="未知字段"):
+            boundary.search({"query": "x", "limit": 5, "scope": "other"})
     finally:
         boundary.close()
 
 
-def test_merge_duplicates_preserves_evidence_and_protected_records(store):
-    for i in range(2):
-        store.create_memory({"id": f"duplicate-{i}", "content": "用户喝咖啡不加糖", "source": "curation",
-                             "evidence": [{"entry_id": f"u{i}", "role": "user", "quote": "咖啡不加糖"}]})
-    pinned = store.create_memory({"content": "用户喝咖啡不加糖", "source": "curation", "pinned": True})["memory"]
-    manual = store.create_memory({"content": "用户喝咖啡不加糖", "source": "manual"})["memory"]
-    different = store.create_memory({"content": "用户喝咖啡要加糖", "source": "curation"})["memory"]
-    store.import_records([{"id": "other-memory", "scope": "other", "content": "用户喝咖啡不加糖", "source": "curation"}])
-    assert store.merge_duplicates() == {"merged": 1}
-    kept = store.get("duplicate-0")
-    assert {source["entry_id"] for source in kept["evidence"]} == {"u0", "u1"}
-    assert store.get("duplicate-1", include_deleted=True)["deleted"] is True
-    assert all(store.get(item["id"]) == item for item in (pinned, manual, different))
-    assert any(m["id"] == "other-memory" and not m["deleted"] for m in store.all_records())
-    assert store.merge_duplicates() == {"merged": 0}
+def test_upsert_rejects_authoritative_metadata_mismatch(tmp_path: Path) -> None:
+    class ConflictingStore(FakeMemoryStore):
+        def create_memory(self, arguments, *, wait=True):
+            return {
+                "memory": {
+                    "id": "created",
+                    "content": arguments["content"],
+                    "metadata": {
+                        **arguments,
+                        "layer": "semantic",
+                        "scope": "sakura",
+                    },
+                }
+            }
+
+    boundary = _boundary(_root(tmp_path), ConflictingStore())
+    try:
+        with pytest.raises(MemoryBoundaryError) as error:
+            boundary.upsert(
+                {
+                    "content": "周末和同事聚餐",
+                    "layer": "episodic",
+                    "category": "schedule",
+                    "importance": 0.6,
+                    "confidence": 0.9,
+                }
+            )
+        assert error.value.code == "MEMORY_ROUND_TRIP_MISMATCH"
+    finally:
+        boundary.close()
 
 
-def test_update_now_processes_below_threshold_and_does_not_replay(tmp_path):
-    history = TimelineStore(tmp_path / "timeline.sqlite3")
-    history.initialize()
-    history.append(NewTimelineEntry("u1", "t1", "sakura", TimelineKind.HUMAN, "chat",
-                                   "2026-10-01T12:00:00+00:00", {"text": "用户喝咖啡不加糖"}))
-    service = _TimelineHostService(history, lambda: "sakura")
-    timeline = SimpleNamespace(read_since=lambda payload: service.call("read_since", [payload]),
-                               read_recent=lambda payload: service.call("read_recent", [payload]))
-    client = Client([add_operation(entry(content="用户喝咖啡不加糖"))])
-    boundary = MemoryBoundary(tmp_path, "sakura", curation_config_getter=lambda: {
-        "triggerTurns": 8, "curationModelRef": {"serviceKey": "model", "profileId": "p", "modelId": "m"}},
-        model_client_factory=lambda _: client)
+@pytest.mark.parametrize(
+    ("current_turn_id", "expected_ids"),
+    [("turn-now", ["older"]), ("", ["same-turn", "older"])],
+)
+def test_recall_uses_boundary_turn_identity_and_freshness(
+    tmp_path: Path, current_turn_id: str, expected_ids: list[str],
+) -> None:
+    store = FakeMemoryStore()
+    store.memories = {
+        "same-turn": {
+            "id": "same-turn",
+            "content": "周末和同事聚餐",
+            "score": 0.95,
+            "metadata": {
+                "scope": "sakura",
+                "created_in_turn_id": "turn-now",
+                "updated_at": "2026-08-30T12:00:00+08:00",
+            },
+        },
+        "older": {
+            "id": "older",
+            "content": "用户喜欢樱花",
+            "score": 0.9,
+            "scope": "sakura",
+            "created_in_turn_id": "turn-before",
+            "updated_at": "2026-08-20T10:00:00+08:00",
+        },
+    }
+    boundary = _boundary(_root(tmp_path), store)
+    try:
+        result = MemoryRecallService(boundary).recall(
+            ContextRequest(current_input="周末安排", current_turn_id=current_turn_id)
+        )
+        assert [fragment.metadata["memory_id"] for fragment in result.fragments] == expected_ids
+        expected_freshness = {
+            "same-turn": "2026-08-30T12:00:00+08:00",
+            "older": "2026-08-20T10:00:00+08:00",
+        }
+        assert [fragment.freshness for fragment in result.fragments] == [
+            expected_freshness[memory_id] for memory_id in expected_ids
+        ]
+    finally:
+        boundary.close()
+
+
+@pytest.mark.parametrize("source", ["Explicit", "EXPLICIT"])
+def test_recall_preserves_explicit_source_case_compatibility(tmp_path: Path, source: str) -> None:
+    store = FakeMemoryStore()
+    store.memories = {
+        "inferred": {
+            "id": "inferred",
+            "content": "周末可能喜欢散步",
+            "score": 0.9,
+            "source": "inferred",
+            "updated_at": "2026-08-20T10:00:00+08:00",
+        },
+        "explicit": {
+            "id": "explicit",
+            "content": "记住我喜欢樱花",
+            "score": 0.9,
+            "source": source,
+            "updated_at": "2026-08-30T12:00:00+08:00",
+        },
+    }
+    boundary = _boundary(_root(tmp_path), store)
+    try:
+        result = MemoryRecallService(boundary).recall(ContextRequest(current_input="我的喜好"))
+        assert [fragment.metadata["memory_id"] for fragment in result.fragments] == ["explicit", "inferred"]
+        explicit, inferred = result.fragments
+        assert explicit.trust == "trusted" and explicit.priority == 80
+        assert explicit.metadata["source"] == "explicit"
+        assert inferred.trust == "untrusted" and inferred.priority == 70
+        assert boundary.search({"query": "喜好", "limit": 5})["memories"][1]["source"] == source
+    finally:
+        boundary.close()
+
+
+def test_empty_curation_response_preserves_failure_without_requesting_repair() -> None:
+    class Api:
+        def complete_raw(self, *_args, **kwargs):
+            if kwargs["trace_metadata"].purpose == "memory_curation_repair":
+                pytest.fail("空响应不应提交格式修复")
+            return ""
+
+    class Store:
+        def list_memories(self, *, limit=None):
+            return []
+
+    with pytest.raises(ValueError):
+        MemoryCurator(Api(), Store()).curate_entries([
+            ChatHistoryEntry(created_at="2026-10-14T12:00:00+08:00", role="user",
+                             content="记住我喜欢樱花", entry_id="entry-1", turn_id="turn-1",
+                             evidence_ready=True)
+        ])
+
+
+def test_memory_curation_requests_at_most_one_provider_repair_for_invalid_json() -> None:
+    class Api:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        def complete_raw(self, *_args, **kwargs):
+            self.calls.append(kwargs["trace_metadata"].purpose)
+            return "{invalid" if len(self.calls) == 1 else '{"operations":[]}'
+
+    class Store:
+        def list_memories(self, *, limit=None):
+            return []
+
+    api = Api()
+    result = MemoryCurator(api, Store()).curate_entries(
+        [
+            ChatHistoryEntry(
+                created_at="2026-08-26T12:00:00+08:00",
+                role="observation",
+                content="画面摘要：用户正在修复测试失败。",
+                entry_id="observation-1",
+                turn_id="turn-1",
+                origin="scheduled_screen",
+                evidence_ready=True,
+            )
+        ]
+    )
+    assert result.returned == 0
+    assert api.calls == ["memory_curation", "memory_curation_repair"]
+
+
+
+
+
+
+def test_plugin_config_is_independent_from_core_curation_documents(tmp_path: Path) -> None:
+    root = _root(tmp_path)
+    api_path = root / "config" / "api.yaml"
+    system_path = root / "config" / "system_config.yaml"
+    api_before = api_path.read_bytes()
+    system_before = system_path.read_bytes()
+    boundary = _boundary(
+        root,
+        FakeMemoryStore(),
+        config={
+            "triggerTurns": 12,
+            "backfillLimit": 321,
+            "curationProfileId": "fixture",
+            "curationModel": "curator",
+        },
+    )
+    try:
+        snapshot = boundary.settings_get()
+        assert snapshot["curation"]["triggerTurns"] == 12  # type: ignore[index]
+        assert snapshot["curation"]["backfillLimit"] == 321  # type: ignore[index]
+        assert snapshot["curationModelSlot"] == MODEL_REF
+        assert "PRIVATE_NOT_PUBLISHED" not in str(snapshot)
+    finally:
+        boundary.close()
+    assert api_path.read_bytes() == api_before
+    assert system_path.read_bytes() == system_before
+
+
+
+
+
+
+def test_completed_turn_curation_commits_cursor_only_after_success(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _root(tmp_path)
+    boundary = _boundary(
+        root,
+        FakeMemoryStore(),
+        config={
+            "triggerTurns": 1,
+            "curationProfileId": "fixture",
+            "curationModel": "curator",
+        },
+    )
+    timeline = _timeline(root)
+    calls: list[int] = []
+
+    class FakeClient:
+        def __init__(self, _settings, *, agent_trace_recorder=None) -> None:
+            self.agent_trace_recorder = agent_trace_recorder
+
+        def close(self) -> None:
+            pass
+
+    class FakeCurator:
+        def __init__(self, _client, _store, *, system_prompt: str = "") -> None:
+            pass
+
+        def curate_entries(self, entries, *, cancel_checker=None):
+            if cancel_checker:
+                cancel_checker()
+            calls.append(len(entries))
+            return MemoryCurationResult(processed_entries=len(entries))
+
+    monkeypatch.setattr(__name__ + "._model_client_factory", FakeClient)
+    monkeypatch.setattr("plugins.optional.sakura_mem0.boundary.MemoryCurator", FakeCurator)
     try:
         boundary.note_timeline_changed(timeline)
-        assert boundary.list_memories() == []
-        boundary.update_now(timeline)
-        deadline = time.monotonic() + 5
-        while boundary._curation_active and time.monotonic() < deadline:
-            time.sleep(.01)
-        assert [m["content"] for m in boundary.list_memories()] == ["用户喝咖啡不加糖"]
-        assert boundary.settings_get()["curation"]["result"]["created"] == 1
-        boundary.update_now(timeline)
-        assert len(client.requests) == 1
+        deadline = time.monotonic() + 2
+        state = boundary._curation_state.snapshot()  # noqa: SLF001 - domain cursor contract
+        while not state["curation_cursor"] and time.monotonic() < deadline:
+            time.sleep(0.01)
+            state = boundary._curation_state.snapshot()  # noqa: SLF001
+        assert calls == [2]
+        assert state["curation_cursor"] == timeline.store.latest_cursor("sakura")
+        assert state["pending_turns"] == 0
+
+        boundary.note_timeline_changed(timeline)
+        time.sleep(0.05)
+        assert calls == [2]
     finally:
         boundary.close()
 
 
-def test_dense_and_lexical_union_does_not_let_dense_top_k_hide_chinese_hit(store, monkeypatch):
-    lexical = store.create_memory({"content": "Sakura 的麦克风权限已打开"})["memory"]
-    dense = store.create_memory({"content": "喝咖啡会选不加糖的拿铁"})["memory"]
-    monkeypatch.setattr(store._index, "search", lambda *_: [{"id": dense["id"], "revision": dense["revision"], "score": .8}])
-    result = store.search_memory({"query": "Sakura 麦克风权限", "automatic": True})["memories"]
-    assert {item["id"] for item in result} == {lexical["id"], dense["id"]}
-    store.update_memory({"id": dense["id"], "content": "现在改喝茶"})
-    assert dense["id"] not in {item["id"] for item in store.search_memory({"query": "咖啡"})["memories"]}
+def test_scheduled_observation_counts_only_after_semantic_analysis_and_once_per_turn(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _root(tmp_path)
+    timeline = _timeline(root, turns=0)
+    boundary = _boundary(
+        root,
+        FakeMemoryStore(),
+        config={
+            "triggerTurns": 1,
+            "curationProfileId": "fixture",
+            "curationModel": "curator",
+        },
+    )
+    calls: list[list[str]] = []
+
+    class FakeClient:
+        def __init__(self, _settings, *, agent_trace_recorder=None) -> None:
+            pass
+
+        def close(self) -> None:
+            pass
+
+    class FakeCurator:
+        def __init__(self, _client, _store, *, system_prompt: str = "") -> None:
+            pass
+
+        def curate_entries(self, entries, *, cancel_checker=None):
+            calls.append([entry.entry_id for entry in entries])
+            return MemoryCurationResult(processed_entries=len(entries))
+
+    monkeypatch.setattr(__name__ + "._model_client_factory", FakeClient)
+    monkeypatch.setattr("plugins.optional.sakura_mem0.boundary.MemoryCurator", FakeCurator)
+    try:
+        timeline.store.append_many(
+            [
+                NewTimelineEntry(
+                    entry_id="capture-only",
+                    turn_id="capture-turn",
+                    character_id="sakura",
+                    kind=TimelineKind.OBSERVATION,
+                    origin="scheduled_screen",
+                    created_at="2026-08-26T12:00:00+08:00",
+                    payload={"text": "截图已提交", "visual": {"imageCount": 1}},
+                ),
+                NewTimelineEntry(
+                    entry_id="capture-assistant",
+                    turn_id="capture-turn",
+                    character_id="sakura",
+                    kind=TimelineKind.ASSISTANT,
+                    origin="proactive",
+                    created_at="2026-08-26T12:00:01+08:00",
+                    payload={
+                        "segments": [
+                            {
+                                "text": "先看看。",
+                                "translation": "",
+                                "tone": "",
+                                "portrait": "",
+                                "suppressTts": False,
+                            }
+                        ]
+                    },
+                ),
+            ]
+        )
+        boundary.note_timeline_changed(timeline)
+        assert calls == []
+        assert boundary._curation_state.pending_turns() == 0  # noqa: SLF001
+
+        timeline.store.append_many(
+            [
+                NewTimelineEntry(
+                    entry_id="semantic-observation",
+                    turn_id="semantic-turn",
+                    character_id="sakura",
+                    kind=TimelineKind.OBSERVATION,
+                    origin="scheduled_screen",
+                    created_at="2026-08-26T12:04:00+08:00",
+                    payload={
+                        "text": "画面摘要：用户正在修复测试失败。",
+                        "visual": {
+                            "imageCount": 1,
+                            "analysisStatus": "succeeded",
+                            "confidence": 0.9,
+                            "sensitiveRedacted": False,
+                        },
+                    },
+                ),
+                NewTimelineEntry(
+                    entry_id="semantic-assistant",
+                    turn_id="semantic-turn",
+                    character_id="sakura",
+                    kind=TimelineKind.ASSISTANT,
+                    origin="proactive",
+                    created_at="2026-08-26T12:04:01+08:00",
+                    payload={
+                        "segments": [
+                            {
+                                "text": "这个失败点值得记一下。",
+                                "translation": "",
+                                "tone": "",
+                                "portrait": "",
+                                "suppressTts": False,
+                            }
+                        ]
+                    },
+                ),
+            ]
+        )
+        boundary.note_timeline_changed(timeline)
+        deadline = time.monotonic() + 2
+        while not calls and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert calls == [["semantic-observation", "semantic-assistant"]]
+    finally:
+        boundary.close()
 
 
-def test_profile_injection_and_current_query_do_not_carry_previous_topic(store, tmp_path):
-    profile = store.create_memory({"content": "用户明确要求以后不用提醒睡觉", "layer": "procedural", "pinned": True})["memory"]
-    store.create_memory({"content": "之前排查语音合成卡顿的问题"})
-    boundary = MemoryBoundary(tmp_path, "sakura", memory_store=store)
-    result = MemoryRecallService(boundary).recall(ContextRequest(
-        current_input="我下在 H8", character_id="sakura",
-        recent_messages=(ContextMessage("user", "语音合成卡顿是什么原因"),),
-    ))
-    assert [fragment.metadata["memory_id"] for fragment in result.fragments] == [profile["id"]]
-    assert result.fragments[0].metadata["selection"] == "profile"
+
+
+def test_completion_arriving_during_curation_runs_one_followup_catchup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _root(tmp_path)
+    timeline = _timeline(root)
+    boundary = _boundary(
+        root,
+        FakeMemoryStore(),
+        config={
+            "triggerTurns": 1,
+            "curationProfileId": "fixture",
+            "curationModel": "curator",
+        },
+    )
+    first_started = threading.Event()
+    release_first = threading.Event()
+    calls: list[list[str]] = []
+
+    class FakeClient:
+        def __init__(self, _settings, *, agent_trace_recorder=None) -> None:
+            pass
+
+        def close(self) -> None:
+            pass
+
+    class FakeCurator:
+        def __init__(self, _client, _store, *, system_prompt: str = "") -> None:
+            pass
+
+        def curate_entries(self, entries, *, cancel_checker=None):
+            calls.append([entry.entry_id for entry in entries])
+            if len(calls) == 1:
+                first_started.set()
+                assert release_first.wait(2)
+            return MemoryCurationResult(processed_entries=len(entries))
+
+    monkeypatch.setattr(__name__ + "._model_client_factory", FakeClient)
+    monkeypatch.setattr("plugins.optional.sakura_mem0.boundary.MemoryCurator", FakeCurator)
+    try:
+        boundary.note_timeline_changed(timeline)
+        assert first_started.wait(1)
+        _append_timeline_turn(timeline, 1)
+        boundary.note_timeline_changed(timeline)
+        release_first.set()
+
+        final_cursor = timeline.store.latest_cursor("sakura")
+        deadline = time.monotonic() + 2
+        while boundary._curation_state.curation_cursor() != final_cursor and time.monotonic() < deadline:  # noqa: SLF001
+            time.sleep(0.01)
+        assert calls == [
+            ["human-0", "assistant-0"],
+            ["human-1", "assistant-1"],
+        ]
+        assert boundary._curation_state.curation_cursor() == final_cursor  # noqa: SLF001
+    finally:
+        release_first.set()
+        boundary.close()
+
+
+def test_plugin_restart_catches_up_from_saved_curation_cursor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _root(tmp_path)
+    timeline = _timeline(root)
+    config = {
+        "triggerTurns": 2,
+        "curationProfileId": "fixture",
+        "curationModel": "curator",
+    }
+    first = _boundary(root, FakeMemoryStore(), config=config)
+    first.note_timeline_changed(timeline)
+    assert first._curation_state.curation_cursor() == ""  # noqa: SLF001
+    assert first._curation_state.pending_turns() == 1  # noqa: SLF001
+    first.close()
+    _append_timeline_turn(timeline, 1)
+    calls: list[list[str]] = []
+
+    class FakeClient:
+        def __init__(self, _settings, *, agent_trace_recorder=None) -> None:
+            pass
+
+        def close(self) -> None:
+            pass
+
+    class FakeCurator:
+        def __init__(self, _client, _store, *, system_prompt: str = "") -> None:
+            pass
+
+        def curate_entries(self, entries, *, cancel_checker=None):
+            calls.append([entry.entry_id for entry in entries])
+            return MemoryCurationResult(processed_entries=len(entries))
+
+    monkeypatch.setattr(__name__ + "._model_client_factory", FakeClient)
+    monkeypatch.setattr("plugins.optional.sakura_mem0.boundary.MemoryCurator", FakeCurator)
+    restarted = _boundary(root, FakeMemoryStore(), config=config)
+    try:
+        restarted.note_timeline_changed(timeline)
+        deadline = time.monotonic() + 2
+        while not restarted._curation_state.curation_cursor() and time.monotonic() < deadline:  # noqa: SLF001
+            time.sleep(0.01)
+        assert calls == [["human-0", "assistant-0", "human-1", "assistant-1"]]
+        assert restarted._curation_state.curation_cursor() == timeline.store.latest_cursor("sakura")  # noqa: SLF001
+    finally:
+        restarted.close()
+
+
+def test_failed_curation_keeps_cursor_and_retry_does_not_duplicate_success(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _root(tmp_path)
+    timeline = _timeline(root)
+    boundary = _boundary(
+        root,
+        FakeMemoryStore(),
+        config={
+            "triggerTurns": 1,
+            "curationProfileId": "fixture",
+            "curationModel": "curator",
+        },
+    )
+    calls = 0
+
+    class FakeClient:
+        def __init__(self, _settings, *, agent_trace_recorder=None) -> None:
+            pass
+
+        def close(self) -> None:
+            pass
+
+    class FakeCurator:
+        def __init__(self, _client, _store, *, system_prompt: str = "") -> None:
+            pass
+
+        def curate_entries(self, entries, *, cancel_checker=None):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise RuntimeError("fixture failure")
+            return MemoryCurationResult(processed_entries=len(entries))
+
+    monkeypatch.setattr(__name__ + "._model_client_factory", FakeClient)
+    monkeypatch.setattr("plugins.optional.sakura_mem0.boundary.MemoryCurator", FakeCurator)
+    try:
+        boundary.note_timeline_changed(timeline)
+        deadline = time.monotonic() + 2
+        while boundary._curation_active and time.monotonic() < deadline:  # noqa: SLF001
+            time.sleep(0.01)
+        assert boundary._curation_state.curation_cursor() == ""  # noqa: SLF001
+
+        boundary.note_timeline_changed(timeline)
+        deadline = time.monotonic() + 2
+        while not boundary._curation_state.curation_cursor() and time.monotonic() < deadline:  # noqa: SLF001
+            time.sleep(0.01)
+        boundary.note_timeline_changed(timeline)
+        time.sleep(0.05)
+        assert calls == 2
+        assert boundary._curation_state.curation_cursor() == timeline.store.latest_cursor("sakura")  # noqa: SLF001
+    finally:
+        boundary.close()
+
+
+
+
+def test_curation_cursor_state_survives_a_b_a_role_switch_beyond_backfill(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _root(tmp_path)
+    store = TimelineStore(root / "data" / "chat_history" / "timeline.sqlite3")
+    store.initialize()
+
+    def append_turn(character_id: str, index: int) -> None:
+        turn_id = f"{character_id}-turn-{index}"
+        store.append_many(
+            [
+                NewTimelineEntry(
+                    entry_id=f"{character_id}-human-{index}",
+                    turn_id=turn_id,
+                    character_id=character_id,
+                    kind=TimelineKind.HUMAN,
+                    origin="chat",
+                    created_at="2026-08-26T12:00:00+08:00",
+                    payload={"text": f"remember {character_id} {index}"},
+                ),
+                NewTimelineEntry(
+                    entry_id=f"{character_id}-assistant-{index}",
+                    turn_id=turn_id,
+                    character_id=character_id,
+                    kind=TimelineKind.ASSISTANT,
+                    origin="chat",
+                    created_at="2026-08-26T12:00:01+08:00",
+                    payload={
+                        "segments": [
+                            {
+                                "text": "ok",
+                                "translation": "",
+                                "tone": "",
+                                "portrait": "",
+                                "suppressTts": False,
+                            }
+                        ]
+                    },
+                ),
+            ]
+        )
+
+    append_turn("alice", 0)
+    append_turn("bob", 0)
+    calls: list[list[str]] = []
+    curation_finished = threading.Event()
+
+    class FakeClient:
+        def __init__(self, _settings, *, agent_trace_recorder=None) -> None:
+            pass
+
+        def close(self) -> None:
+            curation_finished.set()
+
+    class FakeCurator:
+        def __init__(self, _client, _store, *, system_prompt: str = "") -> None:
+            pass
+
+        def curate_entries(self, entries, *, cancel_checker=None):
+            calls.append([entry.entry_id for entry in entries])
+            return MemoryCurationResult(processed_entries=len(entries))
+
+    monkeypatch.setattr(__name__ + "._model_client_factory", FakeClient)
+    monkeypatch.setattr("plugins.optional.sakura_mem0.boundary.MemoryCurator", FakeCurator)
+    config = {
+        "triggerTurns": 1,
+        "backfillLimit": 2,
+        "curationProfileId": "fixture",
+        "curationModel": "curator",
+    }
+
+    def consume(character_id: str) -> None:
+        curation_finished.clear()
+        boundary = MemoryBoundary(
+            root,
+            character_id,
+            memory_store=FakeMemoryStore(),  # type: ignore[arg-type]
+            curation_config_getter=lambda: config,
+            model_catalog_getter=lambda: MODEL_CATALOG,
+            model_resolver=lambda reference: reference,
+            model_client_factory=lambda reference: _model_client_factory(reference),
+        )
+        timeline = TimelineProxy(store, character_id)
+        try:
+            boundary.note_timeline_changed(timeline)
+            expected = store.latest_cursor(character_id)
+            assert curation_finished.wait(10), "curation worker did not finish"
+            assert boundary._curation_state.curation_cursor() == expected  # noqa: SLF001
+        finally:
+            boundary.close()
+
+    consume("alice")
+    consume("bob")
+    for index in range(1, 4):
+        append_turn("alice", index)
+    consume("alice")
+
+    assert calls == [
+        ["alice-human-0", "alice-assistant-0"],
+        ["bob-human-0", "bob-assistant-0"],
+        [
+            "alice-human-1",
+            "alice-assistant-1",
+            "alice-human-2",
+            "alice-assistant-2",
+            "alice-human-3",
+            "alice-assistant-3",
+        ],
+    ]
+
+
+
+
+def test_partial_backend_success_is_idempotent_when_same_entries_are_retried() -> None:
+    class Api:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def complete_raw(self, *_args, **_kwargs):
+            self.calls += 1
+            operations = [
+                {
+                    "op": "add",
+                    "content": "用户喜欢樱花",
+                    "layer": "semantic",
+                    "confidence": 0.9,
+                },
+                {
+                    "op": "add",
+                    "content": "用户在学习日语",
+                    "layer": "semantic",
+                    "confidence": 0.9,
+                },
+            ]
+            return json.dumps(
+                {"operations": operations},
+                ensure_ascii=False,
+            )
+
+    class Store:
+        def __init__(self) -> None:
+            self.calls = 0
+            self.records: list[dict[str, object]] = []
+
+        def list_memories(self, *, limit=None):
+            return list(self.records)
+
+        def create_memory(self, arguments, *, allow_sensitive=False):
+            self.calls += 1
+            if self.calls == 2:
+                raise OSError("second write failed")
+            metadata = memory_module._memory_metadata(  # noqa: SLF001
+                dict(arguments),
+                scope_id="sakura",
+                created_at="2026-08-26T12:00:02+08:00",
+                updated_at="2026-08-26T12:00:02+08:00",
+            )
+            record = {
+                "id": f"memory-{len(self.records)}",
+                "content": arguments["content"],
+                "metadata": metadata,
+            }
+            self.records.append(record)
+            return {"memory": record}
+
+    entries = [
+        ChatHistoryEntry(
+            created_at="2026-08-26T12:00:00+08:00",
+            role="user",
+            content="我喜欢樱花，也在学习日语",
+            entry_id="timeline-human",
+        ),
+        ChatHistoryEntry(
+            created_at="2026-08-26T12:00:01+08:00",
+            role="assistant",
+            content="记住了",
+            entry_id="timeline-assistant",
+        ),
+    ]
+    api = Api()
+    store = Store()
+    curator = MemoryCurator(api, store)
+
+    with pytest.raises(RuntimeError, match="MEMORY_CURATION_WRITE_FAILED"):
+        curator.curate_entries(entries)
+    assert [record["content"] for record in store.records] == ["用户喜欢樱花"]
+
+    result = curator.curate_entries(entries)
+
+    assert result.created == 1
+    assert result.ignored == 1
+    assert [record["content"] for record in store.records] == [
+        "用户喜欢樱花",
+        "用户在学习日语",
+    ]
+
+
+
+
+def test_existing_memory_snapshot_failure_aborts_curation_before_write() -> None:
+    api_calls = 0
+    writes = 0
+
+    class Api:
+        def complete_raw(self, *_args, **_kwargs):
+            nonlocal api_calls
+            api_calls += 1
+            return '{"operations":[]}'
+
+    class Store:
+        def list_memories(self, *, limit=None):
+            raise OSError("snapshot unavailable")
+
+        def create_memory(self, arguments, *, allow_sensitive=False):
+            nonlocal writes
+            writes += 1
+
+    entries = [
+        ChatHistoryEntry(
+            created_at="2026-08-26T12:00:00+08:00",
+            role="user",
+            content="请记住",
+            entry_id="timeline-human",
+        )
+    ]
+
+    with pytest.raises(RuntimeError, match="MEMORY_CURATION_SNAPSHOT_FAILED"):
+        MemoryCurator(Api(), Store()).curate_entries(entries)
+    assert api_calls == 0
+    assert writes == 0
+
+
+def test_imported_history_is_skipped_without_losing_new_local_curation(tmp_path, monkeypatch):
+    root = _root(tmp_path)
+    timeline = _timeline(root, turns=0)
+    timeline.store.import_records("sakura", [{
+        "entry_id": "imported-human", "turn_id": "imported-turn", "kind": "human",
+        "origin": "chat", "created_at": "2026-08-25T12:00:00+08:00",
+        "payload": {"text": "导入的旧对话"},
+    }], preview=False)
+    boundary = _boundary(root, FakeMemoryStore(), config={"triggerTurns": 1, "curationModelRef": MODEL_REF})
+    processed = []
+
+    class Curator:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def curate_entries(self, entries, *, cancel_checker=None):
+            processed.extend(entry.entry_id for entry in entries)
+            return MemoryCurationResult(processed_entries=len(entries))
+
+    monkeypatch.setattr("plugins.optional.sakura_mem0.boundary.MemoryCurator", Curator)
+    monkeypatch.setattr(boundary._curation_threads, "spawn", lambda target, **_kwargs: target())
+    try:
+        boundary.note_timeline_changed(timeline)
+        assert processed == []
+        _append_timeline_turn(timeline, 1)
+        boundary.note_timeline_changed(timeline)
+        assert processed == ["human-1", "assistant-1"]
+        assert len(timeline.store.read_all("sakura")) == 3
+        boundary.note_timeline_changed(timeline)
+        assert processed == ["human-1", "assistant-1"]
+    finally:
+        boundary.close()
+
+
+def test_backend_write_failure_does_not_advance_curation_cursor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FailingStore(FakeMemoryStore):
+        def list_memories(self, *, limit=None):
+            return []
+
+        def create_memory(self, arguments, *, allow_sensitive=False, wait=True):
+            raise OSError("backend unavailable")
+
+    class FakeClient:
+        def __init__(self, _settings, *, agent_trace_recorder=None) -> None:
+            pass
+
+        def complete_raw(self, *_args, **_kwargs):
+            return json.dumps(
+                {
+                    "operations": [
+                        {
+                            "op": "add",
+                            "content": "用户喜欢樱花",
+                            "layer": "semantic",
+                            "confidence": 0.9,
+                        }
+                    ]
+                },
+                ensure_ascii=False,
+            )
+
+        def close(self) -> None:
+            pass
+
+    root = _root(tmp_path)
+    timeline = _timeline(root)
+    boundary = _boundary(
+        root,
+        FailingStore(),
+        config={
+            "triggerTurns": 1,
+            "curationProfileId": "fixture",
+            "curationModel": "curator",
+        },
+    )
+    monkeypatch.setattr(__name__ + "._model_client_factory", FakeClient)
+    try:
+        boundary.note_timeline_changed(timeline)
+        deadline = time.monotonic() + 2
+        while boundary._curation_active and time.monotonic() < deadline:  # noqa: SLF001
+            time.sleep(0.01)
+        assert boundary._curation_state.curation_cursor() == ""  # noqa: SLF001
+        assert boundary._curation_state.pending_turns() == 1  # noqa: SLF001
+    finally:
+        boundary.close()
+
+
+def test_curation_preserves_completed_page_cursor_and_retries_only_failed_page(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _root(tmp_path)
+    timeline = _timeline(root)
+    initial_cursor = timeline.store.latest_cursor("sakura")
+    for index in range(1, 6):
+        _append_timeline_turn(timeline, index)
+
+    # A byte-limited host response can end partway through a logical Turn.
+    read_since = timeline.read_since
+    monkeypatch.setattr(
+        timeline, "read_since", lambda request: read_since({**request, "limit": 3})
+    )
+    boundary = _boundary(
+        root,
+        FakeMemoryStore(),
+        config={
+            "triggerTurns": 1,
+            "curationProfileId": "fixture",
+            "curationModel": "curator",
+        },
+    )
+    boundary._curation_state.mark_timeline_processed(initial_cursor)  # noqa: SLF001
+    calls: list[list[str]] = []
+
+    class FakeCurator:
+        def __init__(self, *_args, **_kwargs) -> None:
+            pass
+
+        def curate_entries(self, entries, *, cancel_checker=None):
+            calls.append([entry.entry_id for entry in entries])
+            if len(calls) == 2:
+                raise OSError("second page failed")
+            return MemoryCurationResult(processed_entries=len(entries))
+
+    def run_inline(target, **_kwargs):
+        target()
+        return object()
+
+    monkeypatch.setattr("plugins.optional.sakura_mem0.boundary.MemoryCurator", FakeCurator)
+    monkeypatch.setattr(boundary._curation_threads, "spawn", run_inline)  # noqa: SLF001
+    first_page = [f"{role}-{index}" for index in range(1, 4) for role in ("human", "assistant")]
+    second_page = [f"{role}-{index}" for index in range(4, 6) for role in ("human", "assistant")]
+    try:
+        boundary.note_timeline_changed(timeline)
+        assert calls == [first_page, second_page]
+        remaining = timeline.store.read_since(
+            "sakura", boundary._curation_state.curation_cursor(), 500  # noqa: SLF001
+        )[0]
+        assert [entry.entry_id for entry in remaining] == second_page
+        assert boundary._curation_state.pending_turns() == 2  # noqa: SLF001
+
+        boundary.note_timeline_changed(timeline)
+        assert calls == [first_page, second_page, second_page]
+        assert boundary._curation_state.curation_cursor() == timeline.store.latest_cursor("sakura")  # noqa: SLF001
+        assert boundary._curation_state.pending_turns() == 0  # noqa: SLF001
+    finally:
+        boundary.close()
+
+
+def test_failed_repair_stops_current_job_and_later_event_can_retry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = 0
+
+    class FakeClient:
+        def __init__(self, _settings) -> None:
+            pass
+
+        def complete_raw(self, *_args, **_kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                boundary.note_timeline_changed(timeline)
+            return "not-json" if calls <= 2 else '{"operations":[]}'
+
+        def close(self) -> None:
+            pass
+
+    root = _root(tmp_path)
+    timeline = _timeline(root)
+    boundary = _boundary(
+        root,
+        FakeMemoryStore(),
+        config={
+            "triggerTurns": 1,
+            "curationProfileId": "fixture",
+            "curationModel": "curator",
+        },
+    )
+    monkeypatch.setattr(
+        __name__ + "._model_client_factory",
+        FakeClient,
+    )
+    def run_inline(target, **_kwargs):
+        target()
+        return object()
+
+    monkeypatch.setattr(boundary._curation_threads, "spawn", run_inline)  # noqa: SLF001
+    try:
+        boundary.note_timeline_changed(timeline)
+
+        assert calls == 2
+        assert boundary._curation_state.curation_cursor() == ""  # noqa: SLF001
+
+        boundary.note_timeline_changed(timeline)
+        assert calls == 3
+        assert boundary._curation_state.curation_cursor() == timeline.store.latest_cursor("sakura")  # noqa: SLF001
+    finally:
+        boundary.close()
+
+
+def test_each_curation_chunk_has_its_own_generation_and_repair(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = 0
+
+    class Client:
+        def complete_raw(self, _system, _messages, **kwargs):
+            nonlocal calls
+            assert kwargs["temperature"] == (0 if calls == 1 else 0.2)
+            assert kwargs["response_format"] == {"type": "json_object"}
+            calls += 1
+            return "not-json" if calls == 1 else '{"operations":[]}'
+
+    client = Client()
+    entries = [
+        ChatHistoryEntry(
+            created_at="2026-08-31T12:00:00+08:00",
+            role="user",
+            content="x" * 2_000,
+            entry_id=f"entry-{index}",
+            turn_id=f"turn-{index}",
+            origin="chat",
+        )
+        for index in range(15)
+    ]
+
+    result = MemoryCurator(client, FakeMemoryStore()).curate_entries(entries)
+
+    assert result.processed_entries == 15
+    assert calls == 4  # Three chunks plus one repair for the first chunk.
+
+
+
+
+def test_wp_5_03_generation_close_cancels_active_memory_curation_without_advancing_cursor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _root(tmp_path)
+    store = FakeMemoryStore()
+    boundary = _boundary(
+        root,
+        store,
+        config={
+            "triggerTurns": 1,
+            "curationProfileId": "fixture",
+            "curationModel": "curator",
+        },
+    )
+    timeline = _timeline(root)
+    started = threading.Event()
+    cancelled = threading.Event()
+
+    class FakeClient:
+        def __init__(self, _settings, *, agent_trace_recorder=None) -> None:
+            pass
+
+        def close(self) -> None:
+            pass
+
+    class BlockingCurator:
+        def __init__(self, _client, _store, *, system_prompt: str = "") -> None:
+            pass
+
+        def curate_entries(self, _entries, *, cancel_checker=None):
+            started.set()
+            while True:
+                try:
+                    if cancel_checker:
+                        cancel_checker()
+                except BaseException:
+                    cancelled.set()
+                    raise
+                time.sleep(0.005)
+
+    monkeypatch.setattr(__name__ + "._model_client_factory", FakeClient)
+    monkeypatch.setattr("plugins.optional.sakura_mem0.boundary.MemoryCurator", BlockingCurator)
+    boundary.note_timeline_changed(timeline)
+    assert started.wait(1)
+
     boundary.close()
 
-
-def test_curation_rejects_batch_without_reliable_sources(store):
-    human = entry()
-    assistant = entry("a1", "用户希望继续提醒睡觉", "assistant")
-    for invalid in (add_operation(assistant),
-                    {**add_operation(human), "evidence": [{"entry_id": "missing", "quote": "不存在"}]}):
-        with pytest.raises(MemoryCurationError):
-            MemoryCurator(Client([add_operation(human), invalid]), store).curate_entries([human, assistant], cursor="next")
-        assert store.list_memories() == []
-        assert store.unprocessed_entries([human, assistant]) == [human, assistant]
-    result = MemoryCurator(Client([]), store).curate_entries([human, assistant], cursor="next")
-    assert result.processed_entries == 2
-    assert store.unprocessed_entries([human, assistant]) == []
+    assert cancelled.is_set()
+    assert store.closed
+    assert boundary._curation_state.curation_cursor() == ""  # noqa: SLF001
 
 
-def test_observation_cannot_overwrite_user_fact_but_can_record_activity(store):
-    old = store.create_memory({"content": "用户不希望收到睡觉提醒", "layer": "procedural", "occurred_at": "2026-01-01T00:00:00Z"})["memory"]
-    observed = entry("o1", "屏幕显示用户正在玩五子棋", "observation")
-    with pytest.raises(MemoryCurationError):
-        MemoryCurator(Client([add_operation(observed, op="update", id=old["id"], layer="procedural",
-            content="用户喜欢睡觉提醒")]), store).curate_entries([observed])
-    assert store.get(old["id"])["content"] == old["content"]
-    result = MemoryCurator(Client([add_operation(observed, layer="episodic")]), store).curate_entries([observed])
-    assert result.created == 1
+def test_model_download_reservation_closes_cancel_race_and_preserves_task_identity(
+    tmp_path: Path,
+) -> None:
+    store = FakeMemoryStore(ready=False, model_missing=True)
+    store.block_download = True
+    boundary = _boundary(_root(tmp_path), store)
+    result: list[str] = []
+    boundary.begin_model_download("memory-model-task")
 
-
-def test_updating_one_profile_fact_does_not_leave_old_preference_in_other_facts(store, tmp_path):
-    human = entry(content="我叫小明，住北京，不喜欢咖啡。")
-    client = Client([
-        add_operation(human, layer="core_profile", predicate="称呼", content="用户叫小明"),
-        add_operation(human, layer="core_profile", predicate="饮食偏好", content="用户不喜欢咖啡"),
-    ])
-    MemoryCurator(client, store).curate_entries([human])
-    facts = {item["predicate"]: item for item in store.profile_memories()}
-    assert facts["称呼"]["content"] == "用户叫小明"
-    assert facts["称呼"]["evidence"][0]["quote"] == human.content
-    changed = entry("u2", "我现在开始喜欢咖啡了", date="2026-10-02T12:00:00+00:00")
-    MemoryCurator(Client([add_operation(changed, op="update", id=facts["饮食偏好"]["id"],
-        layer="core_profile", predicate="饮食偏好", content="用户喜欢咖啡")]), store).curate_entries([changed])
-    boundary = MemoryBoundary(tmp_path, "sakura", memory_store=store)
-    try:
-        context = MemoryRecallService(boundary).recall(ContextRequest(current_input="你好", character_id="sakura"))
-        assert "不喜欢咖啡" not in "\n".join(fragment.content for fragment in context.fragments)
-        assert {item["content"] for item in store.profile_memories()} == {"用户叫小明", "用户喜欢咖啡"}
-    finally:
-        boundary.close()
-
-
-
-def test_incomplete_candidate_does_not_mark_source_as_processed(store):
-    human = entry()
-    with pytest.raises(ValidationError):
-        MemoryCurator(Client([{"op": "add", "layer": "semantic"}]), store).curate_entries([human], cursor="next")
-    assert store.unprocessed_entries([human]) == [human]
-    assert store.get_state("curation", default={}) == {}
-    assert not store.list_memories()
-
-
-
-def _wait_text_import(boundary, request):
-    deadline = time.monotonic() + 3
-    while time.monotonic() < deadline:
-        result = boundary.text_import_status(request)
-        if result["state"] != "running":
-            return result
-        time.sleep(.01)
-    pytest.fail("文本提取未结束")
-
-
-def test_text_import_previews_then_saves_selected_edits_atomically(tmp_path):
-    request = {"requestId": "test-import", "text": "我不喝咖啡。请不要提醒我睡觉。小雨是我的同事。"}
-    document = entry("text-import:test-import", request["text"], "document")
-    client = Client([
-        add_operation(document, layer="core_profile", subject="用户", subject_kind="person", predicate="饮食偏好", content="不喝咖啡"),
-        add_operation(document, layer="procedural", subject="用户", predicate="睡觉提醒", content="不要提醒睡觉"),
-        add_operation(document, subject="用户", predicate="同事", target="小雨", content="小雨是同事"),
-    ])
-    boundary = MemoryBoundary(tmp_path, "sakura", model_client_factory=lambda _: client,
-                              model_resolver=lambda _: {"serviceKey": "model", "profileId": "p", "modelId": "m"})
-    try:
-        boundary.start_text_import(request)
-        result = _wait_text_import(boundary, request)
-        assert result["state"] == "preview"
-        assert boundary.list_memories() == []
-        selected = result["candidates"][:2]
-        selected[0]["content"] = "我喜欢绿茶，不喝咖啡。"
-        selected[1]["content"] = ""
-        with pytest.raises(ValueError):
-            boundary.save_text_import({**request, "candidates": selected})
-        assert boundary.list_memories() == []
-        selected[1]["content"] = "以后不用提醒我要睡觉了。"
-        confirmation = {**request, "candidates": selected}
-        assert boundary.save_text_import(confirmation)["saved"] == 2
-        assert boundary.save_text_import(confirmation)["saved"] == 2
-        records = boundary.memory_store.list_memories(limit=None)
-        assert len(records) == 2
-        assert {item["content"] for item in boundary.memory_store.profile_memories()} == {
-            "我喜欢绿茶，不喝咖啡。", "以后不用提醒我要睡觉了。"}
-        assert all(item["source"] == "manual" and item["evidence"][0]["role"] == "document" for item in records)
-        assert all(item["evidence"][0]["quote"] == request["text"] for item in records)
-        assert boundary.memory_store.get_state("curation", default={}) == {}
-    finally:
-        boundary.close()
-
-
-def test_text_import_cancel_discards_late_model_result(tmp_path):
-    entered, release = threading.Event(), threading.Event()
-
-    class SlowClient(Client):
-        def complete(self, *args, **kwargs):
-            entered.set()
-            assert release.wait(3)
-            return super().complete(*args, **kwargs)
-
-    request = {"requestId": "cancelled-import", "text": "我喜欢茶"}
-    client = SlowClient([add_operation(entry("text-import:cancelled-import", request["text"], "document"))])
-    boundary = MemoryBoundary(tmp_path, "sakura", model_client_factory=lambda _: client,
-                              model_resolver=lambda _: {"serviceKey": "model", "profileId": "p", "modelId": "m"})
-    try:
-        boundary.start_text_import(request)
-        assert entered.wait(3)
-        boundary.cancel_text_import(request)
-        release.set()
-        boundary._curation_threads.stop(3000)
-        assert boundary.text_import_status(request)["state"] == "cancelled"
-        with pytest.raises(ValueError):
-            boundary.save_text_import({**request, "candidates": []})
-        assert not boundary.list_memories()
-    finally:
-        release.set()
-        boundary.close()
-
-
-def test_text_import_requires_a_model_and_keeps_unverifiable_output_unsaved(tmp_path):
-    request = {"requestId": "bad-quote", "text": "我喜欢茶"}
-    boundary = MemoryBoundary(tmp_path, "sakura")
-    try:
-        with pytest.raises(ValueError, match="记忆整理模型"):
-            boundary.start_text_import(request)
-        assert not boundary.list_memories()
-    finally:
-        boundary.close()
-    client = Client([add_operation(entry("text-import:bad-quote", "原文没有这句话", "document"))])
-    boundary = MemoryBoundary(tmp_path, "sakura", model_client_factory=lambda _: client,
-                              model_resolver=lambda _: {"serviceKey": "model", "profileId": "p", "modelId": "m"})
-    try:
-        boundary.start_text_import(request)
-        result = _wait_text_import(boundary, request)
-        assert result["state"] == "failed" and "无法核对原文" in result["error"]
-        assert not boundary.list_memories()
-    finally:
-        boundary.close()
-
-
-def test_old_json_without_entity_fields_restores_and_can_be_exported_again(tmp_path):
-    from sakura_data_transfer import write_archive
-
-    record = {"id": "old-profile", "content": "用户喜欢绿茶，不喝咖啡。", "layer": "core_profile",
-              "scope": "sakura", "category": "", "source": "manual", "importance": .8, "confidence": .9,
-              "created_at": "2025-01-01T12:00:00+00:00", "updated_at": "2025-01-02T12:00:00+00:00",
-              "last_accessed_at": "", "metadata": {"pinned": True}}
-    archive = tmp_path / "old-memory.json"
-    write_archive(archive, kind="memory", provider="sakura.memory.mem0", character_id="sakura", records=[record])
-    boundary = MemoryBoundary(tmp_path, "sakura")
-    request = {"expectedCharacterId": "sakura", "path": str(archive)}
-    try:
-        assert boundary.transfer({**request, "action": "preview"})["added"] == 1
-        assert boundary.transfer({**request, "action": "import"})["added"] == 1
-        restored = boundary.memory_store.get(record["id"])
-        assert restored["content"] == record["content"] and restored["created_at"] == record["created_at"]
-        assert restored["subject"] == "用户" and restored["pinned"]
-        boundary.upsert({"id": record["id"], "content": "现在也喜欢乌龙茶。"})
-        assert boundary.transfer({**request, "action": "import"})["added"] == 0
-        assert boundary.memory_store.get(record["id"])["content"] == "现在也喜欢乌龙茶。"
-        exported = tmp_path / "new-memory.json"
-        boundary.transfer({**request, "action": "export", "format": "json", "path": str(exported)})
-        assert boundary.transfer({**request, "action": "import", "path": str(exported)})["identical"] == 1
-        assert len(boundary.list_memories()) == 1
-    finally:
-        boundary.close()
-
-
-def test_human_edit_during_model_request_is_preserved_without_blocking(store):
-    old = store.create_memory({"content": "午饭喜欢面条", "occurred_at": "2026-01-01T00:00:00Z"})["memory"]
-    human = entry(content="午饭现在喜欢米饭")
-    entered, proceed = threading.Event(), threading.Event()
-    client = Client([add_operation(human, op="update", id=old["id"])])
-    original = client.complete
-    def complete(*args, **kwargs):
-        entered.set()
-        assert proceed.wait(5)
-        return original(*args, **kwargs)
-    client.complete = complete
-    results = []
-    worker = threading.Thread(target=lambda: results.append(MemoryCurator(client, store).curate_entries([human])))
+    worker = threading.Thread(
+        target=lambda: result.append(boundary.run_model_download("memory-model-task")),
+        daemon=True,
+    )
     worker.start()
-    assert entered.wait(5)
-    store.update_memory({"id": old["id"], "content": "午饭喜欢饺子", "pinned": True})
-    proceed.set()
-    worker.join(5)
-    assert not worker.is_alive()
-    assert store.get(old["id"])["content"] == "午饭喜欢饺子"
-    assert results[0].ignored == 1
+    assert store.download_started.wait(2)
+    cancelled = boundary.model_cancel({"taskHandle": "memory-model-task"})
+    worker.join(2)
 
-
-def test_exported_legacy_deletion_without_text_can_be_restored(tmp_path):
-    from contextlib import closing
-
-    source = tmp_path / "source"
-    directory = source / "data/memory"
-    directory.mkdir(parents=True)
-    with closing(sqlite3.connect(directory / "mem0_history.db")) as db, db:
-        db.execute("CREATE TABLE history (memory_id TEXT, user_id TEXT, new_memory TEXT, event TEXT, created_at TEXT)")
-        db.executemany("INSERT INTO history VALUES (?,?,?,?,?)", [
-            ("kept", "sakura", "喜欢绿茶", "ADD", "2026-10-01"),
-            ("removed", "sakura", None, "DELETE", "2026-10-02"),
-        ])
-    archive = tmp_path / "memory.json"
-    request = {"expectedCharacterId": "sakura", "path": str(archive)}
-    exporter = MemoryBoundary(source, "sakura")
     try:
-        assert exporter.transfer({**request, "action": "export", "format": "json"})["exported"] == 2
-    finally:
-        exporter.close()
-
-    importer = MemoryBoundary(tmp_path / "target", "sakura")
-    try:
-        assert importer.transfer({**request, "action": "preview"})["added"] == 2
-        assert importer.transfer({**request, "action": "import"})["added"] == 2
-        assert [item["id"] for item in importer.list_memories()] == ["kept"]
-        removed = importer.memory_store.get("removed", include_deleted=True)
-        assert removed["deleted"] and removed["content"] == ""
-        assert removed["created_at"] == "2026-10-02"
-        importer.memory_store.restore_records([{"id": "removed", "content": "旧内容"}])
-        assert importer.memory_store.get("removed") is None
-        assert importer.transfer({**request, "action": "import"})["identical"] == 2
-    finally:
-        importer.close()
-
-
-def test_curation_batch_rollback_keeps_cursor_and_fts_consistent(store, monkeypatch):
-    human = entry(content="喜欢咖啡")
-    another = entry("u2", "喜欢茶")
-    client = Client([add_operation(human), add_operation(another)])
-    save = store._save
-    def fail_second(record, **kwargs):
-        if record["content"] == "喜欢茶":
-            raise sqlite3.OperationalError("disk full")
-        return save(record, **kwargs)
-    monkeypatch.setattr(store, "_save", fail_second)
-    with pytest.raises(sqlite3.OperationalError, match="disk full"):
-        MemoryCurator(client, store).curate_entries([human, another], cursor="bad-cursor")
-    assert store.list_memories(limit=None) == []
-    assert store.get_state("curation", default={}) == {}
-    assert store.search_memory({"query": "咖啡"})["memories"] == []
-    monkeypatch.setattr(store, "_save", save)
-    MemoryCurator(client, store).curate_entries([human, another], cursor="ok")
-    assert len(store.list_memories(limit=None)) == 2
-
-
-def test_failed_model_and_cancelled_generation_do_not_advance_cursor(store):
-    class BrokenClient:
-        def complete(self, *_args, **_kwargs):
-            return {"message": {"content": "not JSON"}, "finishReason": "stop"}
-    with pytest.raises(ValueError):
-        MemoryCurator(BrokenClient(), store).curate_entries([entry()], cursor="bad")
-    assert store.get_state("curation", default={}) == {}
-    def cancelled():
-        raise OperationCancelled()
-    with pytest.raises(OperationCancelled):
-        MemoryCurator(Client([add_operation(entry())]), store).curate_entries([entry()], cursor="bad", cancel_checker=cancelled)
-    assert store.list_memories(limit=None) == []
-
-
-def test_curation_corrects_invalid_structure_using_the_original_evidence(store):
-    human = entry(content="我不喝咖啡。")
-    requests = []
-
-    class CorrectingClient:
-        def complete(self, request, **kwargs):
-            from copy import deepcopy
-            requests.append(deepcopy(request))
-            content = "{}" if len(requests) == 1 else json.dumps({"operations": [add_operation(human)]})
-            return {"message": {"content": content}, "finishReason": "stop"}
-
-    result = MemoryCurator(CorrectingClient(), store).curate_entries([human], cursor="done")
-    assert result.created == 1
-    assert requests[0]["responseFormat"]["type"] == "json_schema"
-    assert requests[1]["messages"][:2] == requests[0]["messages"]
-    assert "operations" in requests[1]["messages"][-1]["content"]
-    assert len(store.list_memories()) == 1
-    assert store.get_state("curation")["curation_cursor"] == "done"
-
-
-@pytest.mark.parametrize("finish,refusal,code", [
-    ("length", None, "MODEL_OUTPUT_TRUNCATED"),
-    ("stop", "服务拒绝返回结果", "MODEL_OUTPUT_REFUSED"),
-])
-def test_incomplete_model_response_is_not_repaired_or_committed(store, finish, refusal, code):
-    from sakura_model import ModelError
-    calls = []
-
-    class IncompleteClient:
-        def complete(self, request, **kwargs):
-            calls.append(request)
-            return {"message": {"content": '{"operations": [', "refusal": refusal}, "finishReason": finish}
-
-    human = entry()
-    with pytest.raises(ModelError) as error:
-        MemoryCurator(IncompleteClient(), store).curate_entries([human], cursor="bad")
-    assert error.value.code == code
-    assert len(calls) == 1
-    assert store.unprocessed_entries([human]) == [human]
-    assert store.get_state("curation", default={}) == {}
-    assert not store.list_memories()
-
-
-def test_old_history_cannot_overwrite_new_fact_and_deleted_source_stays_deleted(store):
-    human = entry(content="我更喜欢拿铁")
-    old = store.create_memory({"content": "现在喜欢美式咖啡", "occurred_at": "2026-10-10T00:00:00Z"})["memory"]
-    client = Client([add_operation(human, op="update", id=old["id"])])
-    assert MemoryCurator(client, store).curate_entries([human]).ignored == 1
-    assert store.get(old["id"])["content"] == "现在喜欢美式咖啡"
-    fact = entry("u2", "昨天一起修好了语音问题")
-    MemoryCurator(Client([add_operation(fact, layer="episodic")]), store).curate_entries([fact])
-    event = next(item for item in store.list_memories(limit=None) if item["layer"] == "episodic")
-    store.forget_memory({"id": event["id"]})
-    MemoryCurator(Client([add_operation(fact, layer="episodic")]), store).curate_entries([fact])
-    assert len(store.list_memories(limit=None)) == 1
-    assert store.get(event["id"], include_deleted=True)["deleted"]
-
-
-def test_original_human_evidence_can_correct_a_later_unsupported_legacy_summary(store):
-    human = entry(content="以后不用提醒我要睡觉了", date="2026-06-12T00:41:53+08:00")
-    store.import_records([{"id": "old", "scope": "sakura", "source": "curated", "layer": "procedural",
-                           "content": "仍会轻柔提醒，并非严格禁止", "created_at": "2026-06-25T00:00:00+08:00"}])
-    result = MemoryCurator(Client([add_operation(human, op="update", id="old", layer="procedural")]), store).curate_entries([human])
-    assert result.updated == 1
-    assert store.get("old")["content"] == human.content
-    assert store.get("old")["evidence"][0]["quote"] == human.content
-
-
-def test_role_isolation_restart_and_deleted_export(store, tmp_path):
-    item = store.create_memory({"content": "用户喜欢樱花"})["memory"]
-    other = MemoryStore(tmp_path, scope_id="other")
-    assert other.search_memory({"query": "樱花"})["memories"] == []
-    with pytest.raises(ValueError):
-        other.update_memory({"id": item["id"], "content": "覆盖"})
-    other.close()
-    store.forget_memory({"id": item["id"]})
-    archive = store.export_records()
-    target = MemoryStore(tmp_path / "target")
-    target.restore_records(archive)
-    target.restore_records([{**archive[0], "metadata": {**archive[0]["metadata"], "deleted": False}}])
-    assert target.list_memories(limit=None) == []
-    assert target.get(item["id"], include_deleted=True)["deleted"]
-    target.close()
-
-
-def test_legacy_profile_and_history_extra_columns_survive_migration(tmp_path):
-    from plugins.optional.sakura_mem0.legacy import normalize_existing_history_database
-    root = tmp_path / "data/memory"
-    root.mkdir(parents=True)
-    profile = "原始档案：不用提醒睡觉。\n生日是 5 月 17 日。"
-    (root / "core_profiles.json").write_text(json.dumps({"sakura": {"content": profile,
-        "metadata": {"created_at": "2024-01-01", "source": "old-import"}}}), encoding="utf-8")
-    db = root / "mem0_history.db"
-    with sqlite3.connect(db) as connection:
-        connection.execute("CREATE TABLE history (id TEXT PRIMARY KEY, extra TEXT)")
-        connection.execute("INSERT INTO history VALUES ('h1','keep')")
-    normalize_existing_history_database(db)
-    with sqlite3.connect(db) as connection:
-        assert connection.execute("SELECT extra FROM history").fetchone()[0] == "keep"
-    memory = MemoryStore(tmp_path)
-    assert memory.core_profile()["content"] == profile
-    assert memory.core_profile()["source"] == "old-import"
-    memory.close()
-    reopened = MemoryStore(tmp_path)
-    assert len(reopened.list_memories(limit=None)) == 1
-    reopened.close()
-
-
-def test_session_completion_stops_automatic_recall_but_remains_searchable(store):
-    task = store.create_memory({"content": "正在排查语音卡顿", "layer": "session"})["memory"]
-    store.update_memory({"id": task["id"], "state": "completed"})
-    assert store.search_memory({"query": "语音卡顿", "automatic": True})["memories"] == []
-    assert store.search_memory({"query": "语音卡顿"})["memories"][0]["state"] == "completed"
-
-
-def test_history_only_migration_uses_latest_text_and_keeps_deletions(tmp_path):
-    from contextlib import closing
-    root = tmp_path / "data/memory"
-    root.mkdir(parents=True)
-    with closing(sqlite3.connect(root / "mem0_history.db")) as db, db:
-        db.execute("CREATE TABLE history (memory_id TEXT, user_id TEXT, new_memory TEXT, event TEXT, created_at TEXT)")
-        db.executemany("INSERT INTO history VALUES (?,?,?,?,?)", [
-            ("fact", "sakura", "早上喝咖啡", "ADD", "2026-10-01"),
-            ("fact", "sakura", "现在改喝茶", "UPDATE", "2026-10-02"),
-            ("gone", "sakura", "旧偏好", "ADD", "2026-10-01"),
-            ("gone", "sakura", None, "DELETE", "2026-10-03"),
-        ])
-    memory = MemoryStore(tmp_path)
-    try:
-        assert memory.get("fact")["content"] == "现在改喝茶"
-        assert memory.get("fact")["created_at"] == "2026-10-01"
-        assert memory.get("fact")["updated_at"] == "2026-10-02"
-        assert memory.get("gone") is None
-        assert memory.get("gone", include_deleted=True)["deleted"]
-    finally:
-        memory.close()
-
-
-def test_directory_import_applies_unassigned_deletions_before_old_copies(store):
-    store.import_records([
-        {"id": "old", "scope": "sakura", "content": "旧事实"},
-        {"id": "old", "scope": "", "content": "", "deleted": True},
-    ])
-    assert store.get("old") is None
-    assert store.all_records()[0]["deleted"]
-
-
-def test_history_range_snapshot_preserves_pagination_and_roles(tmp_path):
-    timeline = TimelineStore(tmp_path / "timeline.sqlite3")
-    timeline.initialize()
-    for i in range(5):
-        timeline.append(NewTimelineEntry(f"u{i}", f"t{i}", "sakura", TimelineKind.HUMAN, "chat",
-                                        f"2026-10-0{i+1}T12:00:00Z", {"text": f"消息{i}"}))
-    service = _TimelineHostService(timeline, lambda: "sakura")
-    request = {"startDate": "2026-10-02", "endDate": "2026-10-04", "limit": 2}
-    page = service.call("read_range", [request])
-    assert [item["entryId"] for item in page["entries"]] == ["u1", "u2"]
-    timeline.append(NewTimelineEntry("late", "late", "sakura", TimelineKind.HUMAN, "chat",
-                                    "2026-10-03T12:00:00Z", {"text": "晚导入"}))
-    final = service.call("read_range", [{**request, "cursor": page["nextCursor"], "snapshotCursor": page["snapshotCursor"]}])
-    assert [item["entryId"] for item in final["entries"]] == ["u3"]
-    assert not final["hasMore"] and final["total"] == 3
-
-
-def test_backfill_resumes_after_model_failure_without_duplicate_memories(tmp_path):
-    history = TimelineStore(tmp_path / "timeline.sqlite3")
-    history.initialize()
-    for i in range(40):
-        history.append(NewTimelineEntry(f"u{i}", f"t{i}", "sakura", TimelineKind.HUMAN, "chat",
-                                        "2026-10-01T12:00:00Z", {"text": f"完成任务{i}"}))
-    service = _TimelineHostService(history, lambda: "sakura")
-    timeline = SimpleNamespace(read_range=lambda payload: service.call("read_range", [payload]))
-    class BackfillClient(Client):
-        fail = True
-        def complete(self, request, **kwargs):
-            messages = json.loads(request["messages"][1]["content"])["messages"]
-            self.requests.append(messages)
-            if self.fail and len(self.requests) == 2:
-                raise RuntimeError("上游连接断开")
-            first = messages[0]
-            return {"message": {"content": json.dumps({"operations": [{"op": "add", "layer": "episodic", "content": first["content"],
-                "evidence": [{"entry_id": first["entry_id"], "quote": first["content"]}]}]})}, "finishReason": "stop"}
-    client = BackfillClient([])
-    boundary = MemoryBoundary(tmp_path, "sakura",
-        curation_config_getter=lambda: {"curationModelRef": {"serviceKey": "model", "profileId": "p", "modelId": "m"}},
-        model_client_factory=lambda _: client)
-    def await_finished():
-        deadline = time.monotonic() + 5
-        while boundary._curation_active and time.monotonic() < deadline:
-            time.sleep(.01)
-        assert not boundary._curation_active
-    try:
-        boundary.start_backfill(timeline, "2026-10-01", "2026-10-01")
-        await_finished()
-        assert boundary.settings_get()["backfill"]["status"] == "failed"
-        assert len(boundary.list_memories()) == 1
-        client.fail = False
-        boundary.start_backfill(timeline, "2026-10-01", "2026-10-01")
-        await_finished()
-        assert boundary.settings_get()["backfill"]["status"] == "completed"
-        assert len(boundary.list_memories()) == 2
-        assert len(client.requests[-1]) == 8
-        assert boundary.memory_store.get_state("curation", default={}) == {}
+        assert cancelled == {"accepted": True, "taskId": "memory-model-task"}
+        assert result == ["cancelled"]
+        assert boundary.model_cancel({"taskHandle": "memory-model-task"}) == {
+            "accepted": False,
+            "taskId": "",
+        }
     finally:
         boundary.close()
 
 
-def test_history_date_range_follows_local_calendar(tmp_path):
-    from datetime import datetime, timezone
-    history = TimelineStore(tmp_path / "timeline.sqlite3")
-    history.initialize()
-    for entry_id, local in (("previous", datetime(2026, 10, 1, 23, 30)),
-                            ("selected", datetime(2026, 10, 2, 0, 30))):
-        timestamp = local.astimezone().astimezone(timezone.utc).isoformat()
-        history.append(NewTimelineEntry(entry_id, entry_id, "sakura", TimelineKind.HUMAN, "chat",
-                                        timestamp, {"text": "跨午夜的历史"}))
-    entries, _, _, _, total = history.read_range("sakura", "2026-10-02", "2026-10-02")
-    assert [entry.entry_id for entry in entries] == ["selected"]
-    assert total == 1
-
-
-def test_cancel_backfill_does_not_commit_a_late_model_result(tmp_path):
-    entered, resume = threading.Event(), threading.Event()
-    history = TimelineStore(tmp_path / "timeline.sqlite3")
-    history.initialize()
-    history.append(NewTimelineEntry("u1", "t1", "sakura", TimelineKind.HUMAN, "chat",
-                                    "2026-10-01T12:00:00Z", {"text": "喜欢拿铁"}))
-    service = _TimelineHostService(history, lambda: "sakura")
-    class SlowClient(Client):
-        def complete(self, *args, **kwargs):
-            entered.set()
-            assert resume.wait(5)
-            return super().complete(*args, **kwargs)
-    boundary = MemoryBoundary(tmp_path, "sakura",
-        curation_config_getter=lambda: {"curationModelRef": {"serviceKey": "model", "profileId": "p", "modelId": "m"}},
-        model_client_factory=lambda _: SlowClient([add_operation(entry("u1", "喜欢拿铁"))]))
+def test_model_download_failure_is_sanitized_and_releases_task(tmp_path: Path) -> None:
+    store = FakeMemoryStore(ready=False, model_missing=True)
+    store.download_error = True
+    boundary = _boundary(_root(tmp_path), store)
     try:
-        boundary.start_backfill(SimpleNamespace(read_range=lambda payload: service.call("read_range", [payload])),
-                                "2026-10-01", "2026-10-01")
-        assert entered.wait(5)
-        boundary.cancel_backfill()
-        resume.set()
-        deadline = time.monotonic() + 5
-        while boundary._curation_active and time.monotonic() < deadline:
-            time.sleep(.01)
-        assert boundary.settings_get()["backfill"]["status"] == "cancelled"
-        assert boundary.list_memories() == []
-        assert not boundary.settings_get()["backfill"].get("curation_cursor")
-    finally:
-        resume.set()
-        boundary.close()
-
-
-@pytest.mark.parametrize("count", [115, 116])
-def test_profile_budget_survives_many_facts_and_search_failure(store, tmp_path, monkeypatch, count):
-    for index in range(count):
-        store.create_memory({"content": f"画像 {index}", "layer": "core_profile"})
-    boundary = MemoryBoundary(tmp_path, "sakura", memory_store=store)
-    request = ContextRequest(current_input="你好", character_id="sakura")
-    try:
-        result = MemoryRecallService(boundary).recall(request)
-        assert result.status == "ready" and len(result.fragments) == count
-        def fail(*args, **kwargs):
-            raise sqlite3.OperationalError("search unavailable")
-        monkeypatch.setattr(boundary, "search_memory", fail)
-        result = MemoryRecallService(boundary).recall(request)
-        assert result.status == "degraded" and len(result.fragments) == count
+        boundary.begin_model_download("memory-model-failure")
+        assert boundary.run_model_download("memory-model-failure") == "failed"
+        assert boundary.status() == {
+            "status": "degraded",
+            "message": "本地记忆模型下载失败；原缓存保持不变。",
+        }
+        assert boundary.model_download_error_code() == "DOWNLOAD_FAILED"
+        assert boundary.model_cancel({"taskHandle": "memory-model-failure"})["accepted"] is False
     finally:
         boundary.close()
 
 
-@pytest.mark.parametrize("mapping", [{"A": "B", "B": "C"}, {"A": "B", "B": "A"}])
-def test_scope_remapping_moves_records_and_associated_history_once(tmp_path, mapping):
-    for scope in mapping:
-        memory = MemoryStore(tmp_path, scope)
-        human = entry(scope, content=f"{scope} 喝咖啡不加糖")
-        MemoryCurator(Client([add_operation(human, layer="core_profile")]), memory).curate_entries([human], cursor=scope)
-        fact, = memory.profile_memories()
-        memory.update_memory({"id": fact["id"], "content": f"{scope} 改喝茶"})
-        memory.set_core_profile(f"{scope} 的档案")
-        memory.create_memory({"id": "same-id", "content": f"{scope} 已删除的事实"})
-        memory.forget_memory({"id": "same-id"})
-        memory.close()
-    memory = MemoryStore(tmp_path)
+def test_model_download_failure_keeps_previous_cache_and_removes_staging(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cache = (
+        tmp_path
+        / "runtime"
+        / "fastembed-cache"
+        / memory_module.DEFAULT_EMBEDDING_MODEL_CACHE_NAME
+    )
+    cache.mkdir(parents=True)
+    (cache / "old.bin").write_bytes(b"previous-readable-cache")
+
+    def fail_download(snapshot, **_kwargs):
+        partial = Path(snapshot)
+        partial.mkdir(parents=True)
+        (partial / "partial.bin").write_bytes(b"partial")
+        raise OSError("network interrupted")
+
+    monkeypatch.setattr(memory_module, "_download_modelscope_snapshot", fail_download)
+    with pytest.raises(memory_module.MemoryModelImportError) as raised:
+        memory_module.download_embedding_model(tmp_path)
+
+    assert raised.value.code == "DOWNLOAD_NETWORK_FAILED"
+    assert "network interrupted" not in str(raised.value)
+    assert (cache / "old.bin").read_bytes() == b"previous-readable-cache"
+    assert not list(cache.parent.glob(".memory_model_download_*"))
+
+
+def test_modelscope_download_uses_pinned_revision_and_flattens_onnx_data(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payloads = {
+        "config.json": b"config",
+        "onnx/model.onnx": b"graph",
+        "onnx/model.onnx_data": b"weights",
+    }
+    artifacts = {
+        "config.json": (
+            "config.json",
+            len(payloads["config.json"]),
+        ),
+        "model.onnx": (
+            "onnx/model.onnx",
+            len(payloads["onnx/model.onnx"]),
+        ),
+        "model.onnx_data": (
+            "onnx/model.onnx_data",
+            len(payloads["onnx/model.onnx_data"]),
+        ),
+    }
+    requested: list[str] = []
+
+    def fake_urlopen(request, *, timeout):
+        assert timeout == 600
+        requested.append(request.full_url)
+        remote_name = next(name for name in payloads if request.full_url.endswith(name))
+        return io.BytesIO(payloads[remote_name])
+
+    monkeypatch.setattr(memory_module, "MODELSCOPE_EMBEDDING_MODEL_ARTIFACTS", artifacts)
+    monkeypatch.setattr(memory_module, "urlopen_current_proxy", fake_urlopen)
+    progress: list[tuple[str, int]] = []
+    snapshot = tmp_path / "snapshot"
+
+    memory_module._download_modelscope_snapshot(
+        snapshot,
+        progress=lambda stage, percent: progress.append((stage, percent)),
+    )
+
+    assert (snapshot / "config.json").read_bytes() == payloads["config.json"]
+    assert (snapshot / "model.onnx").read_bytes() == payloads["onnx/model.onnx"]
+    assert (snapshot / "model.onnx_data").read_bytes() == payloads["onnx/model.onnx_data"]
+    assert all(
+        f"/resolve/{memory_module.DEFAULT_MODELSCOPE_EMBEDDING_REVISION}/" in url
+        for url in requested
+    )
+    assert progress[-1] == ("downloading", 85)
+
+
+def test_model_import_rejects_bad_onnx_artifacts_and_keeps_previous_cache(
+    tmp_path: Path,
+) -> None:
+    cache = (
+        tmp_path
+        / "runtime"
+        / "fastembed-cache"
+        / memory_module.DEFAULT_EMBEDDING_MODEL_CACHE_NAME
+    )
+    cache.mkdir(parents=True)
+    (cache / "old.bin").write_bytes(b"previous-readable-cache")
+    archive = tmp_path / "bad-onnx.zip"
+    prefix = (
+        f"{memory_module.DEFAULT_EMBEDDING_MODEL_CACHE_NAME}/snapshots/"
+        f"{memory_module.DEFAULT_EMBEDDING_ARTIFACT_REVISION}"
+    )
+    with zipfile.ZipFile(archive, "w") as zf:
+        for filename in memory_module.DEFAULT_EMBEDDING_MODEL_REQUIRED_FILES:
+            zf.writestr(f"{prefix}/{filename}", b"not-the-pinned-artifact")
+
+    with pytest.raises(memory_module.MemoryModelImportError, match="文件大小不匹配"):
+        memory_module.import_embedding_model_archive(archive, tmp_path)
+
+    assert (cache / "old.bin").read_bytes() == b"previous-readable-cache"
+    assert not list(cache.parent.glob(".memory_model_import_*"))
+
+
+def test_fixed_model_snapshot_checks_sizes_without_reading_weights(tmp_path: Path, monkeypatch) -> None:
+    snapshot = (tmp_path / memory_module.DEFAULT_EMBEDDING_MODEL_CACHE_NAME / "snapshots"
+                / memory_module.DEFAULT_EMBEDDING_ARTIFACT_REVISION)
+    snapshot.mkdir(parents=True)
+    (snapshot / "model.onnx").write_bytes(b"model")
+    (snapshot / "config.json").write_bytes(b"{}")
+    monkeypatch.setattr(memory_module, "DEFAULT_EMBEDDING_MODEL_ARTIFACTS", {"model.onnx": 5, "config.json": 2})
+    monkeypatch.delenv("FASTEMBED_CACHE_PATH", raising=False)
+    original_open = Path.open
+
+    def no_content_scan(path, *args, **kwargs):
+        if path.parent == snapshot:
+            pytest.fail("Snapshot availability must not scan model content")
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", no_content_scan)
+    assert memory_module._embedding_model_snapshot(memory_module.DEFAULT_EMBEDDING_MODEL, cache_dir=tmp_path) == snapshot
+    memory_module._validate_fastembed_snapshot_artifacts(snapshot)
+    (snapshot / "model.onnx").unlink()
+    assert memory_module._embedding_model_snapshot(memory_module.DEFAULT_EMBEDDING_MODEL, cache_dir=tmp_path) is None
+    with pytest.raises(memory_module.MemoryModelImportError) as raised:
+        memory_module._validate_fastembed_snapshot_artifacts(snapshot)
+    assert raised.value.code == "DOWNLOAD_SIZE_MISMATCH"
+
+
+def test_missing_model_provider_does_not_disable_memory_crud_or_recall(tmp_path):
+    boundary = _boundary(_root(tmp_path), FakeMemoryStore(), config={"curationModelRef": MODEL_REF})
+    def unavailable():
+        raise RuntimeError("MODEL_PROVIDER_UNAVAILABLE")
+    boundary._model_catalog_getter = unavailable
     try:
-        assert memory.remap_scopes(mapping) == 6
-        for source, target in mapping.items():
-            memory.scope_id = target
-            facts = memory.list_memories(limit=None)
-            assert {item["content"] for item in facts} == {f"{source} 改喝茶", f"{source} 的档案"}
-            fact = next(item for item in facts if item["evidence"])
-            assert fact["evidence"][0]["entry_id"] == source
-            assert memory.get(f"core_profile:{target}")["content"] == f"{source} 的档案"
-            assert memory.get("same-id", include_deleted=True)["content"] == f"{source} 已删除的事实"
-            assert memory.unprocessed_entries([entry(source)]) == []
-            assert memory.unprocessed_entries([entry('B' if source == 'A' else 'A')])
-            revisions = memory._db.execute("SELECT document FROM revisions WHERE scope=? AND id=?", (target, fact["id"])).fetchall()
-            assert [json.loads(row[0])["content"] for row in revisions] == [f"{source} 喝咖啡不加糖"]
+        snapshot = boundary.settings_get()
+        assert snapshot["status"] == "ready"
+        assert snapshot["curation"]["available"] is False
+        created = boundary.upsert({"content": "Remember this", "layer": "semantic", "importance": 0.7, "confidence": 0.9})
+        assert created["memory"]["id"] == "created"
+        result = boundary.search({"query": "Remember", "limit": 5})
+        assert result["status"] == "ready"
+        assert boundary.delete({"id": "created"})["alreadyMissing"] is False
     finally:
-        memory.close()
+        boundary.close()
 
 
-@pytest.mark.parametrize("keep_conflicts", [False, True])
-def test_scope_remapping_preserves_conflicting_records(tmp_path, keep_conflicts):
-    memory = MemoryStore(tmp_path, "A")
+@pytest.mark.parametrize("action", ["close", "reload"])
+@pytest.mark.parametrize("outcome", ["success", "failure"])
+def test_late_memory_load_leaves_closed_or_new_loading_state_untouched(tmp_path, monkeypatch, action, outcome):
+    store = memory_module.MemoryStore(base_dir=tmp_path)
+    tasks, events, closed = [], [], []
+    monkeypatch.setattr(store._thread_group, "spawn", lambda target, **kwargs: tasks.append(target) or object())
+    monkeypatch.setattr(memory_module, "_embedding_model_cached", lambda *args, **kwargs: True)
+    class Client:
+        def close(self):
+            closed.append(True)
+    def create(_generation):
+        if outcome == "failure":
+            raise RuntimeError("late backend failure")
+        return Client()
+    monkeypatch.setattr(store, "_create_memory_client", create)
+    store.add_status_listener(lambda status, message: events.append((status, message)))
     try:
-        memory.create_memory({"id": "same", "content": "A 的事实"})
-        memory.import_records([{"id": "same", "scope": "B", "content": "B 的事实"}])
-        if keep_conflicts:
-            assert memory.remap_scopes({"A": "B"}, keep_conflicts=True) == 0
+        store.preload(wait=False)
+        old_load = tasks.pop()
+        if action == "close":
+            store.close()
         else:
-            with pytest.raises(ValueError, match="重复记忆"):
-                memory.remap_scopes({"A": "B"})
-        assert {(item["scope"], item["content"]) for item in memory.all_records()} == {
-            ("A", "A 的事实"), ("B", "B 的事实")}
-        assert memory.search_memory({"query": "事实"})["memories"][0]["content"] == "A 的事实"
+            store.reset_runtime()
+            store.preload(wait=False)
+        diagnostic = store.load_diagnostic()
+        events.clear()
+        old_load()
+        assert store.load_diagnostic() == diagnostic
+        assert events == []
+        assert not store.is_ready()
+        if action == "close":
+            assert store._status == "stopped"
+        else:
+            assert store._loading
+            monkeypatch.setattr(store, "_create_memory_client", lambda _generation: Client())
+            tasks.pop()()
+            assert store.is_ready()
+        assert bool(closed) is (outcome == "success")
     finally:
-        memory.close()
+        store.close()
+
+
+def test_current_memory_load_failure_keeps_original_reason(tmp_path, monkeypatch):
+    store = memory_module.MemoryStore(base_dir=tmp_path)
+    tasks, events = [], []
+    monkeypatch.setattr(store._thread_group, "spawn", lambda target, **kwargs: tasks.append(target) or object())
+    monkeypatch.setattr(memory_module, "_embedding_model_cached", lambda *args, **kwargs: True)
+    def fail(_generation):
+        raise RuntimeError("database permission denied")
+    monkeypatch.setattr(store, "_create_memory_client", fail)
+    store.add_status_listener(lambda status, message: events.append((status, message)))
+    try:
+        store.preload(wait=False)
+        tasks.pop()()
+        assert events[-1][0] == "failed"
+        assert "database permission denied" in events[-1][1]
+        assert store.load_diagnostic()["outcome"] == "failed"
+        assert not store._loading
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("action", ["close", "reload"])
+def test_retired_memory_backend_diagnostics_do_not_change_current_status(tmp_path, action):
+    store = memory_module.MemoryStore(base_dir=tmp_path)
+    class Client:
+        def set_diagnostic_listener(self, callback):
+            self.diagnostic = callback
+        def close(self):
+            self.diagnostic({"event": "mem0_request_failed", "outcome": "failed"})
+    client = Client()
+    store._register_active_embedder(client, store._reload_generation)
+    try:
+        if action == "close":
+            store.close()
+        else:
+            store.reset_runtime()
+        diagnostic = store.load_diagnostic()
+        status = store._status
+        client.diagnostic({"event": "mem0_request_failed", "outcome": "failed"})
+        assert store._status == status
+        assert store.load_diagnostic() == diagnostic
+    finally:
+        store.close()

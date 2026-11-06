@@ -1,5 +1,4 @@
 import { createSettingsUI, sectionDestination } from "./settings-ui.js";
-import { createDataTransferMenu } from "../core/data-transfer.js";
 import { createSettingsForm } from "./settings-form.js";
 import { createPluginModule } from "./plugin-module.js";
 import { createRecordTable } from "./record-table.js";
@@ -26,7 +25,6 @@ export function createPluginSettingsFeature({
   removeOverlayAfterExit,
   showPage,
   isCharacterTransitioning,
-  currentCharacterId = () => "",
   hasPendingCharacterSelection,
   onModelCatalogChanged = () => {},
   onNavigatePlugin = () => {},
@@ -69,19 +67,12 @@ export function createPluginSettingsFeature({
     managementBusy: false,
   };
   let pluginSettingsDialog = null;
-  let memorySettingsComponents = [];
-  let selectedMemoryCollection = "";
-  let memoryView = "list";
-  let memoryListScroll = 0;
   let availableUpdates = [], openUpdate = () => {};
   const pluginModules = new Map();
   let disposed = false;
-  let collectionSession = 0;
   const modelServices = () => [...pluginModules.keys()].flatMap(module => module.contributions()?.modelServices || []);
   const modelServicePresets = () => [...pluginModules.keys()].flatMap(module => module.contributions()?.modelServicePresets || []);
   const pendingApplication = new Map();
-  const memoryModuleDrafts = new Map();
-  let memoryDraftOwner = "";
   const settingsUI = createSettingsUI({ document, showPage, createSection: createContributedSection });
 
   function moduleContributionsChanged() {
@@ -114,27 +105,10 @@ export function createPluginSettingsFeature({
     }
     if (presentation.component === "module") {
       const generation = runtimePluginController.snapshot()?.coreGenerationId;
-      const owner = `${generation}:${currentCharacterId()}`;
-      if (owner !== memoryDraftOwner) { memoryModuleDrafts.clear(); memoryDraftOwner = owner; }
-      const key = `${plugin.id}:${section.section_id}`;
-      if (section.surface === "memory") {
-        const existing = [...pluginModules].find(([, info]) => info.key === key && info.owner === owner
-          && info.source === presentation.source);
-        if (existing) return existing[0];
-      }
-      if (!memoryModuleDrafts.has(key)) memoryModuleDrafts.set(key, {});
       const component = createPluginModule({ document, source: presentation.source,
         onError: setError, onReady: moduleContributionsChanged,
         context: { document, window, section, read, write, invoke, notify, onError: setError,
-          enhanceSelect, refreshSelect, closeSelects, createIcon, draft: memoryModuleDrafts.get(key),
-          onDataChanged: () => {
-            if (owner !== `${runtimePluginController.snapshot()?.coreGenerationId}:${currentCharacterId()}`) return;
-            for (const [collectionKey, state] of pluginCollectionState) {
-              if (collectionKey.startsWith(`${plugin.id}:`)) {
-                state.loaded = false; state.error = ""; state.queryRevision++;
-              }
-            }
-          },
+          enhanceSelect, refreshSelect, closeSelects, createIcon,
           onCatalogChanged: moduleContributionsChanged,
           modelServices, modelServicePresets,
           readSection: (sectionId, key) => pluginSectionValues(plugin.id, sectionId)[key],
@@ -145,8 +119,7 @@ export function createPluginSettingsFeature({
           importModule: path => import(new URL(`../${path}`, import.meta.url)),
         },
       });
-      pluginModules.set(component, { pluginId: plugin.plugin_id, sectionId: section.section_id,
-        key, owner, pageId: sectionDestination(section), source: presentation.source });
+      pluginModules.set(component, { pluginId: plugin.plugin_id, sectionId: section.section_id, pageId: sectionDestination(section) });
       const dispose = component.dispose;
       component.dispose = () => { pluginModules.delete(component); dispose(); moduleContributionsChanged(); };
       return component;
@@ -175,21 +148,7 @@ export function createPluginSettingsFeature({
       });
     }
     const component = createSettingsForm({ document, plugin, section, read, write, enhanceSelect, refreshSelect,
-      renderDisplay: field => {
-        if (section.surface !== "memory" || field.type !== "status") return pluginSettingControl(plugin, section, field);
-        const value = read(field.key) || {};
-        const status = pluginNode("div", "memory-maintenance-state");
-        status.hidden = value.state === "neutral";
-        status.setAttribute("role", value.state === "error" ? "alert" : "status");
-        status.append(pluginNode("strong", "", value.label));
-        if (value.message) status.append(pluginNode("p", "", value.message));
-        if (value.state === "working") {
-          const progress = document.createElement("progress");
-          progress.setAttribute("aria-label", value.label);
-          status.append(progress);
-        }
-        return status;
-      },
+      renderDisplay: field => pluginSettingControl(plugin, section, field),
       renderAction(action) {
         const button = pluginNode("button", action.danger ? "danger-button" : "secondary-button", action.label);
         button.type = "button"; button.disabled = pluginState.managementBusy || Boolean(pluginState.actionBusyKey); button.addEventListener("click", () => runPluginSettingsAction(plugin, section, action)); return button;
@@ -1189,11 +1148,6 @@ export function createPluginSettingsFeature({
       }
       if (!isCurrent()) return;
       const affectedItemId = operation === "delete" ? editorItemId : result.itemId;
-      for (const sibling of section.collections || []) {
-        if (sibling.collection_id === collection.collection_id) continue;
-        const siblingState = pluginCollectionState.get(pluginCollectionKey(plugin, section, sibling));
-        if (siblingState) siblingState.loaded = false;
-      }
       state.editor = null;
       state.selectedItemId = operation === "delete" ? "" : affectedItemId;
       state.loading = false;
@@ -1231,23 +1185,6 @@ export function createPluginSettingsFeature({
       }
       refreshDirty();
     }
-  }
-
-  function collectionTransferMenu(plugin, section, collection) {
-    const identity = () => `${collectionSession}:${runtimePluginController.snapshot()?.coreGenerationId}:${currentCharacterId()}`;
-    return createDataTransferMenu({ document, invoke, kind: "memory", characterId: currentCharacterId,
-      identityKey: identity,
-      isCurrent: () => !disposed && !collectionInteractionBlocked(collection),
-      transfer: request => runtimePluginController.collection({ operation: "transfer",
-        pluginId: plugin.plugin_id, sectionId: section.section_id, collectionId: collection.collection_id, ...request }),
-      onImported: () => {
-        for (const sibling of section.collections || []) {
-          const state = pluginCollectionState.get(pluginCollectionKey(plugin, section, sibling));
-          if (state) { state.loaded = false; state.error = ""; state.queryRevision++; }
-        }
-        renderMemorySurface();
-      },
-    });
   }
 
   function renderPluginCollection(plugin, section, collection) {
@@ -1443,12 +1380,10 @@ export function createPluginSettingsFeature({
     return block;
   }
 
-  function renderPluginSettings(plugin, surface = null, { includeCollections = true } = {}) {
+  function renderPluginSettings(plugin, surface = null) {
     const allSections = pluginSettingsSections(plugin);
     const knownSurfaces = new Set(["memory", "model", "providers", "screen_awareness"]);
-    const sections = allSections.filter((section) => surface ? section.surface === surface : !sectionDestination(section) && !knownSurfaces.has(section.surface))
-      .filter(section => includeCollections || section.fields?.length || section.actions?.length)
-      .map(section => includeCollections ? section : { ...section, collections: [] });
+    const sections = allSections.filter((section) => surface ? section.surface === surface : !sectionDestination(section) && !knownSurfaces.has(section.surface));
     const container = document.createElement("div");
     container.className = "plugin-settings";
     container.components = [];
@@ -1483,19 +1418,11 @@ export function createPluginSettingsFeature({
         const block = pluginNode(section.presentation.collapsible ? "details" : "section", "plugin-contribution");
         if (section.presentation.component === "record-table") block.classList.add("plugin-record-panel");
         const tabbed = recordTabs && section.presentation.component === "record-table";
-        block.dataset.pluginSection = section.section_id;
-        const content = section.surface === "memory" && section.presentation.component === "form" && !section.presentation.collapsible
-          ? pluginNode("div", "memory-maintenance-copy") : block;
         if (section.presentation.component !== "connection-status" && !tabbed) {
           const heading = pluginNode(section.presentation.collapsible ? "summary" : "h3", "plugin-contribution-title", section.title);
-          content.append(heading);
+          block.append(heading);
         }
-        content.append(component.element);
-        if (content !== block) {
-          block.append(content);
-          const actions = component.element.querySelector(".plugin-setting-actions");
-          if (actions) block.append(actions);
-        }
+        block.append(component.element);
         let panel;
         if (tabbed) {
           if (!recordTabs.parentElement) container.append(recordTabs);
@@ -1733,10 +1660,7 @@ export function createPluginSettingsFeature({
   function visiblePluginActivityIsTransient() {
     const snapshot = runtimePluginController?.snapshot();
     if (["starting", "waiting"].includes(snapshot?.state)) return pluginActivityPageVisible();
-    if (fields.pages.memory.classList.contains("is-active")) return memorySurfaceIsTransitioning()
-      || (pluginView.items || []).some(plugin => pluginSettingsSections(plugin).some(section =>
-        section.surface === "memory" && section.fields.some(field =>
-          field.type === "status" && pluginFieldValue(plugin, section, field)?.state === "working")));
+    if (fields.pages.memory.classList.contains("is-active")) return memorySurfaceIsTransitioning();
     if (fields.pages.plugins.classList.contains("is-active")) return selectedPluginHasTransientActivity();
     if (fields.pages.about.classList.contains("is-active")) return aboutComponentsRunning();
     if (fields.pages.providers?.classList.contains("is-active") || fields.pages.model?.classList.contains("is-active")) {
@@ -1923,7 +1847,6 @@ export function createPluginSettingsFeature({
     state.editor = {
       itemId: item?.itemId || null,
       values: collectionEditorValues(collection, item),
-      displayValues: clonePlain(item?.values || {}),
     };
     state.editor.initialValues = clonePlain(state.editor.values);
     state.editorError = "";
@@ -1960,40 +1883,14 @@ export function createPluginSettingsFeature({
 
     const form = document.createElement("div");
     form.className = "memory-dialog-form";
-    const details = pluginNode("details", "memory-editor-details");
-    details.append(pluginNode("summary", "", "用途与原文"));
-    details.open = Boolean(state.editor.detailsOpen);
-    details.addEventListener("toggle", () => { if (state.editor) state.editor.detailsOpen = details.open; });
-    const detailsFields = pluginNode("div", "memory-dialog-form");
-    details.append(detailsFields);
-    const editorFields = [...(collection.fields || [])];
-    const primaryKeys = ["subject", "predicate", "target", collection.columns[0]?.key];
-    editorFields.sort((a, b) => {
-      const rank = field => primaryKeys.includes(field.key) ? primaryKeys.indexOf(field.key) : primaryKeys.length;
-      return rank(a) - rank(b);
-    });
-    editorFields.forEach((field) => {
+    (collection.fields || []).filter(pluginFieldEditable).forEach((field) => {
       const group = document.createElement("label");
       group.className = `memory-dialog-field${field.key === collection.columns[0]?.key ? " is-content" : ""}`;
       const label = document.createElement("span");
       label.className = "memory-dialog-label";
       label.textContent = field.required ? `${field.label} *` : field.label;
       let control;
-      if (!pluginFieldEditable(field)) {
-        control = document.createElement("output");
-        control.className = "memory-evidence";
-        control.textContent = String(state.editor.displayValues?.[field.key] || "这条记忆没有保留原文依据。");
-        group.classList.add("is-readonly");
-      } else if (field.type === "boolean") {
-        control = document.createElement("input");
-        control.type = "checkbox";
-        control.checked = Boolean(state.editor.values[field.key]);
-        control.addEventListener("change", () => {
-          state.editor.values[field.key] = control.checked;
-          refreshDirty();
-        });
-        group.classList.add("is-toggle");
-      } else if (field.type === "select") {
+      if (field.type === "select") {
         control = document.createElement("select");
         (field.options || []).forEach((option) => {
           const element = document.createElement("option");
@@ -2033,7 +1930,6 @@ export function createPluginSettingsFeature({
           refreshDirty();
         });
       }
-      control.id = `memory-field-${field.key}`;
       group.append(label, control);
       if (field.key === collection.columns[0]?.key && Number.isSafeInteger(field.maxLength)) {
         const counter = document.createElement("span");
@@ -2045,11 +1941,8 @@ export function createPluginSettingsFeature({
         description.textContent = field.description;
         group.append(description);
       }
-      if (field.key === collection.columns[0]?.key || ["subject", "predicate"].includes(field.key)
-        || (field.key === "target" && (collection.collection_id === "knowledge" || state.editor.values.target))) form.append(group);
-      else detailsFields.append(group);
+      form.append(group);
     });
-    if (detailsFields.childElementCount) form.append(details);
 
     const footer = document.createElement("footer");
     footer.className = "memory-dialog-actions";
@@ -2218,7 +2111,6 @@ export function createPluginSettingsFeature({
     const title = document.createElement("h3");
     title.textContent = collection.title || section.title;
     titleGroup.append(title);
-    if (collection.description) titleGroup.append(pluginNode("p", "memory-archive-description", collection.description));
     const headActions = document.createElement("div");
     headActions.className = "memory-archive-head-actions";
     const count = document.createElement("span");
@@ -2289,8 +2181,6 @@ export function createPluginSettingsFeature({
 
     const body = document.createElement("div");
     body.className = "memory-archive-list";
-    body.classList.toggle("is-profile", collection.collection_id === "profile");
-    body.classList.toggle("is-experiences", collection.collection_id === "experiences");
     if (initializing) {
       body.classList.add("is-preparing");
       body.append(createMemoryPreparingState());
@@ -2319,7 +2209,6 @@ export function createPluginSettingsFeature({
       empty.append(mark, heading);
       body.append(empty);
     } else if (!initializing && !activityUnavailable) {
-      const groups = new Map();
       state.items.forEach((item) => {
         const values = item.values || {};
         const card = document.createElement("article");
@@ -2351,28 +2240,11 @@ export function createPluginSettingsFeature({
         const meta = document.createElement("div");
         meta.className = "memory-record-meta";
         for (const column of collection.columns.slice(1)) {
-          if (["subject", "predicate", "target"].includes(column.key)) continue;
-          if (column.key === "kindLabel" && ["profile", "agreements", "experiences"].includes(collection.collection_id)) continue;
-          const eventTime = collection.collection_id === "experiences" && column.key === "updatedAt" && values.occurredAt;
-          const value = collectionDisplayValue(collection, column, eventTime || values[column.key]);
+          const value = collectionDisplayValue(collection, column, values[column.key]);
           if (!value) continue;
           const detail = document.createElement("span");
-          detail.textContent = column.type === "string" ? value : `${eventTime ? "记录于" : column.label} ${value}`;
+          detail.textContent = `${column.label} ${value}`;
           meta.append(detail);
-        }
-        const structured = collection.fields.some(field => field.key === "subject");
-        if (structured) {
-          const heading = pluginNode("div", "memory-fact-heading");
-          if (values.target) {
-            heading.classList.add("is-relation");
-            heading.append(pluginNode("span", "memory-relation-person", values.subject),
-              pluginNode("span", "memory-relation-name", values.predicate),
-              createIcon(document, "arrow-right"),
-              pluginNode("span", "memory-relation-person", values.target));
-          } else {
-            heading.textContent = collection.collection_id === "experiences" ? values.subject : values.predicate;
-          }
-          main.append(heading);
         }
         main.append(content, meta);
         const aside = document.createElement("div");
@@ -2380,32 +2252,14 @@ export function createPluginSettingsFeature({
         const edit = document.createElement("button");
         edit.type = "button";
         edit.className = "memory-card-edit";
-        edit.append(createIcon(document, "pencil"), "编辑");
-        edit.setAttribute("aria-label", "编辑记忆");
+        edit.textContent = "编辑";
         edit.addEventListener("click", (event) => {
           event.stopPropagation();
           openMemoryCollectionEditor(plugin, section, collection, item);
         });
         aside.append(edit);
         card.append(main, aside);
-        if (["profile", "knowledge"].includes(collection.collection_id) && values.subject) {
-          const entityName = values.subject === "用户" && values.target ? values.target : values.subject;
-          const entityKind = values.subject === "用户" && values.target ? values.target_kind : values.subject_kind;
-          const entityKey = `${entityKind}:${entityName}`;
-          let group = groups.get(entityKey);
-          if (!group) {
-            group = pluginNode("section", "memory-entity-group");
-            const name = entityName === "用户" ? "关于你" : entityName;
-            const groupHead = pluginNode("header", "memory-entity-head");
-            const icon = pluginNode("span", "memory-entity-icon");
-            icon.append(createIcon(document, entityKind === "person" ? "user-round" : "folder"));
-            groupHead.append(icon, pluginNode("h4", "memory-entity-name", name));
-            group.append(groupHead);
-            groups.set(entityKey, group);
-            body.append(group);
-          }
-          group.append(card);
-        } else body.append(card);
+        body.append(card);
       });
     }
     state.motion = null;
@@ -2433,21 +2287,6 @@ export function createPluginSettingsFeature({
 
   function renderMemorySurface() {
     if (!fields.memorySurface) return;
-    const focused = document.activeElement;
-    const focusId = (fields.memorySurface.contains(focused) || focused?.closest(".memory-record-dialog")) ? focused?.id : "";
-    const selection = focusId && typeof focused.selectionStart === "number" ? [focused.selectionStart, focused.selectionEnd] : null;
-    const openSections = new Set(Array.from(fields.memorySurface.querySelectorAll("details[data-plugin-section]"))
-      .filter(element => element.open).map(element => element.dataset.pluginSection));
-    const scrollPositions = Array.from(fields.memorySurface.querySelectorAll(".memory-archive-list")).map(element => element.scrollTop);
-    const owner = `${runtimePluginController.snapshot()?.coreGenerationId}:${currentCharacterId()}`;
-    for (const component of memorySettingsComponents) {
-      const info = pluginModules.get(component);
-      const retained = info && memoryView === "advanced" && !isCharacterTransitioning() && info.owner === owner
-        && pluginView.items.some(plugin => plugin.plugin_id === info.pluginId && pluginSettingsSections(plugin)
-          .some(section => section.section_id === info.sectionId && section.presentation?.source === info.source));
-      if (!retained) component.dispose?.();
-    }
-    memorySettingsComponents = [];
     clearMemoryEditorPortal();
     fields.memorySurface.textContent = "";
     if (isCharacterTransitioning()) {
@@ -2497,101 +2336,11 @@ export function createPluginSettingsFeature({
       schedulePluginActivityRefresh();
       return;
     }
-    const collections = contributions.flatMap(({ plugin, section }) => (section.collections || [])
-      .map(collection => ({ plugin, section, collection, key: pluginCollectionKey(plugin, section, collection) })));
-    const mainCollections = collections.filter(({ collection }) => !(collection.collection_id === "memories"
-      && collection.fields.some(field => field.key === "subject")));
-    if (!mainCollections.some(item => item.key === selectedMemoryCollection)) selectedMemoryCollection = mainCollections[0]?.key || "";
-    const selected = mainCollections.find(item => item.key === selectedMemoryCollection);
-    const navigation = pluginNode("div", "memory-navigation");
-    const tabs = pluginNode("nav", "memory-view-tabs");
-    tabs.setAttribute("aria-label", "记忆内容");
-    tabs.setAttribute("role", "tablist");
-    mainCollections.forEach((item, index) => {
-      const tab = pluginNode("button", "");
-      const icon = { profile: "user-round", agreements: "heart", experiences: "calendar-days", knowledge: "folder" }[item.collection.collection_id] || "brain";
-      tab.append(createIcon(document, icon), pluginNode("span", "", item.collection.title));
-      tab.type = "button";
-      tab.id = `memory-collection-${index}`;
-      tab.setAttribute("role", "tab");
-      const active = memoryView === "list" && item.key === selectedMemoryCollection;
-      tab.setAttribute("aria-selected", String(active));
-      tab.setAttribute("aria-controls", "memory-view-panel");
-      tab.tabIndex = item.key === selectedMemoryCollection ? 0 : -1;
-      tab.addEventListener("click", () => {
-        memoryView = "list";
-        selectedMemoryCollection = item.key;
-        memoryListScroll = 0;
-        renderMemorySurface();
-        document.getElementById(tab.id)?.focus();
+    contributions.forEach(({ plugin, section }) => {
+      (section.collections || []).forEach((collection) => {
+        fields.memorySurface.append(renderMemoryCollection(plugin, section, collection));
       });
-      tab.addEventListener("keydown", event => {
-        if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
-        event.preventDefault();
-        const next = event.key === "Home" ? 0 : event.key === "End" ? mainCollections.length - 1
-          : (index + (event.key === "ArrowRight" ? 1 : -1) + mainCollections.length) % mainCollections.length;
-        document.getElementById(`memory-collection-${next}`)?.click();
-      });
-      tabs.append(tab);
     });
-    navigation.append(tabs);
-    const hasAdvanced = contributions.some(({ section }) => section.fields.length || section.actions.length)
-      || collections.some(({ collection }) => collection.can_transfer);
-    if (hasAdvanced) {
-      const advanced = pluginNode("button", "memory-advanced-button");
-      advanced.append(createIcon(document, "settings-2"), "高级设置");
-      advanced.type = "button";
-      advanced.id = "memory-advanced";
-      advanced.setAttribute("aria-pressed", String(memoryView === "advanced"));
-      advanced.addEventListener("click", () => {
-        const list = fields.memorySurface.querySelector(".memory-archive-list");
-        if (list) memoryListScroll = list.scrollTop;
-        memoryView = memoryView === "advanced" ? "list" : "advanced";
-        renderMemorySurface();
-        document.getElementById("memory-advanced")?.focus();
-      });
-      navigation.append(advanced);
-    }
-    fields.memorySurface.append(navigation);
-    let panel;
-    if (memoryView === "advanced") {
-      panel = pluginNode("div", "memory-maintenance");
-      panel.append(pluginNode("h3", "memory-advanced-title", "高级设置"));
-      for (const plugin of new Set(contributions.map(item => item.plugin))) {
-        const settings = renderPluginSettings(plugin, "memory", { includeCollections: false });
-        memorySettingsComponents.push(...settings.components);
-        panel.append(settings);
-      }
-      for (const { plugin, section, collection } of collections.filter(item => item.collection.can_transfer)) {
-        const transfer = pluginNode("div", "memory-data-actions");
-        transfer.append(pluginNode("span", "", "备份或迁入记忆"), collectionTransferMenu(plugin, section, collection));
-        panel.append(transfer);
-      }
-    } else if (selected) {
-      panel = renderMemoryCollection(selected.plugin, selected.section, selected.collection);
-    }
-    if (panel) {
-      panel.id = "memory-view-panel";
-      if (memoryView === "list") {
-        panel.setAttribute("role", "tabpanel");
-        panel.setAttribute("aria-labelledby", `memory-collection-${mainCollections.indexOf(selected)}`);
-      }
-      fields.memorySurface.append(panel);
-    }
-    fields.memorySurface.querySelectorAll("details[data-plugin-section]").forEach(element => {
-      element.open = openSections.has(element.dataset.pluginSection);
-    });
-    fields.memorySurface.querySelectorAll(".memory-archive-list").forEach((element, index) => {
-      element.scrollTop = scrollPositions[index] ?? memoryListScroll;
-    });
-    memorySettingsComponents.forEach(component => component.mounted?.());
-    if (focusId) {
-      const input = document.getElementById(focusId);
-      input?.focus({ preventScroll: true });
-      if (input && selection) input.setSelectionRange(...selection);
-    } else if (focused?.isConnected && fields.memorySurface.contains(focused)) {
-      focused.focus({ preventScroll: true });
-    }
     schedulePluginActivityRefresh();
   }
 
@@ -2603,11 +2352,8 @@ export function createPluginSettingsFeature({
       || "";
     pluginActivityRefreshFailed = false;
     const busyKey = `${plugin.id}:${section.section_id}:${action.action_id}`;
-    const generation = runtimePluginController.snapshot()?.coreGenerationId;
-    const characterId = currentCharacterId();
     pluginState.actionBusyKey = busyKey;
     renderPluginPage();
-    if (section.surface === "memory") renderMemorySurface();
     renderAboutComponents();
     setError("");
     try {
@@ -2621,7 +2367,6 @@ export function createPluginSettingsFeature({
           pluginSectionValues(plugin.id, section.section_id),
         )),
       });
-      if (generation !== runtimePluginController.snapshot()?.coreGenerationId || characterId !== currentCharacterId()) return;
       if (result && typeof result.values === "object" && result.values !== null) {
         pluginState.settingsValues[plugin.id][section.section_id] = {
           ...pluginState.settingsValues[plugin.id][section.section_id],
@@ -2640,7 +2385,6 @@ export function createPluginSettingsFeature({
     } finally {
       pluginState.actionBusyKey = "";
       renderPluginPage();
-      if (section.surface === "memory") renderMemorySurface();
       renderAboutComponents({ restoreResourceKey: restoreAboutResourceKey });
       if (restoreAboutResourceKey && pluginSettingsDialog?.installId === plugin.id) {
         pluginSettingsDialog.general.querySelector(`[data-about-resource-key="${CSS.escape(restoreAboutResourceKey)}"]:not(:disabled)`)?.focus({ preventScroll: true });
@@ -2975,7 +2719,6 @@ export function createPluginSettingsFeature({
             can_create: collection.canCreate,
             can_update: collection.canUpdate,
             can_delete: collection.canDelete,
-            can_transfer: collection.canTransfer,
             delete_confirmation: collection.deleteConfirmation,
           })),
         })),
@@ -3358,7 +3101,6 @@ export function createPluginSettingsFeature({
     collectionDraftCount,
     characterCollectionDraftCount: () => collectionDraftCount("character"),
     invalidateCollectionRequests() {
-      collectionSession++;
       // A role session can change without a Core generation or settings change.
       // Rebind the rendered callbacks and pending replies while retaining drafts.
       const snapshot = runtimePluginController.snapshot();
@@ -3378,21 +3120,12 @@ export function createPluginSettingsFeature({
           if (owner.pageId === "host:providers") void Promise.resolve(module.cancel()).catch(setError);
         }
       }
-      if (page !== "memory") {
-        memorySettingsComponents.forEach(component => component.dispose?.());
-        memorySettingsComponents = [];
-      }
       if (page === "plugins" || page === "about") schedulePluginActivityRefresh();
       if (page === "memory") renderMemorySurface();
       if (page === "interaction") settingsUI.render(pluginView.items || []);
       if (page === "providers" || page === "model") { renderModelSurfaces(); schedulePluginActivityRefresh(); }
     },
     clearCharacterState() {
-      collectionSession++;
-      memoryListScroll = 0;
-      memorySettingsComponents.forEach(component => component.dispose?.());
-      memorySettingsComponents = [];
-      memoryModuleDrafts.clear();
       const snapshot = runtimePluginController.snapshot();
       if (snapshot) runtimePluginController.initialize(snapshot, { preserveDraft: true });
       pluginCollectionState.forEach((state, key) => {
@@ -3412,9 +3145,6 @@ export function createPluginSettingsFeature({
     dispose() {
       disposed = true;
       settingsUI.dispose();
-      memoryModuleDrafts.clear();
-      memorySettingsComponents.forEach(component => component.dispose?.());
-      memorySettingsComponents = [];
       const editor = pluginSettingsDialog;
       pluginSettingsDialog = null;
       if (editor) {

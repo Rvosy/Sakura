@@ -1016,6 +1016,16 @@ def _record_optional_domain_skipped(
     )
 
 
+class _CancellationEventAdapter:
+    """Expose the importer's live cancellation check as a threading.Event API."""
+
+    def __init__(self, cancelled: CancelChecker) -> None:
+        self._cancelled = cancelled
+
+    def is_set(self) -> bool:
+        return self._cancelled()
+
+
 def _prepare_memory_model(
     source: Path,
     target: Path,
@@ -1025,53 +1035,128 @@ def _prepare_memory_model(
     progress: Progress,
     import_id: str,
 ) -> tuple[int, int]:
-    """复用已有中文模型；缺少模型不阻断正文迁移。"""
+    """Stage a verified v2 ONNX model whenever legacy memory is imported.
+
+    A complete target cache is retained.  A compatible cache embedded in the
+    source is copied into the transaction; old Hugging Face/PyTorch caches do
+    not match the fixed FastEmbed revision and therefore fall through to the
+    current downloader.
+    """
 
     from app.legacy_import.plugin_support import migration_module
     memory = migration_module("sakura_mem0.memory")
     DEFAULT_EMBEDDING_MODEL = memory.DEFAULT_EMBEDDING_MODEL
     DEFAULT_EMBEDDING_MODEL_CACHE_NAME = memory.DEFAULT_EMBEDDING_MODEL_CACHE_NAME
-    snapshot = memory._embedding_model_snapshot
+    MemoryModelTaskCancelled = memory.MemoryModelTaskCancelled
+    _embedding_model_cached = memory._embedding_model_cached
+    _embedding_model_snapshot = memory._embedding_model_snapshot
+    _validate_fastembed_snapshot_artifacts = memory._validate_fastembed_snapshot_artifacts
+    download_embedding_model = memory.download_embedding_model
+
 
     target_cache = target / "data" / "cache" / "memory"
     staged_cache = payload / "data" / "cache" / "memory"
-    _check_cancelled(cancelled)
-    target_snapshot = snapshot(DEFAULT_EMBEDDING_MODEL, cache_dir=target_cache)
-    if target_snapshot is not None:
-        files, size = tree_stats(target_snapshot.parents[1])
+
+    def verified_snapshot(cache: Path) -> Path | None:
+        if not _embedding_model_cached(
+            DEFAULT_EMBEDDING_MODEL,
+            cache_dir=cache,
+        ):
+            return None
+        snapshot = _embedding_model_snapshot(
+            DEFAULT_EMBEDDING_MODEL,
+            cache_dir=cache,
+        )
+        if snapshot is None:
+            return None
+        _validate_fastembed_snapshot_artifacts(snapshot)
+        return snapshot
+
+    try:
+        _check_cancelled(cancelled)
+        target_snapshot = verified_snapshot(target_cache)
+        if target_snapshot is not None:
+            files, size = tree_stats(target_snapshot.parents[1])
+            progress("staging", 54, "记忆模型已就绪")
+            _log_legacy_import(
+                import_id,
+                "legacy_import.memory_model_reused",
+                "目标中的记忆模型已通过校验",
+                {"files": files, "bytes": size},
+            )
+            return files, size
+
+        source_caches = (
+            source / "data" / "cache" / "memory",
+            source / "data" / "fastembed-cache",
+        )
+        for source_cache in source_caches:
+            source_snapshot = verified_snapshot(source_cache)
+            if source_snapshot is None:
+                continue
+            source_model = source_snapshot.parents[1]
+            staged_model = staged_cache / DEFAULT_EMBEDDING_MODEL_CACHE_NAME
+            progress("staging", 46, "正在导入记忆模型")
+            copy_tree_checked(source_model, staged_model, cancelled=cancelled)
+            staged_snapshot = verified_snapshot(staged_cache)
+            if staged_snapshot is None:
+                raise RuntimeError("staged memory model is incomplete")
+            files, size = tree_stats(staged_model)
+            progress("staging", 54, "记忆模型已就绪")
+            _log_legacy_import(
+                import_id,
+                "legacy_import.memory_model_copied",
+                "随旧版本迁移的记忆模型已通过校验",
+                {"files": files, "bytes": size},
+            )
+            return files, size
+
+        progress("staging", 46, "正在准备记忆模型")
+        last_percent = -1
+
+        def model_progress(_stage: str, percent: int) -> None:
+            nonlocal last_percent
+            _check_cancelled(cancelled)
+            bounded = min(100, max(0, int(percent)))
+            overall = min(54, 46 + int(bounded * 8 / 100))
+            if overall == last_percent:
+                return
+            last_percent = overall
+            progress("staging", overall, f"正在准备记忆模型（{bounded}%）")
+
+        result = download_embedding_model(
+            cache_dir=staged_cache,
+            progress=model_progress,
+            cancel=_CancellationEventAdapter(cancelled),
+        )
+        staged_snapshot = verified_snapshot(staged_cache)
+        if staged_snapshot is None:
+            raise RuntimeError("prepared memory model is incomplete")
+        files, size = tree_stats(result.model_dir)
         progress("staging", 54, "记忆模型已就绪")
         _log_legacy_import(
             import_id,
-            "legacy_import.memory_model_reused",
-            "复用目标中的记忆模型",
+            "legacy_import.memory_model_prepared",
+            "当前记忆模型已写入迁移事务并通过校验",
             {"files": files, "bytes": size},
         )
         return files, size
-
-    source_caches = (
-        source / "data" / "cache" / "memory",
-        source / "data" / "fastembed-cache",
-    )
-    for source_cache in source_caches:
-        source_snapshot = snapshot(DEFAULT_EMBEDDING_MODEL, cache_dir=source_cache)
-        if source_snapshot is None:
-            continue
-        source_model = source_snapshot.parents[1]
-        staged_model = staged_cache / DEFAULT_EMBEDDING_MODEL_CACHE_NAME
-        progress("staging", 46, "正在导入记忆模型")
-        copy_tree_checked(source_model, staged_model, cancelled=cancelled)
-        files, size = tree_stats(staged_model)
-        progress("staging", 54, "记忆模型已就绪")
+    except LegacyImportError:
+        raise
+    except MemoryModelTaskCancelled:
+        raise LegacyImportError("LEGACY_IMPORT_CANCELLED", "staging") from None
+    except Exception as exc:  # noqa: BLE001 - preserve the original failure at the migration boundary
         _log_legacy_import(
             import_id,
-            "legacy_import.memory_model_copied",
-            "记忆模型已随旧版数据迁移",
-            {"files": files, "bytes": size},
+            "legacy_import.memory_model_failed",
+            "迁移所需的记忆模型准备失败",
+            _exception_log_attributes(exc, stage="memory_model_prepare"),
+            severity="error",
         )
-        return files, size
-
-    progress("staging", 54, "记忆正文已保留，可在插件设置下载中文模型")
-    return 0, 0
+        raise LegacyImportError(
+            "LEGACY_MEMORY_MODEL_PREPARATION_FAILED",
+            "staging",
+        ) from exc
 
 
 def _copy_tts(

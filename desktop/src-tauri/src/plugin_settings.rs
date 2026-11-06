@@ -304,7 +304,6 @@ pub(crate) async fn settings_plugins_collection(
         "create" => "plugins.collection.create",
         "update" => "plugins.collection.update",
         "delete" => "plugins.collection.delete",
-        "transfer" => "plugins.collection.transfer",
         _ => return Err("PLUGIN_COLLECTION_REQUEST_INVALID".to_string()),
     };
     let handle = settings_core_handle(&lifecycle)?;
