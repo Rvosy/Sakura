@@ -367,12 +367,12 @@ html.is-theme-view-transition::view-transition-new(root) {
 .page-heading-icon :is(.sakura-icon, svg) { width: 20px; height: 20px; }
 .page-heading-content .page-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .has-custom-titlebar .page-head { padding-right: 0; }
-.window-controls { display: flex; align-items: center; flex-shrink: 0; gap: 4px; padding-right: 8px; }
-.window-controls > button { display: grid; place-items: center; width: 28px; height: 28px; min-width: 0; min-height: 0; padding: 0; border: 0; border-radius: 6px; background: transparent; color: var(--sakura-secondary-text); box-shadow: none; }
-.window-controls > button:focus-visible { outline-offset: 2px; }
+.window-controls { display: flex; align-self: stretch; flex-shrink: 0; }
+.window-controls > button { display: grid; place-items: center; width: 44px; min-width: 0; min-height: 0; padding: 0; border: 0; border-radius: 0; background: transparent; color: var(--sakura-secondary-text); box-shadow: none; }
+.window-controls > button:focus-visible { outline-offset: -3px; }
 .window-controls > button:hover:not(:disabled) { background: var(--tint-soft); color: var(--sakura-text); transform: none; box-shadow: none; }
-.window-controls > #windowClose:hover { background: color-mix(in srgb, #c43a52 15%, var(--surface-raised)); color: #c43a52; }
-.window-controls svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.3; pointer-events: none; }
+.window-controls > #windowClose:hover { background: #e81123; color: #fff; }
+.window-controls svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.3; pointer-events: none; }
 .window-restore-icon, #windowMaximize[data-maximized="true"] .window-maximize-icon { display: none; }
 #windowMaximize[data-maximized="true"] .window-restore-icon { display: block; }
 #pluginPageActions { display: none; min-width: 0; flex: 1; align-items: center; gap: 12px; }
