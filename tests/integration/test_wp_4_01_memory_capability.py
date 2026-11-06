@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import sys
 import time
@@ -25,7 +26,7 @@ from tests.integration.test_core_host_real_chat_integration import (
 )
 
 
-def _install_official_mem0(distribution_root: Path, user_root: Path) -> None:
+def _install_official_mem0(distribution_root: Path, user_root: Path, assistant_dependencies: Path) -> None:
     (distribution_root / "app").mkdir(parents=True)
     shutil.copy2(REPO_ROOT / "VERSION", distribution_root / "VERSION")
     plugin_root = user_root / "plugins" / "user"
@@ -40,7 +41,7 @@ def _install_official_mem0(distribution_root: Path, user_root: Path) -> None:
     )
     from app.plugins.inventory import PluginDesiredStateStore
     PluginDesiredStateStore(user_root).set("sakura.memory.mem0", True)
-    dependency_root.mkdir(parents=True)
+    shutil.copytree(assistant_dependencies, dependency_root, copy_function=os.link)
     (dependency_root / ".sakura-dependencies.json").write_text(
         json.dumps(
             {
@@ -113,11 +114,12 @@ def _negotiate_mem0_plugin(process) -> None:
 def test_real_core_runs_mem0_as_generic_plugin_without_mutating_owned_config_or_chat(
     tmp_path: Path,
     monkeypatch,
+    assistant_dependencies,
 ) -> None:
     provider, provider_thread = _start_provider("complete")
     app_root = _configure_app_root(tmp_path, provider.server_address[1])
     distribution_root = tmp_path / "distribution"
-    _install_official_mem0(distribution_root, app_root)
+    _install_official_mem0(distribution_root, app_root, assistant_dependencies)
     api_path = app_root / "config" / "api.yaml"
     system_path = app_root / "config" / "system_config.yaml"
     api_before = api_path.read_bytes()
@@ -238,7 +240,7 @@ def test_mem0_model_slot_saves_in_one_phase_without_restarting_plugin(
 
     app_root = _configure_app_root(tmp_path, 9)
     distribution_root = tmp_path / "distribution"
-    _install_official_mem0(distribution_root, app_root)
+    _install_official_mem0(distribution_root, app_root, assistant_dependencies)
     service_key = "sakura.model.openai_compatible"
     shutil.copytree(
         REPO_ROOT / "plugins" / "builtin" / "sakura_model_openai_compatible",
@@ -345,11 +347,12 @@ def test_mem0_model_slot_saves_in_one_phase_without_restarting_plugin(
 
 def test_plugin_settings_without_negotiation_fails_closed_without_opening_memory_storage(
     tmp_path: Path,
+    assistant_dependencies,
 ) -> None:
     provider, provider_thread = _start_provider("complete")
     app_root = _configure_app_root(tmp_path, provider.server_address[1])
     distribution_root = tmp_path / "distribution"
-    _install_official_mem0(distribution_root, app_root)
+    _install_official_mem0(distribution_root, app_root, assistant_dependencies)
     process = real_chat_fixture._start_host(app_root, distribution_root=distribution_root)
     try:
         hello = _request(
