@@ -651,10 +651,12 @@ fn playback_loop(receiver: mpsc::Receiver<AudioCommand>, callback: AudioEventCal
 fn open_default_playback(path: &Path) -> Result<(MixerDeviceSink, Player), AudioPlaybackError> {
     // Open the system default on every item so a device switch/disconnect can
     // recover on the next segment without restarting the application.
-    let sink = DeviceSinkBuilder::open_default_sink().map_err(|error| AudioPlaybackError {
+    let mut sink = DeviceSinkBuilder::open_default_sink().map_err(|error| AudioPlaybackError {
         code: "AUDIO_DEVICE_UNAVAILABLE",
         message: crate::runtime_log::sanitize_diagnostic(&error.to_string(), &[], 4096),
     })?;
+    // 播放结束由统一日志记录，释放设备时不再写入可能已关闭的终端。
+    sink.log_on_drop(false);
     let file = File::open(path).map_err(|error| AudioPlaybackError {
         code: "AUDIO_RECORDING_INVALID",
         message: crate::runtime_log::sanitize_diagnostic(
