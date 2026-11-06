@@ -14,6 +14,28 @@ function catalog() {
   return data;
 }
 
+test("plugin card status and empty areas select the plugin without changing its configuration", async () => {
+  const ui = featureFixture(async () => assert.fail("selecting a plugin must not write settings"));
+  const data = catalog();
+  const runtimeStatus = { state: "ready", label: "运行正常", message: "" };
+  data.plugins[2].sections = [{ sectionId: "runtime", title: "运行状态", reasonCode: "READY",
+    fields: [field("status", { type: "status", placement: "section_header", value: runtimeStatus })],
+    values: { status: runtimeStatus }, actions: [], collections: [] }];
+  ui.feature.initialize(data);
+  const card = index => ui.document.querySelector(`.plugin-card[data-plugin-install-id="${installId(index)}"]`);
+  const detail = ui.document.getElementById("pluginDetail");
+  assert.equal(card(1).querySelector('.semantic-status').textContent,
+    card(3).querySelector('.semantic-status').textContent);
+  await card(1).fire("click", { target: card(1).querySelector('.semantic-status') });
+  assert.equal(detail.dataset.pluginId, installId(1));
+  await card(3).fire("click");
+  assert.equal(detail.dataset.pluginId, installId(3));
+  await card(1).querySelector('.plugin-card-select').fire("click");
+  assert.equal(detail.dataset.pluginId, installId(1));
+  assert.equal(ui.feature.isDirty(), false);
+  ui.feature.dispose();
+});
+
 test("system components begin collapsed and category navigation reveals them", async () => {
   const ui = featureFixture(async () => assert.fail("catalog navigation must not write"));
   const { document } = ui;
@@ -70,7 +92,7 @@ test("installation clears search and category and reveals the newly installed co
   assert.equal(document.getElementById("pluginDetail").dataset.pluginId, installed.installId);
   const card = document.querySelector(`.plugin-card[data-plugin-install-id="${installed.installId}"]`);
   assert.equal(card.revealed, "nearest");
-  assert.equal(document.activeElement, card);
+  assert.equal(document.activeElement, card.querySelector('.plugin-card-select'));
   assert.equal(document.getElementById("plugin-infrastructure-items").hidden, false);
   assert.deepEqual(ui.errors, []);
   ui.feature.dispose();
@@ -146,12 +168,20 @@ test("installed plugin update opens its release without changing settings", asyn
   ui.feature.initialize(data);
   const plugin = data.plugins[0];
   const opened = [];
+  const selectedBefore = ui.document.getElementById('pluginDetail').dataset.pluginId;
+  const cardSelector = `.plugin-card[data-plugin-install-id="${plugin.installId}"]`;
+  const statusBefore = ui.document.querySelector(cardSelector).querySelector('.semantic-status').textContent;
   ui.feature.setUpdates([{ id: plugin.pluginId, currentVersion: "1.0.0", version: "1.1.0" }], id => opened.push(id));
+  const card = ui.document.querySelector(cardSelector);
+  await card.querySelector('.plugin-update-button').fire('click');
+  assert.deepEqual(opened, [plugin.pluginId]);
+  assert.equal(card.querySelector('.semantic-status').textContent, statusBefore);
+  assert.equal(ui.document.getElementById('pluginDetail').dataset.pluginId, selectedBefore);
   ui.feature.openPlugin(plugin.installId);
   const button = ui.document.getElementById("pluginDetail").querySelectorAll("button").find(item => item.textContent.includes("1.0.0 → 1.1.0"));
   assert.ok(button);
   await button.fire("click");
-  assert.deepEqual(opened, [plugin.pluginId]);
+  assert.deepEqual(opened, [plugin.pluginId, plugin.pluginId]);
   assert.equal(ui.feature.isDirty(), false);
   ui.feature.setUpdates([], () => {});
   assert.equal(ui.document.getElementById("pluginDetail").textContent.includes("1.0.0 → 1.1.0"), false);

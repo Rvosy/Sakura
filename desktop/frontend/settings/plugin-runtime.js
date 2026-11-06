@@ -221,7 +221,8 @@ export function createPluginController({ invoke, applySnapshot, readDraft, onDir
         });
       } catch (error) {
         if (savingSection && !savedSections.includes(savingSection)) {
-          const [pluginId, sectionId] = savingSection.split("/"); onSectionFailed(pluginId, sectionId);
+          const [pluginId, sectionId] = savingSection.split("/");
+          onSectionFailed(pluginId, sectionId, settings.settingsById[pluginId][sectionId]);
         }
         if (!refreshAttempted && (hasDetailedSettings || enableResultPending || uncertainManagementError(error))) {
           // The desired state may already be saved even when the reply is lost.

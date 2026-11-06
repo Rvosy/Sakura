@@ -658,6 +658,36 @@ test("plugin dialog preserves drafts across refresh, restores cancel, and saves 
   assert.equal(document.querySelector(".plugin-settings-dialog"), null);
 });
 
+for (const retry of [false, true]) test(`局部保存${retry ? "失败后重试仍" : ""}保留未编辑字段`, async t => {
+  const data = snapshot();
+  const section = data.plugins[0].sections[0];
+  section.fields.push(field("other", { type: "string", required: true }));
+  section.values.other = "initial";
+  const saves = [];
+  const ui = featureFixture(async (command, args) => {
+    if (command === "settings_plugins_get") return structuredClone(data);
+    assert.equal(command, "settings_plugins_save");
+    saves.push(args.values);
+    Object.assign(section.values, args.values);
+    if (retry && saves.length === 1) throw new Error("CONFIG_APPLY_FAILED");
+    return { saved: true, pluginId: args.pluginId, sectionId: args.sectionId, changePlan: "applied",
+      applicationState: "applied", applicationReasonCode: "READY" };
+  });
+  t.after(() => ui.feature.dispose());
+  ui.feature.initialize(structuredClone(data)); await ui.openSettings();
+  const input = ui.document.querySelector('.plugin-settings-dialog input');
+  input.value = "draft"; await input.fire("input");
+  section.values.other = "changed elsewhere";
+  if (retry) {
+    await assert.rejects(() => ui.feature.save(), /CONFIG_APPLY_FAILED/);
+    assert.equal(ui.feature.isDirty(), true);
+  }
+  await ui.feature.save();
+  assert.deepEqual(section.values, { label: "draft", other: "changed elsewhere" });
+  assert.ok(saves.every(values => Object.keys(values).length === 1 && values.label === "draft"));
+  assert.equal(ui.feature.isDirty(), false);
+});
+
 test("plugin feature owns page polling and removes mounted listeners and pending work on disposal", async () => {
   const calls = [];
   const fixture = featureFixture(async (command) => { calls.push(command); return snapshot(); });

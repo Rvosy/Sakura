@@ -1,10 +1,22 @@
 import json
+from types import SimpleNamespace
 
 import pytest
 
 from app.core_host.screen_host import migrate_legacy_screen_settings
 from app.storage.paths import StoragePaths
 from plugins.builtin.sakura_screen_awareness.settings import ScreenAwarenessSettings
+from plugins.builtin.sakura_screen_awareness.plugin import ScreenAwarenessRuntime
+
+
+def test_partial_save_keeps_disabled_screen_capture_and_other_preferences():
+    values = {"enabled": False, "checkIntervalMinutes": 7, "cooldownMinutes": 3,
+              "batchLimit": 4, "resolution": "720p"}
+    config = SimpleNamespace(get=lambda: dict(values), update=lambda patch: values.update(patch) or "applied")
+    runtime = ScreenAwarenessRuntime(None, None, config)
+    assert runtime.save_settings({"cooldownMinutes": 8}) == {"applicationState": "applied"}
+    assert runtime.load_settings() == {"enabled": False, "checkIntervalMinutes": 7,
+                                      "cooldownMinutes": 8, "batchLimit": 4, "resolution": "720p"}
 
 
 @pytest.mark.parametrize("legacy", ["enabled: false", "screen_context_enabled: false"])
