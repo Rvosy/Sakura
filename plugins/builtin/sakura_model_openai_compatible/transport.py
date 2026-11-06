@@ -107,7 +107,8 @@ def execute(settings, request, *, cancel_checker, progress, operation="generate"
     key = settings["api_key"]
     if operation == "generate":
         parameters = request.get("parameters") or {}
-        payload = {**parameters, "model": settings["model"], "messages": [_message(item) for item in request["messages"]]}
+        extra_body = parameters.pop("extra_body", None) or {}
+        payload = {**parameters, **extra_body, "model": settings["model"], "messages": [_message(item) for item in request["messages"]]}
         if request.get("responseFormat") is not None:
             payload["response_format"] = request["responseFormat"]
         if request.get("tools"):
@@ -160,10 +161,12 @@ def execute(settings, request, *, cancel_checker, progress, operation="generate"
                     if operation == "list_models":
                         response = await sdk.models.with_raw_response.list(extra_headers=headers)
                         return decode_response(response.http_response)
+                    options = {"model": payload["model"], "messages": payload["messages"], "extra_headers": headers,
+                               "extra_body": {name: value for name, value in payload.items() if name not in {"model", "messages"}}}
                     # Streaming is optional. The complete reply remains authoritative;
                     # batched deltas never enter the Assistant's segmented reply policy.
                     if request.get("stream"):
-                        stream = await sdk.chat.completions.create(**payload, stream=True, stream_options={"include_usage": True}, extra_headers=headers)
+                        stream = await sdk.chat.completions.create(**options, stream=True, stream_options={"include_usage": True})
                         diagnostics["httpStatus"] = stream.response.status_code
                         content, calls, usage, finish = [], {}, {}, None
                         metadata = {}
@@ -207,13 +210,13 @@ def execute(settings, request, *, cancel_checker, progress, operation="generate"
                         if pending:
                             progress({"type": "text_delta", "text": pending})
                         return {"choices": [{"message": {**metadata, "content": "".join(content), "tool_calls": [calls[index] for index in sorted(calls)]}, "finish_reason": finish}], "usage": usage}
-                    response = await sdk.chat.completions.with_raw_response.create(**payload, extra_headers=headers)
+                    response = await sdk.chat.completions.with_raw_response.create(**options)
                     return decode_response(response.http_response)
 
                 fallbacks = []
-                for attempt in range(1, 5):
+                while True:
                     check_cancelled(cancel_checker)
-                    diagnostics["attemptCount"] = attempt
+                    diagnostics["attemptCount"] = len(fallbacks) + 1
                     try:
                         data = await await_cancellable(send(), cancel_checker)
                         if operation == "list_models":
@@ -223,7 +226,7 @@ def execute(settings, request, *, cancel_checker, progress, operation="generate"
                         return result
                     except APIStatusError as error:
                         parameter = next((name for name in ("response_format", "temperature") if name in payload and _unsupported(error, name)), None)
-                        if parameter is None or request.get("stream") or attempt == 4:
+                        if parameter is None or request.get("stream"):
                             raise
                         # 带工具时不降到 JSON mode，避免兼容服务把工具调用写进正文。
                         if (parameter == "response_format" and payload[parameter].get("type") == "json_schema" and not payload.get("tools")):
@@ -231,7 +234,6 @@ def execute(settings, request, *, cancel_checker, progress, operation="generate"
                         else:
                             payload.pop(parameter)
                         fallbacks.append(parameter)
-                raise AssertionError("compatibility attempts exhausted")
     try:
         with asyncio.Runner() as runner:
             return runner.run(run())

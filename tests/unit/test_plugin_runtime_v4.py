@@ -279,15 +279,18 @@ class Plugin:
 
 
 @pytest.mark.parametrize("retry_port", [8000, 8001])
-def test_unchanged_config_does_not_reload_and_failed_apply_remains_retryable(tmp_path, retry_port):
+@pytest.mark.parametrize("encoding", ["utf-8", "utf-8-sig"])
+def test_unchanged_config_does_not_reload_and_failed_apply_remains_retryable(tmp_path, retry_port, encoding):
     from app.plugins.sakura_plugin_sdk import PluginConfig
     root, data = tmp_path / "plugin", tmp_path / "data"
     root.mkdir()
-    (root / "config.json").write_text('{"port": 8000}', encoding="utf-8")
+    (root / "config.json").write_text('{"port": 8000}', encoding=encoding)
+    data.mkdir()
+    (data / "config.json").write_text('{"custom": "keep"}', encoding=encoding)
     config = PluginConfig("fixture", root, data, lambda cleanup: cleanup)
     # Explicitly pinning a default persists the override without restarting.
     assert config.update({"port": 8000}) == "applied"
-    assert json.loads((data / "config.json").read_text(encoding="utf-8")) == {"port": 8000}
+    assert json.loads((data / "config.json").read_text(encoding="utf-8")) == {"port": 8000, "custom": "keep"}
     calls = []
     def apply(values):
         calls.append(values)
@@ -298,7 +301,8 @@ def test_unchanged_config_does_not_reload_and_failed_apply_remains_retryable(tmp
     assert config.update({"port": 8001}) == "error"
     assert config.update({"port": retry_port}) == "applied"
     assert len(calls) == 2
-    assert config.replace({"port": retry_port}) == "applied"
+    assert config.get()["custom"] == "keep"
+    assert config.replace({"port": retry_port, "custom": "keep"}) == "applied"
     assert len(calls) == 2
     fresh = PluginConfig("fixture", root, data, lambda cleanup: cleanup)
     assert fresh.update({"port": retry_port}) == "applied"

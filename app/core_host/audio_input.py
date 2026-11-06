@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Mapping
 
-from app.plugins.host_services import HOST_CALLER
+from app.plugins.host_services import HOST_CALLER, HOST_CALLER_SCOPE
 from app.storage.paths import StoragePaths, sanitize_directory_component
 
 HOST_AUDIO_INPUT_SERVICE = "sakura.host.audio_input"
@@ -41,6 +41,9 @@ class _Audio:
 
 class AudioInputResources:
     """Only descriptors cross Services; only an authorized reader gets a path."""
+
+    # 关闭时服务可能已撤销，清理按资源保存的进程归属授权。
+    shutdown_methods = frozenset({"revoke", "producerDone", "release"})
 
     def __init__(self, user_root: Path, generation_id: str, identity: Callable) -> None:
         self.root = (StoragePaths(user_root).cache_dir / "asr-input"
@@ -75,8 +78,13 @@ class AudioInputResources:
         return self.commit(resource_id)
 
     def producerDone(self, resource_id: str) -> None:
-        self._require_hub()
-        self.producer_done(resource_id)
+        with self._lock:
+            item = self._items.get(resource_id)
+            if item is None:
+                return
+            if (HOST_CALLER.get(), HOST_CALLER_SCOPE.get()) != (item.hub_id, item.hub_scope):
+                raise AudioInputError("ASR_AUDIO_UNAUTHORIZED")
+            self.producer_done(resource_id)
 
     def allocate(self, recording_id: str, provider_id: str, service_key: str, scope_id: str) -> dict:
         if not isinstance(recording_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", recording_id):
@@ -165,7 +173,7 @@ class AudioInputResources:
             item = self._leases.get(lease_id)
             if item is None:
                 return False
-            if HOST_CALLER.get() != item.provider_id:
+            if (HOST_CALLER.get(), HOST_CALLER_SCOPE.get()) != (item.provider_id, item.scope_id):
                 raise AudioInputError("ASR_AUDIO_UNAUTHORIZED")
             self._leases.pop(lease_id)
             item.leases.discard(lease_id)
@@ -173,8 +181,13 @@ class AudioInputResources:
             return True
 
     def revoke(self, resource_id: str) -> bool:
-        self._require_hub()
-        return self.revoke_resource(resource_id)
+        with self._lock:
+            item = self._items.get(resource_id)
+            if item is None:
+                return False
+            if (HOST_CALLER.get(), HOST_CALLER_SCOPE.get()) != (item.hub_id, item.hub_scope):
+                raise AudioInputError("ASR_AUDIO_UNAUTHORIZED")
+            return self.revoke_resource(resource_id)
 
     def revoke_resource(self, resource_id: str) -> bool:
         with self._lock:

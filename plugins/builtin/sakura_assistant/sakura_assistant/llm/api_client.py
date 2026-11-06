@@ -850,10 +850,7 @@ def _model_call_metric_candidate(
         "output_tokens", "cached_input_tokens", "reasoning_tokens",
     )
     usage_value = None if not usage else {
-        _camel_case_metric(key): (
-            value if isinstance((value := usage.get(key)), int)
-            and not isinstance(value, bool) and value >= 0 else None
-        )
+        _camel_case_metric(key): usage.get(key)
         for key in usage_keys
     }
     estimate_value = {
@@ -872,7 +869,9 @@ def _model_call_metric_candidate(
         source = "unknown"
     return {
         "schema": 2,
-        "request": dict(request or {}),
+        "request": {key: value for key, value in (request or {}).items() if key in {
+            "faultDomain", "reasonCode", "httpStatus", "stage", "attemptCount", "compatibilityFallback",
+        }},
         "operationId": call.operation_id or None,
         "modelCall": call.model_call,
         "purpose": call.purpose,

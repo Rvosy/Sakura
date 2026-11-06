@@ -54,6 +54,32 @@ def test_generation_forwards_sdk_parameters_to_the_provider(monkeypatch):
     assert result["message"]["content"] == "OK"
 
 
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("parameters", [
+    {"thinking": {"type": "enabled"}, "reasoning_effort": "high"},
+    {"extra_body": None, "thinking": {"type": "enabled"}, "reasoning_effort": "high"},
+    {"thinking": {"type": "disabled"}, "extra_body": {"thinking": {"type": "enabled"}},
+     "reasoning_effort": "high"},
+])
+def test_provider_extensions_reach_http_in_streaming_and_complete_requests(monkeypatch, stream, parameters):
+    received = []
+    def handler(request):
+        received.append(json.loads(request.content))
+        if stream:
+            chunk = {"id": "fixture", "object": "chat.completion.chunk", "created": 1, "model": "fixture",
+                     "choices": [{"index": 0, "delta": {"content": "OK"}, "finish_reason": "stop"}]}
+            return httpx.Response(200, headers={"Content-Type": "text/event-stream"},
+                                  content="data: " + json.dumps(chunk) + "\n\ndata: [DONE]\n\n")
+        return httpx.Response(200, json={"choices": [{"message": {"content": "OK"}}]})
+    mock_http(monkeypatch, handler)
+    result = run(request={"messages": REQUEST["messages"], "parameters": parameters, "stream": stream})
+    body, = received
+    assert body["thinking"] == {"type": "enabled"}
+    assert body["reasoning_effort"] == "high"
+    assert "extra_body" not in body
+    assert result["message"]["content"] == "OK"
+
+
 @pytest.fixture
 def job_provider():
     from types import SimpleNamespace

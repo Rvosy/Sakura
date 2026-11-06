@@ -15,7 +15,7 @@ from app.plugin_sdk.sakura_tools import ToolRegistry
 from app.core_host.asr_boundary import ASRBoundary
 from app.core_host.audio_input import AudioInputError, AudioInputResources
 from app.core_host.plugin_runtime_application import PluginRuntimeApplication
-from app.plugins.host_services import HOST_CALLER
+from app.plugins.host_services import HOST_CALLER, HOST_CALLER_SCOPE
 from app.plugins.inventory import PluginInventory
 from app.plugins.runtime_v4 import PluginRuntimeError
 from app.storage.runtime_roots import RuntimeRoots
@@ -329,6 +329,34 @@ def test_cancel_before_device_ready_and_invalid_wav_release_producer(runtime):
     assert app.audio_input.count == 0
 
 
+@pytest.mark.parametrize("state", ["recording", "recognizing", "succeeded"])
+def test_generation_close_reclaims_recording_without_cleanup_failure(runtime, state):
+    from app.core_host.runtime_logging import CORE_BRIDGE_PREFIX, install_runtime_logging
+
+    app, boundary, request, _ = runtime
+    path = ready(request)
+    wav(path)
+    if state != "recording":
+        request("asr.input.submit", recordingId="record-1")
+        if state == "recognizing":
+            until(lambda: app.call_service("test.asr.one.service", "probe"), lambda value: value["reading"])
+        else:
+            until(lambda: app.call_service("sakura.asr", "input", "poll", {"recordingId": "record-1"}),
+                  lambda value: value["state"] == "succeeded")
+    stream = io.BytesIO()
+    bridge = install_runtime_logging(stream)
+    try:
+        boundary.close()
+        app.close()
+    finally:
+        bridge.close()
+    assert not path.exists() and app.audio_input.count == 0
+    records = [json.loads(line.removeprefix(CORE_BRIDGE_PREFIX)) for line in stream.getvalue().splitlines()
+               if line.startswith(CORE_BRIDGE_PREFIX)]
+    failures = [record for record in records if record.get("severity") in {"warning", "error"}]
+    assert not failures, failures
+
+
 @pytest.mark.parametrize("cancel_first", [False, True])
 def test_capture_failure_survives_cleanup_and_worker_exit_without_overriding_user_cancel(runtime, cancel_first):
     app, boundary, request, _ = runtime
@@ -392,6 +420,7 @@ def test_host_authorizes_only_selected_scope_and_validated_descriptor(tmp_path):
     finally:
         HOST_CALLER.reset(token)
     token = HOST_CALLER.set("provider")
+    scope = HOST_CALLER_SCOPE.set("provider-1")
     try:
         lease = resources.acquire(audio["resourceId"])
         resources.revoke_resource(audio["resourceId"])
@@ -401,6 +430,42 @@ def test_host_authorizes_only_selected_scope_and_validated_descriptor(tmp_path):
         resources.release(lease["leaseId"])
         assert not path.exists()
     finally:
+        HOST_CALLER_SCOPE.reset(scope)
+        HOST_CALLER.reset(token)
+        resources.close()
+
+
+@pytest.mark.parametrize("method", ["revoke", "producerDone", "release"])
+def test_audio_cleanup_uses_resource_owner_after_service_unregisters(tmp_path, method):
+    identities = {"sakura.asr": {"providerId": "hub", "scopeId": "hub-1"},
+                  "provider.service": {"providerId": "provider", "scopeId": "provider-1"}}
+    resources = AudioInputResources(tmp_path, "generation", lambda key, **_: identities[key])
+    target = resources.allocate("record", "provider", "provider.service", "provider-1")
+    path = Path(target["path"])
+    wav(path)
+    audio = resources.commit(target["resourceId"])
+    token = HOST_CALLER.set("hub")
+    scope = HOST_CALLER_SCOPE.set("hub-1")
+    try:
+        resources.authorize(audio, "provider.service")
+        argument = audio["resourceId"]
+        owner_scope = "hub-1"
+        if method == "release":
+            HOST_CALLER.set("provider")
+            HOST_CALLER_SCOPE.set("provider-1")
+            argument = resources.acquire(argument)["leaseId"]
+            resources.revoke_resource(audio["resourceId"])
+            owner_scope = "provider-1"
+        identities.clear()
+        HOST_CALLER_SCOPE.set("replacement-process")
+        with pytest.raises(AudioInputError, match="ASR_AUDIO_UNAUTHORIZED"):
+            getattr(resources, method)(argument)
+        assert path.exists() and resources.count == 1
+        HOST_CALLER_SCOPE.set(owner_scope)
+        getattr(resources, method)(argument)
+        assert not path.exists() and resources.count == 0
+    finally:
+        HOST_CALLER_SCOPE.reset(scope)
         HOST_CALLER.reset(token)
         resources.close()
 

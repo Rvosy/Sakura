@@ -774,10 +774,10 @@ class PluginConfig:
         return self._effect(remove)
 
     def _read(self, path: Path) -> dict[str, Any]:
-        if not path.is_file():
-            return {}
         try:
-            value = json.loads(path.read_text(encoding="utf-8"))
+            value = json.loads(path.read_text(encoding="utf-8-sig"))
+        except FileNotFoundError:
+            return {}
         except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
             raise PluginApiError("PLUGIN_CONFIG_INVALID", plugin_id=self._plugin_id) from error
         if not isinstance(value, dict):
