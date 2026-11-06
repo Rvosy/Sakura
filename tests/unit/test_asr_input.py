@@ -354,7 +354,7 @@ def test_generation_close_reclaims_recording_without_cleanup_failure(runtime, st
     records = [json.loads(line.removeprefix(CORE_BRIDGE_PREFIX)) for line in stream.getvalue().splitlines()
                if line.startswith(CORE_BRIDGE_PREFIX)]
     failures = [record for record in records if record.get("severity") in {"warning", "error"}]
-    assert not failures, failures
+    assert not failures, json.dumps(failures, ensure_ascii=False, indent=2)
 
 
 @pytest.mark.parametrize("cancel_first", [False, True])
