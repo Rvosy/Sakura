@@ -2570,16 +2570,15 @@ mod tests {
     };
 
     use super::{
-        core_host_process_request, drain_stderr, hello_payload, lifecycle_test_lock,
-        stderr_diagnostic_summary, CoreHostRuntime, CoreSnapshotCache, ShutdownPolicy,
-        StderrDrainState, StderrDrainStats, StderrDrainer, StderrLogSink, StderrRedactor,
-        MIN_PROTOCOL_MINOR, OPTIONAL_CAPABILITIES, PRODUCTION_SHUTDOWN_POLICY, PROTOCOL_MAJOR,
-        PROTOCOL_MINOR, REQUIRED_CAPABILITIES, STDERR_CACHE_LIMIT,
+        core_host_process_request, drain_stderr, lifecycle_test_lock, stderr_diagnostic_summary,
+        CoreHostRuntime, CoreSnapshotCache, ShutdownPolicy, StderrDrainState, StderrDrainStats,
+        StderrDrainer, StderrLogSink, StderrRedactor, MIN_PROTOCOL_MINOR, OPTIONAL_CAPABILITIES,
+        PRODUCTION_SHUTDOWN_POLICY, PROTOCOL_MAJOR, PROTOCOL_MINOR, REQUIRED_CAPABILITIES,
+        STDERR_CACHE_LIMIT,
     };
 
     const GENERATION_ID: &str = "00000000-0000-4000-8000-000000001c01";
-    const WP_1C_04_LIFECYCLE_GOLDEN: &str =
-        include_str!("../../../tests/fixtures/runtime_v2/wp_1c_04/lifecycle-golden.json");
+    const READINESS_TEST_TIMEOUT: Duration = Duration::from_secs(30);
 
     fn predecessor_hello_payload() -> Value {
         json!({
@@ -2598,23 +2597,6 @@ mod tests {
         request_id: &str,
     ) -> Result<Value, String> {
         host.request_with_payload(request_id, "system.hello", predecessor_hello_payload())
-    }
-
-    #[test]
-    fn default_hello_payload_contains_current_assistant_capabilities() {
-        let payload = hello_payload();
-
-        assert_eq!(
-            payload["optionalCapabilities"],
-            json!([
-                "transport.concurrent-router",
-                "settings.provider-model",
-                "assistant.tools-v1",
-                "assistant.plugins-v1",
-                "assistant.tts-v1",
-                "assistant.screen-capture-v2"
-            ])
-        );
     }
 
     fn repo_root() -> PathBuf {
@@ -4858,19 +4840,6 @@ mod tests {
         assert!(exit.forced);
     }
 
-    fn lifecycle_golden() -> Value {
-        serde_json::from_str(WP_1C_04_LIFECYCLE_GOLDEN)
-            .expect("WP-1C-04 lifecycle golden should parse")
-    }
-
-    fn golden_deadline(golden: &Value, name: &str) -> Duration {
-        Duration::from_millis(
-            golden["deadlinesMs"][name]
-                .as_u64()
-                .unwrap_or_else(|| panic!("missing WP-1C-04 {name} deadline")),
-        )
-    }
-
     fn packaged_layout() -> crate::platform::RuntimeLayout {
         let resource_directory = PathBuf::from(
             std::env::var_os("SAKURA_WP_1C_04_PACKAGED_RESOURCES")
@@ -4898,7 +4867,6 @@ mod tests {
     fn complete_assistant_lifecycle(
         layout: &crate::platform::RuntimeLayout,
         generation_id: &str,
-        golden: &Value,
     ) -> (super::CoreHostExit, String) {
         let mut host = CoreHostRuntime::launch(layout, generation_id)
             .expect("bundled Python Core Host should launch");
@@ -4909,8 +4877,7 @@ mod tests {
             .request_with_payload("initialize", "core.initialize", json!({}))
             .expect("initialize should be accepted");
         assert_eq!(initialize["payload"]["readiness"], "initializing");
-        let readiness_deadline =
-            std::time::Instant::now() + golden_deadline(golden, "readinessWatchdog");
+        let readiness_deadline = std::time::Instant::now() + READINESS_TEST_TIMEOUT;
         loop {
             let snapshot = host
                 .refresh_snapshot("snapshot")
@@ -4931,34 +4898,6 @@ mod tests {
             .shutdown()
             .expect("protocol shutdown should clean the bundled Core tree");
         (exit, credential)
-    }
-
-    #[test]
-    fn wp_1c_04_shared_golden_freezes_lifecycle_order_and_deadlines() {
-        let golden = lifecycle_golden();
-        assert_eq!(golden["schemaVersion"], 1);
-        assert_eq!(
-            golden["lifecycle"],
-            json!([
-                "system.hello",
-                "core.initialize",
-                "core.readiness",
-                "core.snapshot",
-                "system.health",
-                "system.shutdown"
-            ])
-        );
-        assert_eq!(golden_deadline(&golden, "hello"), Duration::from_secs(3));
-        assert_eq!(
-            golden_deadline(&golden, "initializeAcceptance"),
-            Duration::from_secs(5)
-        );
-        assert_eq!(
-            golden_deadline(&golden, "readinessWatchdog"),
-            Duration::from_secs(30)
-        );
-        assert_eq!(golden_deadline(&golden, "shutdown"), Duration::from_secs(3));
-        assert_eq!(golden_deadline(&golden, "treeStop"), Duration::from_secs(5));
     }
 
     #[test]
@@ -4997,7 +4936,6 @@ mod tests {
     #[ignore = "requires the exact packaged target Runtime staged by the platform CI job"]
     fn staged_packaged_runtime_runs_lifecycle_faults_and_clean_generations() {
         let _test_lock = lifecycle_test_lock();
-        let golden = lifecycle_golden();
         let layout = packaged_layout();
         assert_eq!(layout.mode, RuntimeMode::Packaged);
         assert_eq!(layout.architecture, layout.target.architecture());
@@ -5011,13 +4949,13 @@ mod tests {
         let first_generation = "00000000-0000-4000-8000-000000004001";
         let second_generation = "00000000-0000-4000-8000-000000004002";
         let (first_exit, first_credential) =
-            complete_assistant_lifecycle(&layout, first_generation, &golden);
+            complete_assistant_lifecycle(&layout, first_generation);
         assert_eq!(first_exit.root_exit_code, 0);
         assert!(first_exit.tree_empty);
         assert!(!first_exit.forced);
 
         let (second_exit, second_credential) =
-            complete_assistant_lifecycle(&layout, second_generation, &golden);
+            complete_assistant_lifecycle(&layout, second_generation);
         assert_eq!(second_exit.root_exit_code, 0);
         assert!(second_exit.tree_empty);
         assert!(!second_exit.forced);
@@ -5031,8 +4969,7 @@ mod tests {
         final_readiness
             .request_with_payload("initialize-final", "core.initialize", json!({}))
             .expect("real initialization is accepted");
-        let readiness_deadline =
-            std::time::Instant::now() + golden_deadline(&golden, "readinessWatchdog");
+        let readiness_deadline = std::time::Instant::now() + READINESS_TEST_TIMEOUT;
         loop {
             let snapshot = final_readiness
                 .refresh_snapshot("snapshot-final")

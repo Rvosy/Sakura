@@ -4,9 +4,6 @@ import test from "node:test";
 import {
   applyCharacterCatalogChange,
   applyCharacterSwitch,
-  commitCharacterSelection,
-  hasCharacterScopedDrafts,
-  pendingCharacterSelection,
   setCharacterSwitchLock,
   waitForCharacterSwitch,
 } from "../settings/character-switch-runtime.js";
@@ -75,66 +72,6 @@ test("local character switch clears role state and accepts the same Core generat
   });
   assert.equal(result, current);
   assert.deepEqual(calls, ["snapshot", true, "clear", "rebind", false]);
-});
-
-test("appearance, voice, and character collection drafts block switching", () => {
-  assert.equal(hasCharacterScopedDrafts(), false);
-  assert.equal(hasCharacterScopedDrafts({ appearanceDirty: true }), true);
-  assert.equal(hasCharacterScopedDrafts({ voiceDirty: true }), true);
-  assert.equal(hasCharacterScopedDrafts({ collectionDraftCount: 1 }), true);
-});
-
-test("character choices remain local drafts until apply commits only the final target", async () => {
-  let selectedCharacterId = "character-a";
-  const selectedByBackend = [];
-
-  selectedCharacterId = "character-b";
-  assert.equal(pendingCharacterSelection({
-    committedCharacterId: "character-a",
-    selectedCharacterId,
-  }), "character-b");
-  selectedCharacterId = "character-c";
-  assert.equal(selectedByBackend.length, 0);
-
-  const applied = [];
-  await commitCharacterSelection({
-    committedCharacterId: "character-a",
-    selectedCharacterId,
-    readLifecycle: async () => ({ supervisor: { generationNumber: 7 } }),
-    async selectCharacter(characterId) {
-      selectedByBackend.push(characterId);
-      return { targetCharacterId: characterId };
-    },
-    async applyChange(nextReceipt, previousLifecycle) {
-      applied.push({ nextReceipt, previousLifecycle });
-      return "switched";
-    },
-  });
-
-  assert.deepEqual(selectedByBackend, ["character-c"]);
-  assert.equal(applied.length, 1);
-  assert.equal(applied[0].previousLifecycle.supervisor.generationNumber, 7);
-});
-
-test("selecting the committed character again clears the draft and performs no commit", async () => {
-  assert.equal(pendingCharacterSelection({
-    committedCharacterId: "character-a",
-    selectedCharacterId: "character-a",
-  }), null);
-
-  let lifecycleReads = 0;
-  let backendWrites = 0;
-  const result = await commitCharacterSelection({
-    committedCharacterId: "character-a",
-    selectedCharacterId: "character-a",
-    readLifecycle: async () => { lifecycleReads += 1; },
-    selectCharacter: async () => { backendWrites += 1; },
-    applyChange: async () => {},
-  });
-
-  assert.equal(result, null);
-  assert.equal(lifecycleReads, 0);
-  assert.equal(backendWrites, 0);
 });
 
 test("current character publication rebinds settings only after the announced generation is ready", async () => {

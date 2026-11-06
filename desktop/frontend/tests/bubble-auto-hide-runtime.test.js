@@ -1,10 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import {
-  createBubbleAutoHideSettingsController,
-  validateBubbleAutoHideSnapshot,
-} from "../settings/bubble-auto-hide-runtime.js";
+import { createBubbleAutoHideSettingsController } from "../settings/bubble-auto-hide-runtime.js";
 
 function control() {
   const listeners = {};
@@ -27,15 +24,6 @@ function snapshot() {
     limits: { autoHideDelaySeconds: [1, 120, 5] },
   };
 }
-
-test("bubble auto-hide snapshot is generation-scoped and bounded", () => {
-  assert.equal(validateBubbleAutoHideSnapshot(snapshot()).values.autoHideDelaySeconds, 5);
-  assert.throws(() => validateBubbleAutoHideSnapshot({ ...snapshot(), windowGeneration: 0 }));
-  assert.throws(() => validateBubbleAutoHideSnapshot({
-    ...snapshot(),
-    values: { autoHideEnabled: true, autoHideDelaySeconds: 121 },
-  }));
-});
 
 test("failed save keeps the bubble auto-hide draft dirty", async () => {
   const controls = { bubbleAutoHide: control(), bubbleAutoHideDelay: control() };

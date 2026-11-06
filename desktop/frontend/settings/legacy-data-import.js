@@ -28,7 +28,7 @@ export function openLegacyDataImport({ client, setBusy = () => {}, onComplete = 
     choose.disabled = busy || complete;
     for (const select of results.querySelectorAll('select')) { select.disabled = busy; refreshSelect(select); }
     if (confirmation) confirmation.disabled = busy;
-    start.disabled = busy || (!complete && (!plan || plan.blocked || plan.requiresMapping || !legacyDataImportPlanHasWork(plan) || (plan.requiresConflictConfirmation && !confirmation?.checked)));
+    start.disabled = busy || (!complete && (!plan || plan.requiresMapping || !legacyDataImportPlanHasWork(plan) || (plan.requiresConflictConfirmation && !confirmation?.checked)));
     dialog.setAttribute('aria-busy', String(busy));
   };
   const setOperation = (value) => { busy = value; setBusy(value); sync(); };
@@ -87,11 +87,10 @@ export function openLegacyDataImport({ client, setBusy = () => {}, onComplete = 
     if (totals.recoverableErrors) results.append(text('p', `${count(totals.recoverableErrors)} 条坏数据将单独保留，可用记录继续迁移。`, 'legacy-import-warning'));
     for (const issue of plan.packageIssues || []) results.append(text('p', `${issue.name}：角色包无法读取，继续迁移其他数据。`, 'legacy-import-warning'));
     if (plan.charactersTruncated) results.append(text('p', '仅展示前 256 个角色，迁移包含全部已扫描数据。', 'legacy-import-warning'));
-    if (plan.requiresConflictConfirmation && !plan.blocked) {
+    if (plan.requiresConflictConfirmation) {
       const label = text('label', '', 'legacy-import-warning'); confirmation = document.createElement('input'); confirmation.type = 'checkbox';
       confirmation.onchange = sync; label.append(confirmation, text('span', `同意覆盖 ${count(totals.historyConflicts + totals.memoryConflicts)} 条冲突记录，当前版本中的这些记录将被替换。`)); results.append(label);
     }
-    if (plan.blocked) feedback.textContent = '迁移范围有冲突';
     $('[data-summary]').textContent = plan.requiresMapping ? '请选择待关联角色' : legacyDataImportPlanHasWork(plan) ? `待导入 ${count(plan.packagesNew)} 个角色包 · 新增 ${count(totals.historyNew + totals.memoryNew)} 条` : '没有新数据';
     sync();
   };
@@ -108,7 +107,6 @@ export function openLegacyDataImport({ client, setBusy = () => {}, onComplete = 
       plan = next || previous;
       if (!next) mapping = previousMapping;
       feedback.textContent = ''; render();
-      if (next?.blocked) onError('LEGACY_DATA_SCOPE_CONFLICT', '迁移范围有冲突');
     } catch (error) {
       if (!alive) return;
       plan = null; results.hidden = true; closeSelects(dialog); feedback.textContent = '扫描失败';
