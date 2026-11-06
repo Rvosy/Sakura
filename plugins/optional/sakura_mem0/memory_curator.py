@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 try:
+    from .curation_schema import CurationOutput
     from .support import (
         CancelChecker,
         OperationCancelled,
@@ -25,6 +26,7 @@ try:
         looks_like_sensitive_memory,
     )
 except ImportError:
+    from curation_schema import CurationOutput
     from support import (
         CancelChecker,
         OperationCancelled,
@@ -360,11 +362,12 @@ class MemoryCurator:
                 },
             )
             repaired_raw = self.api_client.complete_raw(
-                (
-                    "你是 JSON 格式修复器。只修复下面输出的 JSON 语法和结构，"
-                    "不得新增、删除或改写事实。返回且只返回一个包含 operations 数组的 JSON object。"
-                ),
-                [{"role": "user", "content": raw}],
+                system_prompt,
+                [
+                    {"role": "user", "content": user_prompt},
+                    {"role": "assistant", "content": raw},
+                    {"role": "user", "content": f"请根据原始对话修正结果，字段错误：{first_error}。不要补造事实。"},
+                ],
                 temperature=0,
                 response_format={"type": "json_object"},
                 max_tokens=2000,
@@ -722,14 +725,7 @@ def _parse_curation_operations(raw: str) -> list[dict[str, Any]]:
     """解析模型返回的整理操作；非法输出不得推进历史游标。"""
 
     data = _load_json_object(raw)
-    candidates = data.get("operations") or data.get("operation") or []
-    if not isinstance(candidates, list):
-        raise ValueError("记忆整理输出的 operations 必须是数组。")
-    operations: list[dict[str, Any]] = []
-    for item in candidates:
-        if isinstance(item, dict):
-            operations.append(item)
-    return operations
+    return [operation.model_dump() for operation in CurationOutput.model_validate(data).operations]
 
 
 def _normalize_operation_layer(operation: dict[str, Any]) -> str:

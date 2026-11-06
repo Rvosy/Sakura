@@ -1340,7 +1340,14 @@ def test_curation_preserves_completed_page_cursor_and_retries_only_failed_page(
         boundary.close()
 
 
+@pytest.mark.parametrize("invalid", [
+    "not-json", "{}", '{"facts":["test fact"]}', '{"operations":[42]}',
+    '{"operations":[{"op":"add"}]}', '{"operations":[{"op":"update","content":"新偏好"}]}',
+    '{"operations":[{"op":"delete"}]}', '{"operations":[{"op":"unknown"}]}',
+    '{"operations":[{"op":"delete","id":"owned"},42]}',
+])
 def test_failed_repair_stops_current_job_and_later_event_can_retry(
+    invalid: str,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1355,7 +1362,7 @@ def test_failed_repair_stops_current_job_and_later_event_can_retry(
             calls += 1
             if calls == 1:
                 boundary.note_timeline_changed(timeline)
-            return "not-json" if calls <= 2 else '{"operations":[]}'
+            return invalid if calls <= 2 else '{"operations":[]}'
 
         def close(self) -> None:
             pass
@@ -1383,8 +1390,9 @@ def test_failed_repair_stops_current_job_and_later_event_can_retry(
     try:
         boundary.note_timeline_changed(timeline)
 
-        assert calls == 2
         assert boundary._curation_state.curation_cursor() == ""  # noqa: SLF001
+        assert "owned" in boundary._store.memories  # noqa: SLF001
+        assert calls == 2
 
         boundary.note_timeline_changed(timeline)
         assert calls == 3
