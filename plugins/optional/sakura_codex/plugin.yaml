@@ -4,6 +4,7 @@ name: OpenAI Official
 author: Rvosy
 description: 登录 ChatGPT 账号，自动添加可用的 Codex 模型。
 version: 0.1.0
+min_app_version: "1.3.6"
 entry: plugin:CodexPlugin
 enabled: false
 provides:
