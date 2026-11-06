@@ -138,7 +138,7 @@ export function enhanceSelect(select) {
     menu.style.top = `${upwards ? Math.max(8, rect.top - menu.offsetHeight - 6) : rect.bottom + 6}px`;
     wrapper.classList.add("is-open");
     trigger.setAttribute("aria-expanded", "true");
-    activeSelect = { select, wrapper, menu, close };
+    activeSelect = { select, wrapper, menu, close, trigger, rect };
     highlight(select.selectedIndex);
   }
   function move(key) {
@@ -185,7 +185,10 @@ document.addEventListener("pointerdown", (event) => {
   if (activeSelect && !activeSelect.wrapper.contains(event.target) && !activeSelect.menu.contains(event.target)) closeSelects();
 }, true);
 window.addEventListener("scroll", (event) => {
-  if (activeSelect && !activeSelect.menu.contains(event.target)) closeSelects();
+  if (!activeSelect || activeSelect.menu.contains(event.target)) return;
+  // 打开前的滚动事件可能稍后才送达；锚点已移动时才关闭菜单。
+  const rect = activeSelect.trigger.getBoundingClientRect();
+  if (rect.top !== activeSelect.rect.top || rect.left !== activeSelect.rect.left) closeSelects();
 }, true);
 window.addEventListener("resize", () => closeSelects());
 

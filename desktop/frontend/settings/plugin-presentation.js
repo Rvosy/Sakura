@@ -82,10 +82,19 @@ function pluginStatus({ state = "", reasonCode = "", unavailable = [] } = {}) {
     return result("需要更新", "模型接口已更新，请安装这个插件的兼容版本。", reasonCode);
   }
   if (NORMAL_REASONS.has(reasonCode) || state === "active") {
-    return result("运行正常");
+    return result("已就绪");
   }
   if (reasonCode === "PLUGIN_DISABLED" || state === "disabled") {
     return result("已停用");
+  }
+  if (state === "stopping") {
+    return result("正在停止");
+  }
+  if (state === "waiting" || reasonCode === "NOT_STARTED") {
+    return result("等待启动");
+  }
+  if (state === "starting" || reasonCode === "PLUGIN_STARTING") {
+    return result("正在启动");
   }
   if (reasonCode === "PLUGIN_APPLICATION_NOT_READY") {
     return result("正在启动");
@@ -285,7 +294,8 @@ export function projectPluginActivity(plugin = {}) {
   if (["starting", "waiting", "stopping"].includes(outerState)) {
     return Object.freeze({
       state: "working",
-      label: { starting: "正在启动", waiting: "等待启动", stopping: "正在停止" }[outerState],
+      label: outerState === "starting" && outerReason === "NOT_STARTED" ? "等待启动"
+        : { starting: "正在启动", waiting: "等待启动", stopping: "正在停止" }[outerState],
       message: "",
       hasRunningResource: false,
       isTransient: true,

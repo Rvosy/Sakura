@@ -22,6 +22,19 @@ test("plugin transitions distinguish waiting and stopping even with a stale read
   }
 });
 
+test("queued and initializing plugins do not produce an unavailable error", () => {
+  for (const reasonCode of ["NOT_STARTED", "PLUGIN_STARTING"]) {
+    const status = presentPluginStatus({ state: "starting", reasonCode });
+    assert.equal(status.message, "");
+    assert.equal(status.diagnostic, "");
+    const activity = projectPluginActivity({ state: "starting", reason_code: reasonCode });
+    assert.equal(activity.state, "working");
+    assert.equal(activity.isTransient, true);
+  }
+  const failed = presentPluginStatus({ state: "failed", reasonCode: "PLUGIN_PROCESS_START_FAILED" });
+  assert.ok(failed.diagnostic.includes("PLUGIN_PROCESS_START_FAILED"));
+});
+
 test("component overview combines enabled plugin resources across surfaces and keeps published installation state", () => {
   const section = (surface, value) => ({
     sectionId: "bundle", surface, values: { bundle: value },

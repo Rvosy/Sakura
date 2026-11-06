@@ -24,6 +24,17 @@ def draft_plugin():
     return plugin
 
 
+def test_save_changes_only_submitted_search_settings():
+    values = {"provider": "tavily", "tavily_api_key": "saved-key", "tavily_depth": "advanced"}
+    plugin = WebPlugin()
+    plugin.context = SimpleNamespace(config=SimpleNamespace(
+        get=lambda: dict(values), update=lambda patch: values.update(patch) or "applied"))
+    assert plugin.save({"provider": "bing"}) == "applied"
+    assert values == {"provider": "bing", "tavily_api_key": "saved-key", "tavily_depth": "advanced"}
+    plugin.context.config.update = lambda _patch: "error"
+    assert plugin.save({"provider": "tavily"}) == "error"
+
+
 @pytest.mark.parametrize('provider,markup,title,url', [
     ('baidu', '<div><h3><a href="https://www.baidu.com/link?url=fixture"><em>作品</em>介绍</a></h3></div>', '作品介绍', 'https://www.baidu.com/link?url=fixture'),
 ])

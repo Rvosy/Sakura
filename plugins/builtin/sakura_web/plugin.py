@@ -49,7 +49,8 @@ class WebPlugin:
             return {**search.configuration(self.context.config.get()), "test_query": "", "test_result": self.test_result, "test_status": self.test_status}
 
     def save(self, values):
-        self.context.config.update(search.configuration(values))
+        normalized = search.configuration({**self.context.config.get(), **values})
+        return self.context.config.update({key: normalized[key] for key in values if key in normalized})
 
     def close(self):
         with self.test_lock:

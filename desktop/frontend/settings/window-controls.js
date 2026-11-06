@@ -17,7 +17,6 @@ export function installSettingsWindowControls({ document, appWindow, useCustomTi
     maximize.dataset.maximized = String(maximized);
     const label = maximized ? "还原" : "最大化";
     maximize.setAttribute("aria-label", label);
-    maximize.dataset.tooltip = label;
   }
 
   async function toggleMaximized() {

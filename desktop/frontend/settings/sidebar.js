@@ -20,9 +20,6 @@ export function installSettingsSidebar({ document, storage }) {
     toggle.setAttribute("aria-expanded", String(!collapsed));
     const label = collapsed ? "展开侧栏" : "收起侧栏";
     toggle.setAttribute("aria-label", label);
-    toggle.dataset.tooltip = label;
-    if (collapsed) toggle.dataset.tooltipSide = "right";
-    else delete toggle.dataset.tooltipSide;
     navigation.querySelectorAll(".nav-item").forEach(updateHint);
   }
 
