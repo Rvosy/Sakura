@@ -317,31 +317,6 @@ impl ShellLifecycleHandle {
         Ok(())
     }
 
-    pub fn readiness(&self) -> Result<Option<String>, String> {
-        let publication = self.snapshot()?;
-        if publication.supervisor.app_shutdown {
-            return Err("LIFECYCLE_COMMAND_UNAVAILABLE".to_string());
-        }
-        if publication.supervisor.state == "failed" {
-            return Err(crate::runtime_log::diagnostic_error(
-                "CORE_START_FAILED",
-                publication
-                    .supervisor
-                    .failure
-                    .as_ref()
-                    .map(|failure| failure.message.as_str())
-                    .unwrap_or("Core start failed"),
-            ));
-        }
-        if publication.supervisor.state == "stopped" {
-            return Err("CORE_START_CANCELLED".to_string());
-        }
-        Ok(publication
-            .snapshot
-            .as_ref()
-            .map(|snapshot| snapshot.readiness.clone()))
-    }
-
     pub fn retry(&self) -> Result<(), String> {
         self.command.send(ShellCommand::Retry).map_err(|error| {
             crate::runtime_log::diagnostic_error("LIFECYCLE_COMMAND_UNAVAILABLE", error)
@@ -717,7 +692,7 @@ fn run_worker(
                         Severity::Info,
                         "core.stop.started",
                         "Core generation stop started",
-                        json!({"outcome": "started", "stage":"stop_generation", "reason_code":match reason { StopReason::User=>"CORE_STOP_USER", StopReason::Restart=>"CORE_STOP_RESTART", StopReason::Failure=>"CORE_STOP_FAILURE", StopReason::AppShutdown=>"CORE_STOP_SHUTDOWN" }}),
+                        json!({"outcome": "started", "stage":"stop_generation", "reason_code":match reason { StopReason::Restart=>"CORE_STOP_RESTART", StopReason::Failure=>"CORE_STOP_FAILURE", StopReason::AppShutdown=>"CORE_STOP_SHUTDOWN" }}),
                     );
                     publish(&state, &publication);
                     let cleaned = stop_generation(&mut state, reason);
@@ -1616,7 +1591,7 @@ mod tests {
         };
         let worker = thread::spawn(move || {
             assert!(matches!(commands.recv().unwrap(), ShellCommand::Start));
-            // A new generation started and was explicitly stopped before readiness.
+            // The generation retired before readiness was published.
             publication.lock().unwrap().supervisor.generation_number = 1;
         });
         assert_eq!(
@@ -1624,20 +1599,6 @@ mod tests {
             Err("CORE_START_CANCELLED".into())
         );
         worker.join().unwrap();
-        assert_eq!(handle.readiness(), Err("CORE_START_CANCELLED".into()));
-        handle.publication.lock().unwrap().supervisor.app_shutdown = true;
-        assert_eq!(
-            handle.readiness(),
-            Err("LIFECYCLE_COMMAND_UNAVAILABLE".into())
-        );
-        let mut state = handle.publication.lock().unwrap();
-        state.supervisor.app_shutdown = false;
-        state.supervisor.state = "failed";
-        drop(state);
-        assert!(handle
-            .readiness()
-            .unwrap_err()
-            .starts_with("CORE_START_FAILED"));
     }
 
     #[test]
