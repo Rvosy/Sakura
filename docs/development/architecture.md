@@ -40,7 +40,7 @@ Core 与各插件使用独立进程。图中的插件调用通过服务路由完
 | 设置 | 配置归属、页面贡献、草稿、保存与应用 | `desktop/frontend/settings/`、`app/core_host/plugin_settings.py` | [设置](../specs/settings.md) |
 | 对话与 Assistant | 统一受理、模型工具循环、取消和最终提交 | `app/core_host/real_chat.py`、`plugins/builtin/sakura_assistant/` | [对话](../specs/conversation.md) |
 | 模型服务 | 连接凭据、模型目录、选择槽和实际请求 | `app/core_host/provider_settings.py`、`plugins/builtin/sakura_model_openai_compatible/` | [模型](../specs/model-services.md) |
-| 历史与记忆 | 已发生的对话事实、轮次读取、记忆整理与召回 | `app/storage/`、`plugins/optional/sakura_mem0/`、`plugins/optional/fact_memory/` | [历史与记忆](../specs/timeline-memory.md) |
+| 历史与记忆 | 已发生的对话事实、轮次读取、记忆整理与召回 | `app/storage/`、`plugins/optional/sakura_mem0/` | [历史与记忆](../specs/timeline-memory.md) |
 | 角色与工坊 | 角色身份、资源、草稿、导入导出和局部更新 | `app/core_host/character_studio.py`、`desktop/frontend/studio/` | [角色](../specs/characters.md) |
 | 窗口与表现 | 可见范围、命中、表现控制和段落呈现 | `desktop/frontend/pet/`、`app/core_host/visual_host.py`、`desktop/src-tauri/` | [窗口与表现](../specs/window-presentation.md) |
 | 语音 | 录音采集、识别、合成、播放和历史留存 | `app/core_host/asr_boundary.py`、`app/core_host/tts_boundary.py`、TTS / ASR Hub | [语音](../specs/voice.md) |
@@ -93,7 +93,7 @@ Core 的正文提交与桌面播放是不同完成点。前者确认对话结果
 | 本机角色选择与语音偏好 | 相应宿主配置或 Hub | 导入角色资源不覆盖设备使用选择 |
 | 连接密钥 | 模型提供方 | 消费者取得模型引用，不复制凭据 |
 | Timeline | Core | Assistant 和插件按授权只读，不另建聊天事实库 |
-| 长期记忆与便签 | 所属记忆插件 | 通过 Context、工具与设置参与业务 |
+| 长期记忆 | 所属记忆插件 | 通过 Context、工具与设置参与业务 |
 | 合成任务与推理进程 | 语音 Provider | Hub 转交任务，Core 接收结果 |
 | 持久录音与临时音频副本 | Core 与各自接收者 | 桌面播放和远程传输不删除原录音 |
 | 原生窗口、设备与整棵进程树 | Shell | 前端与 Core 通过现有宿主接口请求 |
