@@ -28,7 +28,7 @@ def _plugin(distribution, plugin_id, service, body, requires=()):
     (root / "plugin.py").write_text(body, encoding="utf-8")
 
 
-@pytest.mark.parametrize("outcome", ["ready", "optional_failed", "assistant_ack_lost", "assistant_release_stuck"])
+@pytest.mark.parametrize("outcome", ["ready", "optional_failed", "assistant_ack_lost", "assistant_release_stuck", "assistant_setup_required"])
 def test_visual_and_real_chat_are_published_before_optional_start_finishes(tmp_path, monkeypatch, outcome):
     optional_fails = outcome == "optional_failed"
     user, distribution = tmp_path / "user", tmp_path / "distribution"
@@ -54,11 +54,13 @@ import json
 from pathlib import Path
 class Plugin:
     def setup(self, context):
-        context.get("fixture.startup.gate").wait("assistant")
+        self.setup_required = context.get("fixture.startup.gate").wait("assistant")
         self.artifacts = context.get("sakura.host.artifacts")
         context.provide("sakura.assistant", self, exports=("prepare", "begin", "poll", "result", "cancel", "release"))
     def prepare(self, session):
-        return {"state": "ready", "code": "vendor.chat_ready", "message": "", "retryable": False}
+        return {"state": "setup_required" if self.setup_required else "ready",
+                "code": "vendor.chat_setup" if self.setup_required else "vendor.chat_ready",
+                "message": "", "retryable": False}
     def begin(self, request):
         allocated = self.artifacts.allocate({"mediaType": "application/json", "suffix": ".json"})
         Path(allocated["path"]).write_text(json.dumps({"reply": {"segments": [{"text": "可选插件仍在启动。"}]}, "actions": []}), encoding="utf-8")
@@ -116,6 +118,7 @@ class Plugin:
             visits.append(stage)
             entered[stage].set()
             assert release[stage].wait(6), stage
+            return outcome == "assistant_setup_required"
 
         def warmed(self, character_id):
             warmed.append(character_id)
@@ -165,8 +168,16 @@ class Plugin:
 
         release["assistant"].set()
         assert entered["optional"].wait(5), controller.snapshot()
-        assert controller.readiness() == "ready"
-        assert controller.snapshot()["components"]["assistant"]["code"] == "vendor.chat_ready"
+        setup_required = outcome == "assistant_setup_required"
+        assert controller.readiness() == ("setup_required" if setup_required else "ready")
+        assert controller.snapshot()["components"]["assistant"]["code"] == (
+            "vendor.chat_setup" if setup_required else "vendor.chat_ready")
+        initial_binding = early["characterPresentation"]["visual"]["bindingId"]
+        assert controller.published_character_presentation()["visual"]["bindingId"] == initial_binding
+        if setup_required:
+            assert controller.published_session() is None
+            return
+        assert controller.published_session().visual_binding.id == initial_binding
         assert not application.wait_until_loaded(timeout=0)
         assert warmed == []
         optional_pending = next(item for item in settings.snapshot()["plugins"] if item["pluginId"] == "aaa.optional")
