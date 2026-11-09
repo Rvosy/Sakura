@@ -1528,6 +1528,7 @@ for (const dragRegion of dragRegions) {
       const dragResult = await tracedInteractionInvoke(
         "start_pet_drag", {}, dragTrace, "pet-drag.start-native",
       );
+      if (dragResult) commitSurfaceApplication(dragResult);
       if (shouldRevealBubbleAfterNativeDrag({
         bubbleWasHidden,
         initialAnchor: initialPortraitAnchor,
@@ -1535,7 +1536,6 @@ for (const dragRegion of dragRegions) {
       })) {
         surfaceVisibilityController?.activatePet();
       }
-      if (dragResult?.portraitAnchor) activePortraitAnchor = dragResult.portraitAnchor;
     } catch (error) {
       showRecoverableError("窗口拖动暂时不可用。");
     } finally {
