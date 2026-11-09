@@ -777,10 +777,6 @@ class ReadinessController:
                     claimed = None
             if claimed is not None:
                 self._start_initializer_close(claimed)
-            elif result.session is None and plugin_application is not None and presentation is not None:
-                bind_presentation = getattr(plugin_application, "bind_character_presentation", None)
-                if callable(bind_presentation):
-                    bind_presentation(str(presentation["characterId"]))
         except BaseException as error:  # noqa: BLE001 - publish a stable, sanitized readiness
             with self._lock:
                 if self._closed:

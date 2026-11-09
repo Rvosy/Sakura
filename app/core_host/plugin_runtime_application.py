@@ -439,7 +439,11 @@ class PluginRuntimeApplication:
             raise PluginRuntimeError("GENERATION_INVALIDATED")
         if self._session is session:
             return
-        candidate = prepared_character or self.prepare_character(session.character)
+        candidate = prepared_character
+        # Chat readiness attaches to the visual published earlier during startup.
+        # Explicit character/resource updates still supply a prepared replacement.
+        if candidate is None and self._visual_character != session.character:
+            candidate = self.prepare_character(session.character)
         try:
             identity = getattr(session.assistant, "identity", None)
             if identity is not None and self.service_identity("sakura.assistant") != identity:
@@ -447,9 +451,11 @@ class PluginRuntimeApplication:
             for slot, model_identity in getattr(session, "model_bindings", {}).items():
                 if self.service_identity(session.model_slots[slot]["serviceKey"]) != model_identity:
                     raise PluginRuntimeError("SERVICE_BINDING_EXPIRED")
-            self.publish_character(candidate)
+            if candidate is not None:
+                self.publish_character(candidate)
         except BaseException:
-            candidate.close()
+            if candidate is not None:
+                candidate.close()
             raise
         self._session = session
         # Readiness publishes the new Session before notifying observers.
@@ -458,7 +464,7 @@ class PluginRuntimeApplication:
         self.speech.invalidate_session()
         self.screen.invalidate_session()
         self._tool_registry.set_event_emitter(lambda name, payload: self.emit_event(name, payload or {}))
-        session.visual_binding = candidate.binding
+        session.visual_binding = self._visual_binding
         self._bound.set()
 
     def create_assistant_input(self, identity, payload):
