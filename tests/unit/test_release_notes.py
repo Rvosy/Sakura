@@ -8,12 +8,33 @@ from pathlib import Path
 
 import pytest
 
-from tools.release.release_notes import release_changes, render_body, version_changes
+from tools.release.release_notes import check_whats_new, release_changes, render_body, version_changes
 
 
 ROOT = Path(__file__).resolve().parents[2]
 VERSION = "1.4.0"
 CHANGES = "新增功能。\n\n### 使用说明\n\n- 保留字面量 `$value`。\n- [安装](guide/setup.md#首次启动)"
+
+
+def test_whats_new_accepts_empty_release_and_rejects_missing_duplicate_or_invalid_entries(tmp_path):
+    path = tmp_path / "whats-new.json"
+    def write(entries):
+        path.write_text(json.dumps({"versions": entries}), encoding="utf-8")
+    entry = {"version": VERSION, "items": []}
+    write([entry])
+    check_whats_new(path, VERSION)
+    write([])
+    with pytest.raises(ValueError, match="缺少当前版本"):
+        check_whats_new(path, VERSION)
+    write([entry, entry])
+    with pytest.raises(ValueError, match="版本重复"):
+        check_whats_new(path, VERSION)
+    write([{**entry, "items": [{"type": "new", "text": " "}]}])
+    with pytest.raises(ValueError, match="正文不能为空"):
+        check_whats_new(path, VERSION)
+    write([{**entry, "items": [{"type": "unknown", "text": "更新"}]}])
+    with pytest.raises(ValueError, match="类型无效"):
+        check_whats_new(path, VERSION)
 
 
 def test_selects_only_exact_version_with_prereleases_and_previous_notes() -> None:

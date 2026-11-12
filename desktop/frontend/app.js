@@ -2212,6 +2212,9 @@ await waitForRuntimeFonts();
 await adaptiveSurface.refresh();
 document.body.dataset.shellState = presentationUnavailable ? "presentation-failed" : "product-ready";
 await invoke("reveal_pet_window");
+invoke("startup_whats_new").catch(error => runtimeDiagnostics.record({
+  level: "warn", event: "whats_new.startup.failed", error: String(error),
+}));
 runtimeDiagnostics.markReady();
 if (!presentationUnavailable) {
   const greeting = presentation.beginGreeting();

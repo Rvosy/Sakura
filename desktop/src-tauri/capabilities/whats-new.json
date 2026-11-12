@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "whats-new",
+  "description": "更新摘要窗口的标题区域拖动。",
+  "windows": ["whats-new"],
+  "permissions": ["core:window:allow-start-dragging"]
+}

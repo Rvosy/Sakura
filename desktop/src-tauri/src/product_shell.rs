@@ -261,6 +261,7 @@ impl FirstRunGuideState {
                     .and_then(Value::as_object_mut)
                     .ok_or_else(|| "FIRST_RUN_GUIDE_DOCUMENT_INVALID".to_string())?;
                 settings.insert(FIRST_RUN_GUIDE_FIELD.to_string(), Value::Bool(true));
+                crate::whats_new::mark_seen(document, env!("CARGO_PKG_VERSION"))?;
                 Ok(())
             })?;
         self.snapshot()
@@ -1328,6 +1329,10 @@ mod tests {
         assert_eq!(settings_entrypoint(true), "settings/index.html");
         let document: Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
         assert_eq!(document["settings"][FIRST_RUN_GUIDE_FIELD], true);
+        assert_eq!(
+            document["settings"]["whats_new_seen_version"],
+            env!("CARGO_PKG_VERSION")
+        );
         assert_eq!(document["settings"]["future"]["kept"], true);
     }
 

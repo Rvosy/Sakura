@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import argparse
+import json
 import posixpath
 import re
 from pathlib import Path
 from string import Template
 from urllib.parse import quote, urlsplit, urlunsplit
 
-from tools.release.versioning import repository_root, source_version
+from tools.release.versioning import SEMVER, repository_root, source_version
 
 
 DOWNLOADS = (
@@ -95,6 +96,30 @@ def render_body(
     ).rstrip() + "\n"
 
 
+def check_whats_new(path: Path, current: str) -> None:
+    versions = json.loads(path.read_text(encoding="utf-8"))["versions"]
+    if not isinstance(versions, list):
+        raise ValueError("更新摘要 versions 必须为数组")
+    seen = set()
+    for entry in versions:
+        version = entry["version"]
+        if not isinstance(version, str) or not SEMVER.fullmatch(version):
+            raise ValueError(f"更新摘要版本号无效：{version!r}")
+        if version in seen:
+            raise ValueError(f"更新摘要版本重复：{version}")
+        seen.add(version)
+        items = entry["items"]
+        if not isinstance(items, list):
+            raise ValueError(f"{version} 的更新摘要 items 必须为数组")
+        for item in items:
+            if item["type"] not in {"new", "improve", "fix"}:
+                raise ValueError(f"{version} 的更新摘要类型无效：{item['type']}")
+            if not isinstance(item["text"], str) or not item["text"].strip():
+                raise ValueError(f"{version} 的更新摘要正文不能为空")
+    if current not in seen:
+        raise ValueError(f"更新摘要缺少当前版本 {current}；无用户可见变化时填写空 items")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, default=repository_root())
@@ -109,6 +134,7 @@ def main() -> int:
     changes = version_changes((args.root / "docs/CHANGELOG.md").read_text(encoding="utf-8"), version)
     changes = release_changes(changes, args.repository, version)
     if args.check:
+        check_whats_new(args.root / "desktop/frontend/data/whats-new.json", version)
         return 0
     if args.assets_dir is None or args.output is None:
         parser.error("生成正文需要 --assets-dir 和 --output")

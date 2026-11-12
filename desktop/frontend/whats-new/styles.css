@@ -1,0 +1,52 @@
+@import url("../core/scrollbars.css");
+@import url("../assets/fonts/fonts.css");
+@import url("../core/icons.css");
+@import url("../core/selection.css");
+@import url("../core/error-dialog.css");
+
+:root {
+  color: var(--text);
+  background: var(--page-background);
+  font: 14px/1.65 "Sakura Noto Sans SC", "Microsoft YaHei UI", "PingFang SC", sans-serif;
+  --hairline: color-mix(in srgb, var(--border) 70%, transparent);
+}
+:root[data-runtime-fonts="fallback"] { font-family: "Microsoft YaHei UI", "PingFang SC", sans-serif; }
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body { overflow: hidden; }
+[hidden] { display: none !important; }
+button { font: inherit; cursor: pointer; }
+button:disabled { cursor: wait; opacity: .6; }
+button:focus-visible, .updates-content:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 3px;
+}
+.updates-shell { height: 100%; display: flex; flex-direction: column; }
+.updates-heading { flex: none; display: flex; align-items: flex-start; gap: 12px; padding: 24px 24px 18px; }
+.updates-heading > .sakura-icon { color: var(--primary); width: 24px; height: 24px; margin-top: 4px; }
+h1 { margin: 0; font-size: 22px; line-height: 1.4; font-weight: 700; }
+#subtitle { margin: 5px 0 0; color: var(--secondary-text); }
+.updates-content { flex: 1; min-height: 0; overflow: auto; scrollbar-gutter: stable; padding: 4px 24px 18px; --scrollbar-thumb: var(--border); }
+.updates-content-inner { display: flow-root; }
+.version + .version { margin-top: 26px; }
+.version-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+h2 { margin: 0; font-size: 16px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.version ul { list-style: none; padding: 0; margin: 0; display: grid; gap: 12px; }
+.version li { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: start; gap: 10px; overflow-wrap: anywhere; }
+.update-text { -webkit-user-select: text; user-select: text; cursor: text; }
+.kind { padding: 1px 7px; margin-top: 1px; border-radius: 5px; font-size: 12px; line-height: 21px; color: var(--secondary-text); background: color-mix(in srgb, var(--border) 18%, var(--page-background)); user-select: none; }
+.kind-new { color: var(--primary); background: color-mix(in srgb, var(--primary) 10%, var(--page-background)); }
+.text-button { display: inline-flex; align-items: center; justify-content: center; gap: 5px; padding: 5px 2px; border: 0; border-radius: 5px; color: var(--secondary-text); background: transparent; }
+.text-button:hover { color: var(--primary); background: color-mix(in srgb, var(--primary) 7%, transparent); }
+.version-heading .text-button { font-size: 13px; }
+#earlier { margin-top: 20px; }
+#status { color: var(--secondary-text); margin: 16px 0; }
+.updates-actions { flex: none; display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 16px 24px 20px; background: var(--page-background); }
+.primary-button { flex: none; min-width: 88px; border: 1px solid var(--primary); border-radius: 9px; padding: 7px 18px; color: var(--input-background); background: var(--primary); }
+.primary-button:hover { background: var(--primary-hover); border-color: var(--primary-hover); }
+@media (max-width: 380px) {
+  .updates-heading { padding: 20px 18px 16px; gap: 9px; }
+  h1 { font-size: 20px; }
+  .updates-content { padding-inline: 18px; }
+  .updates-actions { padding: 14px 18px 18px; gap: 8px; }
+}
