@@ -1,3 +1,4 @@
+@import url("../core/scrollbars.css");
 /*
  * Sakura 设置面板样式。
  *
@@ -229,8 +230,7 @@ html.is-theme-view-transition::view-transition-new(root) {
   min-height: 0;
   overflow-x: hidden;
   overflow-y: auto; scrollbar-gutter: stable;
-  scrollbar-width: thin;
-  scrollbar-color: var(--sakura-border) transparent;
+  --scrollbar-thumb: var(--sakura-border);
 }
 
 .nav-list::-webkit-scrollbar {
@@ -241,11 +241,6 @@ html.is-theme-view-transition::view-transition-new(root) {
   background: transparent;
 }
 
-.nav-list::-webkit-scrollbar-button {
-  width: 0;
-  height: 0;
-  display: none;
-}
 
 .nav-list::-webkit-scrollbar-thumb {
   min-height: 32px;
@@ -670,13 +665,11 @@ body.is-first-run-guide-active .settings-page.is-active > * {
   padding:
     clamp(16px, calc(-9.714px + 2.857vw), 20px)
     var(--settings-content-gutter);
-  scrollbar-width: thin;
-  scrollbar-color: var(--sakura-border) transparent;
+  --scrollbar-thumb: var(--sakura-border);
 }
 
 .plugin-dialog-body, .record-list, .record-editor {
-  scrollbar-width: thin;
-  scrollbar-color: var(--sakura-border) transparent;
+  --scrollbar-thumb: var(--sakura-border);
 }
 
 .page-scroll.is-admin-active {
@@ -3703,8 +3696,7 @@ button:active:not(:disabled) {
   padding: 1px 4px 10px 1px;
   scroll-padding-block: 1px 10px;
   scroll-snap-type: y proximity;
-  scrollbar-width: thin;
-  scrollbar-color: var(--sakura-border) transparent;
+  --scrollbar-thumb: var(--sakura-border);
 }
 
 .memory-record-card {
