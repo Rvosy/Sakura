@@ -22,7 +22,7 @@ def test_whats_new_accepts_empty_release_and_rejects_missing_duplicate_or_invali
         path.write_text(json.dumps({"versions": entries}), encoding="utf-8")
     entry = {"version": VERSION, "items": []}
     write([entry])
-    check_whats_new(path, VERSION)
+    assert check_whats_new(path, VERSION) == []
     write([])
     with pytest.raises(ValueError, match="缺少当前版本"):
         check_whats_new(path, VERSION)
@@ -78,6 +78,17 @@ def test_cli_refreshes_portable_links_and_keeps_updater_notes_separate(tmp_path:
     root = tmp_path / "repository"
     (root / "docs").mkdir(parents=True)
     (root / "packaging").mkdir()
+    summary_path = root / "desktop/frontend/data/whats-new.json"
+    summary_path.parent.mkdir(parents=True)
+    summary_path.write_text(json.dumps({"versions": [
+        {"version": "1.3.0", "items": [{"type": "new", "text": "旧版本摘要"}]},
+        {"version": VERSION, "items": [
+            {"type": "new", "text": "设置新增使用统计"},
+            {"type": "improve", "text": "重新设计设置页布局"},
+            {"type": "fix", "text": "修复中文路径启动问题"},
+        ]},
+        {"version": "1.5.0", "items": [{"type": "new", "text": "未来版本摘要"}]},
+    ]}), encoding="utf-8")
     (root / "VERSION").write_text(VERSION + "\n", encoding="utf-8")
     (root / "docs/CHANGELOG.md").write_text(
         f"# 更新日志\n\n## {VERSION}（待发布）\n\n{CHANGES}\n\n## 1.3.0\n\n旧版内容。\n",
@@ -116,7 +127,7 @@ def test_cli_refreshes_portable_links_and_keeps_updater_notes_separate(tmp_path:
     download_links = re.findall(r"https://github.com/example/Sakura/releases/download/v1\.4\.0/([^\s)]+)", final_body)
     assert set(download_links) == {path.name for path in assets.iterdir()}
     notes = notes_path.read_text(encoding="utf-8").strip()
-    assert notes == release_changes(CHANGES, "example/Sakura", VERSION)
+    assert notes == "- 设置新增使用统计\n- 重新设计设置页布局\n- 修复中文路径启动问题"
 
     updater_path = tmp_path / "latest.json"
     signature = assets / (f"Sakura-{VERSION}-windows-x64-setup.exe.sig")

@@ -14,7 +14,7 @@
 runtime\python.exe -m tools.release.release_notes --check
 ```
 
-发布正文从[模板](../../packaging/release-body.md)生成，包含实际下载链接和本版本更新内容。GitHub 工作流另附自动生成的变更列表。updater notes 只使用版本更新内容，不包含下载表和 PR 清单。
+发布正文从[模板](../../packaging/release-body.md)生成，包含实际下载链接和本版本更新内容。GitHub 工作流另附自动生成的变更列表。updater `notes` 从应用内更新摘要中选取当前版本的条目，按原顺序生成简洁列表；控制台导入和桌宠更新检测共用这份内容。完整 CHANGELOG、下载表和 PR 清单仅用于 Release 页面。
 
 ## 本地 Windows 包
 

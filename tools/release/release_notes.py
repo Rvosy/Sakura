@@ -96,7 +96,8 @@ def render_body(
     ).rstrip() + "\n"
 
 
-def check_whats_new(path: Path, current: str) -> None:
+def check_whats_new(path: Path, current: str) -> list[dict]:
+    """Validate release summaries and return the current version's items."""
     versions = json.loads(path.read_text(encoding="utf-8"))["versions"]
     if not isinstance(versions, list):
         raise ValueError("更新摘要 versions 必须为数组")
@@ -118,6 +119,7 @@ def check_whats_new(path: Path, current: str) -> None:
                 raise ValueError(f"{version} 的更新摘要正文不能为空")
     if current not in seen:
         raise ValueError(f"更新摘要缺少当前版本 {current}；无用户可见变化时填写空 items")
+    return next(entry["items"] for entry in versions if entry["version"] == current)
 
 
 def main() -> int:
@@ -126,15 +128,15 @@ def main() -> int:
     parser.add_argument("--repository", default="Rvosy/Sakura")
     parser.add_argument("--assets-dir", type=Path, help="only link artifacts present in this directory")
     parser.add_argument("--output", type=Path)
-    parser.add_argument("--notes-output", type=Path, help="write version changes without the download template")
+    parser.add_argument("--notes-output", type=Path, help="write the current version's concise update summary")
     parser.add_argument("--check", action="store_true", help="validate current version notes before building")
     args = parser.parse_args()
 
     version = source_version(args.root)
     changes = version_changes((args.root / "docs/CHANGELOG.md").read_text(encoding="utf-8"), version)
     changes = release_changes(changes, args.repository, version)
+    summary = check_whats_new(args.root / "desktop/frontend/data/whats-new.json", version)
     if args.check:
-        check_whats_new(args.root / "desktop/frontend/data/whats-new.json", version)
         return 0
     if args.assets_dir is None or args.output is None:
         parser.error("生成正文需要 --assets-dir 和 --output")
@@ -143,7 +145,7 @@ def main() -> int:
     body = render_body(template, changes, version, args.repository, assets)
     args.output.write_text(body, encoding="utf-8")
     if args.notes_output is not None:
-        args.notes_output.write_text(changes + "\n", encoding="utf-8")
+        args.notes_output.write_text("".join(f"- {item['text']}\n" for item in summary), encoding="utf-8")
     return 0
 
 
