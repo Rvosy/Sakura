@@ -192,7 +192,7 @@ def run():
             dates.get_by_role("button", name="取消", exact=True).click()
             page.emulate_media(reduced_motion="reduce")
             range_button.click()
-            assert dates.evaluate("e => e.getAnimations({subtree: true}).length") == 0
+            assert dates.evaluate("e => e.getAnimations({subtree: true}).length") > 0
             dates.get_by_role("button", name="取消", exact=True).click()
             page.emulate_media(reduced_motion="no-preference")
             dialog.get_by_role("button", name="关闭", exact=True).click()

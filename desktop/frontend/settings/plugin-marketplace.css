@@ -130,7 +130,6 @@ kbd { border: 1px solid var(--hairline); border-radius: 3px; color: var(--sakura
 button:not(.custom-select__trigger):focus-visible, a:focus-visible, summary:focus-visible, input[type="checkbox"]:focus-visible { outline: none; }
 @media (max-width: 440px) { .drawer-scroll { padding: 16px 20px 20px; } .drawer-bottom { padding: 16px 20px; } }
 @media (max-width: 440px) { .market-tools { flex-wrap: wrap; } .market-search { flex-basis: 100%; } .market-submit-button { margin-left: auto; } }
-@media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; } }
 .market-tools { padding: 3px; }
 .market-content { padding: 0 2px 12px 0; }
 .market-foot { padding: 10px 0 0; }
@@ -178,8 +177,4 @@ body:has(#page-plugins:not([data-market-visible="true"])) #pluginInstallMenu .ma
 @keyframes plugin-menu-open {
   from { opacity: 0; transform: translateY(-4px); }
   to { opacity: 1; transform: translateY(0); }
-}
-@media (prefers-reduced-motion: reduce) {
-  #pluginInstallMenu, #refresh[aria-busy="true"] .sakura-icon { animation: none; }
-  .market-filter-panel, .market-filter-trigger .sakura-icon { transition: none; }
 }

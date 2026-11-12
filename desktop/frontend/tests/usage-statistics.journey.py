@@ -171,7 +171,8 @@ def run():
               const chart = echarts.getInstanceByDom(element), option = chart.getOption();
               const last = option.series[0].data.length - 1, value = option.series[0].data[last];
               chart.dispatchAction({type: 'dataZoom', startValue: last, endValue: last});
-              await new Promise(requestAnimationFrame);
+              do { await new Promise(requestAnimationFrame); }
+              while (!chart.getZr().animation.isFinished());
               const [x, y] = chart.convertToPixel({seriesIndex: 0}, [last, value]);
               const box = element.getBoundingClientRect();
               const point = document.elementFromPoint(box.x + x, box.y + y);
@@ -219,7 +220,6 @@ def run():
             dates.get_by_role("button", name="确定", exact=True).click()
             expect(section.locator(".usage-card-tokens .usage-value")).to_have_text("724,000")
 
-            page.emulate_media(reduced_motion="no-preference")
             page.locator('[data-page="appearance"]').click()
             page.locator('[data-page="statistics"]').click()
             expect(section.locator(".usage-chart svg")).to_be_visible()

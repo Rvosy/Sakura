@@ -67,4 +67,3 @@
 .sakura-error-actions > button:disabled { opacity: .6; cursor: default; }
 .sakura-error-dialog :focus-visible { outline: none; }
 @keyframes sakura-error-arrive { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
-@media (prefers-reduced-motion: reduce) { .sakura-error-dialog[open], .sakura-error-dialog * { animation: none; transition: none; } }

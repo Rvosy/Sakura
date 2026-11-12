@@ -53,14 +53,19 @@ test("slow renderer readiness keeps the current binding until loading completes"
   host.destroy();
 });
 
-test("reduced motion switches directly without retaining the retired renderer", async () => {
-  const root = container({ reducedMotion: true, animate() { assert.fail("reduced motion must not animate"); } });
+test("renderer transitions animate even when the system requests reduced motion", async () => {
+  let animations = 0;
+  const root = container({ reducedMotion: true, animate() {
+    animations++;
+    return { finished: Promise.resolve(), cancel() {} };
+  } });
   let destroyed = 0;
   const host = createRendererHost({ container: root,
     loadModule: async () => ({ mount: () => ({ applyState() {}, destroy() { destroyed++; } }) }),
   });
   await host.bind(binding());
   await host.bind(binding("b"));
+  assert.equal(animations, 2);
   assert.equal(destroyed, 1);
   assert.equal(root.children.length, 1);
   host.destroy();

@@ -207,7 +207,7 @@ def run():
             page.emulate_media(reduced_motion="reduce")
             trigger.click()
             expect(input).to_be_visible()
-            assert page.locator("#history-search").evaluate("el => el.getAnimations().length") == 0
+            assert page.locator("#history-search").evaluate("el => el.getAnimations().length") > 0
             search("春天")
             results.first.click()
             expect(rows.first).to_be_focused()

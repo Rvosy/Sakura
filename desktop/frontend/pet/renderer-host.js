@@ -2,7 +2,7 @@ import { settleOnAbort } from "../core/settle-on-abort.js";
 import { normalizeVisualControl } from "./visual-control.js";
 
 export function createRendererHost({ container, loadModule = (url) => import(url), resolveControl, services = {}, onUnavailable = () => {}, onError = () => {},
-  transitionMs = 300, reducedMotion = () => container.ownerDocument.defaultView.matchMedia("(prefers-reduced-motion: reduce)").matches }) {
+  transitionMs = 300 }) {
   let binding = null;
   let instance = null;
   let lifetime = null;
@@ -117,7 +117,7 @@ export function createRendererHost({ container, loadModule = (url) => import(url
         activeSurface = surface;
         surface.className = "visual-renderer-surface";
         staged = null;
-        if (!previousSurface || transitionMs === 0 || reducedMotion()) {
+        if (!previousSurface || transitionMs === 0) {
           cleanup(previous, "destroy");
           container.replaceChildren(surface);
           if (previousSurface) await guarded.finishSurface?.();

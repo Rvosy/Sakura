@@ -135,11 +135,10 @@ export function createUsageStatistics({ document, invoke }) {
     const primary = color("--sakura-primary"), muted = color("--sakura-muted-text");
     const area = { color: primary, opacity: .08 };
     const buckets = trendBuckets(snapshot), values = buckets.map(row => view === "tokens" ? row.total : row.turns);
-    const reduced = win.matchMedia("(prefers-reduced-motion: reduce)").matches;
     chartEmpty.hidden = buckets.some(row => view === "tokens" ? row.calls > 0 : row.turns > 0);
     chartHost.setAttribute("aria-label", `${view === "tokens" ? "Token" : "对话"}趋势，${buckets.length} 个时间点`);
     chart.setOption({
-      animation: !reduced, animationDuration: 650, animationDurationUpdate: 380, animationEasing: "cubicOut", animationEasingUpdate: "cubicOut",
+      animation: true, animationDuration: 650, animationDurationUpdate: 380, animationEasing: "cubicOut", animationEasingUpdate: "cubicOut",
       color: [primary], backgroundColor: "transparent",
       grid: { top: 24, left: 54, right: 20, bottom: 77 },
       tooltip: { trigger: "axis", confine: true, borderWidth: 0, padding: 12,
