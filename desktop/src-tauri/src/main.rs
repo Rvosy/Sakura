@@ -4,6 +4,8 @@ mod asr;
 mod audio;
 mod autostart_settings;
 mod capture;
+#[cfg(windows)]
+mod capture_hdr;
 mod character_appearance;
 mod character_presentation;
 mod character_studio_window;
@@ -7862,6 +7864,7 @@ fn main() {
             chat_settings::current_subtitle_language,
             history_window::history_bootstrap,
             history_window::history_page,
+            history_window::history_image,
             history_window::history_dates,
             history_window::history_transfer,
             data_transfer::data_transfer_choose,

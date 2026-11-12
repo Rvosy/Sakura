@@ -36,6 +36,80 @@ def _boundary(tmp_path, current: list[str]) -> HistoryBoundary:  # type: ignore[
     )
 
 
+def test_history_images_survive_reopen_and_respect_entry_and_character_ownership(tmp_path):
+    from types import SimpleNamespace
+    from app.storage.history_images import HistoryImages
+
+    store = TimelineStore(StoragePaths(tmp_path).timeline_database())
+    store.initialize()
+    images = HistoryImages(store.path)
+    saved = images.save([SimpleNamespace(data_url="data:image/png;base64,aW1hZ2U=", width=10, height=20)])
+    store.append(NewTimelineEntry("picture", "turn-picture", "sakura", TimelineKind.OBSERVATION,
+        "manual_screen", NOW, {"text": "图片", "visual": {"imageCount": 1, "images": saved}}))
+    current = ["sakura"]
+    boundary = _boundary(tmp_path, current)
+    page = _request({"expectedCharacterId": "sakura", "limit": 50})
+    assert boundary.handle(page)["payload"]["entries"][0]["payload"]["images"] == [
+        {**saved[0], "thumbnail": False, "preview": False}]
+    request = {**_request({"expectedCharacterId": "sakura", "entryId": "picture", "imageId": saved[0]["id"], "variant": "original"}),
+               "name": "ui.history.image"}
+    from pathlib import Path
+    assert Path(boundary.handle(request)["payload"]["path"]).read_bytes() == b"image"
+    wrong = {**request, "payload": {**request["payload"], "entryId": "another-entry"}}
+    assert boundary.handle(wrong)["error"]["code"] == "HISTORY_IMAGE_NOT_FOUND"
+    current[0] = "other"
+    assert boundary.handle(request)["error"]["code"] == "HISTORY_CHARACTER_MISMATCH"
+    wrong = {**request, "payload": {**request["payload"], "expectedCharacterId": "other"}}
+    assert boundary.handle(wrong)["error"]["code"] == "HISTORY_IMAGE_NOT_FOUND"
+    current[0] = "sakura"
+    images.path(saved[0]).unlink()
+    assert "images" not in boundary.handle(page)["payload"]["entries"][0]["payload"]
+    assert boundary.handle(request)["error"]["code"] == "HISTORY_IMAGE_NOT_FOUND"
+
+
+def test_large_image_preserves_original_and_generates_bounded_previews(tmp_path):
+    import base64
+    from io import BytesIO
+    from types import SimpleNamespace
+    from PIL import Image
+    from app.storage.history_images import HistoryImages, THUMBNAIL_EDGE, PREVIEW_EDGE
+
+    buffer = BytesIO()
+    with Image.new("RGB", (6000, 4000), "#9bbacd") as source:
+        source.save(buffer, "JPEG")
+    data = buffer.getvalue()
+    images = HistoryImages(tmp_path / "timeline.sqlite3")
+    saved = images.save([SimpleNamespace(data_url="data:image/jpeg;base64," + base64.b64encode(data).decode(),
+                                       width=0, height=0)])[0]
+    assert (saved["width"], saved["height"]) == (6000, 4000)
+    assert images.path(saved).read_bytes() == data
+    for variant, bound in (("thumbnail", THUMBNAIL_EDGE), ("preview", PREVIEW_EDGE)):
+        with Image.open(images.path(saved, variant)) as resized:
+            assert max(resized.size) == bound
+            assert abs(resized.width / resized.height - 1.5) < 0.01
+        assert images.path(saved, variant).stat().st_size < len(data)
+    images.remove([saved])
+    assert list(images.root.iterdir()) == []
+
+
+def test_incomplete_image_batch_is_removed_and_imported_paths_are_rejected(tmp_path):
+    from types import SimpleNamespace
+    from app.storage.history_images import HistoryImages
+    from app.storage.timeline import TimelineDataError
+
+    images = HistoryImages(tmp_path / "timeline.sqlite3")
+    with pytest.raises(ValueError):
+        images.save([SimpleNamespace(data_url=url, width=0, height=0) for url in (
+            "data:image/webp;base64,aW1hZ2U=", "data:image/png;base64,!invalid!")])
+    assert list(images.root.iterdir()) == []
+    store = TimelineStore(tmp_path / "timeline.sqlite3")
+    store.initialize()
+    with pytest.raises(TimelineDataError, match="TIMELINE_IMAGE_INVALID"):
+        store.append(NewTimelineEntry("picture", "turn", "sakura", TimelineKind.OBSERVATION,
+            "manual_screen", NOW, {"text": "图片", "visual": {"images": [
+                {"id": "../private", "mediaType": "image/png", "width": 1, "height": 1}]}}))
+
+
 def test_history_boundary_returns_only_current_character_typed_entries(tmp_path) -> None:  # type: ignore[no-untyped-def]
     store = TimelineStore(StoragePaths(tmp_path).timeline_database())
     store.initialize()
@@ -305,11 +379,14 @@ def test_history_search_matches_text_and_translation_without_metadata_or_other_c
     ]
     store.append_many([NewTimelineEntry(entry_id, entry_id, character, kind, "chat", NOW, payload)
                        for entry_id, character, kind, payload in records])
+    store.append(NewTimelineEntry("image", "image", "sakura", TimelineKind.OBSERVATION,
+                                  "manual_screen", NOW, {"text": "你分享了一张图片。"}))
     boundary = _boundary(tmp_path, ["sakura"])
     for query, expected in [
         ("赏花", ["human", "assistant"]), ("桜", ["assistant"]), ("春", ["human", "activity"]),
         ("SAKURA", ["human"]), ("%_", ["human"]), ("🌸", ["human"]),
         ("metadata-only", []), ("private-id", []), ("' OR 1=1 --", []),
+        ("分享", []),
     ]:
         response = boundary.handle(_request({"expectedCharacterId": "sakura", "limit": 50, "query": query}))
         assert response["ok"] is True, response

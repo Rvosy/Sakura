@@ -306,11 +306,7 @@ impl CaptureManager {
         })?;
         let rect = intersect_local(local_rect, monitor_width, monitor_height)
             .ok_or_else(|| "SCREEN_CAPTURE_SELECTION_INVALID".to_string())?;
-        let image = monitor
-            .capture_region(rect.x as u32, rect.y as u32, rect.width, rect.height)
-            .map_err(|error| {
-                crate::runtime_log::diagnostic_error("SCREEN_CAPTURE_PLATFORM_UNAVAILABLE", error)
-            })?;
+        let image = capture_monitor_image(&monitor, Some(rect))?;
         let screen_name = monitor
             .name()
             .ok()
@@ -423,9 +419,7 @@ impl CaptureManager {
         let monitor = Monitor::from_point(cursor_x, cursor_y).map_err(|error| {
             crate::runtime_log::diagnostic_error("SCREEN_CAPTURE_MONITOR_GONE", error)
         })?;
-        let image = monitor.capture_image().map_err(|error| {
-            crate::runtime_log::diagnostic_error("SCREEN_CAPTURE_PLATFORM_UNAVAILABLE", error)
-        })?;
+        let image = capture_monitor_image(&monitor, None)?;
         let screen_name = monitor
             .name()
             .ok()
@@ -549,6 +543,40 @@ impl Drop for CaptureManager {
             cleanup_resources(&mut state.resources);
         }
     }
+}
+
+fn capture_monitor_image(
+    monitor: &Monitor,
+    rect: Option<PhysicalRect>,
+) -> Result<image::RgbaImage, String> {
+    #[cfg(windows)]
+    {
+        let name = monitor.name().map_err(|error| {
+            crate::runtime_log::diagnostic_error("SCREEN_CAPTURE_MONITOR_GONE", error)
+        })?;
+        if let Some(image) = crate::capture_hdr::capture(&name).map_err(|error| {
+            crate::runtime_log::diagnostic_error("SCREEN_CAPTURE_HDR_FAILED", error)
+        })? {
+            return Ok(match rect {
+                Some(rect) => image::imageops::crop_imm(
+                    &image,
+                    rect.x as u32,
+                    rect.y as u32,
+                    rect.width,
+                    rect.height,
+                )
+                .to_image(),
+                None => image,
+            });
+        }
+    }
+    match rect {
+        Some(rect) => monitor.capture_region(rect.x as u32, rect.y as u32, rect.width, rect.height),
+        None => monitor.capture_image(),
+    }
+    .map_err(|error| {
+        crate::runtime_log::diagnostic_error("SCREEN_CAPTURE_PLATFORM_UNAVAILABLE", error)
+    })
 }
 
 pub fn monitor_descriptors() -> Result<Vec<CaptureMonitor>, String> {

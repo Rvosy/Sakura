@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 import secrets
 import sqlite3
 from contextlib import contextmanager
@@ -618,6 +619,7 @@ class TimelineStore:
                 if query:
                     # 只搜索可阅读的正文与译文，标识、表情参数和插件元数据不参与匹配。
                     scope += """ AND (kind != 'system' OR json_extract(payload_json, '$.eventType') IS NOT 'app.reconnected')
+                        AND NOT (kind = 'observation' AND origin = 'manual_screen')
                         AND (
                             instr(lower(json_extract(payload_json, '$.text')), lower(?)) > 0
                             OR instr(lower(json_extract(payload_json, '$.activity.details')), lower(?)) > 0
@@ -991,8 +993,19 @@ def _validate_visual_metadata(value: Any) -> None:
         "analysisStatus",
         "confidence",
         "sensitiveRedacted",
+        "images",
     }:
         raise TimelineDataError("TIMELINE_VISUAL_INVALID")
+    if "images" in value:
+        if not isinstance(value["images"], list):
+            raise TimelineDataError("TIMELINE_IMAGE_INVALID")
+        for image in value["images"]:
+            if (not isinstance(image, dict) or set(image) != {"id", "mediaType", "width", "height"}
+                    or not isinstance(image["id"], str) or re.fullmatch(r"[0-9a-f]{32}", image["id"]) is None
+                    or not isinstance(image["mediaType"], str)
+                    or re.fullmatch(r"image/[a-z0-9.+-]+", image["mediaType"]) is None
+                    or any(type(image[key]) is not int or image[key] < 0 for key in ("width", "height"))):
+                raise TimelineDataError("TIMELINE_IMAGE_INVALID")
     if "visualId" in value:
         visual_id = _bounded_text("visualId", value["visualId"], MAX_ID_CHARS)
         if _is_unsafe_resource_string(visual_id) or "/" in visual_id or "\\" in visual_id:

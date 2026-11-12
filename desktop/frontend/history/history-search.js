@@ -108,6 +108,7 @@ export function createHistorySearch({ document, invoke, getIdentity, getAssistan
     item.className = "history-search-result";
     item.dataset.entryId = entry.entryId;
     const bubble = projectHistoryEntries([entry], { assistantName: getAssistantName() })[0];
+    if (!bubble) return;
     const meta = document.createElement("span");
     meta.className = "history-search-meta";
     const author = document.createElement("span");

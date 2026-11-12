@@ -189,6 +189,59 @@ pub(crate) struct HistoryRecordRequest {
     entry_id: String,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct HistoryImageRequest {
+    core_generation_id: String,
+    character_id: String,
+    entry_id: String,
+    image_id: String,
+    variant: String,
+}
+
+#[tauri::command]
+pub(crate) async fn history_image(
+    window: WebviewWindow,
+    request: HistoryImageRequest,
+    lifecycle: State<'_, ShellLifecycleState>,
+    resources: State<'_, character_presentation::CharacterPresentationState>,
+) -> Result<tauri::ipc::Response, String> {
+    validate_history_window(&window)?;
+    let presentation = load_current_character_presentation(&lifecycle, &resources)?;
+    if presentation.presentation.generation_id != request.core_generation_id
+        || presentation.presentation.character_id != request.character_id
+    {
+        return Err("HISTORY_IDENTITY_MISMATCH".to_string());
+    }
+    let response = dispatch_settings_request(
+        settings_core_handle(&lifecycle)?,
+        None,
+        "ui.history.image",
+        json!({"expectedCharacterId": request.character_id,
+               "entryId": request.entry_id, "imageId": request.image_id, "variant": request.variant}),
+    )
+    .await?;
+    let payload = settings_response_payload(response)?;
+    let path = payload["path"]
+        .as_str()
+        .ok_or("HISTORY_IMAGE_PATH_MISSING")?
+        .to_owned();
+    // Core Host resolves ownership; image bytes bypass the JSON frame size limit.
+    let bytes = tauri::async_runtime::spawn_blocking(move || std::fs::read(path))
+        .await
+        .map_err(|error| error.to_string())?
+        .map_err(|error| {
+            crate::runtime_log::diagnostic_error("HISTORY_IMAGE_READ_FAILED", error)
+        })?;
+    let current = load_current_character_presentation(&lifecycle, &resources)?;
+    if current.presentation.generation_id != request.core_generation_id
+        || current.presentation.character_id != request.character_id
+    {
+        return Err("HISTORY_IDENTITY_MISMATCH".to_string());
+    }
+    Ok(tauri::ipc::Response::new(bytes))
+}
+
 #[tauri::command]
 pub(crate) async fn history_open_record(
     window: WebviewWindow,

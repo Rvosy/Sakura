@@ -1111,6 +1111,11 @@ def test_manual_screen_attachment_is_one_shot_multimodal_and_history_safe(
     assert stored[1].origin == "manual_screen"
     assert stored[1].payload["visual"]["imageCount"] == 2
     assert "base64" not in json.dumps(stored[1].payload, ensure_ascii=False)
+    from app.storage.history_images import HistoryImages
+
+    saved_images = stored[1].payload["visual"]["images"]
+    image_store = HistoryImages(tmp_path / "timeline.sqlite3")
+    assert [image_store.path(item).read_bytes() for item in saved_images] == [image, second_image]
 
     with pytest.raises(RealChatRejection, match="SCREEN_ATTACHMENT_NOT_FOUND"):
         boundary.reserve_send(
@@ -1124,6 +1129,36 @@ def test_manual_screen_attachment_is_one_shot_multimodal_and_history_safe(
                 },
             )
         )
+    boundary.close()
+
+
+@pytest.mark.parametrize("cancel", [False, True])
+def test_image_save_rolls_back_on_failed_or_cancelled_input_commit(tmp_path, monkeypatch, cancel):
+    from app.storage.history_images import HistoryImages
+    from app.plugin_sdk.sakura_cancellation import OperationCancelled
+
+    timeline = _activated_timeline(tmp_path / "timeline.sqlite3")
+    image_store = HistoryImages(timeline.path)
+    original = image_store.save([SimpleNamespace(data_url="data:image/png;base64,b2xk", width=0, height=0)])
+    session = _SessionDouble(character=SimpleNamespace(id="sakura", display_name="Sakura"),
+        runtime=SimpleNamespace(finish_trace_operation=lambda *_args, **_kwargs: True),
+        assistant=_AssistantDouble(), tool_actions=None, memory_boundary=None)
+    boundary = RealChatBoundary(GENERATION_ID, GENERATION_CREDENTIAL, tmp_path,
+        session_provider=lambda: session, timeline_store=timeline)
+
+    def fail_commit(_entries):
+        assert len(list(image_store.root.iterdir())) == 2
+        if cancel:
+            raise OperationCancelled()
+        raise OSError("fixture database write failed")
+
+    monkeypatch.setattr(timeline, "append_many", fail_commit)
+    operation = boundary.reserve_host_message("查看图片", "data:image/png;base64,bmV3")
+    with pytest.raises(RealChatRejection, match="OPERATION_CANCELLED" if cancel else "TIMELINE_WRITE_FAILED"):
+        boundary.run_reserved_host_message(operation)
+    assert list(image_store.root.iterdir()) == [image_store.path(original[0])]
+    assert image_store.path(original[0]).read_bytes() == b"old"
+    assert timeline.read_all("sakura") == []
     boundary.close()
 
 

@@ -121,7 +121,8 @@ h1 {
 .history-scroll {
   grid-area: 1 / 1;
   min-height: 0;
-  overflow: auto; scrollbar-gutter: stable;
+  overflow-x: hidden;
+  overflow-y: auto; scrollbar-gutter: stable;
   overscroll-behavior: contain;
   overflow-anchor: none;
   padding: 16px 18px 22px;
@@ -241,10 +242,6 @@ h1 {
   0%, 30% { opacity: .18; }
   to { opacity: 0; }
 }
-@media (prefers-reduced-motion: reduce) {
-  .history-search, .history-search-controls { transition: none; }
-  .history-entry.is-search-target .entry-bubble::before { animation-timing-function: step-end; }
-}
 
 .history-load-row {
   display: flex;
@@ -304,6 +301,7 @@ h1 {
   display: grid;
   gap: 4px;
   width: min(82%, 480px);
+  min-width: 0;
 }
 
 .entry-column-human { justify-items: end; }
@@ -436,14 +434,120 @@ h1 {
   user-select: text;
 }
 
+.screen-observation-content { display: grid; gap: 12px; }
+.screen-observation-description { margin: 0; }
+.screen-observation-content > .history-image-gallery { justify-self: center; }
+.screen-observation-notice { interpolate-size: allow-keywords; }
+.screen-observation-notice::details-content {
+  block-size: 0;
+  overflow: clip;
+  transition: block-size 260ms ease-out, content-visibility 260ms allow-discrete;
+}
+.screen-observation-notice[open]::details-content { block-size: auto; }
+
 .entry-bubble-system[open] {
   width: 100%;
 }
 
 .entry-summary:focus-visible {
   border-radius: 4px;
-  outline: none;
+  outline: 2px solid var(--primary);
+  outline-offset: 3px;
 }
+
+.history-image-gallery {
+  width: min(100%, 360px);
+  margin-top: 10px;
+  white-space: normal;
+}
+.history-image-gallery.is-single { width: fit-content; max-width: 100%; }
+.entry-column-human > .history-image-gallery { margin-top: 0; }
+.history-image-thumbnail {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 100%;
+  max-width: 100%;
+  padding: 0;
+  overflow: hidden;
+  border: 0;
+  border-radius: 11px;
+  background: var(--input-background);
+  box-shadow: 0 2px 7px color-mix(in srgb, var(--text) 14%, transparent);
+  color: var(--muted-text);
+  cursor: zoom-in;
+  font-size: 12px;
+}
+.history-image-thumbnail::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border: 1px solid color-mix(in srgb, var(--text) 23%, transparent);
+  border-radius: inherit;
+  pointer-events: none;
+}
+.is-single > .history-image-thumbnail { height: auto; aspect-ratio: 4 / 3; width: 320px; }
+.history-image-thumbnail img { display: block; width: 100%; height: 100%; min-height: 0; object-fit: cover; user-select: none; }
+/* 翻图可横移一张卡片的距离，裁切仍由历史滚动区负责。 */
+.image-album { position: relative; isolation: isolate; overflow: clip; overflow-clip-margin: 280px; }
+.image-album-card { position: absolute; top: 0; left: 0; transform-origin: 0 0; touch-action: pan-y; }
+.image-album-controls { position: absolute; z-index: 1; }
+.image-album-controls button {
+  padding: 6px 10px;
+  border: 1px solid var(--hairline);
+  border-radius: 999px;
+  background: var(--surface-system);
+  color: var(--secondary-text);
+  font: inherit;
+  font-size: 12px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.image-album-controls button:hover { color: var(--text); border-color: var(--primary); }
+.image-album-controls button:focus-visible,
+.history-image-thumbnail:focus-visible,
+.image-viewer-toolbar button:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+.history-image-viewer {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  max-height: none;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: var(--page-background);
+  color: var(--text);
+}
+.history-image-viewer[open] { display: grid; grid-template-rows: auto minmax(0, 1fr); }
+.history-image-viewer::backdrop { background: var(--page-background); }
+.image-viewer-toolbar { display: flex; align-items: center; gap: 4px; padding: 10px 12px; }
+.image-viewer-count { margin-right: auto; color: var(--secondary-text); font-size: 13px; font-variant-numeric: tabular-nums; }
+.image-viewer-toolbar button {
+  display: grid;
+  place-items: center;
+  min-width: 36px;
+  height: 36px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font-size: 16px;
+}
+.image-viewer-toolbar button[aria-label="适应窗口"] { font-size: 12px; min-width: 60px; }
+.image-viewer-toolbar button[aria-label="查看原图"] { font-size: 12px; }
+.image-viewer-toolbar button:hover { background: var(--surface-system); }
+.image-viewer-toolbar button:disabled { cursor: default; opacity: .35; }
+.image-viewer-viewport { overflow: auto; overscroll-behavior: contain; touch-action: pan-x pan-y; }
+.image-viewer-viewport.is-zoomed { cursor: grab; touch-action: none; }
+.image-viewer-viewport.is-zoomed:active { cursor: grabbing; }
+.image-viewer-canvas { display: flex; align-items: center; justify-content: center; min-width: 100%; min-height: 100%; width: max-content; }
+.image-viewer-canvas img { display: block; flex: none; object-fit: contain; user-select: none; }
+.image-viewer-message { color: var(--secondary-text); }
+.history-image-viewer [hidden], .history-image-gallery [hidden] { display: none; }
 
 .history-empty {
   display: grid;

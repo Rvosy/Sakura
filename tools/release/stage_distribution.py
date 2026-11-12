@@ -34,6 +34,7 @@ BUILTIN_PLUGINS = {
 CORE_IMPORTS = (
     "yaml",
     "py7zz",
+    "PIL",
 )
 PLUGIN_ONLY_IMPORTS = (
     "openai",

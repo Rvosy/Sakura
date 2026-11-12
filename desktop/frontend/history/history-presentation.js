@@ -2,7 +2,6 @@ import { selectSegmentText, selectSegmentTracks } from "../pet/typewriter.js";
 
 const SCHEDULED_SCREEN_DISPLAY_TEXT = "刚才留意了一下屏幕状态。";
 const SCHEDULED_SCREEN_TRIGGER_PREFIX = "定时屏幕观察已提交给对话模型";
-const LEGACY_MANUAL_SCREEN_TEXT = /^用户手动选择的 (\d+) 张屏幕截图已提交给对话模型。$/u;
 const LEGACY_PLUGIN_SCREEN_TEXT = /^插件分享了 \d+ 张图片。$/u;
 
 function isScreenObservation(entry) {
@@ -22,9 +21,7 @@ function entryDisplayText(entry) {
     if (entry.payload.notificationKind === "update") return content;
     return `由「${text(entry.payload.sourcePluginName) || entry.payload.sourcePluginId}」发起`;
   }
-  if (entry.kind !== "observation" || entry.origin !== "manual_screen") return content;
-  const legacy = LEGACY_MANUAL_SCREEN_TEXT.exec(content);
-  return legacy ? `你分享了 ${legacy[1]} 张屏幕截图。` : content;
+  return content;
 }
 
 function text(value) {
@@ -47,7 +44,6 @@ export function formatHistoryTime(value, locale = "zh-CN") {
 
 function systemRoleName(entry) {
   if (entry.kind === "system") return "系统记录";
-  if (entry.origin === "manual_screen") return "屏幕记录";
   if (entry.origin === "scheduled_screen") return "屏幕观察";
   if (entry.origin === "host" && entry.payload.sourcePluginId && !entry.payload.visual) {
     return entry.payload.notificationKind === "update" ? "更新提醒" : "插件消息";
@@ -76,11 +72,21 @@ function scheduledScreenBubble(entries, { formatTime }) {
     createdAt: formatTime(first.createdAt),
     content: SCHEDULED_SCREEN_DISPLAY_TEXT,
     detailsContent,
+    images: entries.flatMap(entry => (entry.payload.images || []).map(image => ({ ...image, entryId: entry.entryId }))),
   };
 }
 
 function entryBubbles(entry, { assistantName, subtitleLanguage, formatTime }) {
   const createdAt = formatTime(entry.createdAt);
+  if (entry.kind === "observation" && entry.origin === "manual_screen") {
+    if (!entry.payload.images?.length) return [];
+    return [{
+      entryId: entry.entryId, turnId: entry.turnId,
+      role: "human", group: "human", align: "right", roleName: "你", createdAt,
+      content: "",
+      images: entry.payload.images.map(image => ({ ...image, entryId: entry.entryId })),
+    }];
+  }
   if (entry.kind === "assistant") {
     return entry.payload.segments.map((segment, segmentIndex) => ({
       entryId: entry.entryId,
@@ -121,6 +127,7 @@ function entryBubbles(entry, { assistantName, subtitleLanguage, formatTime }) {
     content: entryDisplayText(entry),
     detailsContent: text(entry.payload.activity?.details),
     actionLabel: text(entry.payload.activity?.actionLabel),
+    images: (entry.payload.images || []).map(image => ({ ...image, entryId: entry.entryId })),
   }];
 }
 
@@ -133,6 +140,7 @@ export function projectHistoryEntries(
   } = {},
 ) {
   const scheduledEntriesByTurn = new Map();
+  const manualImageTurns = new Set(entries.filter(entry => entry.origin === "manual_screen").map(entry => entry.turnId));
   for (const entry of entries) {
     if (isScreenObservation(entry)) {
       const turnEntries = scheduledEntriesByTurn.get(entry.turnId) || [];
@@ -143,6 +151,7 @@ export function projectHistoryEntries(
   const bubbles = [];
   const consumedScheduledTurns = new Set();
   for (const entry of entries) {
+    if (entry.kind === "human" && !text(entry.payload.text).trim() && manualImageTurns.has(entry.turnId)) continue;
     if (entry.kind === "system" && entry.payload.eventType === "app.reconnected") continue;
     if (isScreenObservation(entry)) {
       if (consumedScheduledTurns.has(entry.turnId)) continue;
