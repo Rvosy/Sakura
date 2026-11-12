@@ -91,10 +91,14 @@ def run():
     env = {**os.environ, 'SAKURA_RUNTIME_USER_ROOT': str(root),
            'WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS': f'--remote-debugging-port={port}'}
     pointer = W.POINT(); U.GetCursorPos(C.byref(pointer))
+    metadata = json.loads(subprocess.check_output([
+        'cargo', 'metadata', '--format-version', '1', '--no-deps', '--offline',
+        '--manifest-path', 'desktop/src-tauri/Cargo.toml',
+    ], cwd=ROOT))
     target = subprocess.Popen([sys.executable, str(Path(__file__).resolve()), '--underlay', str(root)],
                                creationflags=subprocess.CREATE_NO_WINDOW)
     log = (root / 'native.log').open('w', encoding='utf-8')
-    app = subprocess.Popen([str(ROOT / 'desktop/src-tauri/target/debug/sakura.exe')], cwd=ROOT, env=env,
+    app = subprocess.Popen([str(Path(metadata['target_directory']) / 'debug/sakura.exe')], cwd=ROOT, env=env,
                            stdout=log, stderr=log, creationflags=subprocess.CREATE_NO_WINDOW)
     print(f'isolated root: {root}', flush=True)
     try:

@@ -64,7 +64,20 @@ def test_windows_existing_data_launcher_scopes_proxy_choice_to_child(
     scripts.mkdir(parents=True)
     for name in ("start-existing-data.ps1", "start-existing-data.bat"):
         shutil.copy2(source_root / "scripts" / name, scripts / name)
-    executable = project_root / "desktop/src-tauri/target/debug/sakura.exe"
+    manifest = project_root / "desktop/src-tauri/Cargo.toml"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text(
+        '[package]\nname = "launcher-probe"\nversion = "0.1.0"\nedition = "2021"\n'
+        '[[bin]]\nname = "sakura"\npath = "main.rs"\n', encoding="utf-8",
+    )
+    (manifest.parent / "main.rs").write_text("fn main() {}", encoding="utf-8")
+    target_directory = tmp_path / "external build"
+    cargo_config = project_root / ".cargo/config.toml"
+    cargo_config.parent.mkdir()
+    cargo_config.write_text(
+        f'[build]\ntarget-dir = {json.dumps(target_directory.as_posix())}\n', encoding="utf-8",
+    )
+    executable = target_directory / "debug/sakura.exe"
     executable.parent.mkdir(parents=True)
     shutil.copy2(windows_launcher_probe, executable)
     user_root = tmp_path / "existing data"

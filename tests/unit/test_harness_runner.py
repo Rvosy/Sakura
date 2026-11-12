@@ -118,7 +118,7 @@ def test_run_profile_records_real_utf8_output(tmp_path: Path) -> None:
     assert [case["stdout"].strip() for case in report["cases"]] == ["中文", "中文"]
 
 
-def test_each_run_uses_unique_repo_temp_env_and_case_env_can_override(
+def test_each_run_uses_unique_external_temp_env_and_case_env_can_override(
     tmp_path: Path,
 ) -> None:
     repo = tmp_path / "repo with 空格"
@@ -129,12 +129,15 @@ def test_each_run_uses_unique_repo_temp_env_and_case_env_can_override(
     )
     manifest = load_manifest(_manifest(tmp_path / "suites.json", code=code))
 
-    _, first, _ = run_profile(manifest, "first", repo_root=repo)
+    _, first, first_report = run_profile(manifest, "first", repo_root=repo)
     _, second, _ = run_profile(manifest, "first", repo_root=repo)
 
     first_root = Path(first["runtime_tmp_root"])
     assert first_root != Path(second["runtime_tmp_root"])
-    assert first_root.parent.parent == (repo / "temp/harness/runtime-tmp").resolve().parent
+    assert not first_root.is_relative_to(repo)
+    assert first_root.is_dir()
+    assert not first_report.is_relative_to(repo)
+    assert first_report.is_file()
     env = json.loads(first["cases"][0]["stdout"])
     assert env == {"TMPDIR": str(first_root), "TMP": str(first_root), "TEMP": str(first_root)}
 

@@ -5,7 +5,14 @@
 
 $ErrorActionPreference = 'Stop'
 $acceptanceRepository = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
-$acceptanceExecutable = Join-Path $acceptanceRepository 'desktop\src-tauri\target\debug\sakura.exe'
+Push-Location -LiteralPath $acceptanceRepository
+try {
+    $cargoMetadata = & cargo metadata --format-version 1 --no-deps --offline --manifest-path desktop/src-tauri/Cargo.toml
+    if ($LASTEXITCODE -ne 0) { throw '无法读取 Cargo 构建目录。' }
+    $acceptanceExecutable = Join-Path ($cargoMetadata | ConvertFrom-Json).target_directory 'debug\sakura.exe'
+} finally {
+    Pop-Location
+}
 
 if (-not (Test-Path -LiteralPath $UserRoot -PathType Container)) {
     Write-Host ('找不到已有数据目录：' + $UserRoot)
