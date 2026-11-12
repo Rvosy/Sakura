@@ -8,6 +8,7 @@ import math
 import os
 import subprocess
 import sys
+import tempfile
 import time
 import uuid
 from dataclasses import dataclass
@@ -20,7 +21,7 @@ from .report import write_json_atomic
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_MANIFEST = Path(__file__).with_name("suites.json")
-DEFAULT_REPORT_ROOT = REPO_ROOT / "temp" / "harness"
+DEFAULT_REPORT_ROOT = Path(tempfile.gettempdir()) / "sakura-harness"
 
 
 class HarnessError(ValueError):
@@ -131,12 +132,12 @@ def _profile_cases(manifest: dict[str, Any], profile_name: str) -> tuple[Case, .
     return tuple(indexed[case_id] for case_id in profile["cases"])
 
 
-def create_runtime_tmp_root(repo_root: Path = REPO_ROOT) -> Path:
+def create_runtime_tmp_root() -> Path:
     run_id = (
         datetime.now(UTC).strftime("%Y%m%dT%H%M%S.%fZ")
         + f"-{os.getpid()}-{uuid.uuid4().hex[:8]}"
     )
-    path = repo_root / "temp" / "harness" / "runtime-tmp" / run_id
+    path = DEFAULT_REPORT_ROOT / "runtime-tmp" / run_id
     path.mkdir(parents=True, exist_ok=False)
     return path.resolve()
 
@@ -232,9 +233,9 @@ def execute_cases(
     return results
 
 
-def _default_report_path(profile_name: str, repo_root: Path = REPO_ROOT) -> Path:
+def _default_report_path(profile_name: str) -> Path:
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S.%fZ")
-    return repo_root / "temp" / "harness" / f"{stamp}-{profile_name}.json"
+    return DEFAULT_REPORT_ROOT / f"{stamp}-{profile_name}.json"
 
 
 def run_profile(
@@ -247,7 +248,7 @@ def run_profile(
     """Run one profile and persist a stable JSON report."""
     cases = _profile_cases(manifest, profile_name)
     started_at = datetime.now(UTC)
-    runtime_tmp_root = create_runtime_tmp_root(repo_root)
+    runtime_tmp_root = create_runtime_tmp_root()
     results = execute_cases(
         cases,
         repo_root=repo_root,
@@ -271,7 +272,7 @@ def run_profile(
         "cases": results,
     }
     destination = write_json_atomic(
-        report_path or _default_report_path(profile_name, repo_root), report
+        report_path or _default_report_path(profile_name), report
     )
     return (0 if report["status"] == "passed" else 1), report, destination
 

@@ -1,6 +1,6 @@
 param(
     [string]$Executable = "",
-    [string]$EvidenceDirectory = "temp\harness\windows-transparent-clickthrough",
+    [string]$EvidenceDirectory = (Join-Path ([IO.Path]::GetTempPath()) ("sakura-clickthrough-" + [guid]::NewGuid().ToString('N'))),
     [switch]$Build
 )
 
@@ -13,7 +13,6 @@ if ($env:OS -ne "Windows_NT") {
 
 $repoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..\..")).Path
 $manifestPath = Join-Path $repoRoot "desktop\src-tauri\Cargo.toml"
-$defaultExecutable = Join-Path $repoRoot "desktop\src-tauri\target\debug\sakura.exe"
 $resolvedEvidenceDirectory = [System.IO.Path]::GetFullPath(
     $EvidenceDirectory,
     $repoRoot
@@ -39,7 +38,14 @@ if ($Build) {
 }
 
 if (-not $Executable) {
-    $Executable = $defaultExecutable
+    Push-Location -LiteralPath $repoRoot
+    try {
+        $cargoMetadata = & cargo metadata --format-version 1 --no-deps --offline --manifest-path $manifestPath
+        if ($LASTEXITCODE -ne 0) { throw 'Failed to read the Cargo target directory.' }
+        $Executable = Join-Path ($cargoMetadata | ConvertFrom-Json).target_directory 'debug\sakura.exe'
+    } finally {
+        Pop-Location
+    }
 }
 $resolvedExecutable = (Resolve-Path -LiteralPath $Executable).Path
 

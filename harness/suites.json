@@ -836,7 +836,7 @@
       "id": "runtime-v2-asr-native-journey",
       "description": "验证内置 ASR 原生模块的设备选择、音量、重采样与 WAV；不自动打开麦克风",
       "argv": [
-        "cargo", "test", "--manifest-path", "plugins/builtin/sakura_asr_hub/native/Cargo.toml", "--locked", "--target-dir", "desktop/src-tauri/target"
+        "cargo", "test", "--manifest-path", "plugins/builtin/sakura_asr_hub/native/Cargo.toml", "--locked"
       ],
       "timeout_seconds": 240,
       "env": {"NO_COLOR": "1", "CARGO_TERM_COLOR": "never"}
@@ -1148,9 +1148,7 @@
         "Bypass",
         "-File",
         "desktop/tests/windows_transparent_clickthrough_acceptance.ps1",
-        "-Build",
-        "-EvidenceDirectory",
-        "temp/harness/windows-transparent-clickthrough"
+        "-Build"
       ],
       "timeout_seconds": 300,
       "env": {

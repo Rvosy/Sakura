@@ -181,7 +181,15 @@ try {
         Pop-Location
     }
 
-    $installer = Get-ChildItem -LiteralPath (Join-Path $projectRoot "desktop\src-tauri\target\release\bundle\nsis") -Filter "*.exe" |
+    Push-Location -LiteralPath $projectRoot
+    try {
+        $cargoMetadata = & cargo metadata --format-version 1 --no-deps --offline --manifest-path desktop/src-tauri/Cargo.toml
+        if ($LASTEXITCODE -ne 0) { throw '无法读取 Cargo 构建目录。' }
+        $cargoTargetDirectory = ($cargoMetadata | ConvertFrom-Json).target_directory
+    } finally {
+        Pop-Location
+    }
+    $installer = Get-ChildItem -LiteralPath (Join-Path $cargoTargetDirectory "release\bundle\nsis") -Filter "*.exe" |
         Sort-Object LastWriteTime -Descending |
         Select-Object -First 1
     if ($null -eq $installer) { throw "Tauri 未生成 NSIS 安装包。" }
@@ -209,7 +217,7 @@ try {
         "--portable",
         "--smoke"
     )
-    $shell = Join-Path $projectRoot "desktop\src-tauri\target\release\sakura.exe"
+    $shell = Join-Path $cargoTargetDirectory "release\sakura.exe"
     Copy-Item -LiteralPath $shell -Destination (Join-Path $portableStage "sakura.exe") -Force
     Remove-Item -LiteralPath (Join-Path $portableStage "release-inventory.json") -Force
     $portable = Join-Path $outputRoot "Sakura-$version-windows-x64-portable.zip"
