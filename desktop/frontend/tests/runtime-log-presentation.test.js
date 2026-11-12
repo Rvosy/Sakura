@@ -77,6 +77,29 @@ test("incremental snapshots append once and reset snapshots replace stale state"
   assert.deepEqual(state.records.map(({ sequence }) => sequence), [9]);
 });
 
+test("TTS completion details remain readable and copyable beyond 28 fields", () => {
+  const fields = {
+    audio_seconds: "10.5", backend: "cuda", bundle_source_commit: "release-commit",
+    bundle_version: "0.1.0", bytes: "672044", elapsed_ms: "12656", engine_total_ms: "12636.18",
+    event: "tts.operation.finished", frontend_ms: "14.916", gpt_ms: "606.05", gpu_driver: "610.62",
+    gpu_name: "NVIDIA GeForce RTX 5070 Ti", inference_ms: "12632.11", language: "ja",
+    outcome: "success", profile: "minimum-memory", provider_id: "sakura.tts.sakuratts",
+    queue_ms: "0.0", redacted: "[REDACTED]", reference_cache: "memory", reference_ms: "230.839",
+    request_ms: "12656.0", requested_backend: "cuda", rtf: "1.205", runtime_mode: "managed",
+    sovits_ms: "6126.26", stage: "synthesis", synthesis_status: "completed", text_chars: "53",
+  };
+  const completion = record(1, {
+    source: "plugin", pluginId: "sakura.tts.sakuratts", scopes: ["tts"], category: "TTS",
+    eventCode: "runtime.message", message: "SakuraTTS 操作结束",
+    details: Object.entries(fields).map(([label, value]) => ({ label, value })),
+  });
+  const state = applyViewerSnapshot(null, validateViewerSnapshot(snapshot([completion])));
+  const rows = collapseViewerRecords(filterViewerRecords(state.records, "tts"), "tts");
+  assert.equal(rows.length, 1);
+  const copied = viewerCopyText(rows[0]);
+  for (const [label, value] of Object.entries(fields)) assert.ok(copied.includes(`${label}：${value}`));
+});
+
 test("consecutive duplicate rows collapse and copied errors retain support details", () => {
   const error = {
     severity: "error",

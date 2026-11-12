@@ -165,7 +165,7 @@ h1 {
   border: 0;
   border-radius: 7px;
   padding: 5px 12px;
-  color: var(--muted-text);
+  color: var(--secondary-text);
   background: transparent;
   cursor: pointer;
   transition: color 140ms ease, background-color 140ms ease, transform 120ms ease;
@@ -173,8 +173,8 @@ h1 {
 .log-tab:hover { color: var(--secondary-text); }
 .log-tab:active { transform: translateY(1px); }
 .log-tab.is-active {
-  color: var(--input-background);
-  background: var(--primary);
+  color: var(--text);
+  background: var(--surface-selected);
 }
 .log-tab span {
   display: inline-block;
@@ -189,7 +189,7 @@ h1 {
 }
 .log-summary,
 .log-status {
-  color: var(--muted-text);
+  color: var(--secondary-text);
   font-size: 12px;
 }
 .log-summary { text-align: right; }
@@ -365,19 +365,23 @@ h1 {
 }
 .detail-row {
   display: grid;
-  grid-template-columns: 88px minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr) minmax(0, 2fr);
   gap: 8px;
   min-width: 0;
 }
-.record-details dt { color: var(--muted-text); font-size: 11px; }
+.record-details dt {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--secondary-text);
+  font-size: 12px;
+}
 .record-details dd {
   min-width: 0;
   margin: 0;
   overflow-wrap: anywhere;
-  color: var(--secondary-text);
-  font-size: 11px;
+  color: var(--text);
+  font-size: 12px;
 }
-.severity-error .record-details dd { color: color-mix(in srgb, var(--error) 62%, var(--text)); }
 
 .log-empty {
   display: grid;
@@ -482,5 +486,4 @@ h1 {
   .log-kicker, .log-summary { display: none; }
   .record-inline { display: none; }
   .record-details { grid-template-columns: 1fr; }
-  .detail-row { grid-template-columns: 82px minmax(0, 1fr); }
 }

@@ -66,7 +66,7 @@ export function validateViewerRecord(value) {
   ) {
     throw viewerError();
   }
-  if (!Array.isArray(value.details) || value.details.length > 28 || value.details.some((detail) => (
+  if (!Array.isArray(value.details) || value.details.some((detail) => (
     !isObject(detail)
     || !exactKeys(detail, ["label", "value"])
     || typeof detail.label !== "string"
