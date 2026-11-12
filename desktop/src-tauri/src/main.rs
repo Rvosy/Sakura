@@ -44,6 +44,7 @@ mod tool_settings;
 mod ui_config;
 mod update_settings;
 mod visual_resources;
+mod whats_new;
 mod window_geometry;
 mod window_interaction;
 #[cfg(any(windows, test))]
@@ -7656,6 +7657,13 @@ fn main() {
             }
         })
         .on_window_event(|window, event| {
+            if window.label() == whats_new::WINDOW_LABEL {
+                if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                    api.prevent_close();
+                    let _ = window.emit("sakura://whats-new-close-requested", ());
+                }
+                return;
+            }
             if matches!(event, tauri::WindowEvent::Destroyed) {
                 audio::close_playback_window(window.app_handle(), window.label());
             }
@@ -7864,6 +7872,12 @@ fn main() {
             runtime_log_window::runtime_log_viewer_snapshot,
             runtime_log_window::close_runtime_log_viewer,
             runtime_log_window::reveal_runtime_log_viewer,
+            whats_new::startup_whats_new,
+            whats_new::whats_new_bootstrap,
+            whats_new::reveal_whats_new,
+            whats_new::resize_whats_new,
+            whats_new::close_whats_new,
+            whats_new::whats_new_open_details,
             error_dialog_window::show_error_dialog,
             error_dialog_window::error_dialog_bootstrap,
             error_dialog_window::reveal_error_dialog,

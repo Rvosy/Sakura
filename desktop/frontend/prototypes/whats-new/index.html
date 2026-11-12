@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Sakura 更新摘要预览</title>
+    <link rel="stylesheet" href="../settings-demo/demo.css" />
+    <style>
+      .demo-bar { flex-wrap: wrap; gap: 14px; }
+      .demo-controls { flex-wrap: wrap; }
+      main { flex: 1; min-height: 0; display: grid; place-items: center; padding: 24px; overflow: auto; container-type: size; }
+      .preview-window { width: min(520px, 100%); box-shadow: 0 16px 50px #27445a24; border: 1px solid #accfde; border-radius: 11px; overflow: hidden; }
+      iframe { width: 100%; height: 380px; max-height: calc(100cqh - 2px); display: block; border: 0; }
+      iframe[hidden] { display: none; }
+      #status:empty { display: none; }
+      body.dark { background: #141b25; }
+      body.dark .preview-window { border-color: #384b62; }
+      @media(max-width: 600px) { main { padding: 16px; } .demo-controls { margin-left: 0; } }
+    </style>
+  </head>
+  <body>
+    <header class="demo-bar">
+      <div class="demo-brand"><strong>Sakura</strong><span>更新摘要预览</span></div>
+      <div class="demo-controls">
+        <label for="scenario">内容</label>
+        <select id="scenario"><option value="single">当前版本</option><option value="multiple">历史版本</option></select>
+        <label for="mode">打开方式</label>
+        <select id="mode"><option value="startup">升级后</option><option value="manual">关于页</option></select>
+        <label for="theme">主题</label>
+        <select id="theme"><option value="light">浅色</option><option value="dark">深色</option></select>
+        <button id="reopen">重新打开</button>
+      </div>
+      <span class="demo-note">本地预览 · 不写入用户配置</span>
+      <span id="status" role="status"></span>
+    </header>
+    <main><div class="preview-window"><iframe id="preview" title="更新摘要"></iframe></div></main>
+    <script type="module" src="./preview.js"></script>
+  </body>
+</html>

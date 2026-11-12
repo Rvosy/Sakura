@@ -1,3 +1,4 @@
+@import url("../core/scrollbars.css");
 @import url("../assets/fonts/fonts.css");
 @import url("../core/selection.css");
 @import url("../core/error-dialog.css");
@@ -124,7 +125,7 @@ h1 {
   overscroll-behavior: contain;
   overflow-anchor: none;
   padding: 16px 18px 22px;
-  scrollbar-color: color-mix(in srgb, var(--primary) 34%, transparent) transparent;
+  --scrollbar-thumb: color-mix(in srgb, var(--primary) 34%, transparent);
 }
 .history-scroll[hidden], .history-toolbar [hidden] { display: none; }
 .history-toolbar { min-width: 0; padding: 0 2px; }

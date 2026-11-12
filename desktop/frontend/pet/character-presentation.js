@@ -28,6 +28,7 @@ export async function loadCurrentCharacterPresentation({
       if (presentation.visual || presentation.visualReasonCode !== "VISUAL_NOT_BOUND") return presentation;
     } catch (error) {
       const code = String(error?.message || error).split(":", 1)[0];
+      if (code === "CHARACTER_REQUIRED") return null;
       if (!["CHARACTER_PRESENTATION_NOT_READY", "CHARACTER_PRESENTATION_UNAVAILABLE",
         "CHARACTER_PRESENTATION_GENERATION_STALE", "CHARACTER_RESOURCE_GENERATION_STALE"].includes(code)) throw error;
     }

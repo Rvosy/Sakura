@@ -45,7 +45,7 @@ latest.json 使用 Tauri 更新清单，包含 version、notes、pub_date 和 pl
 Windows 与 macOS 对应 windows-x86_64 和 darwin-aarch64；便携包使用独立下载项。
 发布 Linux 时，普通 AppImage 下载与 AppImage.tar.gz 签名更新包必须成对提供。
 安装包继续由 GitHub 分发，静态服务保存发布资料而不复制整套发行产物。
-notes 保留该版本的更新说明，不用历史累计日志或 CI 过程输出代替。
+notes 使用与应用内更新摘要一致的当前版本简洁条目，来源见[发行文档](../development/release.md#准备版本)。不包含完整 CHANGELOG、历史版本内容或 CI 过程输出。
 
 ## CI 导入与草稿
 
