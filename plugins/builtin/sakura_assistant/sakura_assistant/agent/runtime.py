@@ -8,6 +8,7 @@ from dataclasses import replace
 from threading import Lock
 from typing import TYPE_CHECKING, Any, Callable, Mapping
 
+from sakura_assistant.agent.screen_observation import SCREEN_OBSERVATION_IMAGE_DETAIL
 from sakura_assistant.agent.actions import AgentAction, AgentEvent, AgentProgress, AgentResult
 from sakura_assistant.agent.context_orchestrator import ContextContributionError
 from sakura_assistant.agent.trace import (
@@ -1829,7 +1830,7 @@ def _build_tool_result_image_message(results: list[ToolExecutionResult]) -> Chat
             "type": "image_url",
             "image_url": {
                 "url": image_url,
-                "detail": "low",
+                "detail": SCREEN_OBSERVATION_IMAGE_DETAIL,
             },
         }
         for image_url in images
@@ -2029,7 +2030,7 @@ def _build_tool_results_message(
             "type": "image_url",
             "image_url": {
                 "url": image_url,
-                "detail": "low",
+                "detail": SCREEN_OBSERVATION_IMAGE_DETAIL,
             },
         }
         for image_url in images
@@ -2379,14 +2380,12 @@ def _build_event_screen_context_image_parts(payload: dict[str, Any]) -> list[dic
 
 
 def _build_screen_context_image_part(screen_context: dict[str, Any]) -> dict[str, Any] | None:
-    SCREEN_AWARENESS_IMAGE_DETAIL = "high"
-
     data_url = screen_context.get("data_url")
     if not isinstance(data_url, str) or not data_url.startswith("data:image/"):
         return None
     detail = _normalize_image_detail(
         screen_context.get("detail"),
-        default=SCREEN_AWARENESS_IMAGE_DETAIL,
+        default=SCREEN_OBSERVATION_IMAGE_DETAIL,
     )
     return {
         "type": "image_url",
@@ -2397,7 +2396,7 @@ def _build_screen_context_image_part(screen_context: dict[str, Any]) -> dict[str
     }
 
 
-def _normalize_image_detail(value: Any, *, default: str = "low") -> str:
+def _normalize_image_detail(value: Any, *, default: str = SCREEN_OBSERVATION_IMAGE_DETAIL) -> str:
     detail = str(value or "").strip().lower()
     if detail in {"low", "high", "original", "auto"}:
         return detail
