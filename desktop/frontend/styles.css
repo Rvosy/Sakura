@@ -1,3 +1,4 @@
+@import url("./core/scrollbars.css");
 @import url("./core/icons.css");
 @import url("./assets/fonts/fonts.css");
 @import url("./core/selection.css");
@@ -273,8 +274,7 @@ body[data-chat-state="thinking"] .bubble::after {
   overflow-wrap: anywhere;
   -webkit-user-select: text;
   user-select: text;
-  scrollbar-color: color-mix(in srgb, var(--primary), transparent 38%) transparent;
-  scrollbar-width: thin;
+  --scrollbar-thumb: color-mix(in srgb, var(--primary), transparent 38%);
 }
 
 .reply-history-nav {
@@ -480,9 +480,8 @@ body[data-chat-state="thinking"] .bubble::after {
   outline: 0;
   -webkit-user-select: text;
   user-select: text;
-  scrollbar-color: color-mix(in srgb, var(--primary) 46%, transparent) transparent;
+  --scrollbar-thumb: color-mix(in srgb, var(--primary) 46%, transparent);
   scrollbar-gutter: stable;
-  scrollbar-width: thin;
   transition: opacity 160ms ease, transform 220ms cubic-bezier(.22, 1, .36, 1);
 }
 
@@ -530,11 +529,6 @@ body[data-chat-state="thinking"] .bubble::after {
   background: color-mix(in srgb, var(--primary) 68%, transparent);
 }
 
-.composer textarea::-webkit-scrollbar-button {
-  display: none;
-  width: 0;
-  height: 0;
-}
 
 .composer textarea:lang(ja) { font-family: var(--font-ja); }
 .composer textarea:lang(ko) { font-family: var(--font-ko); }
@@ -622,8 +616,7 @@ body[data-chat-state="thinking"] .bubble::after {
   gap: 6px;
   overflow-x: auto;
   overflow-y: hidden;
-  scrollbar-color: color-mix(in srgb, var(--primary) 38%, transparent) transparent;
-  scrollbar-width: thin;
+  --scrollbar-thumb: color-mix(in srgb, var(--primary) 38%, transparent);
 }
 
 .composer-attachment-strip[hidden] { display: none; }
@@ -726,8 +719,7 @@ body[data-chat-state="thinking"] .bubble::after {
   max-height: 96px;
   overflow-x: hidden;
   overflow-y: hidden;
-  scrollbar-color: color-mix(in srgb, var(--primary) 38%, transparent) transparent;
-  scrollbar-width: thin;
+  --scrollbar-thumb: color-mix(in srgb, var(--primary) 38%, transparent);
 }
 
 .composer-tool-dock__list[data-scrollable="true"] { overflow-y: auto; scrollbar-gutter: stable; }

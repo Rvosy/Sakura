@@ -1,6 +1,10 @@
 {
   "schema_version": 1,
   "profiles": {
+    "whats-new": {
+      "description": "验证更新摘要的版本范围、已读记录、发行数据和窗口交互",
+      "cases": ["whats-new-rust", "whats-new-release", "whats-new-browser"]
+    },
     "first-run": {
       "description": "验证首次启动、配置引导和已完成配置后的设置入口",
       "cases": [
@@ -199,6 +203,25 @@
     }
   },
   "cases": [
+    {
+      "id": "whats-new-rust",
+      "description": "验证跨版本更新、降级和已读记录",
+      "argv": ["cargo", "test", "--manifest-path", "desktop/src-tauri/Cargo.toml", "whats_new", "--no-default-features", "--locked"],
+      "timeout_seconds": 600
+    },
+    {
+      "id": "whats-new-release",
+      "description": "验证发布说明和更新摘要格式",
+      "argv": ["{python}", "-m", "pytest", "-q", "tests/unit/test_release_notes.py"],
+      "timeout_seconds": 60
+    },
+    {
+      "id": "whats-new-browser",
+      "description": "验证更新摘要的浅深主题、展开、详情和关闭",
+      "argv": ["{python}", "desktop/frontend/tests/whats-new.journey.py"],
+      "timeout_seconds": 120,
+      "env": {"PYTHONIOENCODING": "utf-8", "PYTHONDONTWRITEBYTECODE": "1"}
+    },
     {
       "id": "first-run-frontend-journey",
       "description": "验证欢迎页启动、失败重试、首次配置引导和设置页",

@@ -1,3 +1,4 @@
+@import url("../core/scrollbars.css");
 @import url("../assets/fonts/fonts.css");
 @import url("../core/selection.css");
 @import url("../core/error-dialog.css");
@@ -203,7 +204,7 @@ h1 {
   border-radius: 15px;
   padding: 10px;
   background: var(--surface-panel);
-  scrollbar-color: color-mix(in srgb, var(--primary) 34%, transparent) transparent;
+  --scrollbar-thumb: color-mix(in srgb, var(--primary) 34%, transparent);
 }
 .log-list { display: grid; gap: 6px; }
 .log-record {

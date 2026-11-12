@@ -6,11 +6,15 @@
 
 版本只维护在 [VERSION](../../VERSION)，当前用户更新说明维护在 [CHANGELOG](../CHANGELOG.md)。先确认两者对应，再检查正文：
 
+[应用内更新摘要](../../desktop/frontend/data/whats-new.json)按版本保留历史，每次发布增加当前版本的 `version` 和 `items`。从详细说明中选取几项用户可感知的变化，每项一句话；`type` 使用 `new`（新增）、`improve`（改进）或 `fix`（修复），正文放在 `text`。没有用户可见变化时保留版本记录并使用空 `items`。下方检查同时验证当前摘要是否存在、版本是否重复及条目格式。
+
+摘要随程序离线分发。升级后显示已读版本到当前版本之间的内容，首次没有已读记录时只显示当前版；关闭后在 `ui.json` 的 `settings.whats_new_seen_version` 记录已读版本，降级不回退。新安装完成引导时直接记录当前版本。“关于 → 更新日志”可重新查看，详情链接指向对应 GitHub Release。此字段与更新检查的提醒状态独立。
+
 ```powershell
 runtime\python.exe -m tools.release.release_notes --check
 ```
 
-发布正文从[模板](../../packaging/release-body.md)生成，包含实际下载链接和本版本更新内容。GitHub 工作流另附自动生成的变更列表。updater notes 只使用版本更新内容，不包含下载表和 PR 清单。
+发布正文从[模板](../../packaging/release-body.md)生成，包含实际下载链接和本版本更新内容。GitHub 工作流另附自动生成的变更列表。updater `notes` 从应用内更新摘要中选取当前版本的条目，按原顺序生成简洁列表；控制台导入和桌宠更新检测共用这份内容。完整 CHANGELOG、下载表和 PR 清单仅用于 Release 页面。
 
 ## 本地 Windows 包
 

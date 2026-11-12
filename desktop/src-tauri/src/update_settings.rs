@@ -24,7 +24,6 @@ use crate::{
 
 pub const REPOSITORY_URL: &str = "https://github.com/Rvosy/Sakura";
 pub const WEBSITE_URL: &str = "https://sakura.cialloo.cn/";
-pub const CHANGELOG_URL: &str = "https://github.com/Rvosy/Sakura/blob/main/docs/CHANGELOG.md";
 pub const SPONSOR_URL: &str = "https://ifdian.net/a/Rvosy";
 pub const UPDATE_PREFERENCES_CHANGED_EVENT: &str = "sakura://update-preferences-changed";
 const UPDATE_CHECK_TIMEOUT: Duration = Duration::from_secs(10);
@@ -1251,10 +1250,6 @@ pub fn open_website() -> Result<(), String> {
     open_https_url(WEBSITE_URL, "ABOUT_WEBSITE_OPEN_FAILED")
 }
 
-pub fn open_changelog() -> Result<(), String> {
-    open_https_url(CHANGELOG_URL, "ABOUT_CHANGELOG_OPEN_FAILED")
-}
-
 pub fn open_sponsor() -> Result<(), String> {
     open_https_url(SPONSOR_URL, "ABOUT_SPONSOR_OPEN_FAILED")
 }
@@ -1482,9 +1477,9 @@ pub(crate) fn settings_about_open_repository(window: WebviewWindow) -> Result<()
 }
 
 #[tauri::command]
-pub(crate) fn settings_about_open_changelog(window: WebviewWindow) -> Result<(), String> {
+pub(crate) async fn settings_about_open_changelog(window: WebviewWindow) -> Result<(), String> {
     product_shell::validate_settings_window(&window)?;
-    open_changelog()
+    crate::whats_new::open(window.app_handle().clone(), false).await
 }
 
 #[tauri::command]

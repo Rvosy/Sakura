@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Sakura 更新摘要</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="updates-shell">
+      <header class="updates-heading" data-tauri-drag-region="deep">
+        <span class="sakura-icon icon-sparkles" aria-hidden="true"></span>
+        <div><h1 id="title">近期更新</h1><p id="subtitle" hidden></p></div>
+      </header>
+      <div id="content" class="updates-content" tabindex="0" aria-label="版本更新内容">
+        <div class="updates-content-inner">
+          <p id="status" role="status">正在读取更新内容…</p>
+          <div id="versions"></div>
+          <button id="earlier" class="text-button" type="button" aria-expanded="false" aria-controls="versions" hidden></button>
+        </div>
+      </div>
+      <footer class="updates-actions">
+        <button id="full" class="text-button" type="button">完整更新日志 <span class="sakura-icon icon-external-link" aria-hidden="true"></span></button>
+        <button id="close" class="primary-button" type="button">知道了</button>
+      </footer>
+    </main>
+    <script type="module" src="./whats-new.js"></script>
+  </body>
+</html>

@@ -18,6 +18,7 @@ macOS / Linux 改用 `runtime/bin/python`。打开对应地址：
 | `/prototypes/plugins/` | 插件列表、筛选、设置和资源状态 |
 | `/prototypes/settings-demo/` | 角色显示方式与设置草稿 |
 | `/prototypes/studio-demo/` | 多形态编辑、保存与设置预览 |
+| `/prototypes/whats-new/` | 更新摘要窗口、浅深主题、历史版本展开与滚动 |
 
 示例中的 Live2D、3D、插件条目和字段只用于展示。演示不定义公开接口，角色工坊和表现资源约定见[角色开发文档](../../../docs/development/characters.md)。浏览器预览不能验证原生窗口、点击穿透或系统材质。
 
