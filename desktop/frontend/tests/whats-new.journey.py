@@ -33,7 +33,7 @@ def run():
                 raise RuntimeError("fixture: unreadable ui.json")
             return snapshot
         if command == "close_whats_new" and fail_close:
-            raise RuntimeError("fixture: disk is read-only")
+            raise RuntimeError("fixture: native window could not be destroyed")
         return None
     output = Path(os.environ.get("SAKURA_VISUAL_OUTPUT", ROOT / "temp/whats-new"))
     output.mkdir(parents=True, exist_ok=True)
@@ -86,7 +86,7 @@ def run():
             fail_close = True
             page.get_by_role("button", name="知道了").click()
             expect(page.locator("dialog")).to_be_visible()
-            expect(page.locator("dialog pre")).to_contain_text("fixture: disk is read-only")
+            expect(page.locator("dialog pre")).to_contain_text("fixture: native window could not be destroyed")
             page.locator("dialog").press("Escape")
             fail_close = False
             page.evaluate("window.nativeEvents['sakura://whats-new-close-requested']()")

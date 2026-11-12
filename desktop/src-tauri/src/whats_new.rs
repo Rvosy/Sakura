@@ -5,7 +5,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tauri::{AppHandle, Manager, State, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 
-use crate::{character_appearance, character_presentation, ui_config::UiConfigRepository};
+use crate::{
+    character_appearance, character_presentation,
+    runtime_log::{RuntimeLogEvent, RuntimeLogService, Severity},
+    ui_config::UiConfigRepository,
+};
 
 pub const WINDOW_LABEL: &str = "whats-new";
 const CURRENT: &str = env!("CARGO_PKG_VERSION");
@@ -38,13 +42,10 @@ fn notes() -> Result<Vec<Entry>, String> {
         .map_err(|error| error.to_string())
 }
 
-fn seen_version(document: &Value) -> Result<Option<&str>, String> {
+fn seen_version(document: &Value) -> Result<Option<Version>, String> {
     match document["settings"].get(SEEN_FIELD) {
         None => Ok(None),
-        Some(Value::String(value)) => {
-            version(value)?;
-            Ok(Some(value))
-        }
+        Some(Value::String(value)) => version(value).map(Some),
         Some(_) => Err("更新摘要的已读版本必须为版本号字符串".into()),
     }
 }
@@ -52,7 +53,7 @@ fn seen_version(document: &Value) -> Result<Option<&str>, String> {
 pub(crate) fn mark_seen(document: &mut Value, current: &str) -> Result<(), String> {
     let next = version(current)?;
     if let Some(seen) = seen_version(document)? {
-        if version(seen)?.cmp_precedence(&next).is_ge() {
+        if seen.cmp_precedence(&next).is_ge() {
             return Ok(());
         }
     }
@@ -66,21 +67,19 @@ pub(crate) fn mark_seen(document: &mut Value, current: &str) -> Result<(), Strin
 
 fn select_entries(
     entries: Vec<Entry>,
-    seen: Option<&str>,
-    current: &str,
+    seen: Option<&Version>,
+    current: &Version,
     startup: bool,
 ) -> Result<Vec<Entry>, String> {
-    let current = version(current)?;
-    let seen = seen.map(version).transpose()?;
     let mut selected = Vec::new();
     for entry in entries {
         let candidate = version(&entry.version)?;
         let in_range = !startup
-            || match &seen {
+            || match seen {
                 Some(seen) => candidate.cmp_precedence(seen).is_gt(),
-                None => candidate.cmp_precedence(&current).is_eq(),
+                None => candidate.cmp_precedence(current).is_eq(),
             };
-        if !entry.items.is_empty() && candidate.cmp_precedence(&current).is_le() && in_range {
+        if !entry.items.is_empty() && candidate.cmp_precedence(current).is_le() && in_range {
             selected.push((candidate, entry));
         }
     }
@@ -150,13 +149,12 @@ pub(crate) async fn startup_whats_new(
     let seen = seen_version(&document)?;
     let current = version(CURRENT)?;
     if seen
-        .map(version)
-        .transpose()?
+        .as_ref()
         .is_some_and(|seen| seen.cmp_precedence(&current).is_ge())
     {
         return Ok(());
     }
-    if select_entries(notes()?, seen, CURRENT, true)?.is_empty() {
+    if select_entries(notes()?, seen.as_ref(), &current, true)?.is_empty() {
         return repository.update("WHATS_NEW", |document| mark_seen(document, CURRENT));
     }
     open(window.app_handle().clone(), true).await
@@ -180,8 +178,11 @@ pub(crate) fn whats_new_bootstrap(
     appearance: State<'_, character_appearance::CharacterAppearanceState>,
 ) -> Result<Bootstrap, String> {
     validate_window(&window)?;
-    let document = repository.load("WHATS_NEW")?;
-    let seen = seen_version(&document)?;
+    let seen = if startup {
+        seen_version(&repository.load("WHATS_NEW")?)?
+    } else {
+        None
+    };
     let theme_tokens = resources
         .active_presentation()
         .ok()
@@ -189,10 +190,10 @@ pub(crate) fn whats_new_bootstrap(
         .and_then(|presentation| appearance.current(&presentation).ok())
         .map(|publication| publication.values.theme_tokens)
         .unwrap_or_else(crate::runtime_log_window::fallback_theme_tokens);
-    let entries = select_entries(notes()?, seen, CURRENT, startup)?;
+    let entries = select_entries(notes()?, seen.as_ref(), &version(CURRENT)?, startup)?;
     Ok(Bootstrap {
         version: CURRENT,
-        seen_version: seen.map(str::to_owned),
+        seen_version: seen.map(|value| value.to_string()),
         entries,
         theme_tokens,
     })
@@ -202,7 +203,10 @@ pub(crate) fn whats_new_bootstrap(
 pub(crate) fn resize_whats_new(window: WebviewWindow, height: f64) -> Result<(), String> {
     validate_window(&window)?;
     let mut height = height.min(620.0);
-    if let Some(monitor) = window.current_monitor().map_err(|error| error.to_string())? {
+    if let Some(monitor) = window
+        .current_monitor()
+        .map_err(|error| error.to_string())?
+    {
         let inner = window.inner_size().map_err(|error| error.to_string())?;
         let outer = window.outer_size().map_err(|error| error.to_string())?;
         let decorations = outer.height.saturating_sub(inner.height);
@@ -232,10 +236,22 @@ pub(crate) fn close_whats_new(
     window: WebviewWindow,
     acknowledge: bool,
     repository: State<'_, UiConfigRepository>,
+    runtime_log: State<'_, RuntimeLogService>,
 ) -> Result<(), String> {
     validate_window(&window)?;
     if acknowledge {
-        repository.update("WHATS_NEW", |document| mark_seen(document, CURRENT))?;
+        if let Err(error) = repository.update("WHATS_NEW", |document| mark_seen(document, CURRENT))
+        {
+            let _ = runtime_log.submit(
+                RuntimeLogEvent::rust(
+                    Severity::Warning,
+                    "app",
+                    "whats_new.acknowledge.failed",
+                    "更新摘要已读记录保存失败",
+                )
+                .attributes(serde_json::json!({"diagnostic": error})),
+            );
+        }
     }
     window.destroy().map_err(|error| error.to_string())
 }
@@ -277,11 +293,17 @@ mod tests {
             .collect()
     }
     fn selected(seen: Option<&str>, current: &str, startup: bool) -> Vec<String> {
-        select_entries(entries(), seen, current, startup)
-            .unwrap()
-            .into_iter()
-            .map(|e| e.version)
-            .collect()
+        let seen = seen.map(|value| version(value).unwrap());
+        select_entries(
+            entries(),
+            seen.as_ref(),
+            &version(current).unwrap(),
+            startup,
+        )
+        .unwrap()
+        .into_iter()
+        .map(|e| e.version)
+        .collect()
     }
     #[test]
     fn upgrade_range_orders_semver_and_excludes_future_versions() {
@@ -297,9 +319,14 @@ mod tests {
     fn empty_releases_do_not_display() {
         let mut entries = entries();
         entries[3].items.clear();
-        assert!(select_entries(entries, Some("1.3.6-rc.1"), "1.3.6", true)
-            .unwrap()
-            .is_empty());
+        assert!(select_entries(
+            entries,
+            Some(&version("1.3.6-rc.1").unwrap()),
+            &version("1.3.6").unwrap(),
+            true
+        )
+        .unwrap()
+        .is_empty());
     }
     #[test]
     fn acknowledgement_preserves_other_settings_and_never_moves_backwards() {
@@ -312,6 +339,9 @@ mod tests {
             json!({"settings": {"theme": "custom", "update": {"auto_check_enabled": false}, "whats_new_seen_version": "1.3.6"}})
         );
         mark_seen(&mut document, "1.3.10").unwrap();
-        assert_eq!(seen_version(&document).unwrap(), Some("1.3.10"));
+        assert_eq!(
+            seen_version(&document).unwrap(),
+            Some(version("1.3.10").unwrap())
+        );
     }
 }

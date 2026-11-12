@@ -40,11 +40,11 @@ mod runtime_log_window;
 mod shared_instance;
 mod shell_lifecycle;
 mod telemetry;
-mod whats_new;
 mod tool_settings;
 mod ui_config;
 mod update_settings;
 mod visual_resources;
+mod whats_new;
 mod window_geometry;
 mod window_interaction;
 #[cfg(any(windows, test))]
