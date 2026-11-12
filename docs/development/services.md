@@ -108,3 +108,18 @@ python services/sakura/site/deploy_site.py <dist目录> <站点根目录>
 ```
 
 命令默认预览差异，确认目标与范围后加 --apply。同步保留站点根 service/ 和隐藏文件，不覆盖更新资料、证书入口或服务数据。
+
+## 机器人错误日志查询
+
+接收服务 `app:app` 同时提供 `/support` 只读接口，复用 `queries.py`。设置环境变量 `SAKURA_SUPPORT_TOKEN` 后，客户端通过 `Authorization: Bearer <token>` 访问；未配置或凭据不匹配时返回 401。Nginx 的 `/support/` 路由需保留 Authorization，响应不缓存。
+
+| 接口 | 内容 |
+| --- | --- |
+| `GET /support/errors` | 错误摘要，支持 `queries.Filters` 的关键词、版本、平台等筛选与游标分页 |
+| `GET /support/groups` | 同条件的错误分组 |
+| `GET /support/reports/{report_id}` | 单份错误的完整原始日志；不存在返回 404 |
+| `GET /support/reports/{report_id}/timeline` | 根据错误查询同一次运行中出错前后的记录；错误项返回摘要，完整内容通过报告接口读取 |
+
+分页沿用控制台契约：`limit` 为每页条数，`nextCursor` 用于续读，`hasMore` 标识后续内容。错误记录使用不透明游标，分组和时间线使用偏移游标。报告 ID 使用已有 UUID，不新增诊断码体系。
+
+接口供受信任的技术支持机器人使用，保留异常链、调用栈和上下文，不改写原始证据。机器人凭据放在插件配置中，不作为模型参数；群回复只引用定位所需信息，不转发私人上下文。接口不提供修改、导出任务或管理操作。

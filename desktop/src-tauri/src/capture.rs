@@ -25,7 +25,7 @@ pub const ERROR_EVENT: &str = "sakura://screen-capture-error";
 const RESOURCE_DIRECTORY: &str = "sakura-runtime-v2-screen-resources";
 const MAX_CAPTURE_BYTES: usize = 24 * 1024 * 1024;
 const MAX_CAPTURE_PIXELS: u64 = 32_000_000;
-const MAX_CAPTURE_EDGE: u32 = 1280;
+const CAPTURE_JPEG_QUALITY: u8 = 100;
 const MIN_SELECTION_LOGICAL_PX: f64 = 8.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -311,22 +311,25 @@ impl CaptureManager {
             .map_err(|error| {
                 crate::runtime_log::diagnostic_error("SCREEN_CAPTURE_PLATFORM_UNAVAILABLE", error)
             })?;
-        let image = resize_capture(image);
-        let rgb = image::DynamicImage::ImageRgba8(image).to_rgb8();
-        let mut bytes = Vec::new();
-        JpegEncoder::new_with_quality(&mut bytes, 70)
-            .write_image(
-                rgb.as_raw(),
-                rgb.width(),
-                rgb.height(),
-                ExtendedColorType::Rgb8,
-            )
-            .map_err(|source_error| {
-                crate::runtime_log::diagnostic_error("SCREEN_CAPTURE_ENCODE_FAILED", source_error)
-            })?;
-        if bytes.is_empty() || bytes.len() > MAX_CAPTURE_BYTES {
-            return Err("SCREEN_CAPTURE_RESOURCE_LIMIT".to_string());
-        }
+        let screen_name = monitor
+            .name()
+            .ok()
+            .filter(|name| !name.trim().is_empty())
+            .unwrap_or_else(|| format!("monitor-{}", claim.monitor_id))
+            .chars()
+            .take(128)
+            .collect();
+        self.publish_manual_image(claim, image, screen_name)
+    }
+
+    fn publish_manual_image(
+        &self,
+        claim: &CaptureClaim,
+        image: image::RgbaImage,
+        screen_name: String,
+    ) -> Result<ScreenResourceDescriptor, String> {
+        let (width, height) = image.dimensions();
+        let bytes = encode_capture(image)?;
         let root = self.generation_root(&claim.generation_id)?;
         let token = Uuid::new_v4().simple().to_string();
         let path = root.join(format!("{token}.jpg"));
@@ -379,20 +382,13 @@ impl CaptureManager {
             generation_id: claim.generation_id.clone(),
             resource_token: token,
             mime_type: "image/jpeg",
-            width: rgb.width(),
-            height: rgb.height(),
+            width,
+            height,
             byte_length: bytes.len(),
             captured_at: OffsetDateTime::now_utc()
                 .format(&Rfc3339)
                 .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_string()),
-            screen_name: monitor
-                .name()
-                .ok()
-                .filter(|name| !name.trim().is_empty())
-                .unwrap_or_else(|| format!("monitor-{}", claim.monitor_id))
-                .chars()
-                .take(128)
-                .collect(),
+            screen_name,
         })
     }
 
@@ -449,24 +445,8 @@ impl CaptureManager {
         screen_name: String,
     ) -> Result<ScreenResourceDescriptor, String> {
         let image = resize_host_capture(image, resolution);
-        if u64::from(image.width()) * u64::from(image.height()) > MAX_CAPTURE_PIXELS {
-            return Err("SCREEN_CAPTURE_RESOURCE_LIMIT".to_string());
-        }
-        let rgb = image::DynamicImage::ImageRgba8(image).to_rgb8();
-        let mut bytes = Vec::new();
-        JpegEncoder::new_with_quality(&mut bytes, 70)
-            .write_image(
-                rgb.as_raw(),
-                rgb.width(),
-                rgb.height(),
-                ExtendedColorType::Rgb8,
-            )
-            .map_err(|source_error| {
-                crate::runtime_log::diagnostic_error("SCREEN_CAPTURE_ENCODE_FAILED", source_error)
-            })?;
-        if bytes.is_empty() || bytes.len() > MAX_CAPTURE_BYTES {
-            return Err("SCREEN_CAPTURE_RESOURCE_LIMIT".to_string());
-        }
+        let (width, height) = image.dimensions();
+        let bytes = encode_capture(image)?;
         let root = self.generation_root(generation_id)?;
         let token = Uuid::new_v4().simple().to_string();
         let path = root.join(format!("{token}.jpg"));
@@ -521,8 +501,8 @@ impl CaptureManager {
                 generation_id: generation_id.to_string(),
                 resource_token: token,
                 mime_type: "image/jpeg",
-                width: rgb.width(),
-                height: rgb.height(),
+                width,
+                height,
                 byte_length: bytes.len(),
                 captured_at: OffsetDateTime::now_utc()
                     .format(&Rfc3339)
@@ -802,18 +782,26 @@ fn intersect_local(rect: PhysicalRect, width: u32, height: u32) -> Option<Physic
     })
 }
 
-fn resize_capture(image: image::RgbaImage) -> image::RgbaImage {
-    let longest = image.width().max(image.height());
-    if longest <= MAX_CAPTURE_EDGE {
-        return image;
+fn encode_capture(image: image::RgbaImage) -> Result<Vec<u8>, String> {
+    if u64::from(image.width()) * u64::from(image.height()) > MAX_CAPTURE_PIXELS {
+        return Err("SCREEN_CAPTURE_RESOURCE_LIMIT".to_string());
     }
-    let scale = MAX_CAPTURE_EDGE as f64 / longest as f64;
-    image::imageops::resize(
-        &image,
-        (image.width() as f64 * scale).round().max(1.0) as u32,
-        (image.height() as f64 * scale).round().max(1.0) as u32,
-        FilterType::Lanczos3,
-    )
+    let rgb = image::DynamicImage::ImageRgba8(image).to_rgb8();
+    let mut bytes = Vec::new();
+    JpegEncoder::new_with_quality(&mut bytes, CAPTURE_JPEG_QUALITY)
+        .write_image(
+            rgb.as_raw(),
+            rgb.width(),
+            rgb.height(),
+            ExtendedColorType::Rgb8,
+        )
+        .map_err(|source_error| {
+            crate::runtime_log::diagnostic_error("SCREEN_CAPTURE_ENCODE_FAILED", source_error)
+        })?;
+    if bytes.len() > MAX_CAPTURE_BYTES {
+        return Err("SCREEN_CAPTURE_RESOURCE_LIMIT".to_string());
+    }
+    Ok(bytes)
 }
 
 fn valid_capture_resolution(value: &str) -> bool {
@@ -1055,6 +1043,37 @@ mod tests {
         assert_eq!(capture_target_size(1000, 600, "2160p"), (1000, 600));
         assert_eq!(capture_target_size(1440, 2560, "1080p"), (1080, 1920));
         assert_eq!(capture_target_size(3840, 2160, "fullscreen"), (3840, 2160));
+    }
+
+    #[test]
+    fn manual_frame_preserves_native_pixels_in_encoded_resource() {
+        let root =
+            std::env::temp_dir().join(format!("sakura-manual-capture-{}", Uuid::new_v4().simple()));
+        let manager = CaptureManager::with_base(root.clone()).unwrap();
+        let claim = CaptureClaim {
+            generation_id: "00000000-0000-4000-8000-000000004008".to_string(),
+            character_session_id: "fixture".to_string(),
+            capture_revision: 1,
+            monitor_id: 1,
+            window_labels: Vec::new(),
+        };
+        let descriptor = manager
+            .publish_manual_image(
+                &claim,
+                image::RgbaImage::new(3840, 2160),
+                "fixture".to_string(),
+            )
+            .unwrap();
+        assert_eq!((descriptor.width, descriptor.height), (3840, 2160));
+        let path = root
+            .join(&claim.generation_id)
+            .join(format!("{}.jpg", descriptor.resource_token));
+        let decoded = image::load_from_memory(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!((decoded.width(), decoded.height()), (3840, 2160));
+        manager.release(&descriptor.resource_token, &claim.generation_id);
+        assert!(!path.exists());
+        drop(manager);
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

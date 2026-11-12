@@ -23,6 +23,7 @@ from db import (
 )
 from http_input import _reject, _read_json_limited
 from models import ErrorReport, ModelCallBatch, TelemetryEventBatch
+from support_api import router as support_router
 
 
 LOGGER = logging.getLogger("sakura_telemetry")
@@ -45,6 +46,7 @@ app = FastAPI(
     openapi_url=None,
     lifespan=lifespan,
 )
+app.include_router(support_router)
 
 
 async def _parse_model(request: Request, limit: int, model: type[ModelT]) -> ModelT:
