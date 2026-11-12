@@ -26,7 +26,7 @@ button:focus-visible, .updates-content:focus-visible {
 .updates-heading > .sakura-icon { color: var(--primary); width: 24px; height: 24px; margin-top: 4px; }
 h1 { margin: 0; font-size: 22px; line-height: 1.4; font-weight: 700; }
 #subtitle { margin: 5px 0 0; color: var(--secondary-text); }
-.updates-content { flex: 1; min-height: 0; overflow: auto; scrollbar-gutter: stable; padding: 4px 24px 18px; --scrollbar-thumb: var(--border); }
+.updates-content { flex: 1; min-height: 0; overflow: auto; scrollbar-gutter: stable; padding: 4px 24px 18px; }
 .updates-content-inner { display: flow-root; }
 .version + .version { margin-top: 26px; }
 .version-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }

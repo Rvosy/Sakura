@@ -46,7 +46,9 @@ window.__TAURI__ = {core:{invoke:async(command,args)=>{
   if(command==='settings_voice_cache_get') return {directory:'',maxMegabytes:64,idleFill:false,limits:[32,20480]};
   if(command==='interaction_latency_diagnostics_enabled') return false;
   return {};
-}},event:{listen:async()=>()=>{}},window:{getCurrentWindow:()=>({onCloseRequested:async()=>()=>{}})}};
+}},event:{listen:async()=>()=>{}},window:{getCurrentWindow:()=>({
+  onCloseRequested:async()=>()=>{},setDecorations:async()=>{},onResized:async()=>()=>{},isMaximized:async()=>false
+})}};
 """
 
 

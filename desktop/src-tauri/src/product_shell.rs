@@ -999,7 +999,7 @@ pub fn show_or_focus_settings(app: &AppHandle) -> Result<(), String> {
 
     state.next_generation()?;
     let completed = app.state::<FirstRunGuideState>().snapshot()?.completed;
-    WebviewWindowBuilder::new(
+    let window = WebviewWindowBuilder::new(
         app,
         SETTINGS_WINDOW_LABEL,
         WebviewUrl::App(settings_entrypoint(completed).into()),
@@ -1010,7 +1010,7 @@ pub fn show_or_focus_settings(app: &AppHandle) -> Result<(), String> {
     // 主题快照应用完成前保持隐藏，避免默认粉色样式成为可见首帧。
     .visible(false)
     .inner_size(1200.0, 800.0)
-    .min_inner_size(900.0, 640.0)
+    .min_inner_size(900.0, 720.0)
     .resizable(true)
     .maximizable(true)
     .minimizable(true)
@@ -1022,6 +1022,43 @@ pub fn show_or_focus_settings(app: &AppHandle) -> Result<(), String> {
     .center()
     .build()
     .map_err(|error| format!("SETTINGS_WINDOW_CREATE_FAILED: {error}"))?;
+    if let Some(monitor) = window
+        .current_monitor()
+        .map_err(|error| error.to_string())?
+    {
+        let inner = window.inner_size().map_err(|error| error.to_string())?;
+        let outer = window.outer_size().map_err(|error| error.to_string())?;
+        let area = monitor.work_area();
+        let available = tauri::LogicalSize::<f64>::new(
+            area.size
+                .width
+                .saturating_sub(outer.width.saturating_sub(inner.width)) as f64
+                / monitor.scale_factor(),
+            area.size
+                .height
+                .saturating_sub(outer.height.saturating_sub(inner.height)) as f64
+                / monitor.scale_factor(),
+        );
+        window
+            .set_min_size(Some(tauri::LogicalSize::new(
+                900.0_f64.min(available.width),
+                720.0_f64.min(available.height),
+            )))
+            .map_err(|error| error.to_string())?;
+        window
+            .set_size(tauri::LogicalSize::new(
+                1200.0_f64.min(available.width),
+                800.0_f64.min(available.height),
+            ))
+            .map_err(|error| error.to_string())?;
+        let outer = window.outer_size().map_err(|error| error.to_string())?;
+        window
+            .set_position(tauri::PhysicalPosition::new(
+                area.position.x + area.size.width.saturating_sub(outer.width) as i32 / 2,
+                area.position.y + area.size.height.saturating_sub(outer.height) as i32 / 2,
+            ))
+            .map_err(|error| error.to_string())?;
+    }
     Ok(())
 }
 

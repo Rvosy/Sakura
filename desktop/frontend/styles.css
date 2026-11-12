@@ -186,7 +186,6 @@ textarea:focus-visible,
 
 .bubble[data-auto-expand="true"] .bubble-copy {
   overflow-y: hidden;
-  scrollbar-width: none;
 }
 
 /* Adaptive geometry commits atomically after its native region, so top/height never have a CSS
@@ -274,7 +273,6 @@ body[data-chat-state="thinking"] .bubble::after {
   overflow-wrap: anywhere;
   -webkit-user-select: text;
   user-select: text;
-  --scrollbar-thumb: color-mix(in srgb, var(--primary), transparent 38%);
 }
 
 .reply-history-nav {
@@ -480,7 +478,6 @@ body[data-chat-state="thinking"] .bubble::after {
   outline: 0;
   -webkit-user-select: text;
   user-select: text;
-  --scrollbar-thumb: color-mix(in srgb, var(--primary) 46%, transparent);
   scrollbar-gutter: stable;
   transition: opacity 160ms ease, transform 220ms cubic-bezier(.22, 1, .36, 1);
 }
@@ -509,26 +506,6 @@ body[data-chat-state="thinking"] .bubble::after {
 }
 
 .composer textarea[data-overflow="true"] { overflow-y: auto; scrollbar-gutter: stable; }
-
-.composer textarea::-webkit-scrollbar {
-  width: 6px;
-}
-
-.composer textarea::-webkit-scrollbar-track,
-.composer textarea::-webkit-scrollbar-corner {
-  background: transparent;
-}
-
-.composer textarea::-webkit-scrollbar-thumb {
-  min-height: 28px;
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--primary) 46%, transparent);
-}
-
-.composer textarea::-webkit-scrollbar-thumb:hover {
-  background: color-mix(in srgb, var(--primary) 68%, transparent);
-}
-
 
 .composer textarea:lang(ja) { font-family: var(--font-ja); }
 .composer textarea:lang(ko) { font-family: var(--font-ko); }
@@ -616,7 +593,6 @@ body[data-chat-state="thinking"] .bubble::after {
   gap: 6px;
   overflow-x: auto;
   overflow-y: hidden;
-  --scrollbar-thumb: color-mix(in srgb, var(--primary) 38%, transparent);
 }
 
 .composer-attachment-strip[hidden] { display: none; }
@@ -719,7 +695,6 @@ body[data-chat-state="thinking"] .bubble::after {
   max-height: 96px;
   overflow-x: hidden;
   overflow-y: hidden;
-  --scrollbar-thumb: color-mix(in srgb, var(--primary) 38%, transparent);
 }
 
 .composer-tool-dock__list[data-scrollable="true"] { overflow-y: auto; scrollbar-gutter: stable; }
@@ -820,7 +795,6 @@ body[data-chat-state="thinking"] .bubble::after {
 .composer[data-input-motion="row-growth"] #composer-send {
   transform: translateY(var(--input-toolbar-staging-shift));
 }
-
 
 @keyframes bubble-thinking-sheen {
   0%, 100% { left: 12%; transform: scaleX(.72); }
