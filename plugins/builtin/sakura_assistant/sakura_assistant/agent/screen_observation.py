@@ -12,8 +12,7 @@ SCREEN_OBSERVATION_TRIGGER_KEYWORDS = (
 )
 SCREEN_OBSERVATION_HISTORY_MARKER = "[Sakura 已自主观察屏幕]"
 MANUAL_SCREEN_OBSERVATION_HISTORY_MARKER = "[Sakura 已附加手动框选截图]"
-SCREEN_OBSERVATION_MAX_EDGE = 1280
-SCREEN_OBSERVATION_JPEG_QUALITY = 70
+SCREEN_OBSERVATION_IMAGE_DETAIL = "high"
 
 
 def should_observe_screen(text: str) -> bool:
@@ -75,7 +74,7 @@ def build_screen_observation_user_message(
                 "type": "image_url",
                 "image_url": {
                     "url": observation.data_url,
-                    "detail": "low",
+                    "detail": SCREEN_OBSERVATION_IMAGE_DETAIL,
                 },
             },
         ],
@@ -94,7 +93,7 @@ def build_screen_observation_batch_user_message(
         content.append(
             {
                 "type": "image_url",
-                "image_url": {"url": observation.data_url, "detail": "low"},
+                "image_url": {"url": observation.data_url, "detail": SCREEN_OBSERVATION_IMAGE_DETAIL},
             }
         )
     return {"role": "user", "content": content}
@@ -117,7 +116,7 @@ def build_manual_screen_observation_batch_user_message(
     content.extend(
         {
             "type": "image_url",
-            "image_url": {"url": observation.data_url, "detail": "low"},
+            "image_url": {"url": observation.data_url, "detail": SCREEN_OBSERVATION_IMAGE_DETAIL},
         }
         for observation in observations
     )

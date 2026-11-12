@@ -21,6 +21,7 @@ from .agent.context_orchestrator import ContextProviderContribution
 from .agent.runtime import AgentRuntime
 from .agent.trace import AgentTraceRecorder, traced_message
 from .agent.screen_observation import (
+    SCREEN_OBSERVATION_IMAGE_DETAIL,
     build_manual_screen_observation_batch_user_message,
     build_screen_observation_batch_user_message,
 )
@@ -370,7 +371,7 @@ class AssistantPlugin:
                     message = traced_message(message, "observation_input" if attachment else "user_input", turn_id=request["turnId"],
                         entry_ids=tuple(request["entryIds"]), human_entry_id=request.get("humanEntryId", ""),
                         observation_entry_ids=tuple(request.get("observationEntryIds", ())),
-                        runtime_items=tuple({"kind": "image_input", "width": item.width, "height": item.height, "detail": "low"} for item in observations))
+                        runtime_items=tuple({"kind": "image_input", "width": item.width, "height": item.height, "detail": SCREEN_OBSERVATION_IMAGE_DETAIL} for item in observations))
                     result = runtime.handle_user_message([*history.proactive_messages(), message], cancel_checker=operation.check, progress_callback=progress)
                 operation.check()
                 payload = {"reply": asdict(result.reply), "actions": [asdict(action) for action in result.actions], "visual_observation": result.visual_observation}

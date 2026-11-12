@@ -352,6 +352,7 @@ def test_manual_screens_keep_added_order_and_metadata_through_real_assistant(cha
     content = next(message["content"] for message in chat.requests[0]["messages"]
                    if isinstance(message["content"], list) and any(part.get("type") == "image_url" for part in message["content"]))
     assert [part["image_url"]["url"] for part in content if part["type"] == "image_url"] == urls
+    assert all(part["image_url"]["detail"] == "high" for part in content if part["type"] == "image_url")
     text = content[0]["text"]
     assert "截图 1：3x2" in text and "截图 2：4x2" in text
     assert text.index("right monitor") < text.index("left monitor")
