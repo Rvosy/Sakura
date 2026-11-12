@@ -398,7 +398,7 @@ try {
   });
 } catch (error) {
   runtimeDiagnostics.reportError(error, { command: "visual_startup", code: "VISUAL_STARTUP_FAILED" });
-  showRecoverableError("角色加载失败，请重启 Sakura 后再试。");
+  showRecoverableError(error, { title: "角色加载失败" });
 }
 if (!characterPresentation) {
   presentationUnavailable = true;

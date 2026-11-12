@@ -69,6 +69,19 @@ test("pending resources stop waiting for setup, failure, shutdown, or a replaced
   }
 });
 
+test("first-run without a selected character returns no presentation without reporting a load failure", async () => {
+  const calls = [];
+  const result = await loadCurrentCharacterPresentation({
+    invoke: async command => {
+      calls.push(command);
+      throw new Error("CHARACTER_REQUIRED: 请安装并选择角色。");
+    },
+    setTimer: () => assert.fail("an unconfigured character must not be retried"),
+  });
+  assert.equal(result, null);
+  assert.deepEqual(calls, ["current_character_presentation"]);
+});
+
 test("a stale setup snapshot does not stop the new Core's resource load", async () => {
   let current = null;
   const result = await loadCurrentCharacterPresentation({
