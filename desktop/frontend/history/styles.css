@@ -125,7 +125,6 @@ h1 {
   overscroll-behavior: contain;
   overflow-anchor: none;
   padding: 16px 18px 22px;
-  --scrollbar-thumb: color-mix(in srgb, var(--primary) 34%, transparent);
 }
 .history-scroll[hidden], .history-toolbar [hidden] { display: none; }
 .history-toolbar { min-width: 0; padding: 0 2px; }

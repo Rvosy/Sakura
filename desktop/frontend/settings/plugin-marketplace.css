@@ -27,7 +27,7 @@ kbd { border: 1px solid var(--hairline); border-radius: 3px; color: var(--sakura
 .categories { display: flex; gap: 3px; flex-wrap: wrap; }
 .categories button { padding: 5px 9px; font-size: 12px; border: 1px solid transparent; background: none; color: var(--sakura-secondary-text); border-radius: 6px; }
 .categories button[aria-pressed="true"] { background: var(--tint-soft); color: var(--sakura-primary-hover); }
-.market-content { overflow-y: auto; scrollbar-gutter: stable; min-height: 0; flex: 1; padding: 0 28px 20px; --scrollbar-thumb: var(--sakura-border); }
+.market-content { overflow-y: auto; scrollbar-gutter: stable; min-height: 0; flex: 1; padding: 0 28px 20px; }
 .market-filters { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 10px 3px 10px 0; flex-shrink: 0; }
 .market-sort { margin-left: auto; flex: 0 0 auto; }
 .market-sort .custom-select { width: 110px; min-width: 0; }

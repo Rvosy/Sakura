@@ -204,24 +204,39 @@ html.is-theme-view-transition::view-transition-new(root) {
 .settings-window .nav-brand-icon,
 .settings-window .nav-brand-text,
 .settings-window .nav-item-label { transition: opacity var(--motion-fast) var(--ease); }
-.settings-window .nav-list { flex: 1; padding: 12px 10px 18px; }
-.settings-window .nav-item { min-width: 0; padding-inline: 16px; }
+.settings-window .nav-list { flex: 1; padding: 8px 10px; scrollbar-gutter: auto; }
+.settings-window .nav-item { min-width: 0; min-height: 34px; padding-inline: 16px; }
+.settings-window .nav-group { flex: none; }
+.settings-window .nav-group + .nav-group { margin-top: 4px; padding-top: 4px; }
+.settings-window .nav-group-label { padding-block: 1px; line-height: 16px; }
 .settings-window .nav-group-label { max-height: 24px; overflow: hidden; white-space: nowrap; transition: max-height var(--motion-medium) var(--ease), padding var(--motion-medium) var(--ease), opacity var(--motion-fast) var(--ease); }
 .nav-brand-icon { width: 24px; height: 24px; object-fit: contain; flex-shrink: 0; }
 .nav-toggle { position: absolute; right: 12px; top: calc((var(--settings-titlebar-height) - 28px) / 2); display: grid; place-items: center; width: 28px; height: 28px; min-width: 0; min-height: 0; padding: 0; border: 0; border-radius: 6px; background: transparent; color: var(--sakura-secondary-text); box-shadow: none; transition: right var(--motion-medium) var(--ease), background-color var(--motion-base) var(--ease); }
 .nav-toggle:hover:not(:disabled) { background: var(--tint-soft); color: var(--sakura-text); transform: none; box-shadow: none; }
 .nav-toggle svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round; }
-.nav-footer { flex: none; min-height: 48px; padding: 14px 20px; overflow: hidden; color: var(--sakura-muted-text); font-size: 12px; line-height: 20px; white-space: nowrap; }
+.nav-footer { flex: none; min-height: 36px; padding: 8px 20px; overflow: hidden; color: var(--sakura-muted-text); font-size: 12px; line-height: 20px; white-space: nowrap; }
 .settings-window.is-sidebar-collapsed { --settings-nav-width: 72px; }
 .is-sidebar-collapsed .nav-brand-icon,
 .is-sidebar-collapsed .nav-brand-text,
 .is-sidebar-collapsed .nav-item-label { opacity: 0; }
 .is-sidebar-collapsed .nav-toggle { right: calc(50% - 14px); }
 .is-sidebar-collapsed .nav-toggle svg { transform: rotate(180deg); }
-.settings-window.is-sidebar-collapsed .nav-list { padding: 12px 10px 18px; scrollbar-gutter: auto; scrollbar-width: none; }
-.is-sidebar-collapsed .nav-list::-webkit-scrollbar { display: none; }
 .is-sidebar-collapsed .nav-item { gap: 0; }
 .settings-window.is-sidebar-collapsed .nav-group-label { max-height: 0; padding-block: 0; opacity: 0; }
+
+@media (max-height: 780px) {
+  .settings-window { --settings-titlebar-height: 48px; }
+  .settings-window .nav-list { padding-block: 4px; }
+  .settings-window .nav-item { min-height: 32px; }
+  .settings-window .nav-group + .nav-group { margin-top: 2px; padding-top: 2px; }
+  .settings-window .nav-footer { min-height: 32px; padding-block: 6px; }
+}
+
+@media (max-height: 680px) {
+  .settings-window .nav-item { min-height: 30px; }
+  .settings-window .nav-group-label { position: absolute; width: 1px; height: 1px; padding: 0; clip-path: inset(50%); }
+  .settings-window .nav-footer { min-height: 28px; padding-block: 4px; }
+}
 
 .nav-list {
   display: flex;
@@ -230,28 +245,6 @@ html.is-theme-view-transition::view-transition-new(root) {
   min-height: 0;
   overflow-x: hidden;
   overflow-y: auto; scrollbar-gutter: stable;
-  --scrollbar-thumb: var(--sakura-border);
-}
-
-.nav-list::-webkit-scrollbar {
-  width: 10px;
-}
-
-.nav-list::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-
-.nav-list::-webkit-scrollbar-thumb {
-  min-height: 32px;
-  border: 3px solid transparent;
-  border-radius: 999px;
-  background-clip: padding-box;
-  background-color: color-mix(in srgb, var(--sakura-border) 80%, transparent);
-}
-
-.nav-list::-webkit-scrollbar-thumb:hover {
-  background-color: var(--sakura-primary);
 }
 
 /* 导航分组用小标题和留白区分。 */
@@ -665,30 +658,10 @@ body.is-first-run-guide-active .settings-page.is-active > * {
   padding:
     clamp(16px, calc(-9.714px + 2.857vw), 20px)
     var(--settings-content-gutter);
-  --scrollbar-thumb: var(--sakura-border);
-}
-
-.plugin-dialog-body, .record-list, .record-editor {
-  --scrollbar-thumb: var(--sakura-border);
 }
 
 .page-scroll.is-admin-active {
   overflow: hidden;
-}
-
-:is(.page-scroll, .plugin-dialog-body, .record-list, .record-editor)::-webkit-scrollbar {
-  width: 10px;
-}
-
-:is(.page-scroll, .plugin-dialog-body, .record-list, .record-editor)::-webkit-scrollbar-thumb {
-  border: 3px solid transparent;
-  border-radius: 999px;
-  background-clip: padding-box;
-  background-color: color-mix(in srgb, var(--sakura-border) 80%, transparent);
-}
-
-:is(.page-scroll, .plugin-dialog-body, .record-list, .record-editor)::-webkit-scrollbar-thumb:hover {
-  background-color: var(--sakura-primary);
 }
 
 /* ---------- 设置页与页面切换动效 ---------- */
@@ -1604,10 +1577,7 @@ textarea:disabled {
   border-radius: var(--radius-md);
   background: var(--surface-raised);
   box-shadow: none;
-  scrollbar-width: none;
 }
-
-.custom-select__menu::-webkit-scrollbar { display: none; }
 
 /* 弹层打开时挂到 body 或当前 dialog（见 select-control.js），因此用自身的 is-open 类控制显隐，
    不能再依赖 .custom-select 后代选择器。 */
@@ -3696,7 +3666,6 @@ button:active:not(:disabled) {
   padding: 1px 4px 10px 1px;
   scroll-padding-block: 1px 10px;
   scroll-snap-type: y proximity;
-  --scrollbar-thumb: var(--sakura-border);
 }
 
 .memory-record-card {
@@ -4540,7 +4509,6 @@ input.is-invalid:hover,
   .status-chip {
     padding-inline: 7px;
   }
-
 }
 .setting-help-button {
   display: inline-grid;
@@ -4735,7 +4703,6 @@ input.is-invalid:hover,
   max-width: none;
   margin-right: calc(var(--screen-awareness-unit-width) + var(--screen-awareness-control-gap));
 }
-
 
 #modelProviderSurface, #modelSettingsSurface, #screenAwarenessSurface, .settings-contributions { display: contents; }
 .connection-editor { display: grid; grid-template-rows: auto auto minmax(0, 1fr); gap: 14px; min-height: 0; height: 100%; }

@@ -1,3 +1,4 @@
+@import url("../core/scrollbars.css");
 :root {
   --capture-primary: #4b9ac4;
   font-family: "Noto Sans SC", "Microsoft YaHei UI", sans-serif;

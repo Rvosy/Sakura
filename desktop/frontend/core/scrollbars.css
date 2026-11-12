@@ -1,4 +1,4 @@
-/* 使用可独立隐藏按钮的滚动条样式；scrollbar-color/width 的非 auto 值会覆盖它。 */
+/* 可见滚动条不设置 scrollbar-color/width，避免覆盖伪元素并恢复系统按钮。 */
 ::-webkit-scrollbar {
   width: 6px;
   height: 6px;
@@ -10,16 +10,27 @@
 }
 
 ::-webkit-scrollbar-thumb {
+  min-width: 28px;
+  min-height: 28px;
   border-radius: 999px;
-  background: var(--scrollbar-thumb, var(--sakura-border, var(--border)));
+  background: var(--sakura-border, var(--border, #accfde));
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: var(--sakura-primary, var(--primary));
+  background: var(--sakura-primary, var(--primary, #4b9ac4));
 }
 
 ::-webkit-scrollbar-button {
   display: none;
   width: 0;
   height: 0;
+}
+
+/* 设置导航不显示滚动条；插件扩展或矮屏溢出时仍可滚轮和键盘浏览。 */
+.settings-window #settingsNavigation {
+  scrollbar-width: none;
+}
+
+.settings-window #settingsNavigation::-webkit-scrollbar {
+  display: none;
 }

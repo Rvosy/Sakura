@@ -65,7 +65,7 @@ def run():
                         raise RuntimeError(result["error"])
                     return result["payload"]
 
-            browser = playwright.chromium.launch(channel=os.environ.get("SAKURA_BROWSER_CHANNEL") or "msedge")
+            browser = playwright.chromium.launch(channel=os.environ.get("SAKURA_BROWSER_CHANNEL") or "msedge", ignore_default_args=["--hide-scrollbars"])
             page = browser.new_page(viewport={"width": 620, "height": 680})
             errors = []
             page.on("pageerror", lambda error: errors.append(str(error)))

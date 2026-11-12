@@ -1,6 +1,10 @@
 {
   "schema_version": 1,
   "profiles": {
+    "settings-layout": {
+      "description": "验证设置侧栏尺寸适配和全窗口滚动条交互",
+      "cases": ["settings-sidebar-browser", "scrollbars-browser"]
+    },
     "whats-new": {
       "description": "验证更新摘要的版本范围、已读记录、发行数据和窗口交互",
       "cases": ["whats-new-rust", "whats-new-release", "whats-new-browser"]
@@ -203,6 +207,18 @@
     }
   },
   "cases": [
+    {
+      "id": "settings-sidebar-browser",
+      "description": "验证侧栏完整显示、收起及插件导航溢出访问",
+      "argv": ["{python}", "desktop/frontend/tests/settings-sidebar.journey.py"],
+      "timeout_seconds": 120
+    },
+    {
+      "id": "scrollbars-browser",
+      "description": "验证所有窗口的滚动条样式与滚轮、滑块交互",
+      "argv": ["{python}", "desktop/frontend/tests/scrollbars.journey.py"],
+      "timeout_seconds": 120
+    },
     {
       "id": "whats-new-rust",
       "description": "验证跨版本更新、降级和已读记录",
