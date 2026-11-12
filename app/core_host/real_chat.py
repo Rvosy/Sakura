@@ -397,6 +397,10 @@ class RealChatBoundary:
                 except Exception:
                     pass
             input_entries: list[NewTimelineEntry] = []
+            from app.storage.history_images import HistoryImages
+
+            image_store = HistoryImages(timeline.path)
+            saved_images = []
             turn_id = uuid.uuid4().hex
             created_at = _now_iso()
             history_now = datetime.now().astimezone()
@@ -420,7 +424,8 @@ class RealChatBoundary:
                         character_id=str(character.id), kind=TimelineKind.OBSERVATION,
                         origin="host" if source_plugin_id else "manual_screen", created_at=created_at,
                         payload={"text": ("刚才留意了一下屏幕状态。" if source_plugin_id
-                                          else f"你分享了 {len(screen_attachment.observations)} 张屏幕截图。"),
+                                          else "你分享了一张图片。" if len(screen_attachment.observations) == 1
+                                          else f"你分享了 {len(screen_attachment.observations)} 张图片。"),
                                  "visual": visual, **({"sourcePluginId": source_plugin_id} if source_plugin_id else {})}))
                 elif source_plugin_id is not None:
                     input_entries.append(NewTimelineEntry(entry_id=uuid.uuid4().hex, turn_id=turn_id,
@@ -431,8 +436,15 @@ class RealChatBoundary:
                 stage = "timeline_write"
                 try:
                     execution.cancel.throw_if_cancelled()
+                    if screen_attachment is not None:
+                        saved_images = image_store.save(screen_attachment.observations)
+                        visual["images"] = saved_images
+                    execution.cancel.throw_if_cancelled()
                     timeline.append_many(input_entries)
                 except Exception as error:
+                    image_store.remove(saved_images)
+                    if _is_operation_cancelled(error):
+                        raise
                     history_status = "degraded"
                     raise _BoundaryFailure("TIMELINE_WRITE_FAILED", "Chat input could not be saved", False) from error
             execution.cancel.throw_if_cancelled()

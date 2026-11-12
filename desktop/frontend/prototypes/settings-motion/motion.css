@@ -29,7 +29,3 @@ body[data-preview-motion="on"] .sakura-icon.icon-user-round { --icon-motion: luc
 body[data-preview-motion="on"] .sakura-icon:is(.icon-cloud, .icon-messages-square) { --icon-motion: lucide-bounce 400ms ease-in-out; }
 body[data-preview-motion="on"] .sakura-icon:is(.icon-cpu, .icon-info) { --icon-motion: lucide-breathe 400ms ease-in-out; }
 body[data-preview-motion="on"] .sakura-icon.icon-wrench { --icon-motion: lucide-wave 450ms ease-in-out; }
-@media (prefers-reduced-motion: reduce) {
-  body[data-preview-motion="on"] .advanced-section::details-content,
-  body[data-preview-motion="on"] .custom-select__menu { transition: none; }
-}

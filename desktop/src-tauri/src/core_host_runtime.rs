@@ -1300,6 +1300,8 @@ impl ConcurrentRequestHandle {
                 name,
                 "asr.input.availability"
                     | "plugins.settings.get"
+                    | "plugins.frontend.get"
+                    | "ui.history.image"
                     | "asr.input.poll"
                     | "asr.input.capture_status"
                     | "studio.visual.catalog"
@@ -1308,6 +1310,8 @@ impl ConcurrentRequestHandle {
                     | "host.interaction.current"
                     | "host.interaction.state"
                     | "host.interaction.detach"
+                    | "host.interaction.presented"
+                    | "host.screen.result"
                     | "host.visual.claim"
                     | "host.visual.result"
                     | "visual.control.parse"
@@ -4350,7 +4354,7 @@ mod tests {
     }
 
     #[test]
-    fn polling_logs_are_debug_while_rejections_and_transport_failures_remain_visible() {
+    fn routine_requests_are_debug_while_rejections_and_transport_failures_remain_visible() {
         use super::{ConcurrentRequestHandle, CoreHostRouter};
         use crate::runtime_log::{RuntimeLogConfig, Severity, Verbosity};
         let root =
@@ -4388,6 +4392,8 @@ mod tests {
             for command in [
                 "asr.input.poll",
                 "plugins.settings.get",
+                "plugins.frontend.get",
+                "ui.history.image",
                 "asr.input.capture_status",
                 "studio.visual.catalog",
                 "screen.session",
@@ -4395,6 +4401,8 @@ mod tests {
                 "host.interaction.current",
                 "host.interaction.state",
                 "host.interaction.detach",
+                "host.interaction.presented",
+                "host.screen.result",
                 "host.visual.claim",
                 "host.visual.result",
                 "visual.control.parse",
@@ -4432,6 +4440,10 @@ mod tests {
                 "plugins.settings.get",
                 "host.interaction.state",
                 "visual.control.parse",
+                "plugins.frontend.get",
+                "ui.history.image",
+                "host.interaction.presented",
+                "host.screen.result",
             ] {
                 handle.log_request_result(
                     "screen-log-rejected",
@@ -4455,14 +4467,14 @@ mod tests {
                 .collect();
             assert_eq!(
                 ipc.len(),
-                9,
+                13,
                 "successful polling must not consume viewer history"
             );
-            assert!(ipc[..7]
+            assert!(ipc[..11]
                 .iter()
                 .all(|record| record.event_code == "ipc.request.failed"
                     && record.severity == "warning"));
-            assert!(ipc[7..]
+            assert!(ipc[11..]
                 .iter()
                 .all(|record| record.event_code == "ipc.request.cancelled"
                     && record.severity == "info"));
@@ -4553,7 +4565,14 @@ mod tests {
                 if level == Verbosity::Debug { 3 } else { 0 });
             assert!(text.contains("TRANSPORT_UNAVAILABLE"));
             assert!(text.contains("ASR_RECORDING_NOT_FOUND"));
-            for command in ["screen.session", "screen_awareness.step"] {
+            for command in [
+                "screen.session",
+                "screen_awareness.step",
+                "ui.history.image",
+                "plugins.frontend.get",
+                "host.interaction.presented",
+                "host.screen.result",
+            ] {
                 assert_eq!(
                     text.lines()
                         .filter(|line| line.contains(command) && line.contains("outcome=completed"))

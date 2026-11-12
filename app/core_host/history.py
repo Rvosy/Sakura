@@ -11,12 +11,13 @@ from typing import Any
 
 from app.core_host.protocol import response
 from app.storage.paths import StoragePaths
+from app.storage.history_images import HistoryImages
 from app.storage.timeline import TimelineDataError, TimelineEntry, TimelineStore, timeline_record
 from app.plugin_sdk.sakura_data_transfer import read_archive, write_archive
 from app.core.runtime_log import log_event
 
 
-HISTORY_REQUEST_NAMES = frozenset({"ui.history.page", "ui.history.dates", "ui.history.open_record", "ui.history.transfer"})
+HISTORY_REQUEST_NAMES = frozenset({"ui.history.page", "ui.history.dates", "ui.history.open_record", "ui.history.transfer", "ui.history.image"})
 HISTORY_PAGE_LIMIT = 50
 _HISTORY_RESPONSE_BYTES = 700 * 1024
 
@@ -52,6 +53,7 @@ class HistoryBoundary:
         self._character_provider = character_provider
         self._application_provider = application_provider
         self._timeline = TimelineStore(StoragePaths(user_root).timeline_database())
+        self._images = HistoryImages(self._timeline.path)
         self._import_identities = user_root / "data" / "import-identities.sqlite3"
 
     def handle(self, request: dict[str, Any]) -> dict[str, Any]:
@@ -63,6 +65,10 @@ class HistoryBoundary:
         ):
             raise RuntimeError("GENERATION_IDENTITY_MISMATCH")
         try:
+            if request.get("name") == "ui.history.image":
+                result = self._image(request.get("payload"))
+                return response(request, generation_id=self._generation_id,
+                    generation_credential=self._generation_credential, payload=result)
             if request.get("name") == "ui.history.dates":
                 result = self._dates(request["payload"])
                 return response(request, generation_id=self._generation_id,
@@ -133,7 +139,7 @@ class HistoryBoundary:
                 "coreGenerationId": self._generation_id,
                 "characterId": character_id,
                 "totalCount": total,
-                "entries": [_entry_mapping(entry) for entry in entries],
+                "entries": [self._entry_mapping(entry) for entry in entries],
                 "beforeCursor": before,
                 "afterCursor": after,
             }
@@ -187,6 +193,33 @@ class HistoryBoundary:
                     retryable=True,
                 ),
             )
+
+    def _entry_mapping(self, entry: TimelineEntry) -> dict:
+        result = _entry_mapping(entry)
+        images = [{**image,
+                   "thumbnail": self._images.path(image, "thumbnail").is_file(),
+                   "preview": self._images.path(image, "preview").is_file()}
+                  for image in entry.payload.get("visual", {}).get("images", [])
+                  if self._images.path(image).is_file()]
+        if images:
+            result["payload"]["images"] = images
+        return result
+
+    def _image(self, payload) -> dict:
+        if (not isinstance(payload, Mapping)
+                or set(payload) != {"expectedCharacterId", "entryId", "imageId", "variant"}
+                or not isinstance(payload["entryId"], str) or not isinstance(payload["imageId"], str)
+                or payload["variant"] not in ("original", "thumbnail", "preview")):
+            raise HistoryBoundaryError("INVALID_REQUEST", "图片请求格式无效。")
+        character_id = self._current_character_id()
+        if character_id != payload["expectedCharacterId"]:
+            raise HistoryBoundaryError("HISTORY_CHARACTER_MISMATCH", "角色已变化，请刷新聊天记录。")
+        entry = self._timeline.get_entry(character_id, payload["entryId"])
+        images = entry.payload.get("visual", {}).get("images", []) if entry else []
+        image = next((item for item in images if item["id"] == payload["imageId"]), None)
+        if image is None or not self._images.path(image, payload["variant"]).is_file():
+            raise HistoryBoundaryError("HISTORY_IMAGE_NOT_FOUND", "这张图片已不存在。")
+        return {"path": str(self._images.path(image, payload["variant"]).resolve())}
 
     def _dates(self, payload) -> dict:
         if payload["expectedGenerationId"] != self._generation_id:

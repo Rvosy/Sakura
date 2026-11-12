@@ -48,7 +48,3 @@
   .usage-tabs .plugin-role-tab { padding-inline: 9px; }
   .usage-chart-controls { gap: 8px; }
 }
-@media (prefers-reduced-motion: reduce) {
-  .usage-refresh .sakura-icon { animation: none; }
-  .usage-share > span { transition: none; }
-}

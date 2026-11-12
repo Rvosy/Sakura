@@ -5,6 +5,38 @@ import { projectHistoryEntries } from "../history/history-presentation.js";
 
 const NOW = "2026-08-29T12:00:00+08:00";
 
+test("screen observation groups preserve image ownership without duplicating the summary", () => {
+  const image = { id: "saved-image", mediaType: "image/png", width: 1920, height: 1080 };
+  const projected = projectHistoryEntries([
+    entry("observation", { text: "刚才留意了一下屏幕状态。", sourcePluginId: "screen",
+      visual: { imageCount: 1 }, images: [image] }, { origin: "host", entryId: "capture" }),
+    entry("observation", { text: "画面摘要：正在阅读", sourcePluginId: "screen",
+      visual: { imageCount: 1 } }, { origin: "host", entryId: "analysis" }),
+    entry("observation", { text: "你分享了 1 张屏幕截图。", images: [image] },
+      { origin: "manual_screen", entryId: "manual", turnId: "another-turn" }),
+  ]);
+  assert.equal(projected.length, 2);
+  assert.deepEqual(projected[0].images, [{ ...image, entryId: "capture" }]);
+  assert.equal(projected[0].detailsContent, "画面摘要：正在阅读");
+  assert.deepEqual(projected[1].images, [{ ...image, entryId: "manual" }]);
+  assert.equal(projected[1].role, "human");
+  assert.equal(projected[1].align, "right");
+  assert.equal(projected[1].content, "");
+});
+
+test("image-only sends omit the empty text bubble and keep user text beside pictures", () => {
+  const images = [{ id: "image", mediaType: "image/png", width: 100, height: 200 }];
+  const projection = projectHistoryEntries([
+    entry("human", { text: "" }),
+    entry("observation", { text: "你分享了 1 张屏幕截图。", images }, { origin: "manual_screen" }),
+    entry("human", { text: "看看这里" }, { turnId: "turn-2", entryId: "human-2" }),
+    entry("observation", { text: "你分享了 1 张屏幕截图。", images },
+      { origin: "manual_screen", turnId: "turn-2", entryId: "image-2" }),
+  ]);
+  assert.deepEqual(projection.map(item => item.content), ["", "看看这里", ""]);
+  assert.ok(projection.every(item => item.role === "human" && item.align === "right"));
+});
+
 function entry(kind, payload, overrides = {}) {
   return {
     entryId: `entry-${kind}`,
@@ -138,12 +170,11 @@ test("plugin screen observations retain the character perspective and fold only 
     ];
     const saved = structuredClone(entries);
     const projected = projectHistoryEntries(entries);
-    assert.equal(projected.length, 5);
+    assert.equal(projected.length, 4);
     assert.equal(projected[0].detailsContent, "画面摘要：用户正在检查界面。");
     assert.equal(projected[1].detailsContent, "另一次观察");
     assert.ok(projected[2].content.includes(sourcePluginId));
-    assert.equal(projected[3].content, "你分享了 1 张屏幕截图。");
-    assert.equal(projected[4].content, trigger);
+    assert.equal(projected[3].content, trigger);
     assert.deepEqual(entries, saved);
   }
 });

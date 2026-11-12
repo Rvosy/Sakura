@@ -956,9 +956,6 @@ body.is-first-run-guide-active .settings-page.is-active > * {
   --status-ink: color-mix(in srgb, #c43a52 80%, var(--sakura-text));
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .semantic-status.is-working > .sakura-icon { animation: none; }
-}
 
 .resource-card__status {
   flex: 0 0 auto;
@@ -4391,15 +4388,6 @@ input.is-invalid:hover,
   }
 }
 
-@media (prefers-reduced-motion: reduce) {
-  :root { --motion-page: 0s; }
-  .settings-window .settings-shell,
-  .settings-window .nav-toggle,
-  .settings-window .nav-brand-icon,
-  .settings-window .nav-brand-text,
-  .settings-window .nav-item-label,
-  .settings-window .nav-group-label { transition: none; }
-}
 
 @keyframes overlay-in {
   from {
@@ -4542,9 +4530,6 @@ input.is-invalid:hover,
 .plugin-role-tab { position: relative; min-width: 0; padding: 7px 10px; border: 1px solid transparent; background: transparent; color: var(--sakura-muted-text); font-size: 11px; white-space: nowrap; }
 .plugin-role-tab[aria-selected="true"] { color: var(--sakura-primary); }
 .plugin-role-tab:hover:not(:disabled) { border-color: transparent; color: var(--sakura-primary); transform: none; box-shadow: none; }
-@media (prefers-reduced-motion: reduce) {
-  .plugin-role-tabs::before { transition: none; }
-}
 #page-plugins .plugin-workbench { grid-template-columns: minmax(280px, 1.05fr) minmax(0, 1.3fr); gap: 14px; }
 .plugin-list-shell { display: flex; flex-direction: column; min-height: 0; border: 1px solid var(--hairline); border-radius: var(--radius-md); background: var(--surface-soft); overflow: hidden; }
 #pluginList { flex: 1; border: 0; border-radius: 0; background: transparent; padding: 10px 10px 12px; gap: 16px; }

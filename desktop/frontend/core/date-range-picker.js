@@ -224,7 +224,7 @@ export function createDateRangePicker({ document, id, onChange, loadRange, loadD
     grid.replaceChildren(...buttons);
     updateSelection();
     if (loadDates) void updateRecordedDates(buttons);
-    if (direction && !win.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+    if (direction) {
       monthAnimation = grid.animate([
         { opacity: .3, transform: `translateX(${direction * 12}px)` },
         { opacity: 1, transform: "translateX(0)" },

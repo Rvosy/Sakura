@@ -2,6 +2,7 @@ import { waitForRuntimeFonts } from "../core/font-loader.js";
 import { createDataTransferMenu } from "../core/data-transfer.js";
 import { createDateRangePicker, formatDate } from "../core/date-range-picker.js";
 import { createHistorySearch } from "./history-search.js";
+import { createHistoryImages } from "./history-images.js";
 import { createIcon, installClickIconMotion } from "../core/icons.js";
 import { installDevtoolsShortcutGuard } from "../core/devtools-guard.js";
 import { applyTheme } from "../core/theme.js";
@@ -42,7 +43,11 @@ window.addEventListener("pagehide", () => errors.dispose(), { once: true });
 let loading = false;
 let closed = false;
 let entries = [];
+let subtitleBlocks = [];
 let identity = null;
+const images = createHistoryImages({ document, scroll, invoke, getIdentity: () => identity,
+  onError: error => errors.show({ title: "无法读取图片", message: "图片未能打开，请查看错误详情。", error }),
+});
 let lastScrollTop = 0;
 const datePicker = createDateRangePicker({
   document, id: "history-jump", singleDate: true,
@@ -166,18 +171,19 @@ function updateLatestButton() {
     && scroll.scrollHeight - scroll.clientHeight - scroll.scrollTop < 120);
 }
 
-function render({ animateRecent = false } = {}) {
+function render({ animateRecent = false, enteringIds = new Set() } = {}) {
   clearPlaybackIndicators();
   const fragment = document.createDocumentFragment();
   const pendingText = [];
   const bubbles = projectHistoryEntries(entries, { assistantName, subtitleLanguage });
+  images.beginRender(new Set(bubbles.flatMap(item => (item.images || []).map(image => image.entryId))));
   const recentStart = animateRecent ? Math.max(0, bubbles.length - 8) : bubbles.length;
   let enteringIndex = 0;
   for (const [index, item] of bubbles.entries()) {
     const row = document.createElement("article");
     row.className = `history-entry history-entry-${item.align}`;
     row.dataset.entryId = item.entryId;
-    if (index >= recentStart) {
+    if (index >= recentStart || enteringIds.has(item.entryId)) {
       row.classList.add("is-entering");
       row.style.setProperty("--entry-delay", `${Math.min(enteringIndex, 7) * 18}ms`);
       enteringIndex += 1;
@@ -191,9 +197,12 @@ function render({ animateRecent = false } = {}) {
       meta.textContent = item.metaText;
       column.append(meta);
     }
-    const expandable = item.detailsContent || item.actionLabel;
+    const screenObservation = item.group === "system:屏幕观察";
+    const inlineImages = item.images?.length && !screenObservation;
+    const expandable = item.detailsContent || item.actionLabel || (screenObservation && item.images?.length);
     const bubble = document.createElement(expandable ? "details" : "p");
     bubble.className = `entry-bubble entry-bubble-${item.role}`;
+    if (screenObservation) bubble.classList.add("screen-observation-notice");
     if (expandable) {
       bubble.dataset.entryId = item.entryId;
       bubble.open = expandedEntries.has(item.entryId);
@@ -202,7 +211,18 @@ function render({ animateRecent = false } = {}) {
       summary.textContent = item.content;
       const detailsContent = document.createElement("div");
       detailsContent.className = "entry-details-content";
-      detailsContent.textContent = item.detailsContent;
+      if (screenObservation) {
+        detailsContent.classList.add("screen-observation-content");
+        if (item.detailsContent) {
+          const description = document.createElement("p");
+          description.className = "screen-observation-description";
+          description.textContent = item.detailsContent;
+          detailsContent.append(description);
+        }
+        if (item.images?.length) detailsContent.append(images.gallery(item.images, { expandable: false }));
+      } else {
+        detailsContent.textContent = item.detailsContent;
+      }
       if (item.actionLabel) {
         const open = document.createElement("button");
         open.type = "button";
@@ -255,23 +275,28 @@ function render({ animateRecent = false } = {}) {
       });
       segment.append(bubble, read);
       column.append(segment);
-    } else {
+    } else if (item.content) {
       column.append(bubble);
     }
+    if (inlineImages) column.append(images.gallery(item.images));
     row.append(column);
     fragment.append(row);
   }
   list.replaceChildren(fragment);
+  images.finishRender();
   updatePlaybackButtons();
   for (const [bubble, item] of pendingText) renderSubtitleText(bubble, item.content, item.subtitleTracks, item.subtitleTracks, subtitleLanguage);
-  empty.hidden = entries.length !== 0;
+  subtitleBlocks = pendingText.filter(([, item]) => item.subtitleTracks?.length === 2);
+  empty.hidden = bubbles.length !== 0;
 }
 
 let historyWidth = list.clientWidth;
 const historyResize = new ResizeObserver(() => {
   if (list.clientWidth === historyWidth) return;
   historyWidth = list.clientWidth;
-  render();
+  for (const [bubble, item] of subtitleBlocks) {
+    renderSubtitleText(bubble, item.content, item.subtitleTracks, item.subtitleTracks, subtitleLanguage);
+  }
   updateLatestButton();
 });
 historyResize.observe(list);
@@ -369,9 +394,12 @@ async function loadInitial() {
     await ttsController?.rebind(page.coreGenerationId);
     if (!loadGuard.isCurrent(revision)) return;
     const firstPaint = entries.length === 0;
+    const previousEntryIds = new Set(entries.map(entry => entry.entryId));
+    const enteringIds = new Set(firstPaint ? [] : page.entries
+      .filter(entry => !previousEntryIds.has(entry.entryId)).map(entry => entry.entryId));
     entries = page.entries.slice();
     applyPage(page);
-    render({ animateRecent: firstPaint });
+    render({ animateRecent: firstPaint, enteringIds });
     status.textContent = "";
     requestAnimationFrame(() => {
       if (loadGuard.isCurrent(revision)) moveScroll(scroll.scrollHeight);
@@ -401,6 +429,7 @@ function finishLoading() {
 }
 
 function resetForCharacterSwitch() {
+  images.reset();
   ttsController?.cancel();
   loadGuard.invalidate();
   entries = [];
@@ -507,6 +536,7 @@ scroll.addEventListener("scroll", () => {
   updateLatestButton();
 });
 close.addEventListener("click", () => {
+  images.reset();
   loadGuard.invalidate();
   search.reset();
   datePicker.dispose();
@@ -514,6 +544,7 @@ close.addEventListener("click", () => {
   void invoke?.("close_history_window");
 });
 window.addEventListener("pagehide", () => {
+  images.dispose();
   closed = true;
   loadGuard.invalidate();
   search.reset();

@@ -1,5 +1,6 @@
 """Source scope revocation must preserve RealChat's committed terminal."""
 
+import base64
 import io
 import json
 import threading
@@ -7,11 +8,12 @@ from contextlib import contextmanager
 from types import SimpleNamespace
 
 import pytest
+from PIL import Image
 
 from app.core_host.chat_host import ChatHost
 from app.core_host.real_chat import RealChatBoundary
 from app.core_host.runtime_logging import CORE_BRIDGE_PREFIX, install_runtime_logging
-from app.plugin_sdk.sakura_assistant_contract import ChatReply, ChatSegment
+from app.plugin_sdk.sakura_assistant_contract import ChatReply, ChatSegment, ScreenObservation
 from app.plugins.host_services import HOST_CALLER, HOST_CALLER_SCOPE, HOST_CALLER_LOG_METADATA
 from app.storage.timeline import TimelineKind, TimelineStore
 from sakura_assistant.agent.trace import AgentTraceRecorder
@@ -108,8 +110,14 @@ def setup_turn(tmp_path, monkeypatch, gate_at, *, started_gate=None, with_screen
 
     monkeypatch.setattr(boundary, "run_reserved_plugin_message", run)
     monkeypatch.setattr(boundary, "cancel_host_message", cancel)
-    observations = (SimpleNamespace(data_url="data:image/jpeg;base64,PRIVATE_SCREEN_PIXELS", width=1, height=1,
-                                   captured_at="2026-10-05T00:00:00Z", screen_name="private-screen"),) if with_screen else ()
+    observations = ()
+    if with_screen:
+        image = io.BytesIO()
+        with Image.new("RGB", (1, 1), "#9bbacd") as raster:
+            raster.save(image, "JPEG")
+        observations = (ScreenObservation(
+            data_url="data:image/jpeg;base64," + base64.b64encode(image.getvalue()).decode("ascii"),
+            width=1, height=1, captured_at="2026-10-05T00:00:00Z", screen_name="private-screen"),)
     screen = SimpleNamespace(take_resources=lambda *_args: observations)
 
     def emit(name, payload):
@@ -259,4 +267,5 @@ def test_screen_observation_logs_follow_real_terminal_and_keep_plugin_identity(t
         assert "model connection lost" in records[-1]["attributes"]["diagnostic"]
         assert records[-1]["attributes"]["exception_chain"]
     serialized = json.dumps(records)
-    assert all(private not in serialized for private in ("PRIVATE_SCREEN_PIXELS", "private-screen", "private-image", "private-model-secret", "proactive request"))
+    pixels = turn.assistant.requests[0]["attachment"]["observations"][0]["data_url"].split(",", 1)[1]
+    assert all(private not in serialized for private in (pixels, "private-screen", "private-image", "private-model-secret", "proactive request"))

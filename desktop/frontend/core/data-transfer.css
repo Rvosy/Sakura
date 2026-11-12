@@ -310,7 +310,3 @@
   .data-transfer-dialog { padding: 18px; }
   .data-transfer-dialog footer { flex-wrap: wrap; }
 }
-@media (prefers-reduced-motion: reduce) {
-  .data-transfer-dialog, .data-transfer-dialog::backdrop, .date-range-panel, .date-range-panel *, .date-range-panel::backdrop, .data-transfer-dialog *,
-  .data-transfer-menu, .data-transfer-menu * { transition: none !important; animation: none !important; }
-}
