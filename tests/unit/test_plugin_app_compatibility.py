@@ -90,3 +90,17 @@ def test_marketplace_checks_host_version_before_downloading(tmp_path, manifest, 
     if not allowed:
         assert result["error"]["code"] == "APP_VERSION_UNSUPPORTED"
         assert "升级 Sakura" in result["error"]["message"]
+
+
+@pytest.mark.parametrize("version", ["1.3.6", "1.4.0"])
+def test_mem0_package_requires_host_with_usage_categories(tmp_path, version):
+    from app.plugins.installer import PluginInstallError
+
+    package = Path(__file__).resolve().parents[2] / "plugins/optional/sakura_mem0"
+    installer = LocalPluginInstaller(_roots(tmp_path, version))
+    if version == "1.3.6":
+        with pytest.raises(PluginInstallError, match="APP_VERSION_UNSUPPORTED"):
+            installer.install(package, "folder")
+    else:
+        installed = installer.install(package, "folder")
+        assert (installed.code_dir / "plugin.py").is_file()
