@@ -204,7 +204,10 @@ class AssistantPlugin:
         with self.changed:
             if self.closed:
                 raise AssistantError("ASSISTANT_CLOSED")
-            if self.operations:
+            if operation_id in self.operations or (
+                descriptor.get("kind") != "theme"
+                and any(item.descriptor.get("kind") != "theme" for item in self.operations.values())
+            ):
                 raise AssistantError("ASSISTANT_BUSY")
             operation = Operation(operation_id, dict(descriptor))
             self.operations[operation_id] = operation
@@ -314,6 +317,15 @@ class AssistantPlugin:
         try:
             request = self._read_input(operation)
             operation.check()
+            if operation.descriptor.get("kind") == "theme":
+                from .theme import generate_theme
+                colors = generate_theme(self.context, request, cancel_checker=operation.check)
+                operation.check()
+                artifacts = self.context.get("sakura.host.artifacts")
+                allocation = artifacts.allocate({"mediaType": "application/json", "suffix": ".json"})
+                Path(allocation["path"]).write_text(json.dumps(colors), encoding="utf-8")
+                operation.output = artifacts.commit(allocation["artifactId"])
+                return
             chat, vision = self._settings(request["session"])
             bindings = request["session"].get("modelBindings", {})
             if not bindings.get("chat"):

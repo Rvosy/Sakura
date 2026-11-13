@@ -487,6 +487,44 @@ class PluginRuntimeApplication:
     def run_hook(self, name, data, metadata=None, *, cancel_checker=None):
         return self._host_services.hooks.run(name, data, metadata, cancel_checker=cancel_checker)
 
+    def generate_theme(self, operation_id, character_name, image_url, *, cancel_checker):
+        model = self.active_models()["vision_chat"]
+        if not model:
+            raise ValueError("请先在模型设置中选择支持图片的对话模型或视觉对话模型。")
+        identity = self.service_identity("sakura.assistant")
+        descriptor = self._host_services.create_json_artifact(identity["providerId"], {
+            "characterName": character_name, "imageUrl": image_url, "model": model,
+        })
+        terminal = "cancelled"
+        begun = False
+        try:
+            cancel_checker()
+            begun = True
+            self.call_bound_service("sakura.assistant", identity, "begin", {
+                "operationId": operation_id, "kind": "theme", "input": descriptor,
+            })
+            while True:
+                cancel_checker()
+                state = self.call_bound_service("sakura.assistant", identity, "poll", operation_id, 0, 250)
+                if state["state"] != "running":
+                    break
+            cancel_checker()
+            terminal = "failed"
+            result = self.call_bound_service("sakura.assistant", identity, "result", operation_id)
+            colors = self.read_assistant_result(result)
+            cancel_checker()
+            terminal = "completed"
+            return colors
+        finally:
+            if begun:
+                try:
+                    self.call_bound_service("sakura.assistant", identity, "release", operation_id, terminal)
+                except Exception as error:
+                    log_event("Theme", "AI 配色任务回收失败", exception_diagnostics(
+                        error, reason_code="THEME_RELEASE_FAILED", stage="theme.release",
+                    ), event="theme.release.failed", severity="warning")
+            self._host_services.release_owned_artifact(identity["providerId"], descriptor["artifactId"])
+
     def read_assistant_result(self, descriptor):
         import json
         artifact = self._host_services.resolve_committed_artifact(descriptor["artifactId"])

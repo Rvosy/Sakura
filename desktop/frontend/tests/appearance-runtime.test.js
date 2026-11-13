@@ -45,6 +45,109 @@ const values = Object.freeze({
   themeTokens,
 });
 
+async function themeFixture(t) {
+  class Control {
+    value = "";
+    listeners = {};
+    parentElement = { querySelector: () => ({ textContent: "" }) };
+    style = { setProperty() {} };
+    addEventListener(type, callback) { this.listeners[type] = callback; }
+    setAttribute() {}
+    removeAttribute() {}
+    fire(type) { return this.listeners[type]?.({ type, currentTarget: this }); }
+  }
+  const controls = Object.fromEntries([
+    "portraitScale", "controlPanelWidth", "bubbleHeight", "bubbleAutoExpand", "controlPanelOffset",
+    "inputBarOffset", "speechFontSize", "nameFontSize", "inputFontSize", "themeColors",
+    "visualEffectMode", "resetThemeButton", "themeAiButton", "characterSelect",
+  ].map(id => [id, new Control()]));
+  const colors = Object.fromEntries(Object.keys(toLegacyTheme(themeTokens)).map(id => [id, new Control()]));
+  const snapshot = { schemaVersion: 1, windowGeneration: 1, limits,
+    presentation: { generationId: "generation-a", characterId: "Sakura", themeTokens },
+    appearance: { schemaVersion: 1, coreGenerationId: "generation-a", characterId: "Sakura", values } };
+  const calls = [], errors = [];
+  let resolve, reject, frame;
+  const pending = new Promise((yes, no) => { resolve = yes; reject = no; });
+  const previousWindow = globalThis.window;
+  globalThis.window = {
+    setInterval() {}, clearInterval() {},
+    requestAnimationFrame(callback) { frame = callback; return 1; }, cancelAnimationFrame() { frame = null; },
+  };
+  const controller = createRuntimeAppearanceController({
+    document: { getElementById: id => controls[id], querySelector: selector => colors[selector.match(/data-theme-field="([^"]+)"/)?.[1]] },
+    invoke: async (command, args) => {
+      calls.push([command, args]);
+      if (command === "settings_theme_generate") return pending;
+      if (command === "settings_character_appearance_get") return snapshot;
+      if (command === "settings_character_appearance_save") return { ...snapshot.appearance, values: args.values };
+      return {};
+    },
+    onDirty() {}, onError: error => errors.push(error), prepare() {},
+    fillTheme(theme) { for (const [key, value] of Object.entries(theme)) colors[key].value = value; },
+  });
+  await controller.initialize(snapshot);
+  t.after(() => { controller.dispose(); globalThis.window = previousWindow; });
+  return { controller, controls, colors, calls, errors, resolve, reject, snapshot,
+    preview: async () => { frame?.(); await new Promise(resolve => setImmediate(resolve)); } };
+}
+
+test("AI colors preview as a draft and save without changing layout or input effects", async t => {
+  const f = await themeFixture(t);
+  const generation = f.controls.themeAiButton.fire("click");
+  f.controls.controlPanelWidth.value = "700";
+  f.controls.controlPanelWidth.fire("input");
+  f.controls.visualEffectMode.value = "solid";
+  f.controls.visualEffectMode.fire("change");
+  const generated = { ...themeTokens, primary: "#aa7733", pageBackground: "#fff7ed" };
+  f.resolve({ generationId: "generation-a", characterId: "Sakura", themeTokens: generated });
+  await generation;
+  await f.preview();
+  assert.equal(f.controller.isDirty(), true);
+  assert.equal(f.colors.primary_color.value, generated.primary);
+  const preview = f.calls.findLast(([command]) => command === "settings_character_appearance_preview")[1].values;
+  assert.deepEqual(preview.themeTokens, generated);
+  assert.equal(preview.controlPanelWidth, 700);
+  assert.equal(preview.visualEffectMode, "solid");
+  assert.equal(f.calls.some(([command]) => command === "settings_character_appearance_save"), false);
+  await f.controller.save();
+  assert.equal(f.controller.isDirty(), false);
+  assert.deepEqual(f.errors, []);
+});
+
+test("AI generation errors retain manual colors and expose the original error", async t => {
+  const f = await themeFixture(t);
+  f.colors.primary_color.value = "#aabbcc";
+  f.controls.themeColors.fire("input");
+  const generation = f.controls.themeAiButton.fire("click");
+  const error = new Error("provider rejected image: diagnostic detail");
+  f.reject(error);
+  await generation;
+  assert.equal(f.colors.primary_color.value, "#aabbcc");
+  assert.equal(f.controller.isDirty(), true);
+  assert.deepEqual(f.errors, [error]);
+});
+
+for (const action of ["cancel", "edit", "reset", "character", "close"]) {
+  test(`AI generation cannot overwrite input after ${action}`, async t => {
+    const f = await themeFixture(t);
+    const generation = f.controls.themeAiButton.fire("click");
+    if (action === "cancel") await f.controls.themeAiButton.fire("click");
+    if (action === "edit") {
+      f.colors.primary_color.value = "#abcdef";
+      f.controls.themeColors.fire("input");
+    }
+    if (action === "reset") f.controls.resetThemeButton.fire("click");
+    if (action === "character") f.controls.characterSelect.fire("change");
+    if (action === "close") await f.controller.cancelPreview();
+    const before = f.colors.primary_color.value;
+    f.resolve({ generationId: "generation-a", characterId: "Sakura", themeTokens: { ...themeTokens, primary: "#ff9900" } });
+    await generation;
+    assert.equal(f.colors.primary_color.value, before);
+    assert.ok(f.calls.some(([command]) => command === "settings_theme_cancel"));
+    assert.deepEqual(f.errors, []);
+  });
+}
+
 test("expanded bubble bounds survive settings and pet publication validation", () => {
   const presentation = { generationId: "generation-a", characterId: "Sakura" };
   const validate = (draft) => validatePetAppearancePublication({
@@ -80,7 +183,7 @@ test("Studio publication merges only edited appearance fields and saves against 
   const controls = Object.fromEntries([
     "portraitScale", "controlPanelWidth", "bubbleHeight", "bubbleAutoExpand", "controlPanelOffset",
     "inputBarOffset", "speechFontSize", "nameFontSize", "inputFontSize",
-    "themeColors", "visualEffectMode", "resetThemeButton", "applyButton", "saveButton",
+    "themeColors", "visualEffectMode", "resetThemeButton", "themeAiButton", "characterSelect", "applyButton", "saveButton",
   ].map((id) => [id, new Control()]));
   const themes = Object.fromEntries(Object.keys(toLegacyTheme(themeTokens)).map((id) => [id, new Control()]));
   const document = {
@@ -202,7 +305,7 @@ for (const trigger of ["switch-completion", "lifecycle-poll"]) {
     const controls = Object.fromEntries([
       "portraitScale", "controlPanelWidth", "bubbleHeight", "bubbleAutoExpand", "controlPanelOffset",
       "inputBarOffset", "speechFontSize", "nameFontSize", "inputFontSize",
-      "themeColors", "visualEffectMode", "resetThemeButton",
+      "themeColors", "visualEffectMode", "resetThemeButton", "themeAiButton", "characterSelect",
     ].map((id) => [id, new Control()]));
     const themes = Object.fromEntries(Object.keys(toLegacyTheme(themeTokens)).map((id) => [id, new Control()]));
     const document = {
@@ -314,6 +417,8 @@ test("legacy controls preview, save, retain dirty state on failure, cancel, and 
     "themeColors",
     "visualEffectMode",
     "resetThemeButton",
+    "themeAiButton",
+    "characterSelect",
   ].map((id) => [id, new Control()]));
   const themes = Object.fromEntries(Object.keys(toLegacyTheme(themeTokens)).map((id) => [id, new Control()]));
   const document = {
@@ -450,7 +555,7 @@ test("overlapping rapid portrait drags share one backend gesture and window blur
   const controls = Object.fromEntries([
     "portraitScale", "controlPanelWidth", "bubbleHeight", "bubbleAutoExpand", "controlPanelOffset",
     "inputBarOffset", "speechFontSize", "nameFontSize", "inputFontSize",
-    "themeColors", "visualEffectMode", "resetThemeButton",
+    "themeColors", "visualEffectMode", "resetThemeButton", "themeAiButton", "characterSelect",
   ].map((id) => [id, new Control()]));
   const themes = Object.fromEntries(Object.keys(toLegacyTheme(themeTokens)).map((id) => [id, new Control()]));
   const document = {
@@ -572,7 +677,7 @@ test("overlapping layout drags ignore the old slider blur and publish the newest
   const controls = Object.fromEntries([
     "portraitScale", "controlPanelWidth", "bubbleHeight", "bubbleAutoExpand", "controlPanelOffset",
     "inputBarOffset", "speechFontSize", "nameFontSize", "inputFontSize",
-    "themeColors", "visualEffectMode", "resetThemeButton",
+    "themeColors", "visualEffectMode", "resetThemeButton", "themeAiButton", "characterSelect",
   ].map((id) => [id, new Control()]));
   const themes = Object.fromEntries(Object.keys(toLegacyTheme(themeTokens)).map((id) => [id, new Control()]));
   const document = {

@@ -624,6 +624,7 @@
         "tests/unit/test_codex_provider.py",
         "tests/unit/test_plugin_settings_apply.py",
         "tests/integration/test_model_service.py",
+        "tests/integration/test_theme_generation.py",
         "tests/integration/test_codex_plugin.py",
         "tests/integration/test_model_optional_startup.py",
         "tests/integration/test_provider_apply.py",
@@ -1253,7 +1254,7 @@
     },
     {
       "id": "settings-controls-browser-journey",
-      "description": "验证设置页滑块数值编辑和角色自定义控件",
+      "description": "验证设置页滑块编辑、AI 配色预览保存与取消",
       "argv": ["{python}", "desktop/frontend/tests/settings-controls.journey.py"],
       "timeout_seconds": 120,
       "env": {"PYTHONIOENCODING": "utf-8", "PYTHONDONTWRITEBYTECODE": "1"}

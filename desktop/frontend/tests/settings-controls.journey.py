@@ -2,6 +2,7 @@
 import functools
 import http.server
 import os
+import re
 from pathlib import Path
 import sys
 import threading
@@ -42,12 +43,19 @@ window.__TAURI__ = {core:{invoke:async(command,args)=>{
   if(command==='settings_character_appearance_get') {
     return {schemaVersion:1,windowGeneration:1,presentation,limits,appearance:{schemaVersion:1,coreGenerationId:'g',characterId:'sakura',values}};
   }
+  if(command==='settings_theme_generate') {
+    if(window.holdTheme) return new Promise((resolve,reject)=>{window.rejectTheme=reject;});
+    return {generationId:'g',characterId:'sakura',themeTokens:{...themeTokens,primary:'#34856d',pageBackground:'#f5fbf8'}};
+  }
+  if(command==='settings_theme_cancel') { window.rejectTheme?.(new Error('OPERATION_CANCELLED')); return {cancelled:true}; }
+  if(command==='settings_character_appearance_save') return {schemaVersion:1,coreGenerationId:'g',characterId:'sakura',values:args.values};
   if(command==='settings_asr_get') return {providers:[],preferences:{}};
   if(command==='settings_voice_cache_get') return {directory:'',maxMegabytes:64,idleFill:false,limits:[32,20480]};
   if(command==='interaction_latency_diagnostics_enabled') return false;
   return {};
 }},event:{listen:async()=>()=>{}},window:{getCurrentWindow:()=>({
-  onCloseRequested:async()=>()=>{},setDecorations:async()=>{},onResized:async()=>()=>{},isMaximized:async()=>false
+  onCloseRequested:async()=>()=>{},setDecorations:async()=>{},isMaximized:async()=>false,
+  onResized:async()=>()=>{},minimize:async()=>{},toggleMaximize:async()=>{},startDragging:async()=>{},
 })}};
 """
 
@@ -80,6 +88,33 @@ def check_slider_value_editing(page, errors):
         assert not errors, errors
 
 
+def check_ai_theme(page):
+    page.locator('.nav-item[data-page="appearance"]').click()
+    page.locator("#themeAiButton").click()
+    expect(page.locator('[data-theme-field="primary_color"]')).to_have_value("#34856d")
+    expect(page.locator("body")).to_have_class(re.compile(r".*\bis-dirty\b.*"))
+    page.wait_for_function("window.nativeCalls.some(c => c.command === 'settings_character_appearance_preview' && c.args.values.themeTokens.primary === '#34856d')")
+    assert page.evaluate("getComputedStyle(document.documentElement).getPropertyValue('--sakura-primary').trim()") == "#34856d"
+    assert not page.evaluate("window.nativeCalls.some(c => c.command === 'settings_character_appearance_save')")
+    page.locator("#applyButton").click()
+    expect(page.locator("body")).not_to_have_class(re.compile(r".*\bis-dirty\b.*"))
+    saved = page.evaluate("window.nativeCalls.findLast(c => c.command === 'settings_character_appearance_save').args.values")
+    assert saved["themeTokens"]["primary"] == "#34856d"
+    assert saved["controlPanelWidth"] == 860
+    assert saved["visualEffectMode"] == "solid"
+    page.set_viewport_size({"width": 760, "height": 720})
+    for identity in ("themeAiButton", "resetThemeButton"):
+        box = page.locator("#" + identity).bounding_box()
+        assert box and 0 <= box["x"] < box["x"] + box["width"] <= 760
+    page.evaluate("window.holdTheme = true")
+    page.locator("#themeAiButton").click()
+    expect(page.locator("#themeAiButton")).to_have_text("取消生成")
+    page.locator("#cancelButton").click()
+    page.wait_for_function("window.nativeCalls.some(c => c.command === 'resolve_settings_close' && c.args.discard)")
+    commands = page.evaluate("window.nativeCalls.map(c => c.command)")
+    assert commands.index("settings_theme_cancel") < commands.index("resolve_settings_close")
+
+
 def run():
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), functools.partial(QuietHandler, directory=str(ROOT)))
     threading.Thread(target=server.serve_forever, daemon=True).start()
@@ -93,10 +128,11 @@ def run():
             page.goto(f"http://127.0.0.1:{server.server_port}/desktop/frontend/settings/index.html")
             expect(page.locator("#portraitScale")).to_be_enabled()
             check_slider_value_editing(page, errors)
+            check_ai_theme(page)
             expect(page.locator('.sakura-error-dialog')).to_have_count(0)
 
             browser.close()
-            print("PASS: numeric Enter/Escape/blur, bounds and narrow layout")
+            print("PASS: numeric editing, AI theme preview/save, retained layout and narrow controls")
     finally:
         server.shutdown()
         server.server_close()

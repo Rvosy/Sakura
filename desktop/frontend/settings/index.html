@@ -365,6 +365,15 @@
           <fieldset class="settings-group">
             <legend>配色</legend>
             <div id="themeColors" class="theme-colors"></div>
+            <div class="setting-row theme-generation-row">
+              <div class="setting-row-text">
+                <span class="setting-desc">根据角色默认形态的图片生成配色，生成后可预览、调整并保存。</span>
+              </div>
+              <div class="inline-actions">
+                <button id="themeAiButton" class="secondary-button" type="button">AI 生成配色</button>
+                <button id="resetThemeButton" class="secondary-button" type="button">恢复默认配色</button>
+              </div>
+            </div>
           </fieldset>
           <fieldset class="settings-group">
             <legend>输入栏</legend>
@@ -373,12 +382,6 @@
                 <span class="setting-title">外观效果</span>
               </label>
               <select id="visualEffectMode" data-settings-feature="appearance.input_visual_effect"></select>
-            </div>
-            <div class="setting-row">
-              <div class="inline-actions">
-                <button id="themeAiButton" class="secondary-button" type="button">AI 生成配色</button>
-                <button id="resetThemeButton" class="secondary-button" type="button">恢复默认配色</button>
-              </div>
             </div>
           </fieldset>
         </section>
