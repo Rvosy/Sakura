@@ -1349,16 +1349,6 @@ input[type="checkbox"]:hover:not(:disabled) {
   animation: about-update-action-in var(--motion-medium) var(--ease) both;
 }
 
-.about-update-notes {
-  max-width: 720px;
-  margin: 0 0 0 16px;
-  color: currentColor;
-  font-size: 12px;
-  line-height: 1.55;
-  overflow-wrap: anywhere;
-  white-space: pre-wrap;
-}
-
 @keyframes about-update-spin {
   to { transform: rotate(1turn); }
 }

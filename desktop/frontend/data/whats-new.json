@@ -3,13 +3,13 @@
     {
       "version": "1.4.0",
       "items": [
-        { "type": "new", "text": "设置新增使用统计，可查看 Token 用量和对话趋势" },
-        { "type": "new", "text": "支持 AI 生成主题配色" },
-        { "type": "new", "text": "插件支持一键全部升级，优化插件状态显示" },
-        { "type": "new", "text": "主程序升级后显示更新摘要，可在“关于”中回看各版本变化" },
-        { "type": "improve", "text": "重新设计设置页与角色工坊布局" },
-        { "type": "fix", "text": "修复 SakuraTTS 中文路径启动问题" },
-        { "type": "fix", "text": "修复立绘启动闪烁和拖动结束后裁剪错位的问题" }
+        { "type": "new", "text": "新增聊天图片留存，可在历史记录中查看图片" },
+        { "type": "new", "text": "新增使用统计，可查看 Token 用量、对话趋势及用量分布" },
+        { "type": "improve", "text": "提升截图清晰度，适配 Windows HDR 显示器" },
+        { "type": "new", "text": "插件支持一键全部升级" },
+        { "type": "improve", "text": "更新设置页与角色工坊布局，设置侧栏支持收起" },
+        { "type": "new", "text": "升级后显示更新摘要，可在“关于”中回看历史版本的更新内容" },
+        { "type": "fix", "text": "修复 SakuraTTS 在中文路径下启动失败、立绘闪烁及拖动后裁剪错位的问题" }
       ]
     },
     {
