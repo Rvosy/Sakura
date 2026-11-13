@@ -35,8 +35,13 @@
 .usage-table th { font-weight: 400; color: var(--sakura-muted-text); font-size: 11px; }
 .usage-table th:first-child, .usage-table td:first-child { text-align: left; padding-left: 2px; width: 30%; max-width: 240px; white-space: normal; overflow-wrap: anywhere; }
 .usage-table tbody tr:hover { background: var(--tint-faint); }
-.usage-row-name { display: block; margin-bottom: 8px; }
-.usage-share { display: block; width: 80%; height: 3px; border-radius: 3px; overflow: hidden; }
+.usage-row-name { display: block; }
+.usage-row-note { display: block; margin-top: 5px; color: var(--sakura-muted-text); font-size: 11px; line-height: 1.5; }
+.usage-row-total { font-weight: 600; }
+.usage-share { display: block; width: 100%; height: 3px; margin-top: 7px; border-radius: 3px; overflow: hidden; background: var(--tint-faint); }
+.usage-table .usage-purpose-row td { padding-top: 7px; padding-bottom: 7px; color: var(--sakura-secondary-text); }
+.usage-table .usage-purpose-row td:first-child { padding-left: 18px; }
+.usage-purpose-row .usage-row-total { font-weight: 400; }
 .usage-share > span { display: block; height: 100%; background: var(--sakura-primary); border-radius: inherit; opacity: .5; transition: width .38s ease-out; }
 .usage-table .usage-empty { text-align: center; color: var(--sakura-muted-text); padding: 30px; }
 @keyframes usage-spin { to { transform: rotate(360deg); } }

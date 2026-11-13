@@ -4,6 +4,16 @@ import { createIcon } from "../core/icons.js";
 const number = new Intl.NumberFormat("zh-CN");
 const compact = new Intl.NumberFormat("zh-CN", { notation: "compact", maximumFractionDigits: 1 });
 const format = value => value == null ? "—" : number.format(value);
+const percent = new Intl.NumberFormat("zh-CN", { style: "percent", maximumFractionDigits: 1 });
+const purposeNotes = {
+  conversation: "日常对话与回复生成",
+  memory_curation: "长期记忆的提取与整理",
+  vision: "图片与屏幕理解，含整次请求的文本用量",
+  proactive: "角色主动发起的聊天",
+  background: "后台执行的模型任务",
+  other: "其他模型调用",
+  uncategorized: "记录中没有可识别的用途",
+};
 let chartsReady;
 
 export function trendBuckets(snapshot) {
@@ -93,31 +103,44 @@ export function createUsageStatistics({ document, invoke }) {
   const chartFrame = node("div", "usage-chart-frame"); chartFrame.append(chartHost, chartEmpty);
   chartSection.append(chartHeading, chartFrame);
   const detail = node("section", "usage-detail"), detailHeading = node("div", "usage-section-heading");
-  detailHeading.append(node("h3", null, "用量分布"), tabs([["categories", "功能"], ["models", "模型"], ["plugins", "插件"]], dimension,
+  detailHeading.append(node("h3", null, "Token 用在哪里"), tabs([["categories", "按用途"], ["plugins", "按插件"], ["models", "按模型"]], dimension,
     "统计维度", key => { dimension = key; renderTable(); }));
   const tableScroll = node("div", "usage-table-scroll"), table = node("table", "usage-table"), head = node("thead"), body = node("tbody");
   table.append(head, body); tableScroll.append(table); detail.append(detailHeading, tableScroll);
-  root.append(toolbar, overview, breakdown, chartSection, detail);
+  root.append(toolbar, overview, breakdown, detail, chartSection);
 
   function renderTable() {
     if (!snapshot) return;
     head.replaceChildren(); body.replaceChildren();
     const tr = node("tr");
-    for (const text of [({ categories: "功能", models: "模型", plugins: "插件" })[dimension], "回复次数", "输入 Token", "输出 Token", "总 Token"]) {
+    for (const text of [({ categories: "用途", models: "模型", plugins: "插件 / 用途" })[dimension], "总 Token", "占比", "输入 Token", "输出 Token", "回复次数"]) {
       const th = node("th", null, text); th.scope = "col"; tr.append(th);
     }
     head.append(tr);
     const rows = snapshot[dimension];
-    const maximum = Math.max(1, ...rows.map(row => row.totalTokens || 0));
-    for (const row of rows) {
-      const tr = node("tr"), name = node("td");
+    function appendRow(row, child = false) {
+      const tr = node("tr", child ? "usage-purpose-row" : ""), name = node("td");
       name.append(node("span", "usage-row-name", row.label || row.model || "未分类"));
-      const track = node("span", "usage-share"), fill = node("span");
-      fill.style.width = `${(row.totalTokens || 0) / maximum * 100}%`; track.append(fill); name.append(track); tr.append(name);
-      for (const value of [row.calls, row.inputTokens, row.outputTokens, row.totalTokens]) tr.append(node("td", null, format(value)));
+      const note = dimension === "categories" ? purposeNotes[row.id] : null;
+      if (note) name.append(node("span", "usage-row-note", note));
+      const missing = row.calls - row.measuredCalls;
+      if (missing) name.append(node("span", "usage-row-note", `${format(missing)} 次未返回总量`));
+      tr.append(name);
+      const total = node("td", "usage-row-total", format(row.totalTokens));
+      const share = row.totalTokens == null || !snapshot.summary.totalTokens ? null : row.totalTokens / snapshot.summary.totalTokens;
+      if (!child && share != null) {
+        const track = node("span", "usage-share"), fill = node("span");
+        fill.style.width = `${share * 100}%`; track.append(fill); total.append(track);
+      }
+      tr.append(total, node("td", null, share == null ? "—" : percent.format(share)));
+      for (const value of [row.inputTokens, row.outputTokens, row.calls]) tr.append(node("td", null, format(value)));
       body.append(tr);
     }
-    if (!rows.length) { const tr = node("tr"), td = node("td", "usage-empty", "暂无用量记录"); td.colSpan = 5; tr.append(td); body.append(tr); }
+    for (const row of rows) {
+      appendRow(row);
+      if (dimension === "plugins") for (const category of row.categories) appendRow(category, true);
+    }
+    if (!rows.length) { const tr = node("tr"), td = node("td", "usage-empty", "暂无用量记录"); td.colSpan = 6; tr.append(td); body.append(tr); }
   }
 
   function tooltip(params, buckets) {

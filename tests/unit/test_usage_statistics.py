@@ -95,6 +95,30 @@ def test_plugin_usage_is_owned_deduplicated_and_filtered_by_inclusive_dates(tmp_
     assert {row["id"]: row["totalTokens"] for row in result["categories"]} == {
         "plugin.a:summary": 10, "plugin.b:summary": 10, "memory_curation": 40}
     assert {row["id"] for row in result["plugins"]} == {"plugin.a", "plugin.b"}
+    for plugin in result["plugins"]:
+        assert {row["id"]: row["totalTokens"] for row in plugin["categories"]} == {
+            "memory_curation": 20, f'{plugin["id"]}:summary': 10}
+        assert sum(row["totalTokens"] for row in plugin["categories"]) == plugin["totalTokens"]
+
+
+def test_statistics_uses_current_builtin_names_and_preserves_unknown_usage(tmp_path):
+    store = UsageStore(tmp_path)
+    for category, usage in [("memory_curation", {"total_tokens": 20}), ("vision", {}),
+                            ("custom", {"total_tokens": 0})]:
+        store.record({"recordId": category, "category": category, "categoryLabel": "自定义功能", "usage": usage},
+                     plugin_id="plugin", plugin_name="示例插件")
+    with sqlite3.connect(store.path) as connection:
+        connection.execute("UPDATE usage_calls SET category_label='旧名称' WHERE category='memory_curation'")
+    result = store.snapshot("all")
+    categories = {row["id"]: row for row in result["categories"]}
+    assert categories["memory_curation"]["label"] == "记忆"
+    assert categories["vision"]["label"] == "识图"
+    assert categories["plugin:custom"]["label"] == "自定义功能"
+    assert categories["plugin:custom"]["totalTokens"] == 0
+    assert categories["vision"]["totalTokens"] is None
+    assert categories["vision"]["calls"] == 1
+    assert categories["vision"]["measuredCalls"] == 0
+    assert result["plugins"][0]["categories"] == result["categories"]
 
 
 def test_upgrade_preserves_old_totals_and_enriches_trace_categories(tmp_path):

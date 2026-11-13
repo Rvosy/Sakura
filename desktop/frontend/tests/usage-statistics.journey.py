@@ -54,7 +54,7 @@ def run():
             for index, tokens in enumerate([18000, 42000, 26000, 0, 53000, 98000, 82000, 34000, 60000, 124000]):
                 timestamp = (today - timedelta(days=9-index)).isoformat()
                 store.record({"recordId": str(index), "timestamp": timestamp, "model": "示例模型",
-                    "category": "memory_curation" if index % 3 == 0 else "conversation",
+                    "category": "memory_curation" if index % 3 == 0 else "vision" if index in (2, 5) else "conversation",
                     "usage": {"input_tokens": tokens, "output_tokens": 18000, "cached_input_tokens": 8000, "reasoning_tokens": 3000}},
                     plugin_id="assistant", plugin_name="Sakura Assistant")
                 timeline.append(NewTimelineEntry(str(index), str(index), "sakura", TimelineKind.HUMAN, "chat", timestamp, {"text": "hello"}))
@@ -67,14 +67,13 @@ def run():
                     "name": "usage.statistics.get", "payload": payload})
                 assert result["ok"], result
                 return result["payload"]
-            browser = playwright.chromium.launch(channel=os.environ.get("SAKURA_BROWSER_CHANNEL") or "msedge")
+            browser = playwright.chromium.launch(channel=os.environ.get("SAKURA_BROWSER_CHANNEL") or ("msedge" if sys.platform == "win32" else None))
             page = browser.new_page(viewport={"width": 1200, "height": 900}, reduced_motion="reduce")
             errors = []
             page.on("pageerror", lambda error: errors.append(str(error)))
             page.expose_function("queryUsage", query)
             page.add_init_script(BRIDGE)
-            output = ROOT / "temp/usage-statistics-preview"
-            output.mkdir(parents=True, exist_ok=True)
+            output = Path(tempfile.mkdtemp(prefix="sakura-usage-preview-"))
             page.goto(f"http://127.0.0.1:{server.server_port}/desktop/frontend/settings/index.html")
             try:
                 page.locator('[data-page="statistics"]').click(timeout=3000)
@@ -97,12 +96,20 @@ def run():
                 }""")
             expect(section.locator(".usage-card-tokens .usage-value")).to_have_text("724,000")
             expect(section.locator(".usage-chart svg")).to_be_visible()
-            expect(section.locator(".usage-table")).to_contain_text("记忆整理")
-            section.get_by_role("button", name="插件", exact=True).click()
+            memory = section.locator(".usage-table tbody tr").filter(has=page.get_by_text("记忆", exact=True))
+            expect(memory).to_contain_text("296,000")
+            expect(memory).to_contain_text("40.9%")
+            expect(section.locator(".usage-table")).to_contain_text("识图")
+            page.screenshot(path=str(output / "purposes.png"), animations="disabled")
+            section.get_by_role("button", name="按插件", exact=True).click()
             expect(section.locator(".usage-table")).to_contain_text("摘要插件")
-            section.get_by_role("button", name="模型", exact=True).click()
+            expect(section.locator(".usage-purpose-row")).to_have_count(4)
+            expect(section.locator(".usage-purpose-row").filter(has=page.get_by_text("识图", exact=True))).to_contain_text("160,000")
+            expect(section.locator("tbody tr").filter(has=page.get_by_text("Sakura Assistant", exact=True))).to_contain_text("717,000")
+            page.screenshot(path=str(output / "plugins.png"), animations="disabled")
+            section.get_by_role("button", name="按模型", exact=True).click()
             expect(section.locator(".usage-table")).to_contain_text("摘要模型")
-            section.get_by_role("button", name="功能", exact=True).click()
+            section.get_by_role("button", name="按用途", exact=True).click()
 
             section.locator(".date-range-trigger").click()
             dates = page.get_by_role("dialog", name="选择日期范围")
@@ -112,6 +119,7 @@ def run():
             expect(section.locator(".usage-card-tokens .usage-value")).to_have_text("149,000")
             section.get_by_role("button", name="柱状", exact=True).click()
             chart = section.locator(".usage-chart")
+            chart.scroll_into_view_if_needed()
             box = chart.bounding_box()
             expect(chart).to_contain_text("00:00")
             page.mouse.move(box["x"] + 54 + (box["width"] - 74) / 48, box["y"] + 100)
@@ -130,6 +138,7 @@ def run():
             page.mouse.move(10, 10)
 
             # 拖动缩放手柄后刷新，图表与数值留在原位，缩放范围不重置。
+            chart.scroll_into_view_if_needed()
             box = chart.bounding_box()
             handles = slider_centers()
             page.mouse.move(handles[0]["x"], handles[0]["y"])
@@ -145,6 +154,7 @@ def run():
             page.mouse.move(box["x"] + box["width"] - 70, box["y"] + 120)
             page.screenshot(path=str(output / "zoom-hover.png"), animations="disabled")
             page.evaluate("window.__holdUsage = true")
+            section.get_by_role("button", name="刷新统计", exact=True).scroll_into_view_if_needed()
             before = chart.bounding_box()
             section.get_by_role("button", name="刷新统计", exact=True).click()
             expect(section.locator(".usage-card-tokens .usage-value")).to_have_text("724,000")
@@ -212,6 +222,9 @@ def run():
             page.screenshot(path=str(output / "dark-narrow.png"), animations="disabled")
             section.locator(".usage-table").scroll_into_view_if_needed()
             page.screenshot(path=str(output / "dark-details.png"), animations="disabled")
+            section.get_by_role("button", name="按插件", exact=True).click()
+            page.screenshot(path=str(output / "dark-plugins.png"), animations="disabled")
+            section.get_by_role("button", name="按用途", exact=True).click()
             assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
             page.evaluate("document.querySelector('.page-scroll').scrollTop = 0")
             section.locator(".date-range-trigger").click()
@@ -234,9 +247,20 @@ def run():
               return frames.size > 1;
             }""")
             assert animated, "柱状图应从零展开，而不是直接跳到最终高度"
+
+            store.record({"recordId": "unknown", "category": "vision", "usage": {}},
+                         plugin_id="unknown", plugin_name="未返回用量的插件")
+            section.get_by_role("button", name="刷新统计", exact=True).click()
+            expect(section.locator(".usage-table")).to_contain_text("1 次未返回总量")
+            expect(section.locator(".usage-card-tokens .usage-value")).to_have_text("724,000")
+            section.get_by_role("button", name="按插件", exact=True).click()
+            unknown = section.locator("tbody tr").filter(has=page.get_by_text("未返回用量的插件", exact=True))
+            expect(unknown).to_contain_text("1 次未返回总量")
+            expect(unknown.locator("td").nth(1)).to_have_text("—")
+            expect(unknown.locator("td").nth(2)).to_have_text("—")
             assert not errors, errors
             browser.close()
-            print("PASS: 日期范围、曲线与柱状、悬浮详情、分类维度、刷新与切页；浅色与深色窄窗口截图已生成。")
+            print(f"PASS: 日期范围、曲线与柱状、悬浮详情、用途占比与插件明细、刷新与切页；截图：{output}")
     finally:
         server.shutdown()
         server.server_close()

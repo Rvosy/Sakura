@@ -148,8 +148,19 @@ class UsageStore:
                 "SELECT category AS id, category_label AS label, " + columns + where + " GROUP BY category ORDER BY totalTokens DESC, calls DESC", params)]
             plugins = [dict(row) for row in connection.execute(
                 "SELECT plugin_id AS id, plugin_name AS label, " + columns + where + " GROUP BY plugin_id ORDER BY totalTokens DESC, calls DESC", params)]
+            plugin_categories = [dict(row) for row in connection.execute(
+                "SELECT plugin_id, category AS id, category_label AS label, " + columns + where
+                + " GROUP BY plugin_id, category ORDER BY totalTokens DESC, calls DESC", params)]
             earliest = connection.execute("SELECT MIN(at) FROM usage_calls").fetchone()[0]
             skipped = int(connection.execute("SELECT value FROM usage_meta WHERE key='imported'").fetchone()[0])
+        # 内置名称随界面更新，保留插件自定义名称和历史记录中的用量。
+        for row in categories + plugin_categories:
+            row["label"] = CATEGORIES.get(row["id"], row["label"])
+        by_plugin = {row["id"]: row for row in plugins}
+        for plugin in plugins:
+            plugin["categories"] = []
+        for row in plugin_categories:
+            by_plugin[row.pop("plugin_id")]["categories"].append(row)
         return {"period": period, "start": start.isoformat() if start else None, "end": end.isoformat(), "updatedAt": now.isoformat(),
                 "summary": summary, "daily": daily, "hourly": hours, "granularity": "hour" if hourly else "day",
                 "models": models, "categories": categories, "plugins": plugins, "skipped": skipped,
