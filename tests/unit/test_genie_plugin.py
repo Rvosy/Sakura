@@ -1119,9 +1119,9 @@ def test_conversion_events_reach_core_bridge_and_live_converter_log(tmp_path: Pa
                for line in stream.getvalue().splitlines() if line.startswith(CORE_BRIDGE_PREFIX)]
     assert records
     assert all("Genie ONNX" in record["message"] for record in records)
-    assert all(record["event"] == "runtime.message" and record["plugin_id"] == p.PROVIDER_ID
+    assert all(record["event"] == record["attributes"]["event"] and record["plugin_id"] == p.PROVIDER_ID
                and record["channel"] == "tts" for record in records)
-    events = [record["attributes"]["event"] for record in records]
+    events = [record["event"] for record in records]
     assert events[:2] == ["tts.conversion.checking", "tts.conversion.started"]
     assert "tts.conversion.running" in events
     assert f"tts.conversion.{terminal}" in events
