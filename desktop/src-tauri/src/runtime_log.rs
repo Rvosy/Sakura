@@ -1212,7 +1212,10 @@ fn custom_viewer_details(record: &RuntimeLogRecord) -> Vec<RuntimeLogViewerDetai
             } else if key == "audio_seconds" {
                 format!("{value} 秒")
             } else if key == "bytes" {
-                value.as_u64().map(format_bytes).unwrap_or_else(|| value.to_string())
+                value
+                    .as_u64()
+                    .map(format_bytes)
+                    .unwrap_or_else(|| value.to_string())
             } else {
                 viewer_render_detail(record, key, value)
             },
@@ -1494,13 +1497,19 @@ fn encode_record(record: &RuntimeLogRecord, max_bytes: usize) -> Option<Vec<u8>>
         summary_parts.push(format!("plugin={id}"));
     }
     let attribute_summary = if record.custom {
-        record.attributes.as_ref().and_then(Value::as_object)
-            .into_iter().flat_map(|fields| fields.iter())
+        record
+            .attributes
+            .as_ref()
+            .and_then(Value::as_object)
+            .into_iter()
+            .flat_map(|fields| fields.iter())
             .map(|(key, value)| {
                 format!(
                     "{}={}",
                     key,
-                    render_human_scalar(key, value).replace('\n', " \\n ").replace('\r', "")
+                    render_human_scalar(key, value)
+                        .replace('\n', " \\n ")
+                        .replace('\r', "")
                 )
             })
             .collect::<Vec<_>>()
@@ -4865,11 +4874,22 @@ mod tests {
         assert_eq!(record.scopes, ["tts"]);
         assert_eq!(record.plugin_id.as_deref(), Some("fixture.voice"));
         assert_eq!(record.correlation_id.as_deref(), Some("op:voice-one"));
-        for (label, value) in [("耗时", "1.44 秒"), ("音频时长", "10.96 秒"),
-            ("状态", "已完成"), ("排队耗时", "0 ms"), ("vendor_metric", "{\"count\":2}")] {
-            assert!(record.details.iter().any(|detail| detail.label == label && detail.value == value));
+        for (label, value) in [
+            ("耗时", "1.44 秒"),
+            ("音频时长", "10.96 秒"),
+            ("状态", "已完成"),
+            ("排队耗时", "0 ms"),
+            ("vendor_metric", "{\"count\":2}"),
+        ] {
+            assert!(record
+                .details
+                .iter()
+                .any(|detail| detail.label == label && detail.value == value));
         }
-        assert!(!record.details.iter().any(|detail| matches!(detail.label.as_str(), "事件代码" | "操作编号")));
+        assert!(!record
+            .details
+            .iter()
+            .any(|detail| matches!(detail.label.as_str(), "事件代码" | "操作编号")));
         log.drain_and_shutdown_for_test();
         let saved = fs::read_to_string(root.join("sakura-plugins.log")).unwrap();
         assert!(saved.contains("tts.operation.finished"));
