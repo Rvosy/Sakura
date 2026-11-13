@@ -12,7 +12,7 @@ use windows::{
     },
     Win32::{
         Devices::Display::*,
-        Foundation::{E_FAIL, HMODULE, WIN32_ERROR},
+        Foundation::{E_FAIL, E_NOINTERFACE, HMODULE, WIN32_ERROR},
         Graphics::{
             Direct3D::D3D_DRIVER_TYPE_UNKNOWN,
             Direct3D11::*,
@@ -48,7 +48,12 @@ pub fn capture(device_name: &str) -> Result<Option<RgbaImage>> {
                 if display_name(&descriptor.DeviceName) != device_name {
                     continue;
                 }
-                let color = output.cast::<IDXGIOutput6>()?.GetDesc1()?;
+                let output6 = match output.cast::<IDXGIOutput6>() {
+                    Ok(output6) => output6,
+                    Err(error) if error.code() == E_NOINTERFACE => return Ok(None),
+                    Err(error) => return Err(error),
+                };
+                let color = output6.GetDesc1()?;
                 if color.ColorSpace != DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020 {
                     return Ok(None);
                 }
@@ -56,10 +61,8 @@ pub fn capture(device_name: &str) -> Result<Option<RgbaImage>> {
                 return capture_output(&adapter, &output, white_scale).map(Some);
             }
         }
-        Err(Error::new(
-            E_FAIL,
-            format!("截图显示器已断开：{device_name}"),
-        ))
+        // GDI 可见的显示设备不一定有 DXGI 输出，交由普通截图入口处理。
+        Ok(None)
     }
 }
 
