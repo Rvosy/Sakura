@@ -92,7 +92,6 @@ const fields = {
   macosSettingsOpenAppleSupportButton: document.getElementById("macosSettingsOpenAppleSupportButton"),
   macosSettingsOpenHelpStatus: document.getElementById("macosSettingsOpenHelpStatus"),
   updateStatus: document.getElementById("updateStatus"),
-  updateNotes: document.getElementById("updateNotes"),
   updateFeedback: document.getElementById("updateFeedback"),
   updateCheckButton: document.getElementById("updateCheckButton"),
   updateCheckLabel: document.getElementById("updateCheckLabel"),
@@ -817,8 +816,6 @@ function applyUpdateSnapshot(snapshot) {
   fields.updateStatus.textContent = snapshot.available
     ? `检测到新版本：v${snapshot.version}`
     : `当前已是最新版本 v${snapshot.currentVersion}`;
-  fields.updateNotes.textContent = snapshot.notes?.trim() || "";
-  fields.updateNotes.hidden = !fields.updateNotes.textContent;
   fields.updateActionButton.hidden = !snapshot.available;
   fields.updateActionButton.disabled = updateActionBusy;
   fields.updateActionLabel.textContent = snapshot.mode === "portable"
@@ -898,7 +895,6 @@ async function checkForUpdates() {
   fields.updateFeedback.dataset.state = "checking";
   fields.updateStatus.textContent = "正在检查更新…";
   fields.updateCheckLabel.textContent = "正在检查…";
-  fields.updateNotes.hidden = true;
   try {
     applyUpdateSnapshot(await rootSettingsClient.updateGet());
   } catch (error) {
