@@ -343,8 +343,6 @@ pub struct RuntimeLogViewerRecord {
     pub category: String,
     pub event_code: String,
     pub message: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub description: Option<String>,
     pub details: Vec<RuntimeLogViewerDetail>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub correlation_id: Option<String>,
@@ -686,11 +684,7 @@ impl RuntimeLogService {
         }) {
             return Err(());
         }
-        let event_name = if parsed.custom {
-            "runtime.message".to_string()
-        } else {
-            parsed.event.clone()
-        };
+        let event_name = parsed.event.clone();
         let event = RuntimeLogEvent {
             source: if parsed.plugin_id.is_some() {
                 LogSource::Plugin
@@ -1187,6 +1181,12 @@ fn custom_viewer_details(record: &RuntimeLogRecord) -> Vec<RuntimeLogViewerDetai
         .and_then(Value::as_object)
         .into_iter()
         .flat_map(|fields| fields.iter())
+        .filter(|(key, value)| match key.as_str() {
+            "event" => value.as_str() != Some(record.event.as_str()),
+            "operation_id" => value.as_str() != record.operation_id.as_deref(),
+            "request_id" => value.as_str() != record.request_id.as_deref(),
+            _ => true,
+        })
         .map(|(key, value)| RuntimeLogViewerDetail {
             label: match key.as_str() {
                 "screen_count" => "截图数量",
@@ -1199,27 +1199,23 @@ fn custom_viewer_details(record: &RuntimeLogRecord) -> Vec<RuntimeLogViewerDetai
                 "created" => "新增数量",
                 "updated" => "更新数量",
                 "archived" => "归档数量",
-                "tool_name"
-                | "model"
-                | "diagnostic"
-                | "exception_chain"
-                | "exception_stack"
-                | "recovery_diagnostic"
-                | "cause_type"
-                | "cause_code"
-                | "validation_field"
-                | "error_type"
-                | "exception_site"
-                | "errno"
-                | "winerror" => viewer_detail_label(key),
-                key => key,
+                key => viewer_detail_label(key),
             }
             .to_string(),
-            value: value
-                .as_str()
-                .filter(|text| !text.is_empty())
-                .map(str::to_string)
-                .unwrap_or_else(|| value.to_string()),
+            value: if key.ends_with("_ms") && value.is_number() {
+                let milliseconds = value.as_f64().unwrap();
+                if milliseconds >= 1000.0 {
+                    format!("{} 秒", (milliseconds / 10.0).round() / 100.0)
+                } else {
+                    format!("{milliseconds} ms")
+                }
+            } else if key == "audio_seconds" {
+                format!("{value} 秒")
+            } else if key == "bytes" {
+                value.as_u64().map(format_bytes).unwrap_or_else(|| value.to_string())
+            } else {
+                viewer_render_detail(record, key, value)
+            },
         })
         .collect()
 }
@@ -1498,13 +1494,13 @@ fn encode_record(record: &RuntimeLogRecord, max_bytes: usize) -> Option<Vec<u8>>
         summary_parts.push(format!("plugin={id}"));
     }
     let attribute_summary = if record.custom {
-        custom_viewer_details(record)
-            .into_iter()
-            .map(|d| {
+        record.attributes.as_ref().and_then(Value::as_object)
+            .into_iter().flat_map(|fields| fields.iter())
+            .map(|(key, value)| {
                 format!(
                     "{}={}",
-                    d.label,
-                    d.value.replace('\n', " \\n ").replace('\r', "")
+                    key,
+                    render_human_scalar(key, value).replace('\n', " \\n ").replace('\r', "")
                 )
             })
             .collect::<Vec<_>>()
@@ -1577,7 +1573,6 @@ fn project_viewer_record(
         } else {
             viewer_record_message(record, severity)
         },
-        description: viewer_problem_description(record, severity).map(str::to_string),
         details: {
             let mut details = if record.custom {
                 custom_viewer_details(record)
@@ -1802,223 +1797,12 @@ fn viewer_is_gpt_sovits(record: &RuntimeLogRecord) -> bool {
         .any(|value| value.eq_ignore_ascii_case("sakura.tts.gpt-sovits"))
 }
 
-fn viewer_problem_description(
-    record: &RuntimeLogRecord,
-    severity: Severity,
-) -> Option<&'static str> {
-    if !severity.is_priority() {
-        return None;
-    }
-
-    let event = record.event.as_str();
-
-    if viewer_has_code(
-        record,
-        &[
-            "AUTHENTICATION_FAILED",
-            "CREDENTIAL_REQUIRED",
-            "invalid_api_key",
-        ],
-    ) {
-        return Some("模型服务没有接受当前凭据，这次回复无法生成。");
-    }
-    if viewer_has_code(
-        record,
-        &["INSUFFICIENT_QUOTA", "QUOTA_EXCEEDED", "insufficient_quota"],
-    ) {
-        return Some("模型服务暂时没有接受这次请求，回复未能生成。");
-    }
-    if viewer_has_code(record, &["MODEL_NOT_FOUND", "model_not_found"]) {
-        return Some("模型服务找不到当前模型，这次回复无法生成。");
-    }
-    if event.starts_with("api.")
-        && viewer_has_code(
-            record,
-            &[
-                "NETWORK_UNAVAILABLE",
-                "CONNECTION_INTERRUPTED",
-                "PROVIDER_REQUEST_FAILED",
-                "REQUEST_TIMEOUT",
-            ],
-        )
-    {
-        return Some("Sakura 没有收到模型服务的响应，这次回复未能生成。");
-    }
-
-    if viewer_has_code(record, &["TTS_DEVICE_PROBE_FAILED"]) {
-        return Some("语音服务启动时没能确认可用设备，暂时不能生成语音。");
-    }
-    if viewer_has_code(record, &["TTS_ONNX_CONVERSION_UNAVAILABLE"]) {
-        return Some("Genie 转换工具或运行环境不完整，无法转换角色模型。");
-    }
-    if event == "tts.conversion.failed" {
-        return Some(
-            "角色模型未能转换为 ONNX。可查看原因码及插件的 genie-converter.log 获取详情。",
-        );
-    }
-    if viewer_has_code(record, &["TTS_RUNTIME_PYTHON_MISSING"]) {
-        return Some("语音运行环境不完整，暂时不能生成语音。");
-    }
-    if viewer_has_code(record, &["TTS_ACCELERATOR_UNAVAILABLE"]) {
-        return Some("没有检测到语音服务需要的运行设备，暂时不能生成语音。");
-    }
-    if viewer_has_code(record, &["TTS_RUNTIME_TIMEOUT"]) {
-        return Some("等待 GPT-SoVITS 服务响应超时，语音暂时不可用。");
-    }
-    if viewer_has_code(record, &["TTS_RUNTIME_EXITED"]) {
-        return Some("GPT-SoVITS 进程在启动期间提前退出，语音暂时不可用。");
-    }
-    if viewer_has_code(record, &["TTS_RUNTIME_INVALID", "TTS_RUNTIME_START_FAILED"]) {
-        return Some("GPT-SoVITS 运行环境不完整或无法启动，语音暂时不可用。");
-    }
-    if viewer_has_code(
-        record,
-        &["TTS_PORT_OCCUPIED", "TTS_PORT_OCCUPIED_BY_OTHER_PROCESS"],
-    ) {
-        return Some("GPT-SoVITS 使用的端口已被占用，服务没有启动。");
-    }
-    if viewer_has_code(record, &["TTS_WEIGHTS_UNAVAILABLE"]) {
-        if viewer_has_stage(record, "gpt_weights") {
-            return Some("GPT 角色语音权重加载失败，文字回复仍可使用。");
-        }
-        if viewer_has_stage(record, "sovits_weights") {
-            return Some("SoVITS 角色语音权重加载失败，文字回复仍可使用。");
-        }
-        return Some("角色语音模型加载失败，文字回复仍可使用。");
-    }
-    if viewer_has_code(
-        record,
-        &[
-            "TTS_CONNECTION_FAILED",
-            "TTS_REQUEST_TIMEOUT",
-            "TTS_PROBE_TIMEOUT",
-            "TTS_PROBE_UNAVAILABLE",
-        ],
-    ) {
-        return Some("Sakura 没有收到语音服务的响应，这次语音没有生成。");
-    }
-    if viewer_has_code(record, &["TTS_PORT_OCCUPIED_BY_OTHER_PROCESS"]) {
-        return Some("语音服务使用的端口已被其他程序占用，语音服务没有启动。");
-    }
-
-    if viewer_has_code(record, &["WINDOWS_ADVANCED_EFFECTS_DISABLED"]) {
-        return Some("Windows 已关闭高级视觉效果，输入栏改用普通背景。");
-    }
-    if viewer_has_code(record, &["WINDOWS_ENERGY_SAVER_ACTIVE"]) {
-        return Some("Windows 正在使用节能模式，输入栏暂时改用普通背景。");
-    }
-    if viewer_has_code(record, &["WINDOWS_HOST_BACKDROP_REQUIRES_BUILD_22000"]) {
-        return Some("当前 Windows 版本不支持这项视觉效果，输入栏会使用普通背景。");
-    }
-
-    if event.starts_with("plugin.")
-        && viewer_has_code(
-            record,
-            &[
-                "CLOSE_TIMEOUT",
-                "PLUGIN_CALL_TIMEOUT",
-                "REGISTRATION_TIMEOUT",
-            ],
-        )
-    {
-        return Some("工具服务没有及时回应，本次操作没有完成。");
-    }
-    if viewer_has_code(
-        record,
-        &[
-            "PLUGIN_DISABLED",
-            "PLUGIN_PROCESS_EXITED",
-            "API_VERSION_UNSUPPORTED",
-            "DEPENDENCY_CYCLE",
-            "SERVICE_CONFLICT",
-            "MISSING_SERVICE",
-        ],
-    ) {
-        return Some("插件没有正常运行，依赖它的功能暂时不可用。");
-    }
-
-    if event == "api.request.failed" {
-        if matches!(viewer_http_status(record), Some(401 | 403)) {
-            return Some("模型服务没有接受当前凭据，这次回复无法生成。");
-        }
-        if matches!(viewer_http_status(record), Some(404)) {
-            return Some("模型服务找不到当前模型，这次回复无法生成。");
-        }
-        if matches!(viewer_http_status(record), Some(408 | 429 | 500..=599))
-            || viewer_has_error_type(record, &["TimeoutError", "RemoteDisconnected"])
-        {
-            return Some("Sakura 没有收到模型服务的正常响应，这次回复未能生成。");
-        }
-    }
-
-    let description = match event {
-        "core.spawn.failed" | "first_run.core_start.failed" => {
-            "Sakura 的后台程序没有启动，聊天和部分功能暂时不可用。"
-        }
-        "shell.error.unhandled" | "core.error.unhandled" | "ipc.request.failed" => {
-            "Sakura 的后台功能遇到问题，相关操作可能无法完成。"
-        }
-        "chat.request.failed"
-        | "api.request.failed"
-        | "reply.processing.failed"
-        | "reply.display.failed" => "这次回复没有正常完成。",
-        "memory.recall.failed" | "memory.recall.unavailable" => {
-            "这轮对话没有读到长期记忆，但仍会继续生成回复。"
-        }
-        "memory.curation.failed" | "memory.curation.request_fuse_opened" => {
-            "后台记忆整理没有完成，不影响当前对话。"
-        }
-        "context.dependencies.degraded" => "这次对话没有使用到全部记忆或辅助信息。",
-        "screen.capture.failed" => "这次请求没有附带屏幕画面，文字内容仍会正常发送。",
-        "updater.signature.failed" => "更新包没有通过安全校验，本次更新已经停止。",
-        value if value.starts_with("updater.") => "本次更新没有完成，当前版本仍可继续使用。",
-        value if value.starts_with("tts.") => "语音功能没有正常完成，文字回复仍可使用。",
-        value if value.starts_with("appearance.") || value.starts_with("ui.") => {
-            "界面效果已改用兼容模式。"
-        }
-        value if value.starts_with("tool.") || value.starts_with("plugin.") => {
-            "相关工具没有正常完成，本次操作可能缺少对应结果。"
-        }
-        value if value.starts_with("memory.") || value.starts_with("context.") => {
-            "这次对话没有使用到全部记忆或辅助信息。"
-        }
-        value if value.starts_with("screen.") => "这次请求没有附带屏幕画面。",
-        value
-            if value.starts_with("settings.")
-                || value.starts_with("config.")
-                || value.starts_with("storage.") =>
-        {
-            "相关设置或数据操作没有完成。"
-        }
-        value if value.starts_with("core.") || value.starts_with("ipc.") => {
-            "Sakura 的后台功能遇到问题，相关操作可能无法完成。"
-        }
-        _ if severity == Severity::Warning => "这项功能没有按预期工作，Sakura 仍在运行。",
-        _ => "这项操作没有正常完成。",
-    };
-    Some(description)
-}
-
 fn viewer_has_code(record: &RuntimeLogRecord, candidates: &[&str]) -> bool {
     viewer_attribute_strings(record, &["reason_code", "provider_error_code", "code"]).any(|value| {
         candidates
             .iter()
             .any(|candidate| value.eq_ignore_ascii_case(candidate))
     })
-}
-
-fn viewer_has_error_type(record: &RuntimeLogRecord, candidates: &[&str]) -> bool {
-    viewer_attribute_strings(record, &["error_type", "provider_error_type", "cause_type"]).any(
-        |value| {
-            candidates
-                .iter()
-                .any(|candidate| value.eq_ignore_ascii_case(candidate))
-        },
-    )
-}
-
-fn viewer_has_stage(record: &RuntimeLogRecord, candidate: &str) -> bool {
-    viewer_attribute_strings(record, &["stage"]).any(|value| value.eq_ignore_ascii_case(candidate))
 }
 
 fn viewer_attribute_strings<'a>(
@@ -2033,17 +1817,6 @@ fn viewer_attribute_strings<'a>(
         .flat_map(|attributes| attributes.iter())
         .filter(move |(key, _)| keys.contains(&normalize_key(key).as_str()))
         .filter_map(|(_, value)| value.as_str())
-}
-
-fn viewer_http_status(record: &RuntimeLogRecord) -> Option<u16> {
-    let attributes = record.attributes.as_ref()?.as_object()?;
-    let (_, value) = attributes
-        .iter()
-        .find(|(key, _)| matches!(normalize_key(key).as_str(), "status" | "http_status"))?;
-    value
-        .as_u64()
-        .and_then(|status| u16::try_from(status).ok())
-        .or_else(|| value.as_str()?.parse::<u16>().ok())
 }
 
 fn viewer_details(record: &RuntimeLogRecord) -> Vec<RuntimeLogViewerDetail> {
@@ -2207,6 +1980,15 @@ fn viewer_is_gpt_lifecycle(record: &RuntimeLogRecord) -> bool {
 
 fn viewer_render_detail(record: &RuntimeLogRecord, key: &str, value: &Value) -> String {
     let rendered = render_human_scalar(key, value);
+    if matches!(key, "status" | "outcome" | "synthesis_status") {
+        match rendered.as_str() {
+            "success" | "succeeded" | "completed" => return "已完成".into(),
+            "cancelled" => return "已取消".into(),
+            "ready" => return "已就绪".into(),
+            "failed" => return "失败".into(),
+            _ => {}
+        }
+    }
     if key == "provider" && rendered == "sakura.tts.genie" {
         return "Genie TTS".to_string();
     }
@@ -2229,9 +2011,7 @@ fn viewer_render_detail(record: &RuntimeLogRecord, key: &str, value: &Value) -> 
         ("stage", "sovits_weights") => "SoVITS 权重".to_string(),
         ("status", "starting") => "正在启动".to_string(),
         ("status", "waiting") => "等待就绪".to_string(),
-        ("status", "ready") => "已就绪".to_string(),
         ("status", "loading") => "正在加载".to_string(),
-        ("status", "failed") => "失败".to_string(),
         ("elapsed_ms" | "duration_ms", raw) => raw
             .parse::<f64>()
             .ok()
@@ -2242,7 +2022,7 @@ fn viewer_render_detail(record: &RuntimeLogRecord, key: &str, value: &Value) -> 
     }
 }
 
-fn viewer_detail_label(key: &str) -> &'static str {
+fn viewer_detail_label(key: &str) -> &str {
     match key {
         "diagnostic" => "诊断",
         "exception_chain" => "异常链",
@@ -2292,6 +2072,40 @@ fn viewer_detail_label(key: &str) -> &'static str {
         "provider" => "服务",
         "model" => "模型",
         "elapsed_ms" | "duration_ms" => "耗时",
+        "turn_elapsed_ms" => "总耗时",
+        "request_ms" => "请求耗时",
+        "queue_ms" => "排队耗时",
+        "engine_total_ms" => "引擎耗时",
+        "inference_ms" => "推理耗时",
+        "reference_ms" => "参考音频处理耗时",
+        "frontend_ms" => "文本处理耗时",
+        "gpt_ms" => "语义生成耗时",
+        "sovits_ms" => "声学生成耗时",
+        "audio_seconds" => "音频时长",
+        "synthesis_status" => "合成结果",
+        "reference_cache" => "参考音频缓存",
+        "reference_audio" => "参考音频",
+        "backend" => "计算后端",
+        "requested_backend" => "配置后端",
+        "profile" => "运行配置",
+        "runtime_mode" => "运行方式",
+        "gpu_name" => "显卡",
+        "gpu_driver" => "显卡驱动",
+        "bundle_version" => "引擎版本",
+        "bundle_source_commit" => "引擎提交",
+        "provider_id" => "服务标识",
+        "language" => "语言",
+        "rtf" => "实时率",
+        "model_call" => "模型调用序号",
+        "tool_count" => "可用工具数",
+        "tool_call_count" => "工具调用数",
+        "trace_id" => "Trace 编号",
+        "operation_id" => "操作编号",
+        "request_id" => "请求编号",
+        "eligible_turns" => "待整理轮数",
+        "trigger_turns" => "整理触发轮数",
+        "channel" => "模块",
+        "event" => "事件代码",
         "retryable" => "可重试",
         "attempt" => "尝试次数",
         "progress" => "进度",
@@ -2334,7 +2148,7 @@ fn viewer_detail_label(key: &str) -> &'static str {
         "proxy_https_configured" => "HTTPS 代理",
         "proxy_all_configured" => "全局代理",
         "proxy_no_proxy_configured" => "代理排除规则",
-        _ => "详情",
+        _ => key,
     }
 }
 
@@ -3745,6 +3559,7 @@ fn verbosity_for_severity(severity: Severity) -> Verbosity {
 
 fn core_message(event: &str) -> &'static str {
     match event {
+        "plugin.upgrade.retired_bundled_ignored" => "已忽略升级残留的内置插件",
         "agent.turn.started" => "开始处理用户消息",
         "agent.turn.finished" => "模型回复已生成",
         "chat.request.received" => "对话请求已接收",
@@ -4934,7 +4749,6 @@ mod tests {
         assert_eq!(snapshot.records.len(), 3);
         assert_eq!(snapshot.records[0].event_code, "shell.started");
         assert_eq!(snapshot.records[0].message, "Sakura 已启动");
-        assert_eq!(snapshot.records[0].description, None);
         assert_eq!(snapshot.records[1].event_code, "ipc.request.completed");
         assert_eq!(snapshot.records[1].message, "读取插件设置完成");
         assert_eq!(
@@ -4946,7 +4760,7 @@ mod tests {
                 },
                 RuntimeLogViewerDetail {
                     label: "状态".to_string(),
-                    value: "completed".to_string(),
+                    value: "已完成".to_string(),
                 },
                 RuntimeLogViewerDetail {
                     label: "耗时".to_string(),
@@ -4957,10 +4771,6 @@ mod tests {
         assert_eq!(snapshot.records[2].event_code, "plugin.private.warning");
         assert_eq!(snapshot.records[2].severity, "warning");
         assert_eq!(snapshot.records[2].message, "运行过程中出现提醒");
-        assert_eq!(
-            snapshot.records[2].description.as_deref(),
-            Some("相关工具没有正常完成，本次操作可能缺少对应结果。")
-        );
         assert!(!serde_json::to_string(&snapshot)
             .unwrap()
             .contains("不应展示的正文"));
@@ -5029,6 +4839,42 @@ mod tests {
             assert!(failed.message.contains("失败"));
             assert!(failed.details.iter().any(|detail| detail.value == command));
         }
+    }
+
+    #[test]
+    fn plugin_events_keep_identity_readable_metrics_and_unknown_details() {
+        let root = temp_root("plugin-event-details");
+        let log = RuntimeLogService::start_with_config(test_config(root.join("runtime.log")));
+        let context = CoreLogContext {
+            generation_id: "plugin-details-generation".into(),
+            generation_number: 1,
+            core_pid: 42,
+        };
+        let wire = json!({
+            "severity":"info", "verbosity":"info", "channel":"plugin", "custom":true,
+            "event":"tts.operation.finished", "message":"语音合成完成",
+            "plugin_id":"fixture.voice", "plugin_name":"测试语音", "operation_id":"voice-one",
+            "attributes": {"event":"tts.operation.finished", "operation_id":"voice-one",
+                "elapsed_ms":1438, "audio_seconds":10.96, "outcome":"success",
+                "queue_ms":0, "vendor_metric":{"count":2}}
+        });
+        assert!(log.submit_core_bridge(&wire.to_string(), &context).unwrap());
+        let snapshot = log.viewer_snapshot(None).unwrap();
+        let record = &snapshot.records[0];
+        assert_eq!(record.event_code, "tts.operation.finished");
+        assert_eq!(record.scopes, ["tts"]);
+        assert_eq!(record.plugin_id.as_deref(), Some("fixture.voice"));
+        assert_eq!(record.correlation_id.as_deref(), Some("op:voice-one"));
+        for (label, value) in [("耗时", "1.44 秒"), ("音频时长", "10.96 秒"),
+            ("状态", "已完成"), ("排队耗时", "0 ms"), ("vendor_metric", "{\"count\":2}")] {
+            assert!(record.details.iter().any(|detail| detail.label == label && detail.value == value));
+        }
+        assert!(!record.details.iter().any(|detail| matches!(detail.label.as_str(), "事件代码" | "操作编号")));
+        log.drain_and_shutdown_for_test();
+        let saved = fs::read_to_string(root.join("sakura-plugins.log")).unwrap();
+        assert!(saved.contains("tts.operation.finished"));
+        assert!(saved.contains("elapsed_ms=1438"));
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
@@ -5166,10 +5012,6 @@ mod tests {
         let record = log.viewer_snapshot(None).unwrap().records.pop().unwrap();
         assert_eq!(record.message, "模型回复请求失败");
         assert_eq!(
-            record.description.as_deref(),
-            Some("模型服务没有接受当前凭据，这次回复无法生成。")
-        );
-        assert_eq!(
             record.correlation_id.as_deref(),
             Some("op:operation-1234567890")
         );
@@ -5256,7 +5098,7 @@ mod tests {
 
     #[test]
     fn wp_5_06_viewer_uses_specific_plain_language_before_safe_diagnostics() {
-        let root = temp_root("viewer-descriptions");
+        let root = temp_root("viewer-failure-messages");
         let log = RuntimeLogService::start_with_config(test_config(root.join("runtime.log")));
         assert!(log.submit(
             RuntimeLogEvent::rust(
@@ -5287,43 +5129,9 @@ mod tests {
                 "status": "degraded",
             })),
         ));
-        assert!(log.submit(RuntimeLogEvent::rust(
-            Severity::Warning,
-            "custom",
-            "custom.warning",
-            "ignored",
-        )));
-        assert!(log.submit(RuntimeLogEvent::rust(
-            Severity::Error,
-            "custom",
-            "custom.failure",
-            "ignored",
-        )));
-
         let records = log.viewer_snapshot(None).unwrap().records;
         assert_eq!(records[0].message, "GPT-SoVITS 服务启动失败");
-        assert_eq!(
-            records[0].description.as_deref(),
-            Some("语音服务启动时没能确认可用设备，暂时不能生成语音。")
-        );
         assert_eq!(records[1].message, "输入栏视觉效果已降级");
-        assert_eq!(
-            records[1].description.as_deref(),
-            Some("Windows 已关闭高级视觉效果，输入栏改用普通背景。")
-        );
-        assert!(!records[1]
-            .description
-            .as_deref()
-            .unwrap()
-            .contains("os_build"));
-        assert_eq!(
-            records[2].description.as_deref(),
-            Some("这项功能没有按预期工作，Sakura 仍在运行。")
-        );
-        assert_eq!(
-            records[3].description.as_deref(),
-            Some("这项操作没有正常完成。")
-        );
         log.drain_and_shutdown_for_test();
         let _ = fs::remove_dir_all(root);
     }
@@ -5508,7 +5316,6 @@ mod tests {
             assert_eq!(record.scopes, ["tts"]);
             assert!(record.message.contains("Genie"));
             assert!(record.details.iter().any(|detail| detail.label == "耗时"));
-            assert_eq!(record.description.is_some(), stage == "failed");
         }
         log.drain_and_shutdown_for_test();
         let written = fs::read_to_string(path).unwrap();
@@ -5551,15 +5358,7 @@ mod tests {
 
         let records = log.viewer_snapshot(None).unwrap().records;
         assert_eq!(records[0].message, "GPT-SoVITS 服务启动失败");
-        assert_eq!(
-            records[0].description.as_deref(),
-            Some("等待 GPT-SoVITS 服务响应超时，语音暂时不可用。")
-        );
         assert_eq!(records[1].message, "角色语音模型加载失败");
-        assert_eq!(
-            records[1].description.as_deref(),
-            Some("SoVITS 角色语音权重加载失败，文字回复仍可使用。")
-        );
         log.drain_and_shutdown_for_test();
         let _ = fs::remove_dir_all(root);
     }

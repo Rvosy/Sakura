@@ -92,6 +92,17 @@ test("closing the dialog allows reopening it without adding another window", asy
   assert.equal(document.body.children.length, 1);
 });
 
+test("a message without diagnostics shows only the result and restores details for a later error", () => {
+  const { controller } = fixture();
+  const dialog = controller.show({ title: "下载失败" });
+  assert.equal(dialog.querySelector("details").hidden, true);
+  assert.equal(button(dialog, "复制详情").hidden, true);
+  controller.show({ title: "下载失败", error: "Connection reset" });
+  assert.equal(dialog.querySelector("details").hidden, false);
+  assert.equal(button(dialog, "复制详情").hidden, false);
+  assert.equal(dialog.querySelector("pre").textContent, "Connection reset");
+});
+
 test("disposing prevents a late failure from recreating the dialog", () => {
   for (const openedFirst of [false, true]) {
     const { document, controller } = fixture();

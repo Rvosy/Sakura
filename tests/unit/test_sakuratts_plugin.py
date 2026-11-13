@@ -1085,6 +1085,9 @@ def test_prewake_skips_character_without_voice_configuration(tmp_path):
     assert provider.wake is None
     assert provider.error == ''
     assert not any(level == 'error' for level, _ in records)
+    assert len(records) == 1
+    assert records[0][0] == 'debug'
+    assert records[0][1]['outcome'] == 'skipped'
 
 
 def test_missing_character_model_returns_diagnostic_with_source_location(tmp_path):

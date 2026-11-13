@@ -539,17 +539,9 @@ class SakuraMem0Runtime:
         elif state in {"failed", "cancelled"}:
             actions = ["retryEmbedding"]
             if state == "cancelled":
-                message = (
-                    "已取消，原模型仍可用。"
-                    if installed
-                    else "已取消"
-                )
+                message = "已取消"
             else:
-                message = (
-                    "下载失败，原模型仍可用。"
-                    if installed
-                    else "下载失败"
-                )
+                message = "下载失败"
         elif installed:
             actions = []
             message = "已安装"

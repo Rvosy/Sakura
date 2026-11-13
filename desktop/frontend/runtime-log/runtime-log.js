@@ -118,10 +118,11 @@ function fillRecordMain(main, item) {
   const headline = document.createElement("div");
   headline.className = "record-headline";
   appendText(headline, "record-time", item.record.timestamp);
-  appendText(headline, "record-category", item.record.category === "PLUGIN" ? "插件" : item.record.category);
+  if (item.record.category !== "PLUGIN") appendText(headline, "record-category", item.record.category);
   if (item.record.pluginId) appendText(headline, "record-plugin", viewerPluginName(item.record));
-  if (["warning", "error"].includes(item.record.severity)) {
-    appendText(headline, `record-level record-level-${item.record.severity}`, item.record.severity === "error" ? "错误" : "提醒");
+  if (item.record.severity !== "info") {
+    const level = { error: "错误", warning: "警告", debug: "调试", trace: "跟踪" }[item.record.severity];
+    appendText(headline, `record-level record-level-${item.record.severity}`, level);
   }
   appendText(headline, "record-message", item.record.message);
   const inline = viewerInlineSummary(item.record);
@@ -130,15 +131,15 @@ function fillRecordMain(main, item) {
   main.append(headline);
   const failure = viewerFailureText(item.record);
   if (failure) {
-    appendFailure(main, failure, failure === "未记录底层原因");
+    appendFailure(main, failure);
     const recovery = item.record.details.find(detail => detail.label === "回滚报错");
     if (recovery) appendFailure(main, `回滚也失败：${recovery.value}`);
-  } else if (item.record.description) appendText(main, "record-description", item.record.description);
+  }
 }
 
-function appendFailure(parent, text, missing = false) {
+function appendFailure(parent, text) {
   const element = document.createElement("span");
-  element.className = `record-raw${missing ? " is-missing" : ""}`;
+  element.className = "record-raw";
   const type = text.match(/^([A-Za-z_][A-Za-z0-9_.]*:)(?=\s)/);
   if (type) {
     appendText(element, "record-raw-type", type[1]);
@@ -255,7 +256,7 @@ function render(newAfterSequence = Number.MAX_SAFE_INTEGER) {
   const pluginId = activeScope === "plugins" ? pluginFilter.value : "";
   const failures = viewerState?.failedFiles || [];
   saveStatus.hidden = failures.length === 0;
-  saveStatus.textContent = failures.length ? `${failures.map((name) => name === "plugins" ? "插件" : "软件").join("、")}日志文件保存失败，窗口中的记录仍可查看。` : "";
+  saveStatus.textContent = failures.length ? `${failures.map((name) => name === "plugins" ? "插件" : "软件").join("、")}日志文件保存失败` : "";
   const problems = viewerProblemCount(records, activeScope, pluginId);
   problemCount.textContent = String(problems);
   const filtered = filterViewerRecords(records, activeScope, viewMode, pluginId);

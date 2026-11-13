@@ -618,7 +618,7 @@ class MemoryBoundary:
                     return
                 log_event(
                     "Memory",
-                    "证据 Turn 达到阈值，开始记忆整理",
+                    f"开始整理 {pending} 轮对话的记忆",
                     {
                         "reason_code": "EVIDENCE_TURN_THRESHOLD",
                         "eligible_turns": pending,

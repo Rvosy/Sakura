@@ -1299,6 +1299,21 @@ impl ConcurrentRequestHandle {
             && matches!(
                 name,
                 "asr.input.availability"
+                    | "settings.provider_model.get"
+                    | "tools.settings.get"
+                    | "tts.settings.get"
+                    | "asr.settings.get"
+                    | "storage.settings.get"
+                    | "characters.settings.get"
+                    | "characters.visuals.get"
+                    | "ui.history.page"
+                    | "ui.composer_tools.get"
+                    | "plugins.collection.query"
+                    | "plugins.marketplace.context"
+                    | "usage.statistics.get"
+                    | "chat.send"
+                    | "tts.synthesis.start"
+                    | "tts.synthesis.cancel"
                     | "plugins.settings.get"
                     | "plugins.frontend.get"
                     | "ui.history.image"
@@ -4391,6 +4406,11 @@ mod tests {
             // Exercise the same producer and real writer without opening a microphone.
             for command in [
                 "asr.input.poll",
+                "settings.provider_model.get",
+                "usage.statistics.get",
+                "plugins.collection.query",
+                "chat.send",
+                "tts.synthesis.start",
                 "plugins.settings.get",
                 "plugins.frontend.get",
                 "ui.history.image",

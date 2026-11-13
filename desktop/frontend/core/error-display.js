@@ -1,7 +1,7 @@
 import { safeErrorText } from './runtime-diagnostics.js';
 
 // Keep source diagnostics as text; never render external error content as HTML.
-export function errorText(error, fallback = '未提供错误详情') {
+export function errorText(error) {
   const parts = [], seen = new Set();
   function add(value, label = '') {
     if (typeof value !== 'string' && typeof value !== 'number' && typeof value !== 'boolean') return;
@@ -58,5 +58,5 @@ export function errorText(error, fallback = '未提供错误详情') {
   visit(error);
   // Source boundaries already bound remote diagnostics. Do not cut off another
   // portion of the traceback while preparing it for display or copying.
-  return safeErrorText(parts.join('\n\n') || fallback, Infinity);
+  return safeErrorText(parts.join('\n\n'), Infinity);
 }
