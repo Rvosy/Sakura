@@ -41,10 +41,7 @@ type WindowRect = (i32, i32, i32, i32);
 
 enum CaptureError {
     NotReady,
-    Failed {
-        code: &'static str,
-        detail: &'static str,
-    },
+    Failed { code: &'static str, detail: String },
 }
 
 struct GlassInner {
@@ -308,7 +305,7 @@ fn arm_capture(shared: Arc<Shared>, window: tauri::WebviewWindow, generation: u6
                 }
                 let (code, detail) = match error {
                     CaptureError::NotReady => {
-                        ("LINUX_INPUT_BLUR_CAPTURE_FAILED", "GTK 窗口尚未就绪")
+                        ("LINUX_INPUT_BLUR_CAPTURE_FAILED", "GTK 窗口尚未就绪".into())
                     }
                     CaptureError::Failed { code, detail } => (code, detail),
                 };
@@ -316,7 +313,7 @@ fn arm_capture(shared: Arc<Shared>, window: tauri::WebviewWindow, generation: u6
                     &shared,
                     code,
                     "Linux 输入栏没能采样到桌面，暂时只显示半透明底色",
-                    detail,
+                    &detail,
                 );
             }
         }
@@ -358,23 +355,23 @@ fn capture_background(
     )
     .ok_or(CaptureError::Failed {
         code: "LINUX_INPUT_BLUR_CAPTURE_FAILED",
-        detail: "输入栏不在可采样区域内",
+        detail: "输入栏不在可采样区域内".into(),
     })?;
     let pixbuf = root
         .pixbuf(x, y, width, height)
         .ok_or(CaptureError::Failed {
             code: "LINUX_INPUT_BLUR_CAPTURE_FAILED",
-            detail: "根窗口没有返回画面",
+            detail: "根窗口没有返回画面".into(),
         })?;
     let blurred = blur_pixbuf(&pixbuf).ok_or(CaptureError::Failed {
         code: "LINUX_INPUT_BLUR_CAPTURE_FAILED",
-        detail: "采样画面无法缩放",
+        detail: "采样画面无法缩放".into(),
     })?;
     let bytes = blurred
         .save_to_bufferv("png", &[("compression", "6")])
-        .map_err(|_| CaptureError::Failed {
+        .map_err(|error| CaptureError::Failed {
             code: "LINUX_INPUT_BLUR_CAPTURE_FAILED",
-            detail: "采样结果无法编码",
+            detail: error.to_string(),
         })?;
     Ok(base64_encode(&bytes))
 }
@@ -419,18 +416,11 @@ fn report(shared: &Shared, code: &'static str, message: &'static str, detail: &s
         .attributes(serde_json::json!({
             "code": code,
             "reason_code": code,
-            "diagnostic": safe_detail(detail),
+            "diagnostic": detail,
             "stage": "linux_input_glass",
             "outcome": "degraded",
         })),
     );
-}
-
-fn safe_detail(detail: &str) -> String {
-    if detail.contains('/') || detail.contains('\\') {
-        return "GDK capture failed".to_string();
-    }
-    detail.chars().take(180).collect()
 }
 
 pub(crate) fn linux_input_window_rect(
