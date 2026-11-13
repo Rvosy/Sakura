@@ -211,7 +211,7 @@ jobs:
             unset APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD
             unset APPLE_SIGNING_IDENTITY APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID
           fi
-          npx --yes @tauri-apps/cli@2.11.4 build --config tauri.release.json
+          npx --yes @tauri-apps/cli@2.12.4 build --config tauri.release.json
 
       - name: Collect Windows release artifacts
         if: runner.os == 'Windows'

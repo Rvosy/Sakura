@@ -83,6 +83,10 @@
         "runtime-v2-window-interaction-tests"
       ]
     },
+    "runtime-v2-windows-keyboard": {
+      "description": "验证已构建 Windows 桌面壳在键盘与焦点消息重入时保持响应",
+      "cases": ["runtime-v2-windows-keyboard-reentrancy"]
+    },
     "runtime-v2-windows-interaction": {
       "description": "在真实 Windows 桌面验证 Runtime v2 原生透明穿透",
       "cases": [
@@ -207,6 +211,12 @@
     }
   },
   "cases": [
+    {
+      "id": "runtime-v2-windows-keyboard-reentrancy",
+      "description": "使用隔离用户目录向真实窗口交错发送按键和焦点消息，检查事件循环响应",
+      "argv": ["{python}", "-X", "utf8", "desktop/tests/windows_keyboard_reentrancy_acceptance.py"],
+      "timeout_seconds": 60
+    },
     {
       "id": "settings-sidebar-browser",
       "description": "验证侧栏完整显示、收起及插件导航溢出访问",
