@@ -189,6 +189,8 @@ mdurl==0.1.2 \
 packaging==26.3 \
     --hash=sha256:94edc256424af38762eb31306eed28beb9f0efc50a8837492c9d6fd6004aed79 \
     --hash=sha256:d7193f7c8e4e93f444fde0262bf90af30e16fa0ad0ad44cb553c87339b23cd1c
+pillow==13.0.0 \
+    --hash=sha256:42d63be3af4f9b951b199b0a9d23365d37ab14687e6d77b74940432c8515c4ca
 py7zz==1.4.0 \
     --hash=sha256:32a1ce9d6b0eb944cc9e8827350c87a31b15abcd5df146c5edd4be1fbfbf755c \
     --hash=sha256:5db0b912ba4047930c9afa111821f90231c006ce57a1899a384c0da40e2df1da \
