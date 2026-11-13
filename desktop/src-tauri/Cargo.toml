@@ -14,7 +14,7 @@ path = "src/main.rs"
 
 [build-dependencies]
 serde_json = "=1.0.150"
-tauri-build = { version = "=2.6.3", features = [] }
+tauri-build = { version = "=2.7.4", features = [] }
 
 [dependencies]
 semver = "=1.0.28"
@@ -22,7 +22,7 @@ serde = { version = "=1.0.228", features = ["derive"] }
 serde_json = "=1.0.150"
 serde_yaml = "=0.9.34"
 regex = "=1.13.0"
-tauri = { version = "=2.11.3", features = ["image-png", "macos-private-api", "tray-icon", "unstable"] }
+tauri = { version = "=2.12.5", features = ["image-png", "macos-private-api", "tray-icon", "unstable"] }
 tauri-plugin-autostart = "=2.5.1"
 tauri-plugin-updater = "=2.10.1"
 # The updater disables reqwest's default features, so explicitly unify this
@@ -42,10 +42,10 @@ xcap = "=0.9.6"
 
 [target.'cfg(windows)'.dependencies]
 half = "=2.7.1"
-windows = { version = "=0.61.3", features = ["Foundation_Numerics", "Graphics_Effects", "System", "UI_Composition", "UI_Composition_Desktop", "Win32_Foundation", "Graphics_Capture", "Graphics_DirectX_Direct3D11", "Win32_System_WinRT_Direct3D11", "Win32_System_WinRT_Graphics_Capture", "Win32_Devices_Display", "Win32_Graphics_Direct3D", "Win32_Graphics_Direct3D11", "Win32_Graphics_Dxgi", "Win32_Graphics_Dxgi_Common", "Win32_Graphics_Direct2D", "Win32_Graphics_Direct2D_Common", "Win32_Graphics_Dwm", "Win32_Graphics_Gdi", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_JobObjects", "Win32_System_LibraryLoader", "Win32_System_Pipes", "Win32_System_Threading", "Win32_System_WinRT_Composition", "Win32_System_WinRT_Graphics_Direct2D", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
-windows-core = "=0.61.2"
-windows-numerics = "=0.2.0"
-windows-collections = "=0.2.0"
+windows = { version = "=0.62.2", features = ["Foundation_Numerics", "Graphics_Effects", "System", "UI_Composition", "UI_Composition_Desktop", "Win32_Foundation", "Graphics_Capture", "Graphics_DirectX_Direct3D11", "Win32_System_WinRT_Direct3D11", "Win32_System_WinRT_Graphics_Capture", "Win32_Devices_Display", "Win32_Graphics_Direct3D", "Win32_Graphics_Direct3D11", "Win32_Graphics_Dxgi", "Win32_Graphics_Dxgi_Common", "Win32_Graphics_Direct2D", "Win32_Graphics_Direct2D_Common", "Win32_Graphics_Dwm", "Win32_Graphics_Gdi", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_JobObjects", "Win32_System_LibraryLoader", "Win32_System_Pipes", "Win32_System_Threading", "Win32_System_WinRT_Composition", "Win32_System_WinRT_Graphics_Direct2D", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+windows-core = "=0.62.2"
+windows-numerics = "=0.3.1"
+windows-collections = "=0.3.2"
 windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_UI_Controls", "Win32_UI_WindowsAndMessaging"] }
 windows-version = "=0.1.7"
 

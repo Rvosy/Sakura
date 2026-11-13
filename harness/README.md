@@ -19,6 +19,8 @@ Python 测试依赖见 [requirements-dev.txt](../tools/requirements-dev.txt)。�
 
 需要浏览器的旅程依赖 Playwright，Windows 默认使用已安装的 Edge。真实窗口、音频设备和平台体验需在对应环境验证，模拟桥接通过不代表设备验证通过。
 
+Windows 键盘死锁回归使用隔离用户目录启动真实桌面壳，交错发送按键和焦点消息并检查窗口响应。退出当前 Sakura 并运行 `cargo build --manifest-path desktop/src-tauri/Cargo.toml --locked` 后，执行 `runtime\python.exe -m harness run runtime-v2-windows-keyboard`。
+
 ## 结果与隔离
 
 退出码 `0` 表示通过，`1` 表示检查失败，`2` 表示调用或清单错误。报告保存实际命令、退出码、耗时与输出。失败应定位原始原因，不能用反复重跑替代修复。

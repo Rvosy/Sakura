@@ -145,7 +145,7 @@ jobs:
         shell: bash
         env:
           SAKURA_REQUIRE_DIAGNOSTIC_MAPPING: "1"
-        run: npx --yes @tauri-apps/cli@2.11.4 build --config tauri.release.json
+        run: npx --yes @tauri-apps/cli@2.12.4 build --config tauri.release.json
 
       - name: Collect Windows Setup and Portable ZIP
         if: runner.os == 'Windows'

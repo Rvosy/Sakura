@@ -379,7 +379,7 @@ impl ManagedProcessTree {
             });
         }
         if unsafe { ResumeThread(thread_handle.raw()) } == u32::MAX {
-            let error = WindowsError::from_win32();
+            let error = WindowsError::from_thread();
             rollback_assigned_tree(&job, &process)?;
             return Err(windows_error("ResumeThread", error));
         }
@@ -457,7 +457,7 @@ impl ManagedProcessTree {
             WAIT_TIMEOUT => Ok(WaitOutcome::TimedOut),
             _ => Err(windows_error(
                 "WaitForSingleObject",
-                WindowsError::from_win32(),
+                WindowsError::from_thread(),
             )),
         }
     }
@@ -523,7 +523,7 @@ impl ManagedProcessTree {
             if root_observation != WAIT_OBJECT_0 && root_observation != WAIT_TIMEOUT {
                 return Err(windows_error(
                     "WaitForSingleObject",
-                    WindowsError::from_win32(),
+                    WindowsError::from_thread(),
                 ));
             }
 
@@ -558,7 +558,7 @@ impl ManagedProcessTree {
             if root_wait != WAIT_OBJECT_0 {
                 return Err(windows_error(
                     "WaitForSingleObject",
-                    WindowsError::from_win32(),
+                    WindowsError::from_thread(),
                 ));
             }
 

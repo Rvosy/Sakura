@@ -163,7 +163,7 @@ try {
             if (-not (Test-Path -LiteralPath $privateKeyPath -PathType Leaf)) {
                 throw "TAURI_SIGNING_PRIVATE_KEY_PATH 指向的私钥文件不存在。"
             }
-            # Tauri CLI 2.11.4 的 updater bundler 实际读取私钥内容变量；
+            # Tauri CLI 的 updater bundler 读取私钥内容变量；
             # 本地脚本仍接受更安全、便于使用的路径变量，并只在当前子进程中展开。
             $env:TAURI_SIGNING_PRIVATE_KEY = Get-Content -Raw -LiteralPath $privateKeyPath
             $privateKeyLoadedFromPath = $true
@@ -171,7 +171,7 @@ try {
         $previousDiagnosticRequirement = $env:SAKURA_REQUIRE_DIAGNOSTIC_MAPPING
         try {
             $env:SAKURA_REQUIRE_DIAGNOSTIC_MAPPING = "1"
-            Invoke-Checked "npx" @("--yes", "@tauri-apps/cli@2.11.4", "build", "--config", "tauri.release.json")
+            Invoke-Checked "npx" @("--yes", "@tauri-apps/cli@2.12.4", "build", "--config", "tauri.release.json")
         }
         finally {
             $env:SAKURA_REQUIRE_DIAGNOSTIC_MAPPING = $previousDiagnosticRequirement
