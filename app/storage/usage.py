@@ -48,11 +48,16 @@ class UsageStore:
         connection.execute("BEGIN IMMEDIATE")
         if connection.execute("PRAGMA user_version").fetchone()[0] < 2:
             columns = {row[1] for row in connection.execute("PRAGMA table_info(usage_calls)")}
-            for column, default in (("category", "uncategorized"), ("category_label", "未分类"), ("plugin_id", ""), ("plugin_name", "历史数据")):
+            for column, default in (("category", "uncategorized"), ("category_label", "未分类"), ("plugin_id", ""), ("plugin_name", "")):
                 if column not in columns:
                     connection.execute(f"ALTER TABLE usage_calls ADD COLUMN {column} TEXT NOT NULL DEFAULT '{default}'")
             connection.execute("DELETE FROM usage_meta WHERE key='imported'")
             connection.execute("PRAGMA user_version=2")
+        if connection.execute("PRAGMA user_version").fetchone()[0] < 3:
+            # Mem0 的记忆整理调用曾遗漏用途标记，修正已有记录，保留原始用量。
+            connection.execute("""UPDATE usage_calls SET category='memory_curation', category_label=?
+                WHERE plugin_id='sakura.memory.mem0' AND category='other'""", (CATEGORIES["memory_curation"],))
+            connection.execute("PRAGMA user_version=3")
         connection.execute("INSERT OR IGNORE INTO usage_meta VALUES ('started', ?)",
                            (str(datetime.now().replace(microsecond=0).timestamp()),))
         connection.commit()
@@ -61,7 +66,7 @@ class UsageStore:
     def record_response(self, response, metadata):
         return self.record({"recordId": metadata["operationId"], "model": metadata["model"]["modelId"],
             "category": metadata.get("usageCategory", "other"), "categoryLabel": metadata.get("usageLabel"),
-            "usage": response.get("usage") or {}}, plugin_id=metadata.get("callerId", ""), plugin_name=metadata.get("callerName", ""))
+            "usage": response.get("usage") or {}}, plugin_id=metadata.get("callerId") or "sakura.core", plugin_name=metadata.get("callerName", ""))
 
     def record(self, record, *, plugin_id, plugin_name):
         identity = record.get("recordId")
@@ -80,7 +85,7 @@ class UsageStore:
         with closing(self._connect()) as connection, connection:
             cursor = connection.execute("INSERT OR IGNORE INTO usage_calls VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", (
                 json.dumps([plugin_id, identity]), at, model, *token_usage(record.get("usage")), "live",
-                category, label, plugin_id, plugin_name or plugin_id or "历史数据",
+                category, label, plugin_id, plugin_name or plugin_id,
             ))
             return {"recorded": cursor.rowcount > 0}
 
@@ -110,7 +115,7 @@ class UsageStore:
                         ON CONFLICT(id) DO UPDATE SET category=excluded.category, category_label=excluded.category_label
                         WHERE usage_calls.source='trace' AND usage_calls.category='uncategorized'""", (
                         "trace:" + identity, at, record["model"], *token_usage(record["usage"]), "trace",
-                        category, CATEGORIES[category], "", "历史日志",
+                        category, CATEGORIES[category], "", "",
                     ))
             connection.execute("INSERT INTO usage_meta VALUES ('imported', ?)", (str(skipped),))
 
@@ -146,13 +151,25 @@ class UsageStore:
                 "SELECT model, " + columns + where + " GROUP BY model ORDER BY totalTokens DESC, calls DESC", params)]
             categories = [dict(row) for row in connection.execute(
                 "SELECT category AS id, category_label AS label, " + columns + where + " GROUP BY category ORDER BY totalTokens DESC, calls DESC", params)]
-            plugins = [dict(row) for row in connection.execute(
-                "SELECT plugin_id AS id, plugin_name AS label, " + columns + where + " GROUP BY plugin_id ORDER BY totalTokens DESC, calls DESC", params)]
+            # 旧内置 Agent 与现有 Assistant 是同一能力；已有插件归属优先。
+            sources = [dict(row) for row in connection.execute(
+                "SELECT CASE WHEN plugin_id != '' THEN plugin_id WHEN source='trace' THEN 'sakura.assistant.default' ELSE '' END AS id, "
+                "plugin_name AS label, " + columns + where + " GROUP BY 1 ORDER BY totalTokens DESC, calls DESC", params)]
             earliest = connection.execute("SELECT MIN(at) FROM usage_calls").fetchone()[0]
             skipped = int(connection.execute("SELECT value FROM usage_meta WHERE key='imported'").fetchone()[0])
+        # 内置名称随界面更新，保留插件自定义名称和历史记录中的用量。
+        for row in categories:
+            row["label"] = CATEGORIES.get(row["id"], row["label"])
+        for source in sources:
+            if source["id"] == "sakura.assistant.default":
+                source["label"] = "Assistant"
+            elif source["id"] == "sakura.core":
+                source["label"] = "Sakura 主程序"
+            elif not source["id"]:
+                source["label"] = "历史记录"
         return {"period": period, "start": start.isoformat() if start else None, "end": end.isoformat(), "updatedAt": now.isoformat(),
                 "summary": summary, "daily": daily, "hourly": hours, "granularity": "hour" if hourly else "day",
-                "models": models, "categories": categories, "plugins": plugins, "skipped": skipped,
+                "models": models, "categories": categories, "sources": sources, "skipped": skipped,
                 "earliest": datetime.fromtimestamp(earliest).astimezone().isoformat() if earliest is not None else None}
 
 

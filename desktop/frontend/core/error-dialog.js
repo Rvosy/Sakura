@@ -69,7 +69,7 @@ export function createErrorDialog({
           || event.clientY < bounds.top || event.clientY > bounds.bottom) dialog.close();
     });
     document.body.append(dialog);
-    elements = { dialog, title, message, details, diagnostic, copyStatus };
+    elements = { dialog, title, message, details, diagnostic, copy, copyStatus };
     return elements;
   }
 
@@ -77,7 +77,7 @@ export function createErrorDialog({
     show({ title = "操作失败", message = "", error } = {}) {
       if (disposed) return null;
       const ui = ensureDialog();
-      const diagnostic = errorText(error ?? (message || title));
+      const diagnostic = errorText(error);
       if (!ui.dialog.open || ui.title.textContent !== title || ui.diagnostic.textContent !== diagnostic) {
         ui.details.open = true;
         ui.copyStatus.textContent = "";
@@ -88,6 +88,8 @@ export function createErrorDialog({
       if (message) ui.dialog.setAttribute("aria-describedby", ui.message.id);
       else ui.dialog.removeAttribute("aria-describedby");
       ui.diagnostic.textContent = diagnostic;
+      ui.details.hidden = !diagnostic;
+      ui.copy.hidden = !diagnostic;
       if (!ui.dialog.open) {
         ui.dialog.showModal();
         onOpen(ui.dialog);

@@ -25,7 +25,7 @@ document.querySelector('#copy').addEventListener('click', event => {
   event.stopImmediatePropagation();
   const selected = document.querySelector('.log-record[aria-selected="true"]')?.viewerItem;
   const text = mode === 'proposed' && selected
-    ? viewerCopyText({...selected, record:{...selected.record, description:undefined}})
+    ? viewerCopyText(selected)
     : event.currentTarget.dataset.copyText;
   if (text) parent.postMessage({type:'demo-copy',text},location.origin);
 }, true);

@@ -379,6 +379,8 @@ def awareness_logs():
         return True
 
     logger = SimpleNamespace(
+        debug=lambda message, fields=None: log_message("debug", message, fields=fields,
+                                                       component="plugin", plugin_id="sakura.screen_awareness"),
         info=lambda message, fields=None: log_message("info", message, fields=fields,
                                                      component="plugin", plugin_id="sakura.screen_awareness"),
         warning=lambda message, fields=None: log_message("warning", message, fields=fields,
@@ -407,6 +409,7 @@ def test_screen_awareness_logs_retained_count_without_polling_noise(awareness_lo
     assert [record.attributes["event"] for record in run.records] == ["screen.awareness.captured"] * 3
     assert [record.attributes["screen_count"] for record in run.records] == [1, 2, 3]
     assert all(record.attributes["screen_limit"] == 3 for record in run.records)
+    assert all(record.severity == "debug" for record in run.records)
     for count, record in enumerate(run.records, 1):
         assert "角色甲" in record.message and f"{count}/3" in record.message
     assert run.submitted[0]["resources"] == [item["resourceId"] for item in run.captured]

@@ -287,8 +287,9 @@ class AssistantModelClient:
                 "temperature": temperature,
                 "message_count": len(payload["messages"]),
                 "has_image": messages_contain_image(payload["messages"]),
-                "chat_params": _filter_supported_chat_params(chat_params),
             },
+            severity="debug",
+            event="api.request.prepared",
         )
         try:
             data = self._call_model_with_trace(
@@ -415,8 +416,9 @@ class AssistantModelClient:
                 "message_count": len(payload["messages"]),
                 "tool_count": len(tools or []),
                 "has_image": messages_contain_image(payload["messages"]),
-                "chat_params": _filter_supported_chat_params(chat_params),
             },
+            severity="debug",
+            event="api.request.prepared",
         )
         try:
             data = self._call_model_with_trace(
@@ -562,9 +564,14 @@ class AssistantModelClient:
             if trace_call is not None and trace_call.auto_operation:
                 self._agent_trace_recorder.finish_operation(trace_call.operation_id, status="failed")
             raise
+        elapsed_ms = int((time.perf_counter() - started) * 1000)
         _submit_model_call_metric(trace_call, request=self._trace_local.request_diagnostic,
             settings=self.settings, estimate=estimate, usage=_summarize_token_usage(response.get("usage")),
-            latency_ms=int((time.perf_counter() - started) * 1000), outcome="success", error_code=None)
+            latency_ms=elapsed_ms, outcome="success", error_code=None)
+        log_event("API", "模型请求完成", {
+            **attributes,
+            "elapsed_ms": elapsed_ms,
+        }, event="api.request.finished")
         return response
 
     def _ensure_chat_config(self):

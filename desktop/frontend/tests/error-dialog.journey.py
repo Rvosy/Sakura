@@ -113,6 +113,14 @@ def run():
                 check_details(page)
                 if output:
                     page.screenshot(path=str(Path(output) / f'error-dialog-inline-{width}.png'))
+            page.evaluate("fixture.inline.show({title: '下载失败'})")
+            dialog = page.get_by_role('dialog')
+            expect(dialog).to_be_visible()
+            expect(dialog.locator('details')).not_to_be_visible()
+            expect(dialog.get_by_role('button', name='复制详情', exact=True)).not_to_be_visible()
+            page.evaluate("fixture.inline.show({title: fixture.snapshot.title, error: fixture.snapshot.details})")
+            check_details(page)
+            expect(dialog.get_by_role('button', name='复制详情', exact=True)).to_be_visible()
             page.get_by_role('dialog').get_by_role('button', name='关闭', exact=True).click()
             expect(page.get_by_role('dialog')).not_to_be_visible()
             assert not errors, errors

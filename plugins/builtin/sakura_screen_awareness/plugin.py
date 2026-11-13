@@ -142,7 +142,7 @@ class ScreenAwarenessRuntime:
                               "screen_limit": plan["batchLimit"], "screen_captured_at": resource["capturedAt"]}
                     if dropped:
                         fields["screen_note"] = "已替换最早的一张截图"
-                    self._log("info", f"看了一眼屏幕（{len(self._resources)}/{plan['batchLimit']}）",
+                    self._log("debug", f"已采集屏幕（{len(self._resources)}/{plan['batchLimit']}）",
                               facts=facts, fields=fields)
                     plan = self._policy.step({**current, "count": len(self._resources), "revision": plan["revision"]})
             if stale:

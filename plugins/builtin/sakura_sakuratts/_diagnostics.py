@@ -37,7 +37,10 @@ def operation(log, stage, *, cancel=None, report_error=True):
     level = 'info'
     try:
         yield fields
-        fields['outcome'] = 'cancelled' if cancel is not None and cancel.is_set() else 'success'
+        if cancel is not None and cancel.is_set():
+            fields['outcome'] = 'cancelled'
+        else:
+            fields.setdefault('outcome', 'success')
     except Cancelled:
         fields['outcome'] = 'cancelled'
         raise
@@ -51,5 +54,10 @@ def operation(log, stage, *, cancel=None, report_error=True):
             fields.update(provider_exception_diagnostics(error))
         raise
     finally:
-        log(level, 'SakuraTTS 操作结束', **fields,
+        action = {'synthesis': '语音合成', 'preload': '语音预加载', 'engine_start': '语音服务启动'}[stage]
+        outcome = fields['outcome']
+        result = {'success': '完成', 'failed': '失败', 'cancelled': '已取消', 'skipped': '已跳过'}[outcome]
+        if outcome == 'skipped' or (stage == 'engine_start' and outcome == 'success'):
+            level = 'debug'
+        log(level, f'{action}{result}', **fields,
             elapsed_ms=round((time.monotonic() - started) * 1000))

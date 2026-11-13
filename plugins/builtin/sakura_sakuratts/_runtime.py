@@ -31,7 +31,7 @@ class RuntimeFailure(RuntimeError):
             report = json.loads(output[output.index('{'):])
         except ValueError:
             report = {}
-        reason = report.get('error') or (output.strip().splitlines() or ['进程未输出错误详情'])[-1]
+        reason = report.get('error') or (output.strip().splitlines() or [''])[-1]
         self.device_unavailable = report.get('error_type') == 'CUDARuntimeError' and any(
             code in reason for code in ('cudaErrorNoDevice', 'cudaErrorInsufficientDriver', 'cudaErrorSystemDriverMismatch'))
         if 'ASCII' in reason:
@@ -45,7 +45,7 @@ class RuntimeFailure(RuntimeError):
                        '安装路径过长也会出现此错误。请将“运行环境目录”设为短路径（例如 D:\\SakuraTTS），'
                        '再点击“迁移运行环境”；若文件确实缺失，请重新下载并安装整合包。')
         else:
-            message = f'{backend.upper()} 运行失败：{reason}'
+            message = f'{backend.upper()} 运行失败' + (f'：{reason}' if reason else '')
         self.reason = message
         super().__init__(f'{message}\n运行日志：{log}')
         self.diagnostics = {'diagnostic': str(self), 'stderr': output}
@@ -283,7 +283,7 @@ class Runtime:
                         fields['rtf'] = round(fields['request_ms'] / 1000 / fields['audio_seconds'], 3)
                     if metrics is not None:
                         metrics.update(fields)
-                    self.emit('info', 'SakuraTTS 合成耗时', **fields)
+                    self.emit('debug', '语音合成阶段耗时', **fields)
                 return body if path == '/tts' else json.loads(body)
         except HTTPError as error:
             with error:

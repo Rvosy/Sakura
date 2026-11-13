@@ -178,22 +178,20 @@ class Provider:
             self.executor.submit(self._prewake, character_id, cancel)
 
     def _prewake(self, character_id, cancel):
-        started = time.monotonic()
         try:
-            with operation(self.log, 'preload', cancel=cancel):
+            with operation(self.log, 'preload', cancel=cancel) as metrics:
                 self.error = ''
                 voice = character_voice(self.character, character_id, optional=True)
                 if voice is None:
+                    metrics['outcome'] = 'skipped'
                     return
                 self.runtime.start(self.bundle.current(), self.config, voice, cancel)
                 if not cancel.is_set():
                     self.log('info', 'SakuraTTS 正在提前加载模型', backend=self.runtime.backend)
                     if self.config['idleSeconds'] > 0:
                         self.runtime.request('/runtime/wake', {'keep_alive_seconds': 0})
-                    self.log('info', 'SakuraTTS 正在准备默认参考音频', reference_audio=Path(voice['ref_audio_path']).name)
+                    self.log('debug', '正在准备默认参考音频', reference_audio=Path(voice['ref_audio_path']).name)
                     self.runtime.request('/set_refer_audio?' + urlencode({'refer_audio_path': voice['ref_audio_path']}))
-                    self.log('info', 'SakuraTTS 模型与默认参考音频已就绪', backend=self.runtime.backend,
-                             elapsed_ms=round((time.monotonic() - started) * 1000, 1))
         except Cancelled:
             pass
         except Exception as error:

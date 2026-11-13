@@ -539,17 +539,9 @@ class SakuraMem0Runtime:
         elif state in {"failed", "cancelled"}:
             actions = ["retryEmbedding"]
             if state == "cancelled":
-                message = (
-                    "已取消，原模型仍可用。"
-                    if installed
-                    else "已取消"
-                )
+                message = "已取消"
             else:
-                message = (
-                    "下载失败，原模型仍可用。"
-                    if installed
-                    else "下载失败"
-                )
+                message = "下载失败"
         elif installed:
             actions = []
             message = "已安装"
@@ -738,7 +730,7 @@ def _default_runtime(context: object) -> SakuraMem0Runtime | None:
         memory_cache_dir=Path(storage.resolve("cache", "memory")),
         model_catalog_getter=model_slots.catalog,
         model_resolver=model_slots.resolve,
-        model_client_factory=lambda ref: ModelClient(context, ref),
+        model_client_factory=lambda ref: ModelClient(context, ref, usage_category="memory_curation"),
     )
 
 

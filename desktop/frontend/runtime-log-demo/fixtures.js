@@ -70,8 +70,8 @@ export const scenarios = {
     failure('long-response','模型回复请求失败','MODEL_REQUEST_FAILED','BadRequestError: Invalid request: messages[12].tool_calls[0].function.arguments is not valid JSON.\nExpected a comma or closing brace after the property value at line 1, column 243.\nThe upstream gateway rejected the request before model execution. Request ID: req-demo-8372.\nParameter: messages[12].tool_calls[0].function.arguments; type: invalid_request_error; code: invalid_tool_arguments.\nGateway: https://api.example.test/v1/chat/completions; Authorization: [REDACTED].',{
       category:'API', event:'api.request.failed', stage:'模型服务请求', description:REPLY, elapsed:302, http:400, site:'app.llm.api_client:request:752', providerCode:'invalid_tool_arguments',
     }),
-    failure('unknown','后台请求失败','REQUEST_FAILED','未记录底层原因',{
-      description:GENERIC, command:'demo.unknown', stage:'请求处理', elapsed:17, missing:true,
+    failure('unknown','后台请求失败','REQUEST_FAILED','',{
+      description:GENERIC, command:'demo.unknown', stage:'请求处理', elapsed:17,
     }),
   ],
 };
@@ -88,7 +88,7 @@ export function createSnapshot(mode, scenario) {
     const isProposed = mode === 'proposed';
     const fields = [detail('错误代码',example.code)];
     if (isProposed) {
-      fields.unshift(detail('原始报错',example.raw));
+      if (example.raw) fields.unshift(detail('原始报错',example.raw));
       fields.push(detail('失败阶段',example.stage));
       if (example.chain) fields.push(detail('异常链',example.chain));
       if (example.site) fields.push(detail('代码位置',example.site));
@@ -101,7 +101,7 @@ export function createSnapshot(mode, scenario) {
     if (example.elapsed !== undefined) fields.push(detail('耗时',`${example.elapsed} ms`));
     if (isProposed) fields.push(detail('应用版本','0.0.0-demo'));
     push({ timestamp, scopes:[example.scope || 'software'], severity:example.severity || 'warning', category:example.category || 'CORE', eventCode:example.event || 'ipc.request.failed', message:example.message,
-      source:example.source || 'rust', description:example.description, details:fields, correlationId:example.id.slice(0,8),
+      source:example.source || 'rust', ...(!isProposed ? {description:example.description} : {}), details:fields, correlationId:example.id.slice(0,8),
       ...(example.pluginId ? {pluginId:example.pluginId,pluginName:example.pluginName} : {}),
     });
     if (!isProposed && example.duplicate) push({ timestamp, severity:'warning', category:'UI', eventCode:'webview.command.failed', source:'webview', message:'界面命令失败', description:GENERIC, details:[detail('错误代码','INVOKE_FAILED'),detail('耗时',`${example.elapsed} ms`)] });

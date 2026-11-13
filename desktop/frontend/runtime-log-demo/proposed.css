@@ -14,13 +14,6 @@
   -webkit-user-select: text;
 }
 .record-raw-type { font-weight: 700; }
-.record-raw.is-missing {
-  padding: 3px 0;
-  border: 0;
-  background: transparent;
-  color: var(--secondary-text);
-  font-family: inherit;
-}
 .record-recovery { margin-top: 2px; }
 .record-recovery-label { color: var(--secondary-text); font-family: 'Sakura Noto Sans SC', 'Microsoft YaHei UI', sans-serif; }
 .record-details .detail-wide { grid-column:1/-1; }

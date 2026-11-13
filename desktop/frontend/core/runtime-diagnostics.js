@@ -61,7 +61,7 @@ function safeDiagnostic(error) {
   const details = error?.details?.diagnostics || error?.diagnostics || error;
   const raw = details?.diagnostic || publicError?.[2] || coded?.[2] || source;
   const prefix = !publicError && !coded && typeof error?.name === "string" ? `${error.name}: ` : "";
-  const diagnostic = safeErrorText(prefix + raw) || "未记录底层原因";
+  const diagnostic = safeErrorText(prefix + raw);
   const chain = [], stacks = [], seen = new Set();
   if (details?.exception_chain) chain.push(details.exception_chain);
   if (details?.exception_stack) stacks.push(details.exception_stack);

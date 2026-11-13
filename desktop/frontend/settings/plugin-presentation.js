@@ -142,7 +142,7 @@ function pluginStatus({ state = "", reasonCode = "", unavailable = [] } = {}) {
   if (["PLUGIN_DEPENDENCIES_MISSING", "PLUGIN_DEPENDENCIES_STALE", "PLUGIN_DEPENDENCIES_INVALID"].includes(reasonCode)) {
     return result(
       "依赖检查失败",
-      "未提供错误详情。",
+      "",
       reasonCode,
     );
   }

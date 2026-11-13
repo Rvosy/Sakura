@@ -3,7 +3,7 @@ const SEVERITIES = new Set(["trace", "debug", "info", "warning", "error"]);
 const VIEW_MODES = new Set(["all", "problems"]);
 const MAX_RECORDS = 400;
 const INLINE_DETAIL_LABELS = new Set([
-  "状态", "服务", "模型", "工具", "耗时", "数据量", "数量", "进度", "分辨率",
+  "状态", "服务", "模型", "工具", "耗时", "总耗时", "音频时长", "数量", "进度", "分辨率",
   "当前版本", "目标版本", "检测到的版本",
 ]);
 const TTS_LIFECYCLE_EVENTS = new Set([
@@ -37,7 +37,6 @@ export function validateViewerRecord(value) {
   const keys = new Set(required);
   keys.add("pluginId");
   keys.add("pluginName");
-  keys.add("description");
   keys.add("correlationId");
   if (!isObject(value) || Object.keys(value).some((key) => !keys.has(key))) throw viewerError();
   if (required.some((key) => !(key in value))) throw viewerError();
@@ -55,15 +54,6 @@ export function validateViewerRecord(value) {
   if (value.scopes.includes("tts") && value.scopes.length !== 1) throw viewerError();
   if (!SEVERITIES.has(value.severity)) throw viewerError();
   if ([value.category, value.eventCode, value.message].some((text) => typeof text !== "string" || !text)) {
-    throw viewerError();
-  }
-  if (!["warning", "error"].includes(value.severity)) {
-    if ("description" in value) throw viewerError();
-  } else if (
-    typeof value.description !== "string"
-    || !value.description.trim()
-    || value.description.length > 192
-  ) {
     throw viewerError();
   }
   if (!Array.isArray(value.details) || value.details.some((detail) => (
@@ -133,7 +123,6 @@ function collapseKey(record) {
     record.category,
     record.eventCode,
     record.message,
-    record.description || "",
     record.details,
     record.correlationId || "",
   ]);
@@ -192,31 +181,23 @@ export function viewerProblemCount(records, scope, pluginId = "") {
 export function viewerInlineSummary(record, limit = 3) {
   if (TTS_LIFECYCLE_EVENTS.has(record.eventCode)) {
     const elapsed = record.details.find((detail) => detail.label === "耗时");
-    return elapsed ? `${elapsed.label}=${elapsed.value}` : "";
+    return elapsed ? `${elapsed.label} ${elapsed.value}` : "";
   }
-  const elapsed = ["elapsed_ms", "duration_ms"]
-    .map(label => record.details.find(detail => detail.label === label))
-    .find(detail => detail?.value.trim() && Number.isFinite(Number(detail.value)) && Number(detail.value) >= 0);
-  const details = record.details.slice();
-  if (elapsed && !details.some(detail => detail.label === "耗时")) {
-    const milliseconds = Number(elapsed.value);
-    details.unshift({ label: "耗时", value: milliseconds >= 1000
-      ? `${Number((milliseconds / 1000).toFixed(2))} 秒`
-      : `${Number(milliseconds.toFixed(1))} ms` });
-  }
-  return details
+  return record.details
     .filter((detail) => (
       INLINE_DETAIL_LABELS.has(detail.label)
       && !(record.eventCode.startsWith("ipc.request.") && detail.label === "状态")
+      && !(detail.label === "工具" && record.message.includes(detail.value))
+      && !(detail.label === "状态" && ["已完成", "已就绪", "已取消"].includes(detail.value))
     ))
     .slice(0, Math.max(0, limit))
-    .map((detail) => `${detail.label}=${detail.value}`)
+    .map((detail) => `${detail.label} ${detail.value}`)
     .join(" · ");
 }
 
 export function viewerCopyText(item) {
   const { record, repeatCount = 1 } = item;
-  const level = { info: "信息", warning: "提醒", error: "错误" }[record.severity] || record.severity;
+  const level = { trace: "跟踪", debug: "调试", info: "信息", warning: "警告", error: "错误" }[record.severity];
   const lines = [
     `[${record.timestamp}] [${record.category}] [${level}] ${record.message}`,
   ];
@@ -224,7 +205,6 @@ export function viewerCopyText(item) {
   if (record.pluginId) lines.push(`插件：${viewerPluginName(record)}`, `插件标识：${record.pluginId}`);
   const failure = viewerFailureText(record);
   if (failure) lines.push(`原始报错：${failure}`);
-  else if (record.description) lines.push(`说明：${record.description}`);
   lines.push(`事件代码：${record.eventCode}`);
   for (const detail of record.details) {
     if (failure && ["诊断", "原始报错"].includes(detail.label)) continue;
@@ -238,7 +218,7 @@ export function viewerCopyText(item) {
 export function viewerFailureText(record) {
   if (!["warning", "error"].includes(record.severity)) return "";
   const diagnostic = record.details.find(detail => ["诊断", "原始报错"].includes(detail.label))?.value;
-  if (!diagnostic) return "未记录底层原因";
+  if (!diagnostic) return "";
   const type = record.details.find(detail => detail.label === "根因类型")?.value
     || record.details.find(detail => detail.label === "类型")?.value;
   return type && !diagnostic.startsWith(`${type}:`) && diagnostic !== type ? `${type}: ${diagnostic}` : diagnostic;

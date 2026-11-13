@@ -1621,18 +1621,14 @@ class MemoryStore:
         elapsed = int(time.time() - self._loading_started_at) if self._loading_started_at else 0
         return {
             "status": "loading",
-            "message": (
-                f"记忆系统正在初始化（已等待 {elapsed} 秒），稍后会自动就绪。"
-            ),
+            "message": f"正在初始化记忆（已耗时 {elapsed} 秒）",
             "memories": [],
         }
 
     def _failed_response(self, error: str) -> dict[str, Any]:
         return {
             "status": "failed",
-            "message": (
-                "长期记忆系统暂时不可用，普通聊天仍可继续。"
-            ),
+            "message": "长期记忆加载失败",
             "error": error,
             "memories": [],
         }
@@ -1658,7 +1654,7 @@ class MemoryStore:
             self._load_error = error
             status_event = self._set_status_locked(
                 "failed",
-                "长期记忆系统暂时不可用；普通聊天仍可继续。",
+                "长期记忆运行失败",
             )
             self._record_load_diagnostic(
                 event="memory_store_runtime_failed",
@@ -2313,7 +2309,7 @@ def _format_memory_load_error(exc: Exception, *, embedding_download: bool) -> st
         "然后在设置页手动导入：\n"
         "https://github.com/Rvosy/Sakura/releases/download/v0.9.7/"
         "models--qdrant--all-MiniLM-L6-v2-onnx.zip\n"
-        "也可以尝试开启代理并重启 Sakura 重新下载；普通聊天仍可继续。"
+        "也可以配置代理后重启 Sakura 重新下载。"
         f"\n\n原始错误：{raw_message}"
     )
 

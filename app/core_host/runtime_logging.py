@@ -864,7 +864,8 @@ def _wire_record_from_log_event(record: LogEvent) -> dict[str, object]:
         from app.plugins.sakura_plugin_sdk import prepare_log_payload
         message, safe_attributes = prepare_log_payload(record.message, attributes)
         safe_attributes.update(_safe_attributes({key: value for key, value in attributes.items() if key in DIAGNOSTIC_TEXT_KEYS or key in {"cause_type", "cause_code", "validation_field", "error_type", "exception_site", "errno", "winerror"}}))
-        wire.update(custom=True, message=message, event="runtime.message")
+        wire.update(custom=True, message=message,
+                    event=_safe_token(safe_attributes.get("event"), 96) or "runtime.message")
     else:
         safe_attributes = _safe_attributes(attributes)
     if safe_attributes:

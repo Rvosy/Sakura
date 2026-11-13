@@ -57,6 +57,27 @@ def test_missing_host_sink_never_opens_a_fallback_file(monkeypatch) -> None:
     log_event("APP", "Sakura startup", event="core.process.started")
 
 
+def test_plugin_events_keep_identity_level_and_operation_across_bridge() -> None:
+    stream = io.BytesIO()
+    bridge = install_runtime_logging(stream)
+    try:
+        for severity, event in [("info", "memory.recall.finished"), ("debug", "screen.awareness.captured")]:
+            assert log_message(severity, "处理完成", plugin_id="fixture.plugin", fields={
+                "event": event, "operation_id": "fixture-operation", "elapsed_ms": 1250,
+            })
+        assert log_message("info", "普通记录", fields={"event": "invalid event"})
+    finally:
+        bridge.close()
+    first, debug, fallback = _records(stream)
+    assert first["event"] == "memory.recall.finished"
+    assert first["operation_id"] == "fixture-operation"
+    assert first["plugin_id"] == "fixture.plugin"
+    assert first["attributes"]["elapsed_ms"] == 1250
+    assert debug["event"] == "screen.awareness.captured"
+    assert debug["severity"] == "debug"
+    assert fallback["event"] == "runtime.message"
+
+
 @pytest.mark.parametrize("value", [12, "字段" * 100])
 def test_custom_field_budget_is_stable_across_sdk_and_core_cleaning(value) -> None:
     from app.plugins.sakura_plugin_sdk import prepare_log_payload

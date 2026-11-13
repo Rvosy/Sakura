@@ -437,6 +437,10 @@ def test_model_call_runtime_events_match_final_payload_and_trace(
     context = next(attributes for event, attributes in events if event == "context.prompt.prepared")
     started = next(attributes for event, attributes in events if event == "api.request.started")
     received = next(attributes for event, attributes in events if event == "api.response.received")
+    finished = next(attributes for event, attributes in events if event == "api.request.finished")
+    assert finished["model_call"] == started["model_call"]
+    assert finished["trace_id"] == started["trace_id"]
+    assert finished["elapsed_ms"] >= 0
     assert context["trace_id"] == started["trace_id"] == received["trace_id"] == "1"
     assert context["model_call"] == started["model_call"] == received["model_call"] == 1
     assert context["history_messages"] == 2

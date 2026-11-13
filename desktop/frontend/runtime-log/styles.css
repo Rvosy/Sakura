@@ -271,11 +271,10 @@ h1 {
 .record-level-error { color: var(--error); }
 .record-message {
   min-width: 0;
-  overflow: hidden;
+  overflow-wrap: anywhere;
   color: var(--text);
   font-weight: 600;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  white-space: normal;
 }
 .record-inline {
   min-width: 0;
@@ -298,13 +297,6 @@ h1 {
 .record-disclosure {
   grid-column: 1;
 }
-.record-description {
-  min-width: 0;
-  color: var(--secondary-text);
-  font-size: 12px;
-  line-height: 1.45;
-  white-space: normal;
-}
 .record-raw {
   display: block;
   margin-top: 5px;
@@ -320,13 +312,6 @@ h1 {
   -webkit-user-select: text;
 }
 .record-raw-type { font-weight: 700; }
-.record-raw.is-missing {
-  padding: 3px 0;
-  border: 0;
-  background: transparent;
-  color: var(--secondary-text);
-  font-family: inherit;
-}
 .record-details .detail-wide { grid-column: 1 / -1; }
 .record-details dd { white-space: pre-wrap; user-select: text; -webkit-user-select: text; }
 .severity-warning .record-disclosure > summary::after,

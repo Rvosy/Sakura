@@ -1,10 +1,10 @@
 """模型用量的功能分类，插件可使用自己的稳定分类 ID。"""
 
 CATEGORIES = {
-    "conversation": "对话",
-    "memory_curation": "记忆整理",
-    "vision": "视觉分析",
-    "proactive": "主动回复",
+    "conversation": "聊天",
+    "memory_curation": "记忆",
+    "vision": "识图",
+    "proactive": "主动聊天",
     "background": "后台任务",
     "other": "其他功能",
     "uncategorized": "未分类",

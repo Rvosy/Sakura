@@ -12,6 +12,8 @@ import {
   viewerScopeCounts,
   viewerPluginName,
   viewerPluginOptions,
+  viewerInlineSummary,
+  viewerFailureText,
 } from "../runtime-log/runtime-log-presentation.js";
 
 function record(sequence, overrides = {}) {
@@ -41,10 +43,32 @@ function snapshot(records, overrides = {}) {
   };
 }
 
+test("inline summaries avoid repeating tools and keep useful timing", () => {
+  const tool = record(1, {eventCode: "tool.execution.finished", message: "工具执行完成：web_search",
+    details: [{label: "耗时", value: "1.45 秒"}, {label: "工具", value: "web_search"}]});
+  assert.equal(viewerInlineSummary(tool), "耗时 1.45 秒");
+  const reply = record(2, {details: [{label: "总耗时", value: "41.14 秒"}]});
+  assert.equal(viewerInlineSummary(reply), "总耗时 41.14 秒");
+  const tts = record(3, {details: [{label: "状态", value: "已完成"},
+    {label: "耗时", value: "1.44 秒"}, {label: "音频时长", value: "10.96 秒"}]});
+  assert.equal(viewerInlineSummary(tts), "耗时 1.44 秒 · 音频时长 10.96 秒");
+});
+
+test("records without diagnostics keep their message and real causes remain intact", () => {
+  const warning = record(1, {severity: "warning", message: "部分记录未保留"});
+  assert.equal(viewerFailureText(warning), "");
+  assert.ok(viewerCopyText({record: warning}).includes(warning.message));
+  const error = {...warning, severity: "error"};
+  assert.equal(viewerFailureText(error), "");
+  const withCause = {...warning, details: [{label: "诊断", value: "connection reset\noriginal cause"}]};
+  assert.equal(viewerFailureText(withCause), "connection reset\noriginal cause");
+  assert.ok(viewerCopyText({record: withCause}).includes("connection reset\noriginal cause"));
+});
+
 test("unified snapshots filter plugins by trusted identity and preserve file failure status", () => {
   const one = record(1, { source: "plugin", pluginId: "fixture.one", pluginName: "长期记忆", scopes: ["plugins"],
     message: "<img src=x onerror=alert(1)>", eventCode: "runtime.message" });
-  const two = record(2, { ...one, sequence: 2, pluginId: "fixture.two", severity: "error", description: "插件报告了错误。" });
+  const two = record(2, { ...one, sequence: 2, pluginId: "fixture.two", severity: "error" });
   const debug = record(3, { ...one, sequence: 3, severity: "debug" });
   const state = applyViewerSnapshot(null, snapshot([one, two, debug], { failedFiles: ["plugins"] }));
   assert.deepEqual(state.failedFiles, ["plugins"]);
@@ -106,7 +130,6 @@ test("consecutive duplicate rows collapse and copied errors retain support detai
     category: "API",
     eventCode: "api.request.failed",
     message: "模型请求失败",
-    description: "模型服务没有接受当前凭据，这次回复无法生成。",
     correlationId: "op:12345678",
     details: [
       { label: "诊断", value: "身份验证失败" },
@@ -127,7 +150,6 @@ test("collapsed rows have distinct instance keys even when identical records are
     severity: "warning",
     eventCode: "runtime.degraded",
     message: "运行提醒",
-    description: "部分功能没有按预期工作。",
   };
   const collapsed = collapseViewerRecords([
     record(1, repeated),
