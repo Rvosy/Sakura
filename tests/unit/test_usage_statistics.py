@@ -43,7 +43,8 @@ def test_history_import_survives_rotation_and_live_records_are_not_duplicated(tm
     trace = make_trace(tmp_path, yesterday)
     shutil.copyfile(trace, trace.with_name(f"sakura-agent-trace.{yesterday.date()}.1.log"))
     store = UsageStore(tmp_path)
-    metadata = {"operationId": "live-1", "model": {"modelId": "new-model"}}
+    metadata = {"operationId": "live-1", "model": {"modelId": "new-model"},
+                "callerId": "sakura.assistant.default", "callerName": "Assistant"}
     store.record_response({"usage": {"input_tokens": 50, "output_tokens": 10}}, metadata)
     store.record_response({"usage": {"input_tokens": 50, "output_tokens": 10}}, metadata)
     store.record_response({}, {**metadata, "operationId": "unknown"})
@@ -53,10 +54,14 @@ def test_history_import_survives_rotation_and_live_records_are_not_duplicated(tm
     assert result["summary"]["measuredCalls"] == 2
     assert result["summary"]["totalTokens"] == 180
     assert result["summary"]["historicalCalls"] == 1
+    assert [(row["id"], row["label"], row["calls"], row["totalTokens"]) for row in result["sources"]] == [
+        ("sakura.assistant.default", "Assistant", 3, 180)]
     assert store.snapshot("today")["summary"]["totalTokens"] == 60
     for path in (tmp_path / "data/logs").glob("*.log"):
         path.unlink()
-    assert UsageStore(tmp_path).snapshot("all")["summary"]["totalTokens"] == 180
+    reopened = UsageStore(tmp_path).snapshot("all")
+    assert reopened["summary"]["totalTokens"] == 180
+    assert reopened["sources"] == result["sources"]
 
 
 def test_provider_response_is_recorded_and_write_failure_does_not_break_reply(tmp_path):
@@ -64,7 +69,7 @@ def test_provider_response_is_recorded_and_write_failure_does_not_break_reply(tm
     service = HookHostService(None, None, None, usage_store=store)
     data = {"response": {"usage": {"total_tokens": 9}, "message": {"content": "hello"}}}
     assert service.run("model.after_response", data, {"operationId": "one", "model": {"modelId": "model"}}) == data
-    assert store.snapshot("all")["summary"]["totalTokens"] == 9
+    assert [(row["id"], row["totalTokens"]) for row in store.snapshot("all")["sources"]] == [("sakura.core", 9)]
     class BrokenStore:
         def record_response(self, *args):
             raise OSError("disk full")
@@ -94,11 +99,7 @@ def test_plugin_usage_is_owned_deduplicated_and_filtered_by_inclusive_dates(tmp_
     assert result["summary"]["totalTokens"] == 60
     assert {row["id"]: row["totalTokens"] for row in result["categories"]} == {
         "plugin.a:summary": 10, "plugin.b:summary": 10, "memory_curation": 40}
-    assert {row["id"] for row in result["plugins"]} == {"plugin.a", "plugin.b"}
-    for plugin in result["plugins"]:
-        assert {row["id"]: row["totalTokens"] for row in plugin["categories"]} == {
-            "memory_curation": 20, f'{plugin["id"]}:summary': 10}
-        assert sum(row["totalTokens"] for row in plugin["categories"]) == plugin["totalTokens"]
+    assert {row["id"]: row["totalTokens"] for row in result["sources"]} == {"plugin.a": 30, "plugin.b": 30}
 
 
 def test_statistics_uses_current_builtin_names_and_preserves_unknown_usage(tmp_path):
@@ -118,7 +119,6 @@ def test_statistics_uses_current_builtin_names_and_preserves_unknown_usage(tmp_p
     assert categories["vision"]["totalTokens"] is None
     assert categories["vision"]["calls"] == 1
     assert categories["vision"]["measuredCalls"] == 0
-    assert result["plugins"][0]["categories"] == result["categories"]
 
 
 def test_upgrade_preserves_old_totals_and_enriches_trace_categories(tmp_path):
@@ -142,11 +142,32 @@ def test_upgrade_preserves_old_totals_and_enriches_trace_categories(tmp_path):
     assert result["summary"]["calls"] == 2
     assert result["summary"]["totalTokens"] == 197
     assert {row["id"]: row["totalTokens"] for row in result["categories"]} == {"conversation": 120, "uncategorized": 77}
+    assert [(row["label"], row["totalTokens"]) for row in result["sources"]] == [("Assistant", 120), ("历史记录", 77)]
     trace.unlink()
     assert UsageStore(tmp_path).snapshot("all")["summary"]["totalTokens"] == 197
 
 
-def test_model_client_records_default_and_per_call_function_categories(tmp_path):
+def test_upgrade_corrects_mem0_usage_without_changing_totals_or_other_plugins(tmp_path):
+    store = UsageStore(tmp_path)
+    for plugin, category, tokens in [("sakura.memory.mem0", "other", 10), ("", "conversation", 20),
+                                     ("sakura.memory.mem0", "custom", 30), ("another", "other", 40),
+                                     ("sakura.memory.mem0", "memory_curation", 50)]:
+        store.record({"recordId": str(tokens), "category": category, "usage": {"total_tokens": tokens}},
+                     plugin_id=plugin, plugin_name=plugin or "历史数据")
+    with sqlite3.connect(store.path) as connection:
+        connection.execute("PRAGMA user_version=2")
+    result = UsageStore(tmp_path).snapshot("all")
+    assert result["summary"]["calls"] == 5
+    assert result["summary"]["totalTokens"] == 150
+    assert {row["id"]: row["totalTokens"] for row in result["categories"]} == {
+        "memory_curation": 60, "conversation": 20, "sakura.memory.mem0:custom": 30, "other": 40}
+    assert {row["id"]: (row["label"], row["totalTokens"]) for row in result["sources"]} == {
+        "sakura.memory.mem0": ("sakura.memory.mem0", 90), "another": ("another", 40), "": ("历史记录", 20)}
+    assert UsageStore(tmp_path).snapshot("all")["categories"] == result["categories"]
+
+
+@pytest.mark.parametrize("client_source", ["sdk", "mem0"])
+def test_model_client_records_default_and_per_call_function_categories(tmp_path, monkeypatch, client_source):
     from sakura_model_client import ModelClient
     store = UsageStore(tmp_path)
     hooks = HookHostService(None, None, None, usage_store=store)
@@ -163,7 +184,22 @@ def test_model_client_records_default_and_per_call_function_categories(tmp_path)
                 return {"response": {"message": {"content": "ok"}, "usage": {"total_tokens": 10}}}
             return {}
     context = SimpleNamespace(bind=lambda key: Provider(), get=lambda key: hooks if key == "sakura.host.hooks" else None)
-    client = ModelClient(context, {"serviceKey": "fixture", "profileId": "p", "modelId": "m"}, usage_category="memory_curation")
+    reference = {"serviceKey": "fixture", "profileId": "p", "modelId": "m"}
+    if client_source == "mem0":
+        from plugins.optional.sakura_mem0 import plugin as mem0_plugin
+        services = {
+            "sakura.host.hooks": hooks,
+            "sakura.host.storage": SimpleNamespace(resolve=lambda *_: str(tmp_path)),
+            "sakura.host.character": SimpleNamespace(current=lambda: {"id": "sakura", "systemPrompt": "Sakura"}),
+            "sakura.host.model_slots.v2": SimpleNamespace(catalog=lambda: [], resolve=lambda ref: ref),
+        }
+        context.get = services.get
+        context.data_path = lambda _: str(tmp_path)
+        context.config = SimpleNamespace(get=lambda: {}, update=lambda value: None)
+        monkeypatch.setattr(mem0_plugin, "SakuraMem0Runtime", lambda *args, **kwargs: kwargs["model_client_factory"])
+        client = mem0_plugin._default_runtime(context)(reference)
+    else:
+        client = ModelClient(context, reference, usage_category="memory_curation")
     try:
         client.complete({"messages": []})
         client.complete({"messages": []}, usage_category="vision")

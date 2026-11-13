@@ -56,9 +56,10 @@ def run():
                 store.record({"recordId": str(index), "timestamp": timestamp, "model": "示例模型",
                     "category": "memory_curation" if index % 3 == 0 else "vision" if index in (2, 5) else "conversation",
                     "usage": {"input_tokens": tokens, "output_tokens": 18000, "cached_input_tokens": 8000, "reasoning_tokens": 3000}},
-                    plugin_id="assistant", plugin_name="Sakura Assistant")
+                    plugin_id="sakura.assistant.default", plugin_name="Assistant")
                 timeline.append(NewTimelineEntry(str(index), str(index), "sakura", TimelineKind.HUMAN, "chat", timestamp, {"text": "hello"}))
-            store.record({"recordId": "external", "model": "摘要模型", "category": "summary", "categoryLabel": "摘要生成",
+            summary_model = "example-provider/summary-model-with-a-long-name-20261113"
+            store.record({"recordId": "external", "model": summary_model, "category": "summary", "categoryLabel": "摘要生成",
                 "timestamp": today.isoformat(),
                 "usage": {"total_tokens": 7000}}, plugin_id="summary", plugin_name="摘要插件")
             boundary = UsageStatisticsBoundary("g", "c", root)
@@ -96,19 +97,26 @@ def run():
                 }""")
             expect(section.locator(".usage-card-tokens .usage-value")).to_have_text("724,000")
             expect(section.locator(".usage-chart svg")).to_be_visible()
+            await_chart = """async () => {
+              const echarts = await import('/desktop/frontend/vendor/echarts/echarts.esm.min.js');
+              const chart = echarts.getInstanceByDom(document.querySelector('.usage-chart'));
+              do { await new Promise(requestAnimationFrame); }
+              while (!chart.getZr().animation.isFinished());
+            }"""
+            page.evaluate(await_chart)
+            page.screenshot(path=str(output / "overview.png"), animations="disabled")
             memory = section.locator(".usage-table tbody tr").filter(has=page.get_by_text("记忆", exact=True))
             expect(memory).to_contain_text("296,000")
             expect(memory).to_contain_text("40.9%")
             expect(section.locator(".usage-table")).to_contain_text("识图")
-            page.screenshot(path=str(output / "purposes.png"), animations="disabled")
-            section.get_by_role("button", name="按插件", exact=True).click()
+            section.locator(".usage-detail").screenshot(path=str(output / "purposes.png"), animations="disabled")
+            section.get_by_role("button", name="按来源", exact=True).click()
             expect(section.locator(".usage-table")).to_contain_text("摘要插件")
-            expect(section.locator(".usage-purpose-row")).to_have_count(4)
-            expect(section.locator(".usage-purpose-row").filter(has=page.get_by_text("识图", exact=True))).to_contain_text("160,000")
-            expect(section.locator("tbody tr").filter(has=page.get_by_text("Sakura Assistant", exact=True))).to_contain_text("717,000")
-            page.screenshot(path=str(output / "plugins.png"), animations="disabled")
+            expect(section.locator("tbody tr").filter(has=page.get_by_text("Assistant", exact=True))).to_contain_text("717,000")
+            section.locator(".usage-detail").screenshot(path=str(output / "sources.png"), animations="disabled")
             section.get_by_role("button", name="按模型", exact=True).click()
-            expect(section.locator(".usage-table")).to_contain_text("摘要模型")
+            expect(section.locator(".usage-table")).to_contain_text(summary_model)
+            section.locator(".usage-detail").screenshot(path=str(output / "models.png"), animations="disabled")
             section.get_by_role("button", name="按用途", exact=True).click()
 
             section.locator(".date-range-trigger").click()
@@ -222,8 +230,11 @@ def run():
             page.screenshot(path=str(output / "dark-narrow.png"), animations="disabled")
             section.locator(".usage-table").scroll_into_view_if_needed()
             page.screenshot(path=str(output / "dark-details.png"), animations="disabled")
-            section.get_by_role("button", name="按插件", exact=True).click()
-            page.screenshot(path=str(output / "dark-plugins.png"), animations="disabled")
+            section.get_by_role("button", name="按来源", exact=True).click()
+            section.locator(".usage-detail").scroll_into_view_if_needed()
+            page.screenshot(path=str(output / "dark-sources.png"), animations="disabled")
+            section.get_by_role("button", name="按模型", exact=True).click()
+            section.locator(".usage-detail").screenshot(path=str(output / "dark-models.png"), animations="disabled")
             section.get_by_role("button", name="按用途", exact=True).click()
             assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
             page.evaluate("document.querySelector('.page-scroll').scrollTop = 0")
@@ -253,14 +264,14 @@ def run():
             section.get_by_role("button", name="刷新统计", exact=True).click()
             expect(section.locator(".usage-table")).to_contain_text("1 次未返回总量")
             expect(section.locator(".usage-card-tokens .usage-value")).to_have_text("724,000")
-            section.get_by_role("button", name="按插件", exact=True).click()
+            section.get_by_role("button", name="按来源", exact=True).click()
             unknown = section.locator("tbody tr").filter(has=page.get_by_text("未返回用量的插件", exact=True))
             expect(unknown).to_contain_text("1 次未返回总量")
-            expect(unknown.locator("td").nth(1)).to_have_text("—")
             expect(unknown.locator("td").nth(2)).to_have_text("—")
+            expect(unknown.locator("td").nth(4)).to_have_text("—")
             assert not errors, errors
             browser.close()
-            print(f"PASS: 日期范围、曲线与柱状、悬浮详情、用途占比与插件明细、刷新与切页；截图：{output}")
+            print(f"PASS: 日期范围、曲线与柱状、悬浮详情、用途占比与来源汇总、刷新与切页；截图：{output}")
     finally:
         server.shutdown()
         server.server_close()

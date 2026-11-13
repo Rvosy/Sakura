@@ -5,15 +5,6 @@ const number = new Intl.NumberFormat("zh-CN");
 const compact = new Intl.NumberFormat("zh-CN", { notation: "compact", maximumFractionDigits: 1 });
 const format = value => value == null ? "—" : number.format(value);
 const percent = new Intl.NumberFormat("zh-CN", { style: "percent", maximumFractionDigits: 1 });
-const purposeNotes = {
-  conversation: "日常对话与回复生成",
-  memory_curation: "长期记忆的提取与整理",
-  vision: "图片与屏幕理解，含整次请求的文本用量",
-  proactive: "角色主动发起的聊天",
-  background: "后台执行的模型任务",
-  other: "其他模型调用",
-  uncategorized: "记录中没有可识别的用途",
-};
 let chartsReady;
 
 export function trendBuckets(snapshot) {
@@ -103,44 +94,45 @@ export function createUsageStatistics({ document, invoke }) {
   const chartFrame = node("div", "usage-chart-frame"); chartFrame.append(chartHost, chartEmpty);
   chartSection.append(chartHeading, chartFrame);
   const detail = node("section", "usage-detail"), detailHeading = node("div", "usage-section-heading");
-  detailHeading.append(node("h3", null, "Token 用在哪里"), tabs([["categories", "按用途"], ["plugins", "按插件"], ["models", "按模型"]], dimension,
+  detailHeading.append(node("h3", null, "用量分布"), tabs([["categories", "按用途"], ["sources", "按来源"], ["models", "按模型"]], dimension,
     "统计维度", key => { dimension = key; renderTable(); }));
   const tableScroll = node("div", "usage-table-scroll"), table = node("table", "usage-table"), head = node("thead"), body = node("tbody");
   table.append(head, body); tableScroll.append(table); detail.append(detailHeading, tableScroll);
-  root.append(toolbar, overview, breakdown, detail, chartSection);
+  root.append(toolbar, overview, breakdown, chartSection, detail);
 
   function renderTable() {
     if (!snapshot) return;
     head.replaceChildren(); body.replaceChildren();
     const tr = node("tr");
-    for (const text of [({ categories: "用途", models: "模型", plugins: "插件 / 用途" })[dimension], "总 Token", "占比", "输入 Token", "输出 Token", "回复次数"]) {
+    table.setAttribute("aria-label", ({ categories: "用途用量", models: "模型用量", sources: "来源用量" })[dimension]);
+    for (const text of [({ categories: "用途", models: "模型", sources: "来源" })[dimension], "回复次数", "输入 Token", "输出 Token", "总 Token"]) {
       const th = node("th", null, text); th.scope = "col"; tr.append(th);
     }
     head.append(tr);
     const rows = snapshot[dimension];
-    function appendRow(row, child = false) {
-      const tr = node("tr", child ? "usage-purpose-row" : ""), name = node("td");
+    for (const row of rows) {
+      const tr = node("tr"), name = node("td");
       name.append(node("span", "usage-row-name", row.label || row.model || "未分类"));
-      const note = dimension === "categories" ? purposeNotes[row.id] : null;
-      if (note) name.append(node("span", "usage-row-note", note));
       const missing = row.calls - row.measuredCalls;
       if (missing) name.append(node("span", "usage-row-note", `${format(missing)} 次未返回总量`));
       tr.append(name);
-      const total = node("td", "usage-row-total", format(row.totalTokens));
+      const total = node("td", "usage-row-total");
+      total.append(node("span", "usage-row-total-value", format(row.totalTokens)));
       const share = row.totalTokens == null || !snapshot.summary.totalTokens ? null : row.totalTokens / snapshot.summary.totalTokens;
-      if (!child && share != null) {
+      if (share != null) {
+        const shareLabel = node("span", "usage-row-share");
+        shareLabel.setAttribute("aria-label", `占总量 ${percent.format(share)}`);
         const track = node("span", "usage-share"), fill = node("span");
-        fill.style.width = `${share * 100}%`; track.append(fill); total.append(track);
+        track.setAttribute("aria-hidden", "true");
+        fill.style.width = `${share * 100}%`; track.append(fill); shareLabel.append(track);
+        shareLabel.append(node("span", null, percent.format(share)));
+        total.append(shareLabel);
       }
-      tr.append(total, node("td", null, share == null ? "—" : percent.format(share)));
-      for (const value of [row.inputTokens, row.outputTokens, row.calls]) tr.append(node("td", null, format(value)));
+      for (const value of [row.calls, row.inputTokens, row.outputTokens]) tr.append(node("td", null, format(value)));
+      tr.append(total);
       body.append(tr);
     }
-    for (const row of rows) {
-      appendRow(row);
-      if (dimension === "plugins") for (const category of row.categories) appendRow(category, true);
-    }
-    if (!rows.length) { const tr = node("tr"), td = node("td", "usage-empty", "暂无用量记录"); td.colSpan = 6; tr.append(td); body.append(tr); }
+    if (!rows.length) { const tr = node("tr"), td = node("td", "usage-empty", "暂无用量记录"); td.colSpan = 5; tr.append(td); body.append(tr); }
   }
 
   function tooltip(params, buckets) {
@@ -173,9 +165,9 @@ export function createUsageStatistics({ document, invoke }) {
           formatter: value => snapshot.granularity === "hour" ? value.slice(11, 16) : value.slice(value.length === 7 ? 2 : 5), margin: 15 } },
       yAxis: { type: "value", minInterval: 1, splitNumber: 3, axisLine: { show: false }, axisTick: { show: false },
         axisLabel: { color: muted, fontSize: 11, formatter: value => compact.format(value) }, splitLine: { show: false } },
-      dataZoom: [{ type: "slider", throttle: 0, left: "6%", right: "6%", bottom: 4, height: 24,
+      dataZoom: [{ type: "slider", throttle: 0, left: 54, right: 20, bottom: 4, height: 24,
         // 为手柄保留间距，避免最小范围时交叠、越过。
-        minSpan: 8 / (chartHost.clientWidth * .88) * 100,
+        minSpan: 8 / (chartHost.clientWidth - 74) * 100,
         borderColor: "transparent", backgroundColor: "transparent",
         fillerColor: chartLibrary.color.modifyAlpha(primary, .09), dataBackground: { lineStyle: { color: primary, opacity: .3 }, areaStyle: { color: primary, opacity: .08 } },
         selectedDataBackground: { lineStyle: { color: primary }, areaStyle: { color: primary, opacity: .12 } },
@@ -202,7 +194,10 @@ export function createUsageStatistics({ document, invoke }) {
     fields.tokens.value.textContent = format(s.calls ? s.totalTokens : 0);
     fields.tokens.note.textContent = `输入 ${format(s.inputTokens)} · 输出 ${format(s.outputTokens)}`;
     fields.turns.value.textContent = format(c.turns); fields.turns.note.textContent = `${format(c.characters)} 个角色`;
-    fields.calls.value.textContent = format(s.calls); fields.calls.note.textContent = `${format(s.measuredCalls)} 次返回用量`;
+    fields.calls.value.textContent = format(s.calls);
+    const missing = s.calls - s.measuredCalls;
+    fields.calls.note.textContent = missing ? `${format(missing)} 次缺少 Token 总量` : "";
+    fields.calls.note.hidden = missing === 0;
     breakdown.replaceChildren(node("span", null, `缓存输入 ${format(s.cachedTokens)}`), node("span", null, `推理输出 ${format(s.reasoningTokens)}`));
     renderTable(); updateChart(resetRange);
   }

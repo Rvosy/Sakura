@@ -315,7 +315,7 @@ class Plugin:
 
 record 使用 `recordId`（必填的稳定调用 ID）、`model`、`category`、`categoryLabel`、`usage` 和可选 ISO 8601 `timestamp`。时间默认取写入时刻，补录历史时应提供带时区的响应时间。插件身份由宿主填写，不接受调用方指定其他来源。
 
-内置分类由 [`sakura_usage.CATEGORIES`](../../app/plugin_sdk/sakura_usage.py) 定义，界面以聊天、记忆、识图等用途展示。自定义分类 ID 使用字母、数字、点、下划线或连字符，以字母或数字开头；通过 `categoryLabel` 提供显示名称。宿主按插件隔离自定义分类，不同插件的同名分类不会合并。内置分类可跨插件汇总；按插件查看时保留各自的用途明细。
+内置分类由 [`sakura_usage.CATEGORIES`](../../app/plugin_sdk/sakura_usage.py) 定义，界面以聊天、记忆、识图等用途展示。自定义分类 ID 使用字母、数字、点、下划线或连字符，以字母或数字开头；通过 `categoryLabel` 提供显示名称。宿主按插件隔离自定义分类，不同插件的同名分类不会合并。内置分类可跨插件汇总；界面的“按来源”分别汇总主程序和各插件的用量。
 
 usage 接受模型返回的 `prompt_tokens/completion_tokens` 或 `input_tokens/output_tokens`，以及 `total_tokens`。总量缺失且输入、输出都存在时才相加。缓存与推理是子项：可传 `cached_input_tokens/reasoning_tokens`，也可保留提供方的 `prompt_tokens_details.cached_tokens/completion_tokens_details.reasoning_tokens` 或 input/output 对应字段；它们不额外累加到总量。缺失字段保持缺失，不能用 0 代替未知值。无用量的响应仍可计入回复次数。
 
