@@ -83,7 +83,7 @@ def run():
                 payload = {"expectedCharacterId": request["characterId"]}
                 if command == "history_image":
                     payload.update(entryId=request["entryId"], imageId=request["imageId"], variant=request["variant"])
-                    reads.append((request["entryId"], request["variant"]))
+                    reads.append((request["entryId"], request["variant"], request["imageId"]))
                 else:
                     payload.update(limit=50)
                 result = boundary.handle({"generationId": "generation", "generationCredential": "credential",
@@ -123,6 +123,10 @@ def run():
                       return {start() {}, dispose() {}, cancel() {}, setInputCaptureActive() {}};
                     }`};
                   if (command !== 'history_image') return await nativeHistory(command, args);
+                  if (args.request.imageId === window.failImageId && args.request.variant !== 'thumbnail') {
+                    window.failedImageReads = (window.failedImageReads || 0) + 1;
+                    throw new Error('IMAGE_READ_DENIED: fixture preview');
+                  }
                   window.activeImageReads += 1;
                   try {
                     if (window.activeImageReads > 4) throw new Error('ROUTER_QUEUE_FULL');
@@ -155,8 +159,8 @@ def run():
             expect(page.locator('[data-entry-id="old"]')).to_have_count(0)
             expect(page.get_by_text("你分享了", exact=False)).to_have_count(0)
             page.wait_for_function("[...document.querySelectorAll('.history-image-thumbnail img')].every(img => img.naturalWidth > 0 && !img.hidden)")
-            assert ("automatic", "thumbnail") in reads
-            assert all(variant == "thumbnail" for _, variant in reads)
+            assert any(entry == "automatic" and variant == "thumbnail" for entry, variant, _ in reads)
+            assert all(variant == "thumbnail" for _, variant, _ in reads)
             assert len(reads) == 78
             expect(automatic.locator("details")).not_to_have_attribute("open", "")
             closed_height = automatic.locator("details").bounding_box()["height"]
@@ -180,7 +184,7 @@ def run():
             assert auto_description["y"] + auto_description["height"] <= auto_image["y"]
             assert automatic.locator("img").evaluate("el => el.closest('details.entry-bubble') !== null")
             expect(automatic.locator("img")).to_be_visible()
-            assert ("automatic", "thumbnail") in reads
+            assert any(entry == "automatic" and variant == "thumbnail" for entry, variant, _ in reads)
             assert page.evaluate("liveImageUrls.size") == 78
             automatic.scroll_into_view_if_needed()
             page.screenshot(path=str(ROOT / "temp/history-images-light.png"), animations="disabled")
@@ -263,31 +267,164 @@ def run():
             thumbnail = manual.get_by_role("button", name="预览图片 1")
             thumbnail.click()
             viewer = page.get_by_role("dialog", name="图片预览", exact=True)
+            def settle_viewer():
+                page.wait_for_function("""() => document.querySelector('.history-image-viewer')
+                    .getAnimations({subtree: true}).every(animation => animation.playState !== 'running')""")
             expect(viewer).to_be_visible()
-            expect(viewer.locator("img")).to_be_visible()
-            assert ("manual", "preview") in reads
-            assert ("manual", "original") not in reads
-            assert viewer.locator("img").evaluate("el => el.naturalWidth") == 2560
+            expect(viewer.locator(".image-viewer-slide:not([aria-hidden]) img")).to_be_visible()
+            assert any(entry == "manual" and variant == "preview" for entry, variant, _ in reads)
+            assert ("manual", "original", thumbnail.get_attribute("data-image-id")) not in reads
+            assert viewer.locator(".image-viewer-slide:not([aria-hidden]) img").evaluate("el => el.naturalWidth") == 2560
             viewer.get_by_role("button", name="查看原图").click()
             page.wait_for_function("document.querySelector('.history-image-viewer img').naturalWidth === 6000")
             scroll_before = page.locator("#history-scroll").evaluate("el => el.scrollTop")
-            width = viewer.locator("img").evaluate("el => el.getBoundingClientRect().width")
+            width = viewer.locator(".image-viewer-slide:not([aria-hidden]) img").evaluate("el => el.getBoundingClientRect().width")
             viewer.get_by_role("button", name="放大图片").click()
-            assert viewer.locator("img").evaluate("el => el.getBoundingClientRect().width") > width
-            page.keyboard.press("ArrowRight")
-            expect(viewer.locator("img")).to_have_attribute("alt", "图片 2")
-            expect(viewer.locator("img")).to_be_visible()
-            viewer.get_by_role("button", name="放大图片").click()
-            viewer.get_by_role("button", name="放大图片").click()
+            settle_viewer()
+            assert viewer.locator(".image-viewer-slide:not([aria-hidden]) img").evaluate("el => el.getBoundingClientRect().width") > width
             area = viewer.locator(".image-viewer-viewport")
             box = area.bounding_box()
-            top = area.evaluate("el => el.scrollTop")
+            image = viewer.locator(".image-viewer-slide:not([aria-hidden]) img")
+            viewer.get_by_role("button", name="实际尺寸", exact=True).click()
+            settle_viewer()
+            assert abs(image.bounding_box()["width"] - 6000) < 1
+            # 放大后图片可触达窗口四边，悬浮工具栏周围仍可拖动图片。
+            for x, y in [(2, 100), (618, 100), (310, 2), (100, 678)]:
+                assert image.evaluate("(el, point) => document.elementFromPoint(...point) === el", [x, y])
+            edge_y = image.bounding_box()["y"]
+            page.mouse.move(100, 620)
+            page.mouse.down()
+            page.mouse.move(100, 550)
+            page.mouse.up()
+            assert image.bounding_box()["y"] < edge_y - 60
+            page.screenshot(path=str(ROOT / "temp/history-image-preview-edge.png"), animations="disabled")
+            viewer.get_by_role("button", name="放大图片").click()
+            settle_viewer()
+            assert image.bounding_box()["width"] > 6000
+            viewer.get_by_role("button", name="适应窗口", exact=True).click()
+            settle_viewer()
+            fitted = image.bounding_box()
+            # 裸滚轮围绕指针放大，指针下的图片坐标保持不变。
+            px, py = box["x"] + box["width"] * .6, box["y"] + box["height"] * .55
+            point = ((px - fitted["x"]) / fitted["width"], (py - fitted["y"]) / fitted["height"])
+            page.mouse.move(px, py)
+            page.mouse.wheel(0, -300)
+            page.wait_for_function("""width => document.querySelector('.history-image-viewer img')
+                .getBoundingClientRect().width > width""", arg=fitted["width"])
+            zoomed = image.bounding_box()
+            assert abs((px - zoomed["x"]) / zoomed["width"] - point[0]) < .005
+            assert abs((py - zoomed["y"]) / zoomed["height"] - point[1]) < .005
+            assert page.locator("#history-scroll").evaluate("el => el.scrollTop") == scroll_before
+            viewer.get_by_role("button", name="适应窗口", exact=True).click()
+            settle_viewer()
+            page.mouse.move(px, py)
+            page.mouse.wheel(0, 200)
+            page.wait_for_function("""width => document.querySelector('.history-image-viewer img')
+                .getBoundingClientRect().width < width""", arg=fitted["width"])
+            expect(viewer).to_be_visible()
+            viewer.get_by_role("button", name="适应窗口", exact=True).click()
+            settle_viewer()
+            image.dblclick()
+            settle_viewer()
+            assert abs(image.bounding_box()["width"] - 6000) < 1
+            image.dblclick(position={"x": 3000, "y": 2000})
+            settle_viewer()
+            assert abs(image.bounding_box()["width"] - fitted["width"]) < 1
+            page.screenshot(path=str(ROOT / "temp/history-image-preview-light.png"), animations="disabled")
+            # 连续滚轮从正在显示的尺寸续接，而不是跳到终点或重新从旧尺寸开始。
+            motion = image.evaluate("""async el => {
+              const area = el.closest('.image-viewer-viewport');
+              const bounds = area.getBoundingClientRect();
+              const wheel = () => area.dispatchEvent(new WheelEvent('wheel', {
+                deltaY: -120, clientX: bounds.width / 2, clientY: bounds.height / 2,
+                bubbles: true, cancelable: true
+              }));
+              const width = () => el.getBoundingClientRect().width;
+              const start = width();
+              wheel();
+              const immediate = width();
+              await new Promise(requestAnimationFrame);
+              await new Promise(requestAnimationFrame);
+              const middle = width();
+              wheel();
+              return {start, immediate, middle, continued: width()};
+            }""")
+            assert abs(motion["immediate"] - motion["start"]) < 1
+            assert motion["start"] < motion["middle"] < motion["start"] * 1.272
+            assert abs(motion["continued"] - motion["middle"]) < 1
+            settle_viewer()
+            assert image.bounding_box()["width"] > motion["middle"]
+            viewer.get_by_role("button", name="适应窗口", exact=True).click()
+            settle_viewer()
+            second_id = manual.locator('.history-image-thumbnail').nth(1).get_attribute("data-image-id")
+            second_reads = sum(image_id == second_id and variant != "thumbnail" for _, variant, image_id in reads)
+            page.keyboard.press("ArrowRight")
+            expect(viewer.locator(".image-viewer-slide:not([aria-hidden]) img")).to_have_attribute("alt", "图片 2")
+            expect(viewer.locator(".image-viewer-slide:not([aria-hidden]) img")).to_be_visible()
+            movement = viewer.evaluate("""el => {
+              const slides = el.querySelectorAll('.image-viewer-slide');
+              for (const slide of slides) for (const animation of slide.getAnimations()) {
+                animation.pause();
+                animation.currentTime = animation.effect.getTiming().duration / 2;
+              }
+              return [...slides].map(slide => ({old: slide.hasAttribute('aria-hidden'),
+                x: slide.getBoundingClientRect().x}));
+            }""")
+            assert any(slide["old"] and slide["x"] < 0 for slide in movement)
+            assert any(not slide["old"] and slide["x"] > 0 for slide in movement)
+            page.screenshot(path=str(ROOT / "temp/history-image-slide.png"))
+            viewer.evaluate("el => el.getAnimations({subtree:true}).forEach(animation => animation.play())")
+            settle_viewer()
+            assert sum(image_id == second_id and variant != "thumbnail" for _, variant, image_id in reads) == second_reads
+            viewer.get_by_role("button", name="放大图片").click()
+            settle_viewer()
+            viewer.get_by_role("button", name="放大图片").click()
+            settle_viewer()
+            area = viewer.locator(".image-viewer-viewport")
+            box = area.bounding_box()
+            top = image.bounding_box()["y"]
             page.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
             page.mouse.down()
             page.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2 - 60)
             page.mouse.up()
-            assert area.evaluate("el => el.scrollTop") > top
+            assert image.bounding_box()["y"] < top - 50
+            released = image.bounding_box()["y"]
+            page.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2 + 40)
+            assert abs(image.bounding_box()["y"] - released) < 1
             page.screenshot(path=str(ROOT / "temp/history-image-preview.png"), animations="disabled")
+            page.evaluate("window.holdImage = true; window.imageWaiters = []")
+            page.keyboard.press("ArrowRight")
+            expect(image).to_have_attribute("alt", "图片 3")
+            settle_viewer()
+            page.wait_for_function("window.imageWaiters.length > 0")
+            page.keyboard.press("ArrowRight")
+            expect(image).to_have_attribute("alt", "图片 3")
+            expect(image).to_be_visible()
+            expect(viewer.locator(".image-viewer-count")).to_have_text("3 / 5")
+            expect(viewer.get_by_role("status")).not_to_be_visible()
+            page.keyboard.press("ArrowRight")
+            page.keyboard.press("ArrowLeft")
+            page.keyboard.press("ArrowLeft")
+            page.evaluate("window.holdImage = false; window.imageWaiters.forEach(resolve => resolve())")
+            page.wait_for_function("window.activeImageReads === 0")
+            settle_viewer()
+            expect(image).to_have_attribute("alt", "图片 3")
+            expect(viewer.locator(".image-viewer-count")).to_have_text("3 / 5")
+            fifth_id = manual.locator('.history-image-thumbnail').nth(4).get_attribute("data-image-id")
+            page.evaluate("id => { window.failImageId = id; window.failedImageReads = 0; }", fifth_id)
+            page.keyboard.press("ArrowRight")
+            expect(image).to_have_attribute("alt", "图片 4")
+            page.wait_for_function("window.failedImageReads > 0")
+            expect(page.locator('.sakura-error-dialog')).not_to_be_visible()
+            page.keyboard.press("ArrowRight")
+            failure = page.get_by_role("dialog", name="无法读取图片", exact=True)
+            expect(failure).to_be_visible()
+            expect(failure.get_by_label("错误详情", exact=True)).to_contain_text("IMAGE_READ_DENIED: fixture preview")
+            expect(image).to_have_attribute("alt", "图片 4")
+            failure.get_by_role("button", name="关闭", exact=True).click()
+            page.evaluate("window.failImageId = null")
+            page.keyboard.press("ArrowRight")
+            expect(image).to_have_attribute("alt", "图片 5")
             page.keyboard.press("Escape")
             expect(viewer).not_to_be_visible()
             expect(thumbnail).to_be_focused()
@@ -364,8 +501,18 @@ def run():
             manual.get_by_role("button", name="预览图片 1", exact=True).focus()
             page.keyboard.press("ArrowRight")
             manual.get_by_role("button", name="预览图片 2", exact=True).click()
-            expect(viewer.locator("img")).to_be_visible()
+            expect(viewer.locator(".image-viewer-slide:not([aria-hidden]) img")).to_be_visible()
             page.screenshot(path=str(ROOT / "temp/history-image-preview-small.png"), animations="disabled")
+            viewer.get_by_role("button", name="适应窗口", exact=True).click()
+            settle_viewer()
+            page.set_viewport_size({"width": 900, "height": 720})
+            page.wait_for_function("""() => {
+              const area = document.querySelector('.image-viewer-viewport').getBoundingClientRect();
+              const image = document.querySelector('.history-image-viewer img').getBoundingClientRect();
+              return Math.abs(image.height - area.height) < 1 && image.width <= area.width;
+            }""")
+            page.screenshot(path=str(ROOT / "temp/history-image-preview-dark.png"), animations="disabled")
+            page.set_viewport_size({"width": 480, "height": 440})
             viewer.get_by_role("button", name="关闭图片预览").click()
             page.keyboard.press("ArrowLeft")
             page.keyboard.press("ArrowLeft")

@@ -506,8 +506,12 @@ h1 {
 .image-album-controls button:hover { color: var(--text); border-color: var(--primary); }
 .image-album-controls button:focus-visible,
 .history-image-thumbnail:focus-visible,
-.image-viewer-toolbar button:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+.history-image-viewer button:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
 .history-image-viewer {
+  --viewer-shade: color-mix(in srgb, var(--primary) 8%, #090b10);
+  --viewer-surface: color-mix(in srgb, var(--viewer-shade) 78%, transparent);
+  --viewer-text: #f4f6f8;
+  --viewer-accent: color-mix(in srgb, var(--primary) 55%, white);
   position: fixed;
   inset: 0;
   width: 100%;
@@ -517,37 +521,103 @@ h1 {
   margin: 0;
   padding: 0;
   border: 0;
-  background: var(--page-background);
-  color: var(--text);
+  overflow: hidden;
+  background: transparent;
+  color: var(--viewer-text);
 }
-.history-image-viewer[open] { display: grid; grid-template-rows: auto minmax(0, 1fr); }
-.history-image-viewer::backdrop { background: var(--page-background); }
-.image-viewer-toolbar { display: flex; align-items: center; gap: 4px; padding: 10px 12px; }
-.image-viewer-count { margin-right: auto; color: var(--secondary-text); font-size: 13px; font-variant-numeric: tabular-nums; }
-.image-viewer-toolbar button {
+.history-image-viewer[open] {
+  display: block;
+  animation: image-viewer-enter 160ms ease-out;
+}
+.history-image-viewer::backdrop {
+  background: color-mix(in srgb, var(--primary) 8%, #090b10);
+  opacity: .94;
+}
+.image-viewer-header {
+  position: absolute;
+  z-index: 1;
+  inset: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 18px;
+  pointer-events: none;
+}
+.image-viewer-header > span { text-shadow: 0 1px 4px #000; }
+.history-image-viewer .image-viewer-header button { background: var(--viewer-surface); }
+.image-viewer-count { margin-right: auto; opacity: .75; font-size: 12px; font-variant-numeric: tabular-nums; }
+.history-image-viewer button {
   display: grid;
   place-items: center;
   min-width: 36px;
   height: 36px;
-  padding: 0 10px;
+  padding: 0 8px;
   border: 0;
-  border-radius: 7px;
+  border-radius: 9px;
   background: transparent;
   color: inherit;
   cursor: pointer;
-  font-size: 16px;
+  font-size: 13px;
+  transition: background 120ms, color 120ms;
+  pointer-events: auto;
 }
-.image-viewer-toolbar button[aria-label="适应窗口"] { font-size: 12px; min-width: 60px; }
-.image-viewer-toolbar button[aria-label="查看原图"] { font-size: 12px; }
-.image-viewer-toolbar button:hover { background: var(--surface-system); }
-.image-viewer-toolbar button:disabled { cursor: default; opacity: .35; }
-.image-viewer-viewport { overflow: auto; overscroll-behavior: contain; touch-action: pan-x pan-y; }
-.image-viewer-viewport.is-zoomed { cursor: grab; touch-action: none; }
-.image-viewer-viewport.is-zoomed:active { cursor: grabbing; }
-.image-viewer-canvas { display: flex; align-items: center; justify-content: center; min-width: 100%; min-height: 100%; width: max-content; }
-.image-viewer-canvas img { display: block; flex: none; object-fit: contain; user-select: none; }
-.image-viewer-message { color: var(--secondary-text); }
+.history-image-viewer button:hover:not(:disabled) { background: color-mix(in srgb, var(--viewer-text) 16%, transparent); color: var(--viewer-accent); }
+.history-image-viewer button:focus-visible { outline-color: var(--viewer-accent); }
+.history-image-viewer button:disabled { cursor: default; opacity: .35; }
+.image-viewer-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  width: max-content;
+  padding: 5px;
+  border-radius: 14px;
+  background: var(--viewer-surface);
+  pointer-events: auto;
+}
+.image-viewer-toolbar button[aria-label="实际尺寸"] { min-width: 72px; font-variant-numeric: tabular-nums; }
+.image-viewer-toolbar button[aria-label="缩小图片"] { font-size: 21px; }
+.image-viewer-toolbar button[aria-pressed="true"] { background: color-mix(in srgb, var(--primary) 28%, transparent); color: var(--viewer-accent); }
+.image-viewer-divider { height: 18px; width: 1px; margin: 0 3px; background: color-mix(in srgb, var(--viewer-text) 20%, transparent); }
+.image-viewer-footer {
+  position: absolute;
+  z-index: 1;
+  inset: auto 0 0;
+  display: grid;
+  justify-items: center;
+  padding: 14px 12px 16px;
+  pointer-events: none;
+}
+.history-image-viewer .image-viewer-previous,
+.history-image-viewer .image-viewer-next {
+  position: absolute;
+  z-index: 1;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 36px;
+  height: 48px;
+  background: var(--viewer-surface);
+}
+.image-viewer-previous { left: 12px; }
+.history-image-viewer .sakura-icon { font-size: 18px; }
+.image-viewer-previous .sakura-icon { transform: rotate(180deg); }
+.image-viewer-next { right: 12px; }
+.image-viewer-viewport { position: absolute; inset: 0; overflow: hidden; overscroll-behavior: contain; touch-action: none; }
+.image-viewer-viewport.is-zoomed { cursor: grab; }
+.image-viewer-viewport.is-dragging { cursor: grabbing; }
+.image-viewer-canvas { position: absolute; inset: 0; display: grid; place-items: center; }
+.image-viewer-slide { position: absolute; inset: 0; overflow: hidden; }
+.image-viewer-slide[aria-hidden="true"] { pointer-events: none; }
+.image-viewer-canvas img { position: absolute; left: 50%; top: 50%; max-width: none; user-select: none; }
+.image-viewer-message { color: var(--viewer-text); }
+.image-viewer-viewport:not(.is-zoomed) img { cursor: zoom-in; }
 .history-image-viewer [hidden], .history-image-gallery [hidden] { display: none; }
+@keyframes image-viewer-enter { from { opacity: 0; } to { opacity: 1; } }
+@media (max-width: 520px) {
+  .image-viewer-header { padding: 8px 10px; gap: 8px; }
+  .image-viewer-previous { left: 5px; }
+  .image-viewer-next { right: 5px; }
+  .image-viewer-footer { padding-top: 10px; }
+}
 
 .history-empty {
   display: grid;
