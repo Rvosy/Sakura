@@ -916,6 +916,27 @@ fn restrict_file(_path: &std::path::Path) -> Result<(), String> {
 mod tests {
     use super::*;
 
+    #[test]
+    #[ignore = "需要可截图的真实桌面和显示器"]
+    fn capture_connected_monitors_at_native_resolution() {
+        let monitors = Monitor::all().unwrap();
+        assert!(!monitors.is_empty());
+        for monitor in monitors {
+            let dimensions = (monitor.width().unwrap(), monitor.height().unwrap());
+            let image = capture_monitor_image(&monitor, None).unwrap();
+            assert_eq!(image.dimensions(), dimensions);
+            let rect = PhysicalRect {
+                x: 0,
+                y: 0,
+                width: dimensions.0 / 2,
+                height: dimensions.1 / 2,
+            };
+            let region = capture_monitor_image(&monitor, Some(rect)).unwrap();
+            assert_eq!(region.dimensions(), (rect.width, rect.height));
+            println!("Captured {} at {dimensions:?}", monitor.name().unwrap());
+        }
+    }
+
     fn request() -> CaptureSelectionRequest {
         CaptureSelectionRequest {
             session_id: "session".to_string(),
