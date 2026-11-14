@@ -188,6 +188,7 @@ def run():
             assert page.evaluate("liveImageUrls.size") == 78
             automatic.scroll_into_view_if_needed()
             page.screenshot(path=str(ROOT / "temp/history-images-light.png"), animations="disabled")
+            assert manual.locator(".image-album-card").evaluate_all("cards => cards.every(card => Math.abs(card.clientWidth / card.clientHeight - 3 / 4) < .01)"), "collapsed thumbnails must share the same portrait aspect ratio"
             # 展开保留比例；快速反向切换不丢卡片或留下运动中的资源。
             album = manual.locator(".image-album")
             manual.get_by_role("button", name="展开 5 张图片").click()
@@ -228,32 +229,37 @@ def run():
             front.scroll_into_view_if_needed()
             stack_height = album.bounding_box()["height"]
             box = front.bounding_box()
-            page.mouse.move(box["x"] + box["width"] * .8, box["y"] + box["height"] / 2)
+            travel = box["width"]
+            x, y = box["x"] + box["width"] * .8, box["y"] + box["height"] / 2
+            page.mouse.move(x, y)
             page.mouse.down()
-            rear = manual.locator('[aria-label="预览图片 3"]')
-            rear_transform = rear.evaluate("el => getComputedStyle(el).transform")
-            page.mouse.move(box["x"] + box["width"] * .6, box["y"] + box["height"] / 2, steps=6)
-            front_above_next = """el => {
-              const next = el.parentElement.querySelector('[aria-label="预览图片 2"]');
-              return Number(getComputedStyle(el).zIndex) > Number(getComputedStyle(next).zIndex);
-            }"""
-            assert front.evaluate(front_above_next), "short drag must keep the current photo in front"
-            page.mouse.move(box["x"] + box["width"] * .2, box["y"] + box["height"] / 2, steps=10)
-            assert rear.evaluate("el => getComputedStyle(el).transform") == rear_transform, "rear photos must not enlarge together"
-            assert front.evaluate("el => new DOMMatrix(getComputedStyle(el).transform).e") < album.evaluate("el => el.clientWidth") * .2, "left drag must travel beyond half a photo"
-            assert not front.evaluate(front_above_next), "crossing the threshold must tuck the photo behind before release"
-            assert front.evaluate("el => !el.hidden && getComputedStyle(el).opacity === '1'")
+            page.mouse.move(x - travel * .2, y, steps=6)
+            short_x = front.bounding_box()["x"]
+            page.mouse.move(x - travel * .6, y, steps=10)
+            pivot_x = front.bounding_box()["x"]
+            assert pivot_x < short_x, "before the turn point the photo follows the pointer outward"
+            page.mouse.move(x - travel * .75, y, steps=6)
+            inserting_x = front.bounding_box()["x"]
+            assert inserting_x > pivot_x, "continued leftward drag must insert the photo to the right"
+            held_x = front.bounding_box()["x"]
+            # 停住超过原动画时长，图片仍须停在手势控制的位置。
+            page.wait_for_timeout(500)
+            assert abs(front.bounding_box()["x"] - held_x) < 1, "holding the pointer must not finish insertion automatically"
+            page.mouse.move(x - travel * 1.05, y, steps=8)
+            assert front.bounding_box()["x"] > inserting_x, "insertion must remain controlled over a longer drag"
             page.screenshot(path=str(ROOT / "temp/history-images-drag-behind.png"))
-            # 拖回阈值内时恢复前景，松手不翻页。
-            page.mouse.move(box["x"] + box["width"] * .7, box["y"] + box["height"] / 2, steps=10)
-            assert front.evaluate(front_above_next)
+            page.mouse.move(x - travel * .75, y, steps=8)
+            assert abs(front.bounding_box()["x"] - inserting_x) < 1, "reverse drag must retrace the insertion"
+            page.mouse.move(x - travel * .2, y, steps=10)
+            assert abs(front.bounding_box()["x"] - short_x) < 1
             page.mouse.up()
             page.wait_for_function("document.getAnimations().every(animation => animation.playState !== 'running')")
             expect(front).to_have_attribute("aria-hidden", "false")
             box = front.bounding_box()
-            page.mouse.move(box["x"] + box["width"] * .8, box["y"] + box["height"] / 2)
+            x, y = box["x"] + box["width"] * .8, box["y"] + box["height"] / 2
+            page.mouse.move(x, y)
             page.mouse.down()
-            page.mouse.move(box["x"] + box["width"] * .2, box["y"] + box["height"] / 2, steps=10)
+            page.mouse.move(x - travel * .9, y, steps=12)
             page.mouse.up()
             expect(manual.get_by_role("button", name="预览图片 2", exact=True)).to_be_visible()
             expect(page.locator(".history-image-viewer")).not_to_be_visible()
@@ -264,7 +270,23 @@ def run():
             manual.get_by_role("button", name="预览图片 2", exact=True).focus()
             page.keyboard.press("ArrowLeft")
             page.wait_for_function("document.getAnimations().every(animation => animation.playState !== 'running')")
+            def check_edge_drag(card, direction):
+                page.wait_for_function("document.getAnimations().every(animation => animation.playState !== 'running')")
+                box = card.bounding_box()
+                x, y = box["x"] + box["width"] / 2, box["y"] + box["height"] / 2
+                page.mouse.move(x, y)
+                page.mouse.down()
+                page.mouse.move(x + direction * box["width"] * .7, y, steps=10)
+                shift = card.bounding_box()["x"] - box["x"]
+                assert 0 < shift * direction < box["width"] * .15, "edge drag must only nudge the current image"
+                expect(card).to_have_attribute("aria-hidden", "false")
+                page.mouse.up()
+                page.wait_for_function("document.getAnimations().every(animation => animation.playState !== 'running')")
+                assert abs(card.bounding_box()["x"] - box["x"]) < 1
+                expect(page.locator(".history-image-viewer")).not_to_be_visible()
+
             thumbnail = manual.get_by_role("button", name="预览图片 1")
+            check_edge_drag(thumbnail, 1)
             thumbnail.click()
             viewer = page.get_by_role("dialog", name="图片预览", exact=True)
             def settle_viewer():
@@ -440,7 +462,7 @@ def run():
             box = observation_front.bounding_box()
             page.mouse.move(box["x"] + box["width"] * .8, box["y"] + box["height"] / 2)
             page.mouse.down()
-            page.mouse.move(box["x"] + box["width"] * .2, box["y"] + box["height"] / 2, steps=10)
+            page.mouse.move(box["x"] + box["width"] * .8 - box["width"] * .9, box["y"] + box["height"] / 2, steps=12)
             page.mouse.up()
             page.wait_for_function("document.getAnimations().every(animation => animation.playState !== 'running')")
             observation_next = observation_album.get_by_role("button", name="预览图片 2", exact=True)
@@ -448,10 +470,8 @@ def run():
             box = observation_next.bounding_box()
             page.mouse.move(box["x"] + box["width"] * .2, box["y"] + box["height"] / 2)
             page.mouse.down()
-            origin_x = observation_next.evaluate("el => new DOMMatrix(getComputedStyle(el).transform).e")
-            page.mouse.move(box["x"] + box["width"] * .8, box["y"] + box["height"] / 2, steps=10)
-            assert observation_next.evaluate("el => new DOMMatrix(getComputedStyle(el).transform).e") - origin_x > box["width"] * .5
-            assert observation_next.evaluate("el => Number(getComputedStyle(el).zIndex)") < observation_album.locator('[aria-label="预览图片 1"]').evaluate("el => Number(getComputedStyle(el).zIndex)")
+            page.mouse.move(box["x"] + box["width"] * .2 + box["width"] * .9, box["y"] + box["height"] / 2, steps=12)
+            expect(observation_next).to_be_visible()
             assert page.locator('#history-scroll').evaluate("el => el.scrollWidth <= el.clientWidth")
             page.screenshot(path=str(ROOT / "temp/history-images-drag-right.png"))
             page.mouse.up()
@@ -513,15 +533,21 @@ def run():
             }""")
             page.screenshot(path=str(ROOT / "temp/history-image-preview-dark.png"), animations="disabled")
             page.set_viewport_size({"width": 480, "height": 440})
+            viewer.evaluate("el => { window.previewClosed = new Promise(resolve => el.addEventListener('close', resolve, {once:true})); }")
             viewer.get_by_role("button", name="关闭图片预览").click()
+            page.evaluate("window.previewClosed")
             page.keyboard.press("ArrowLeft")
             page.keyboard.press("ArrowLeft")
+            expect(manual.get_by_role("button", name="预览图片 1", exact=True)).to_be_focused()
+            for _ in range(5):
+                page.keyboard.press("ArrowRight")
             expect(manual.get_by_role("button", name="预览图片 5", exact=True)).to_be_focused()
+            check_edge_drag(manual.get_by_role("button", name="预览图片 5", exact=True), -1)
             for image in saved[3:]:
                 images.path(image).unlink()
             page.locator("#refresh").evaluate("button => button.click()")
             expect(manual.locator(".image-album-card")).to_have_count(3)
-            expect(manual.get_by_role("button", name="预览图片 2", exact=True)).to_be_visible()
+            expect(manual.get_by_role("button", name="预览图片 3", exact=True)).to_be_visible()
             store.append(NewTimelineEntry("arriving", "arriving", "sakura", TimelineKind.OBSERVATION,
                 "host", now, {"text": "新收到的屏幕观察。", "sourcePluginId": "screen",
                 "visual": {"imageCount": 1, "images": observed}}))
@@ -545,7 +571,7 @@ def run():
             page.wait_for_function("liveImageUrls.size === 0")
             assert errors == [], errors
             browser.close()
-        print("PASS: 40-image album, drag depth and reversal, interrupted motion, aspect ratio, eager thumbnails, screen observation captions, zoom, focus, themes and stale image isolation")
+        print("PASS: 40-image album, pointer-controlled insertion and bounded navigation, interrupted motion, aspect ratio, eager thumbnails, screen observation captions, zoom, focus, themes and stale image isolation")
     finally:
         server.shutdown()
         server.server_close()
