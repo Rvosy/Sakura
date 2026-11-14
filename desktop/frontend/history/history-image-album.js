@@ -1,8 +1,11 @@
 const MOTION = { duration: 420, easing: "cubic-bezier(.22, 1, .36, 1)" };
+const TURN_DISTANCE = .6;
+const INSERT_DISTANCE = .65;
+const EDGE_DISTANCE = .08;
 
 // 相册只管理排列和手势，图片读取与释放由 history-images 负责。
 export function createImageAlbum({ document, images, makeThumbnail, state, scroll, expandable = true }) {
-  state.index %= images.length;
+  state.index = Math.min(state.index, images.length - 1);
   const group = document.createElement("div");
   group.className = "history-image-gallery image-album";
   group.setAttribute("role", "group");
@@ -43,43 +46,51 @@ export function createImageAlbum({ document, images, makeThumbnail, state, scrol
     animation.finished.then(() => animations.delete(animation), () => animations.delete(animation));
   }
 
-  function transform(target) {
-    return `translate3d(${target.x}px, ${target.y}px, 0) rotate(${target.rotation}deg) scale(${target.scale})`;
+  function transform({ x, y, width, height, rotation, scale }) {
+    return new DOMMatrix().translate(x + width / 2, y + height / 2)
+      .rotate(rotation).scale(scale).translate(-width / 2, -height / 2).toString();
   }
 
   function arrangement(selected = state.index) {
     const width = group.clientWidth;
     const expanded = state.expanded;
     const cardWidth = Math.min(280, width - (expandable ? 68 : 32));
-    const sizes = images.map(image => dimensions(image, cardWidth, 280));
-    const stackHeight = Math.max(...sizes.map(size => size.height), 48);
-    const size = sizes[selected];
+    const size = dimensions({ width: 3, height: 4 }, cardWidth, 280);
     const slotLeft = expandable ? width - cardWidth - 16 : (width - cardWidth) / 2;
-    const front = { x: slotLeft + (cardWidth - size.width) / 2, y: (stackHeight - size.height) / 2, ...size };
+    const edgePosition = selected === 0 ? -1 : selected === images.length - 1 ? 1 : 0;
+    const frontX = slotLeft + (cardWidth - size.width) / 2 + edgePosition * size.width * .08;
     const targets = new Map();
     let height = 0;
-    for (let offset = 0; offset < images.length; offset += 1) {
-      const index = expanded ? offset : (selected + offset) % images.length;
-      // 深处的卡片共用后排位置，翻过的图片仍留在堆叠里。
-      const depth = Math.min(offset, 2);
-      const item = expanded ? dimensions(images[index], Math.min(320, width - 68), 320)
-        : sizes[index];
-      const scale = expanded || offset === 0 ? 1 : .94;
+    for (let index = 0; index < images.length; index += 1) {
+      const distance = Math.abs(index - selected);
+      const side = Math.sign(index - selected);
+      // 首尾露出同侧两张，中间露出前后各一张；更远的图片叠在相邻图下面。
+      const depth = Math.min(distance, edgePosition === 0 ? 1 : 2);
+      const item = expanded ? dimensions(images[index], Math.min(320, width - 68), 320) : size;
+      const scale = expanded ? 1 : 1 - depth * .12;
+      const rotation = expanded ? 0 : side * depth * 2;
       const target = expanded
-        ? { x: width - item.width, y: height, ...item, scale, rotation: 0 }
-        : { x: front.x + (front.width - item.width * scale) / 2 + depth * 8,
-          y: front.y + (front.height - item.height * scale) / 2 + depth * 3,
-          ...item, scale, rotation: depth * 1.5 };
-      target.z = images.length - offset;
+        ? { x: width - item.width, y: height, ...item, scale, rotation }
+        : { x: frontX + side * depth * size.width * .12, y: 0, ...item, scale, rotation };
+      target.z = images.length - distance;
       targets.set(index, target);
       if (expanded) height += item.height + 10;
     }
-    return { targets, cardWidth, width, stackHeight, height: expanded ? height - 10 : stackHeight + 12 };
+    return { targets, cardWidth, width, stackHeight: size.height, height: expanded ? height - 10 : size.height + 12 };
   }
 
   function sideTransform(old, distance) {
-    const progress = Math.min(1, Math.abs(distance) / old.width);
-    return `translateX(${distance}px) ${old.transform} rotate(${Math.sign(distance) * 12 * progress}deg) scale(${1 - .08 * progress})`;
+    const progress = Math.min(1, Math.abs(distance) / (old.width * TURN_DISTANCE));
+    const centerX = old.width / 2;
+    const centerY = old.height / 2;
+    return `translateX(${distance}px) ${old.transform} translate(${centerX}px, ${centerY}px) rotate(${Math.sign(distance) * 8 * progress}deg) scale(${1 - .15 * progress}) translate(${-centerX}px, ${-centerY}px)`;
+  }
+
+  function interpolateTransform(start, end, progress) {
+    const from = new DOMMatrix(start);
+    const to = new DOMMatrix(end);
+    const matrix = ["a", "b", "c", "d", "e", "f"].map(key => from[key] + (to[key] - from[key]) * progress);
+    return `matrix(${matrix.join(",")})`;
   }
 
   function snapshot() {
@@ -124,7 +135,7 @@ export function createImageAlbum({ document, images, makeThumbnail, state, scrol
       if (motion && old) {
         const start = `${old.transform} scale(${old.width / target.width}, ${old.height / target.height})`;
         if (index === departing) {
-          const side = sideTransform({ ...old, transform: start }, -direction * old.width * .9);
+          const side = sideTransform({ ...old, transform: start }, -direction * old.width * TURN_DISTANCE);
           animate(card, [
             { transform: start, zIndex: images.length + 1, offset: 0 },
             { transform: side, zIndex: images.length + 1, offset: .45 },
@@ -138,10 +149,24 @@ export function createImageAlbum({ document, images, makeThumbnail, state, scrol
     }
   }
 
+  function canTurn(direction) {
+    return state.index + direction >= 0 && state.index + direction < images.length;
+  }
+
   function turn(direction) {
     if (state.expanded) return;
+    if (!canTurn(direction)) {
+      const old = snapshot().get(state.index);
+      cancelMotion();
+      animate(cards.get(state.index), [
+        { transform: old.transform },
+        { transform: sideTransform(old, -direction * old.width * EDGE_DISTANCE) },
+        { transform: cards.get(state.index).style.transform },
+      ]);
+      return;
+    }
     const departing = state.index;
-    state.index = (state.index + direction + images.length) % images.length;
+    state.index += direction;
     layout(true, departing, direction);
   }
   toggle.addEventListener("click", () => {
@@ -171,25 +196,29 @@ export function createImageAlbum({ document, images, makeThumbnail, state, scrol
     dragged = true;
     drag.dx = dx;
     const front = drag.before.get(state.index);
-    const progress = Math.min(1, Math.abs(dx) / (front.width * .85));
     const direction = dx < 0 ? 1 : -1;
-    const next = (state.index + direction + images.length) % images.length;
-    const { targets } = arrangement(next);
-    const passed = Math.abs(dx) >= front.width * .55;
+    const available = canTurn(direction);
+    // 前段向外翻，后段反向插入；两段进度都由水平拖动距离决定。
+    const threshold = front.width * TURN_DISTANCE;
+    const edge = front.width * EDGE_DISTANCE;
+    const distance = Math.sign(dx) * (available ? Math.min(Math.abs(dx), threshold)
+      : edge * Math.abs(dx) / (edge + Math.abs(dx)));
+    const insertion = available ? Math.min(1, Math.max(0, (Math.abs(dx) - threshold) / (front.width * INSERT_DISTANCE))) : 0;
+    const progress = Math.min(1, Math.abs(dx) / threshold);
+    const next = state.index + direction;
+    const { targets } = arrangement(available ? next : state.index);
     for (const [index, card] of cards) {
       const old = drag.before.get(index);
       const target = targets.get(index);
       if (index === state.index) {
-        card.style.transform = sideTransform(old, dx);
-        card.style.zIndex = String(passed ? target.z : images.length + 1);
-      } else if (index === next) {
-        const from = new DOMMatrix(old.transform);
-        const to = new DOMMatrix(transform(target));
-        const matrix = ["a", "b", "c", "d", "e", "f"].map(key => from[key] + (to[key] - from[key]) * progress);
-        card.style.transform = `matrix(${matrix.join(",")})`;
+        const outside = sideTransform(old, distance);
+        card.style.transform = insertion > 0 ? interpolateTransform(outside, transform(target), insertion) : outside;
+        card.style.zIndex = String(insertion > 0 ? target.z : images.length + 1);
+      } else if (available && index === next) {
+        card.style.transform = interpolateTransform(old.transform, transform(target), progress);
         card.style.zIndex = String(target.z);
       } else {
-        card.style.transform = old.transform;
+        card.style.transform = interpolateTransform(old.transform, transform(target), insertion);
         card.style.zIndex = String(target.z);
       }
     }
@@ -200,8 +229,10 @@ export function createImageAlbum({ document, images, makeThumbnail, state, scrol
     const { dx, before } = drag;
     drag = null;
     if (!dragged) return;
-    if (!cancelled && Math.abs(dx) >= before.get(state.index).width * .55) {
-      state.index = (state.index + (dx < 0 ? 1 : -1) + images.length) % images.length;
+    const direction = dx < 0 ? 1 : -1;
+    const front = before.get(state.index);
+    if (!cancelled && canTurn(direction) && Math.abs(dx) > front.width * TURN_DISTANCE) {
+      state.index += direction;
     }
     layout(true);
   }
