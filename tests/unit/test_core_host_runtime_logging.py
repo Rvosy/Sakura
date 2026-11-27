@@ -248,23 +248,23 @@ def test_external_only_mode_drops_when_bridge_is_absent(monkeypatch) -> None:  #
     log_event("TTS", "发送 GPT-SoVITS 请求", {"text_chars": 4})
 
 
-def test_router_chat_operation_context_is_scoped_and_content_derived_events_are_removed() -> None:
+def test_router_chat_operation_context_is_scoped_and_redacts_secrets() -> None:
     stream = io.BytesIO()
     bridge = install_runtime_logging(stream)
     try:
         assert get_interaction_id() == ""
         with _request_interaction_context({"name": "chat.send", "id": "operation-router-1"}):
             assert get_interaction_id() == "operation-router-1"
-            log_event("PrivateChannel", PRIVATE_CHAT, {"status": "completed"})
+            log_event("PrivateChannel", f"请求完成 {PRIVATE_SECRET}", {"status": "completed"})
         assert get_interaction_id() == ""
     finally:
         bridge.close()
 
     serialized = stream.getvalue().decode("utf-8")
-    assert PRIVATE_CHAT not in serialized
+    assert PRIVATE_SECRET not in serialized
     record = _records(stream)[0]
     assert record["channel"] == "core.runtime"
-    assert record["event"] == "core.runtime.event"
+    assert "请求完成" in record["message"]
     assert record["operation_id"] == "operation-router-1"
 
 
@@ -384,7 +384,7 @@ def test_bridge_queue_evicts_low_priority_and_aggregates_drops() -> None:
     assert bridge.close()
 
 
-def test_bridge_records_are_bounded_and_unknown_attributes_are_removed() -> None:
+def test_bridge_records_are_bounded_and_redact_body_and_secrets() -> None:
     stream = io.BytesIO()
     bridge = install_runtime_logging(stream)
     try:
@@ -394,7 +394,7 @@ def test_bridge_records_are_bounded_and_unknown_attributes_are_removed() -> None
             event="core.test.bounded",
             attributes={
                 "status": "x" * 10_000,
-                "arbitrary": PRIVATE_CHAT,
+                "custom_detail": f"detail {PRIVATE_SECRET}",
                 "body": PRIVATE_TOOL_ARGUMENT,
                 "record_bytes": 10_000,
             },
@@ -406,10 +406,11 @@ def test_bridge_records_are_bounded_and_unknown_attributes_are_removed() -> None
     assert lines
     assert all(len(line) <= CORE_BRIDGE_MAX_LINE_BYTES for line in lines)
     serialized = stream.getvalue().decode("utf-8")
-    assert PRIVATE_CHAT not in serialized
+    assert PRIVATE_SECRET not in serialized
     assert PRIVATE_TOOL_ARGUMENT not in serialized
     record = _records(stream)[0]
-    assert record["attributes"] == {"record_bytes": 10_000}
+    assert record["attributes"]["record_bytes"] == 10_000
+    assert record["attributes"]["custom_detail"] == "detail [REDACTED]"
 
 
 def test_bridge_context_source_ids_preserve_contract_limits_and_reject_non_ids() -> None:
@@ -540,17 +541,18 @@ def test_prompt_dependency_degradation_keeps_safe_root_cause() -> None:
     assert PRIVATE_CHAT not in stream.getvalue().decode("utf-8")
 
 
-def test_unknown_info_event_is_not_promoted_to_user_visible_info() -> None:
+def test_custom_info_event_keeps_its_event_name_and_message() -> None:
     stream = io.BytesIO()
     bridge = install_runtime_logging(stream)
     try:
-        log_event("Plugin", "内部握手细节", event="plugin.internal.handshake")
+        log_event("Plugin", "内部握手细节", {"source_file": "plugins/optional/demo/plugin.py"}, event="plugin.internal.handshake")
     finally:
         bridge.close()
 
     event = _records(stream)[0]
-    assert event["event"] == "core.runtime.event"
-    assert event["severity"] in {"debug", "trace"}
+    assert event["event"] == "plugin.internal.handshake"
+    assert event["message"] == "内部握手细节"
+    assert event["attributes"]["source_file"] == "plugins/optional/demo/plugin.py"
 
 
 def test_tts_business_event_keeps_text_size_without_text() -> None:
@@ -611,28 +613,22 @@ def test_forwarded_worker_record_uses_only_active_sink_and_reapplies_safety(
                 "event": "tts.private.unknown",
             }
         )
-        assert not forward_runtime_log_record({**forwarded, "unexpected": True})
         assert not forward_runtime_log_record({**forwarded, "severity": []})
-        assert not forward_runtime_log_record(
-            {**forwarded, "attributes": {"diagnostic": "x" * CORE_BRIDGE_MAX_LINE_BYTES}}
-        )
     finally:
         bridge.close()
 
     records = _records(stream)
     event = records[0]
     assert event["event"] == "tts.request.started"
+    assert event["message"] == "untrusted worker message"
     assert event["operation_id"] == "chat-worker-1"
-    assert event["attributes"] == {
-        "provider": "gpt_sovits",
-        "text_chars": 41,
-        "attempt": 1,
-    }
+    assert event["attributes"]["provider"] == "gpt_sovits"
+    assert event["attributes"]["text_chars"] == 41
+    assert event["attributes"]["attempt"] == 1
+    assert event["attributes"]["api_url"] == "http://127.0.0.1:9880/tts"
     persisted = stream.getvalue().decode("utf-8")
     assert records[1]["event"] == "tts.private.unknown"
     assert records[1]["severity"] == "error"
-    assert "127.0.0.1" not in persisted
-    assert "voice.pth" not in persisted
     assert PRIVATE_CHAT not in persisted
     assert PRIVATE_SECRET not in persisted
 

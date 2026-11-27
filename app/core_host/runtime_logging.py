@@ -37,178 +37,8 @@ _ACTIVE_BRIDGE: RuntimeLoggingBridge | None = None
 _PRIORITY_SEVERITIES = frozenset({"warning", "error"})
 _TOKEN_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]*$")
 _CODE_RE = re.compile(r"^[A-Z][A-Z0-9_]{0,63}$")
-_FORBIDDEN_KEY_MARKERS = (
-    "authorization",
-    "cookie",
-    "credential",
-    "api_key",
-    "apikey",
-    "token",
-    "secret",
-    "password",
-    "prompt",
-    "body",
-    "content",
-    "input",
-    "output",
-    "payload",
-    "arguments",
-    "query",
-    "memory",
-    "translation",
-    "path",
-    "message",
-    "error",
-    "reason",
-)
-_SAFE_ATTRIBUTE_KEYS = frozenset(
-    {
-        "endpoint", "url", "path", "stderr",
-        "source_file",
-        "source_line",
-        "timeout_ms",
-        "exit_code",
-        "child_exited",
-        "probe_outcome",
-        "primary_code",
-        "recovery_code",
-        "recovery_outcome",
-        "source_exists",
-        "staged_exists",
-        "backup_exists",
-        "repair_reason",
-        "repair_outcome",
-        "action",
-        "attempt",
-        "bytes",
-        "candidates",
-        "category",
-        "cause_type",
-        "cause_code",
-        "validation_field",
-        "child_pid",
-        "code",
-        "command",
-        "component",
-        "count",
-        "counts",
-        "context_window_source",
-        "context_window_tokens",
-        "current_required_tokens",
-        "deadline_ms",
-        "detail_stage",
-        "service_key",
-        "startup_snapshot",
-        "section_id",
-        "slot_id",
-        "result_type",
-        "has_application_state",
-        "application_state_type",
-        "dependency",
-        "code_source",
-        "dependency_source",
-        "version",
-        "diagnostic",
-        "dropped_bytes",
-        "dropped_count",
-        "dropped_records",
-        "dynamic_context_estimated_tokens",
-        "elapsed_ms",
-        "eof",
-        "error_type",
-        "failed",
-        "eligible_turns",
-        "created",
-        "updated",
-        "archived",
-        "ignored",
-        "filtered",
-        "final_reply_elapsed_ms",
-        "forced",
-        "generation",
-        "history_messages",
-        "host_state",
-        "input_target",
-        "items",
-        "listed",
-        "lines",
-        "name",
-        "memories",
-        "memory_estimated_tokens",
-        "model",
-        "model_call",
-        "model_cached",
-        "operation",
-        "outcome",
-        "output_reserve",
-        "parse_status",
-        "prompt_tokens",
-        "completion_tokens",
-        "total_tokens",
-        "provider",
-        "provider_id",
-        "plugin_id",
-        "install_id",
-        "previous_version",
-        "recording_id",
-        "playback_id",
-        "port",
-        "progress",
-        "duration_ms",
-        "http_status",
-        "retry_count",
-        "provider_error_code",
-        "provider_error_type",
-        "purpose",
-        "request_estimated_tokens",
-        "required_context_tokens",
-        "required_tokens",
-        "retryable",
-        "safety_margin",
-        "segment_count",
-        "saved_sections",
-        "selection_saved",
-        "tool_call_count",
-        "tool_count",
-        "tool_schema_estimated_tokens",
-        "tool_schema_tokens",
-        "estimated_tokens",
-        "text_chars",
-        "width",
-        "height",
-        "process_alive",
-        "read_failed",
-        "record_bytes",
-        "record_truncated",
-        "request",
-        "reason_code",
-        "registered",
-        "revision",
-        "reply_chars",
-        "resolution",
-        "risk",
-        "selected",
-        "segment_index",
-        "server_id",
-        "segments",
-        "step_index",
-        "stage",
-        "static_prompt_tokens",
-        "status",
-        "exception_site",
-        "exception_chain",
-        "exception_stack",
-        "recovery_diagnostic",
-        "errno",
-        "winerror",
-        "tool_name",
-        "trigger_turns",
-        "tree_empty",
-        "truncated",
-        "truncated_records",
-        "turn_elapsed_ms",
-        "wait",
-    }
+_FORBIDDEN_KEY_RE = re.compile(
+    r"(?:^|_)(?:authorization|cookie|credential|api_?key|token|secret|password|prompt|body|content|input|output|payload|arguments|query|memory|translation|text|message)(?:_|$)"
 )
 _CORRELATION_KEYS = {
     "interaction_id": "operation_id",
@@ -217,20 +47,6 @@ _CORRELATION_KEYS = {
     "action_id": "action_id",
     "trace_id": "trace_id",
 }
-_FORWARDED_RECORD_KEYS = frozenset(
-    {
-        "severity",
-        "verbosity",
-        "channel",
-        "event",
-        "message",
-        "request_id",
-        "operation_id",
-        "action_id",
-        "trace_id",
-        "attributes",
-    }
-)
 _FORWARDED_VERBOSITY = {
     "trace": 5,
     "debug": 3,
@@ -238,8 +54,9 @@ _FORWARDED_VERBOSITY = {
     "warn": 1,
     "error": 1,
 }
-_BODY_FREE_METRIC_KEYS = frozenset(
+_SAFE_KEY_EXCEPTIONS = frozenset(
     {
+        *DIAGNOSTIC_TEXT_KEYS,
         "completion_tokens",
         "context_window_tokens",
         "current_required_tokens",
@@ -247,22 +64,24 @@ _BODY_FREE_METRIC_KEYS = frozenset(
         "estimated_tokens",
         "history_messages",
         "input_target",
+        "input_tokens",
+        "memories",
+        "memory_count",
         "memory_estimated_tokens",
         "output_reserve",
+        "output_tokens",
         "prompt_tokens",
         "request_estimated_tokens",
         "required_context_tokens",
         "required_tokens",
         "safety_margin",
         "static_prompt_tokens",
+        "text_chars",
         "tool_schema_estimated_tokens",
         "tool_schema_tokens",
-        "transport",
         "total_tokens",
+        "transport",
     }
-)
-_SAFE_DIAGNOSTIC_KEYS = frozenset(
-    {*DIAGNOSTIC_TEXT_KEYS, "error_type", "provider_error_code", "provider_error_type", "reason_code"}
 )
 _CORE_CHANNELS = frozenset(
     {
@@ -284,124 +103,6 @@ _CORE_CHANNELS = frozenset(
         "ui",
     }
 )
-_FIXED_MESSAGES = {
-    "usage.write.failed": "模型用量保存失败",
-    "usage.read.failed": "使用统计读取失败",
-    "plugin.dependencies.attempt.started": "开始安装插件依赖",
-    "plugin.dependencies.attempt.failed": "插件依赖安装尝试失败",
-    "plugin.dependencies.install.finished": "插件依赖下载安装完成",
-    "plugin.dependencies.install.failed": "插件依赖安装失败",
-    "reply.repair.finished": "Reply repair finished",
-    "agent.turn.started": "Assistant turn started",
-    "agent.turn.finished": "Assistant turn finished",
-    "chat.request.received": "Chat request received",
-    "chat.request.completed": "Chat request completed",
-    "chat.finished": "Chat finished",
-    "chat.request.cancelled": "Chat request cancelled",
-    "chat.request.failed": "Chat request failed",
-    "memory.recall.started": "Memory recall started",
-    "memory.recall.finished": "Memory recall finished",
-    "memory.recall.failed": "Memory recall failed",
-    "memory.recall.unavailable": "Memory recall was not run because Memory is unavailable",
-    "context.prompt.prepared": "Model context prepared",
-    "context.dependencies.ready": "Prompt dependency ready",
-    "context.dependencies.degraded": "Prompt dependency unavailable; chat continues degraded",
-    "api.request.started": "Model request started",
-    "api.request.finished": "Model request finished",
-    "api.request.failed": "Model request failed",
-    "api.response.received": "Model response received",
-    "reply.processing.finished": "Model response processed",
-    "reply.processing.repair_started": "Model response repair started",
-    "reply.processing.failed": "Model response processing failed",
-    "reply.display.completed": "Reply displayed",
-    "reply.display.failed": "Reply display failed",
-    "tool.execution.started": "Tool execution started",
-    "tool.execution.waiting_confirmation": "Tool execution is waiting for confirmation",
-    "tool.execution.finished": "Tool execution finished",
-    "tool.execution.failed": "Tool execution failed",
-    "screen.capture.started": "Screen capture started",
-    "screen.capture.attached": "Screen capture attached",
-    "screen.capture.cancelled": "Screen capture cancelled",
-    "screen.capture.failed": "Screen capture failed",
-    "tts.service.started": "TTS service started",
-    "tts.service.waiting_ready": "TTS service process is waiting for readiness",
-    "tts.service.ready": "TTS service ready",
-    "tts.service.failed": "TTS service failed",
-    "tts.process.cleanup.started": "TTS stale process cleanup started",
-    "tts.process.cleanup.finished": "TTS stale process cleanup finished",
-    "tts.process.cleanup.failed": "TTS stale process cleanup failed",
-    "tts.settings.saved": "TTS settings saved",
-    "tts.settings.partial": "TTS settings were partially saved",
-    "tts.synthesis.started": "TTS synthesis started",
-    "tts.synthesis.ready": "TTS synthesis ready",
-    "tts.synthesis.finished": "TTS synthesis finished",
-    "tts.synthesis.failed": "TTS synthesis failed",
-    "tts.synthesis.cancelled": "TTS synthesis cancelled",
-    "tts.recording.committed": "TTS recording committed",
-    "tts.recording.failed": "TTS recording failed",
-    "tts.playback.started": "TTS playback started",
-    "tts.playback.finished": "TTS playback finished",
-    "tts.playback.stopped": "TTS playback stopped",
-    "tts.playback.failed": "TTS playback failed",
-    "tts.request.started": "TTS synthesis started",
-    "tts.request.finished": "TTS synthesis finished",
-    "tts.request.failed": "TTS synthesis failed",
-    "tts.service.http": "TTS service request completed",
-    "tts.service.warning": "TTS service warning",
-    "tts.service.stderr": "TTS service error",
-    "tts.service.probe.started": "TTS service probe started",
-    "tts.service.probe.failed": "TTS service probe not ready",
-    "tts.service.synthesis.started": "TTS service synthesis started",
-    "tts.service.text.received": "TTS service received synthesis text",
-    "tts.service.info": "TTS service status updated",
-    "tts.service.warmup_queued": "TTS service warmup queued",
-    "tts.service.warmup_skipped": "TTS service warmup skipped",
-    "tts.service.warmup_failed": "TTS service warmup failed",
-    "tts.endpoint.ready": "TTS endpoint ready",
-    "tts.weights.loading": "TTS weights loading",
-    "tts.weights.ready": "TTS weights ready",
-    "tts.weights.failed": "TTS weights failed",
-    "plugin.loaded": "Plugin loaded",
-    "plugin.upgrade.retired_bundled_ignored": "已忽略升级残留的内置插件",
-    "plugin.install.preparing": "正在准备插件安装",
-    "plugin.install.completed": "插件安装完成",
-    "plugin.update.switching": "正在切换插件版本",
-    "plugin.update.completed": "插件更新完成",
-    "plugin.update.rollback_started": "正在恢复插件更新前的文件",
-    "plugin.update.rollback_completed": "插件更新前的文件已恢复",
-    "plugin.update.recovery_started": "正在处理未完成的插件更新",
-    "plugin.update.recovery_completed": "插件更新恢复处理完成",
-    "plugin.update.recovery_skipped": "已保留损坏的更新记录，继续重新安装",
-    "plugin.update.cleanup_failed": "插件更新备份清理失败",
-    "plugin.update.failed": "插件更新恢复失败",
-    "plugin.uninstall.started": "正在卸载插件",
-    "plugin.uninstall.completed": "插件卸载完成，数据已保留",
-    "plugin.management.failed": "插件管理操作未完成",
-    "plugin.settings.failed": "插件设置读取失败",
-    "plugin.settings.load.failed": "插件设置分区读取失败",
-    "model.slot.load.failed": "模型选择读取失败",
-    "model.catalog.failed": "模型目录读取失败",
-    "plugin.start.phase.completed": "Plugin startup phase completed",
-    "assistant.initialization.failed": "Assistant 初始化失败",
-    "settings.provider_model.slot_save_failed": "Plugin model slot save failed",
-    "settings.provider_model.slot_save_reconciled": "Plugin model slot save reconciled",
-    "startup.window_services.created": "Window services created",
-    "startup.background_services.created": "Background services created",
-    "startup.background_services.injected": "Background services injected",
-    "core.process.started": "Core process logging started",
-    "core.process.stopping": "Core process logging is stopping",
-    "core.error.unhandled": "Unhandled Core error",
-    "core.log.records_dropped": "Core log records were dropped",
-    "memory.initialization.stage": "Memory initialization stage updated",
-    "memory.curation.started": "Background memory curation started",
-    "memory.curation.finished": "Background memory curation finished",
-    "memory.curation.failed": "Background memory curation failed and will retry",
-    "memory.curation.triggered": "Background memory curation triggered",
-    "memory.curation.request_fuse_opened": "Background memory curation request fuse opened",
-    "python.logging.info": "Python application log event",
-    "python.logging.warning": "Python application warning",
-    "python.logging.error": "Python application error",
-}
 
 
 @dataclass(frozen=True)
@@ -508,6 +209,7 @@ class RuntimeLoggingBridge:
         severity: str,
         channel: str,
         event: str,
+        message: str | None = None,
         attributes: Mapping[str, object] | None = None,
         request_id: str | None = None,
         operation_id: str | None = None,
@@ -515,12 +217,13 @@ class RuntimeLoggingBridge:
         trace_id: str | None = None,
     ) -> bool:
         severity = _normalize_severity(severity)
+        safe_event = _safe_token(event, 96) or "core.runtime.event"
         wire: dict[str, object] = {
             "severity": severity,
             "verbosity": _verbosity_for_severity(severity),
             "channel": _safe_token(channel, 64) or "core.runtime",
-            "event": _safe_token(event, 96) or "core.runtime.event",
-            "message": _fixed_message(event),
+            "event": safe_event,
+            "message": safe_diagnostic_text(message, 512) if message else safe_event,
         }
         for key, value in (
             ("request_id", request_id),
@@ -672,7 +375,7 @@ class RuntimeLoggingBridge:
             "verbosity": "warn",
             "channel": "core.runtime",
             "event": "core.log.records_dropped",
-            "message": _fixed_message("core.log.records_dropped"),
+            "message": "Core log records were dropped",
             "attributes": {"dropped_count": total, "counts": counts},
         }
         line = _encode_wire_record(wire)
@@ -725,22 +428,10 @@ def submit_telemetry_model_call(candidate: Mapping[str, object]) -> bool:
 
 
 def forward_runtime_log_record(value: Mapping[str, object]) -> bool:
-    """Forward a validated worker record only to the active Core log bridge."""
+    """Forward a worker record to the active Core log bridge."""
 
-    if not isinstance(value, Mapping) or not set(value).issubset(_FORWARDED_RECORD_KEYS):
+    if not isinstance(value, Mapping):
         return False
-    try:
-        encoded = json.dumps(
-            dict(value),
-            ensure_ascii=False,
-            separators=(",", ":"),
-            allow_nan=False,
-        ).encode("utf-8")
-    except (TypeError, ValueError):
-        return False
-    if len(CORE_BRIDGE_PREFIX) + len(encoded) + 1 > CORE_BRIDGE_MAX_LINE_BYTES:
-        return False
-
     severity_value = value.get("severity")
     verbosity_value = value.get("verbosity")
     channel = _safe_token(value.get("channel"), 64)
@@ -754,7 +445,6 @@ def forward_runtime_log_record(value: Mapping[str, object]) -> bool:
         or channel is None
         or event is None
         or not isinstance(message, str)
-        or len(message.encode("utf-8")) > 192
     ):
         return False
 
@@ -772,18 +462,16 @@ def forward_runtime_log_record(value: Mapping[str, object]) -> bool:
     if value.get("trace_id") is not None and trace_id is None:
         return False
 
-    known_event = event in _FIXED_MESSAGES
-    diagnostic_event = severity_value in {"warning", "error"}
     record = LogEvent(
         timestamp="",
-        severity=str(severity_value) if known_event or diagnostic_event else "trace",
-        verbosity=_FORWARDED_VERBOSITY[verbosity_value] if known_event or diagnostic_event else 5,
+        severity=str(severity_value),
+        verbosity=_FORWARDED_VERBOSITY[verbosity_value],
         channel=channel,
         event=event,
-        message=_fixed_message(event),
+        message=safe_diagnostic_text(message, 512) or event,
         trace_id=trace_id or "",
         attributes=attributes or None,
-        event_is_fixed=known_event or diagnostic_event,
+        event_is_fixed=True,
     )
     return submit_external_log_event(record)
 
@@ -829,23 +517,19 @@ class _NullBinaryStream:
 
 def _wire_record_from_log_event(record: LogEvent) -> dict[str, object]:
     severity = _normalize_severity(record.severity)
-    known_event = record.event in _FIXED_MESSAGES
     if severity == "info" and not record.custom:
-        if not known_event or record.verbosity >= 5:
+        if record.verbosity >= 5:
             severity = "trace"
         elif record.verbosity >= 3:
             severity = "debug"
-    event = (
-        _safe_token(record.event, 96)
-        if record.event_is_fixed and (known_event or severity in {"warning", "error"})
-        else "core.runtime.event"
-    )
+    event = _safe_token(record.event, 96) if record.event_is_fixed else None
+    event = event or "core.runtime.event"
     wire: dict[str, object] = {
         "severity": severity,
         "verbosity": _verbosity_for_severity(severity),
         "channel": _safe_core_channel(record.channel),
-        "event": event or "core.runtime.event",
-        "message": _fixed_message(record.event),
+        "event": event,
+        "message": safe_diagnostic_text(record.message, 512) if record.message else event,
     }
     attributes = record.attributes if isinstance(record.attributes, Mapping) else {}
     correlations: dict[str, str] = {}
@@ -873,24 +557,23 @@ def _wire_record_from_log_event(record: LogEvent) -> dict[str, object]:
     return wire
 
 
+def _is_forbidden_attribute_key(key: str) -> bool:
+    if not key or key in _CORRELATION_KEYS:
+        return True
+    if key in _SAFE_KEY_EXCEPTIONS or key.endswith(("_tokens", "_chars", "_count", "_ms", "_bytes")):
+        return False
+    return bool(_FORBIDDEN_KEY_RE.search(key))
+
+
 def _safe_attributes(attributes: Mapping[str, object] | None) -> dict[str, object]:
     if not isinstance(attributes, Mapping):
         return {}
     safe: dict[str, object] = {}
     for raw_key, value in list(attributes.items())[:32]:
         key = _canonical_key(raw_key)
-        if (
-            key in _CORRELATION_KEYS
-            or key not in _SAFE_ATTRIBUTE_KEYS
-            or (
-                key not in {*_SAFE_DIAGNOSTIC_KEYS, *_BODY_FREE_METRIC_KEYS, "endpoint", "url", "path", "stderr"}
-                and any(marker in key for marker in _FORBIDDEN_KEY_MARKERS)
-            )
-        ):
+        if _is_forbidden_attribute_key(key):
             continue
         if key in {"provider_id", "plugin_id"}:
-            # Preserve the full public Context/manifest identity, never a
-            # container count or arbitrary diagnostic text in an ID field.
             token = _safe_token(value, 200 if key == "provider_id" else 64)
             if token is not None:
                 safe[key] = token
@@ -901,31 +584,14 @@ def _safe_attributes(attributes: Mapping[str, object] | None) -> dict[str, objec
                 continue
             safe[key] = value
         elif isinstance(value, str):
-            if key == "validation_field":
-                field = safe_diagnostic_text(value, 1024)
-                if field:
-                    safe[key] = field
-            elif key == "source_file":
-                if (
-                    value.startswith(
-                        ("app/", "plugins/builtin/", "desktop/src-tauri/src/")
-                    )
-                    and all(
-                        re.fullmatch(r"[A-Za-z0-9_.-]+", part)
-                        and part not in {".", ".."}
-                        for part in value.split("/")
-                    )
-                    and len(value) <= 240
-                ):
+            if key == "source_file":
+                if ".." not in value and len(value) <= 240:
                     safe[key] = value
-            elif key in DIAGNOSTIC_TEXT_KEYS or key in {"endpoint", "url", "path", "stderr", "model", "provider", "exception_site"}:
-                diagnostic = safe_diagnostic_text(value, TRACE_LIMIT if key != "diagnostic" else 4096)
-                if diagnostic is not None:
-                    safe[key] = diagnostic
             else:
-                token = _safe_token(value, 128)
-                if token is not None:
-                    safe[key] = token
+                limit = TRACE_LIMIT if key in DIAGNOSTIC_TEXT_KEYS and key != "diagnostic" else (4096 if key == "diagnostic" else 1024)
+                diagnostic = safe_diagnostic_text(value, limit)
+                if diagnostic:
+                    safe[key] = diagnostic
         elif isinstance(value, (list, tuple, set, frozenset)):
             safe[key] = len(value)
         elif isinstance(value, Mapping):
@@ -978,6 +644,8 @@ def _safe_stack(error: BaseException) -> list[dict[str, object]]:
         module = frame.filename.replace("\\", "/")
         if "/app/" in module:
             relative = "app/" + module.rsplit("/app/", 1)[1]
+        elif "/plugins/" in module:
+            relative = "plugins/" + module.rsplit("/plugins/", 1)[1]
         else:
             relative = ""
         function = _safe_token(frame.name, 128)
@@ -1169,10 +837,6 @@ def _severity_from_logging_level(level: int) -> str:
     if level >= logging.DEBUG:
         return "debug"
     return "trace"
-
-
-def _fixed_message(event: object) -> str:
-    return _FIXED_MESSAGES.get(str(event), "Core internal diagnostic")
 
 
 __all__ = [

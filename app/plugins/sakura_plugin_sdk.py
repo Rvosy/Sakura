@@ -24,7 +24,10 @@ from pathlib import Path
 from typing import Any, BinaryIO, Callable, Iterable, Mapping, Sequence
 
 
-_PRIVATE = re.compile(r"authorization|cookie|credential|api.?key|secret|password|token|body|content|prompt|messages|payload|arguments|environment", re.I)
+_PRIVATE = re.compile(
+    r"(?:^|_)(?:authorization|cookie|credential|api_?key|secret|password|token|body|content|prompt|messages|payload|arguments|environment)(?:_|$)",
+    re.I,
+)
 _SECRET = re.compile(r'''(?ix)
     (\b(?:api[_-]?key|authorization|cookie|password|secret|(?:access[_-]?|refresh[_-]?)?token|credential)
     ["']?\s*[:=]\s*(?:(?:bearer|basic)\s+)?)(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,;}&]+)
