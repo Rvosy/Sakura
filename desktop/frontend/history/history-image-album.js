@@ -55,7 +55,9 @@ export function createImageAlbum({ document, images, makeThumbnail, state, scrol
     const width = group.clientWidth;
     const expanded = state.expanded;
     const cardWidth = Math.min(280, width - (expandable ? 68 : 32));
-    const size = dimensions({ width: 3, height: 4 }, cardWidth, 280);
+    const sizes = images.map(image => dimensions(expandable ? { width: 3, height: 4 } : image, cardWidth, 280));
+    const size = sizes[selected];
+    const stackHeight = Math.max(...sizes.map(item => item.height));
     const slotLeft = expandable ? width - cardWidth - 16 : (width - cardWidth) / 2;
     const edgePosition = selected === 0 ? -1 : selected === images.length - 1 ? 1 : 0;
     const frontX = slotLeft + (cardWidth - size.width) / 2 + edgePosition * size.width * .08;
@@ -66,17 +68,18 @@ export function createImageAlbum({ document, images, makeThumbnail, state, scrol
       const side = Math.sign(index - selected);
       // 首尾露出同侧两张，中间露出前后各一张；更远的图片叠在相邻图下面。
       const depth = Math.min(distance, edgePosition === 0 ? 1 : 2);
-      const item = expanded ? dimensions(images[index], Math.min(320, width - 68), 320) : size;
+      const item = expanded ? dimensions(images[index], Math.min(320, width - 68), 320) : sizes[index];
       const scale = expanded ? 1 : 1 - depth * .12;
       const rotation = expanded ? 0 : side * depth * 2;
       const target = expanded
         ? { x: width - item.width, y: height, ...item, scale, rotation }
-        : { x: frontX + side * depth * size.width * .12, y: 0, ...item, scale, rotation };
+        : { x: frontX + (size.width - item.width) / 2 + side * depth * size.width * .12,
+          y: (stackHeight - item.height) / 2, ...item, scale, rotation };
       target.z = images.length - distance;
       targets.set(index, target);
       if (expanded) height += item.height + 10;
     }
-    return { targets, cardWidth, width, stackHeight: size.height, height: expanded ? height - 10 : size.height + 12 };
+    return { targets, cardWidth, width, stackHeight, height: expanded ? height - 10 : stackHeight + 12 };
   }
 
   function sideTransform(old, distance) {
