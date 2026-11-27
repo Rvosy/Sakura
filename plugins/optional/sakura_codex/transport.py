@@ -8,10 +8,7 @@ from sakura_cancellation import await_cancellable
 from sakura_model import ModelError
 from sakura_openai_responses import build_request, complete
 
-if __package__:
-    from .oauth import checked_json, http_client
-else:
-    from oauth import checked_json, http_client
+from .oauth import checked_json, http_client
 
 
 BASE_URL = "https://chatgpt.com/backend-api/codex"

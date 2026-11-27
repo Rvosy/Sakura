@@ -7,45 +7,28 @@ import os
 import re
 import shutil
 import sqlite3
-import stat
 import sys
 import threading
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
-import zipfile
 from contextlib import nullcontext
 from dataclasses import dataclass, field
 from datetime import datetime
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from types import ModuleType
 from typing import Any, Callable, Iterable
 
-try:
-    from .support import (
-        ResourceRegistry,
-        StoragePaths,
-        ThreadGroupResource,
-        atomic_write_text,
-        external_runtime_sink_active,
-        log_event,
-        rename_with_retry,
-        suppress_runtime_logs,
-        validate_zip_resource_limits,
-    )
-except ImportError:
-    from support import (
-        ResourceRegistry,
-        StoragePaths,
-        ThreadGroupResource,
-        atomic_write_text,
-        external_runtime_sink_active,
-        log_event,
-        rename_with_retry,
-        suppress_runtime_logs,
-        validate_zip_resource_limits,
-    )
+from .support import (
+    ResourceRegistry,
+    StoragePaths,
+    ThreadGroupResource,
+    atomic_write_text,
+    external_runtime_sink_active,
+    log_event,
+    rename_with_retry,
+)
 
 
 
@@ -78,27 +61,11 @@ MEMORY_LAYERS = (
     MEMORY_LAYER_PROCEDURAL,
     MEMORY_LAYER_SESSION,
 )
-VECTOR_MEMORY_LAYERS = (
-    MEMORY_LAYER_SEMANTIC,
-    MEMORY_LAYER_EPISODIC,
-    MEMORY_LAYER_PROCEDURAL,
-    MEMORY_LAYER_SESSION,
-)
-MEMORY_LAYER_LABELS = {
-    MEMORY_LAYER_CORE_PROFILE: "常驻档案",
-    MEMORY_LAYER_SEMANTIC: "长期事实",
-    MEMORY_LAYER_EPISODIC: "事件总结",
-    MEMORY_LAYER_PROCEDURAL: "协作规则",
-    MEMORY_LAYER_SESSION: "当前任务",
-}
 DEFAULT_MEMORY_IMPORTANCE = 0.5
 DEFAULT_MEMORY_CONFIDENCE = 0.75
 DEFAULT_MEMORY_SOURCE = "manual"
 MAX_MEMORY_SOURCE_ENTRY_IDS = 500
 MAX_MEMORY_SOURCE_ENTRY_ID_CHARS = 128
-CORE_PROFILE_CONTEXT_BUDGET = 1200
-SESSION_CONTEXT_BUDGET = 600
-MEMORY_SECTION_CHAR_BUDGET = 1600
 DEFAULT_MODELSCOPE_ENDPOINT = "https://www.modelscope.cn"
 DEFAULT_MODELSCOPE_EMBEDDING_REPO = "onnx-community/all-MiniLM-L6-v2-ONNX"
 DEFAULT_MODELSCOPE_EMBEDDING_REVISION = "e1da369847063d70f2fd772226551865bcab1c2d"
@@ -112,7 +79,6 @@ DEFAULT_EMBEDDING_MODEL_ARTIFACTS = {
     "tokenizer.json": 711_661,
     "tokenizer_config.json": 1_433,
 }
-DEFAULT_EMBEDDING_MODEL_REQUIRED_FILES = tuple(DEFAULT_EMBEDDING_MODEL_ARTIFACTS)
 MODELSCOPE_EMBEDDING_MODEL_ARTIFACTS = {
     "config.json": (
         "config.json",
@@ -141,7 +107,6 @@ MODELSCOPE_EMBEDDING_MODEL_ARTIFACTS = {
 }
 _MEM0_CREATE_LOCK = threading.Lock()
 _EMBEDDER_OWNER = threading.local()
-_WINDOWS_DRIVE_RE = re.compile(r"^[A-Za-z]:")
 _DIAGNOSTIC_TOKEN_RE = re.compile(r"^[A-Za-z0-9_.-]{1,96}$")
 os.environ.setdefault("MEM0_TELEMETRY", "False")
 
@@ -196,14 +161,13 @@ def append_memory_initialization_diagnostic(
                 attributes["child_pid"] = max(0, int(child_pid))
             if process_alive is not None:
                 attributes["process_alive"] = bool(process_alive)
-            with suppress_runtime_logs():
-                log_event(
-                    "Memory",
-                    {"memory_store_load_started": "长期记忆正在初始化", "memory_store_load_completed": "长期记忆已就绪", "memory_store_load_failed": "长期记忆初始化失败"}.get(event, "长期记忆初始化阶段"),
-                    attributes,
-                    event="memory.initialization.stage",
-                    severity=("error" if event == "memory_store_load_failed" else "warning" if outcome == "failed" else "info" if event in {"memory_store_load_started", "memory_store_load_completed"} else "debug"),
-                )
+            log_event(
+                "Memory",
+                {"memory_store_load_started": "长期记忆正在初始化", "memory_store_load_completed": "长期记忆已就绪", "memory_store_load_failed": "长期记忆初始化失败"}.get(event, "长期记忆初始化阶段"),
+                attributes,
+                event="memory.initialization.stage",
+                severity=("error" if event == "memory_store_load_failed" else "warning" if outcome == "failed" else "info" if event in {"memory_store_load_started", "memory_store_load_completed"} else "debug"),
+            )
             return
 
     except Exception:  # noqa: BLE001 - diagnostics must never affect Memory.
@@ -536,7 +500,7 @@ class MemorySearchResult:
 
 
 class MemoryModelImportError(RuntimeError):
-    """记忆嵌入模型归档包格式错误或导入失败。"""
+    """记忆嵌入模型下载或安装失败。"""
 
     def __init__(self, message: str, *, code: str = "DOWNLOAD_FAILED") -> None:
         super().__init__(message)
@@ -548,12 +512,12 @@ class MemoryRuntimeUnavailableError(RuntimeError):
 
 
 class MemoryModelTaskCancelled(RuntimeError):
-    """用户或当前 Core generation 取消了模型导入/下载。"""
+    """用户或当前 Core generation 取消了模型下载。"""
 
 
 @dataclass(frozen=True)
 class EmbeddingModelImportResult:
-    """记忆嵌入模型导入结果。"""
+    """记忆嵌入模型安装结果。"""
 
     model_name: str
     cache_folder: Path
@@ -842,27 +806,6 @@ class MemoryStore:
 
         return DEFAULT_MODELSCOPE_ENDPOINT
 
-    def import_embedding_model_archive(
-        self,
-        path: Path,
-        *,
-        progress: Callable[[str, int], None] | None = None,
-        cancel: threading.Event | None = None,
-    ) -> EmbeddingModelImportResult:
-        """导入离线嵌入模型 ZIP，并重置长期记忆运行时以复用新缓存。"""
-
-        result = import_embedding_model_archive(
-            path,
-            self.base_dir,
-            cache_dir=self.memory_cache_dir,
-            progress=progress,
-            cancel=cancel,
-        )
-        if not self.is_ready():
-            self.reset_runtime()
-            self.preload(wait=False)
-        return result
-
     def download_embedding_model(
         self,
         *,
@@ -977,34 +920,6 @@ class MemoryStore:
             "history_db_path": str(self.memory_dir / "mem0_history.db"),
         }
 
-    def summary(self, limit: int = 12) -> str:
-        mem = self._get_memory(wait=False)
-        core_profile = self.core_profile()
-        if mem is None:
-            if core_profile is not None:
-                return _format_memory_context(
-                    core_profile=core_profile,
-                    semantic=[],
-                    episodic=[],
-                    procedural=[],
-                    session=[],
-                    status="长期记忆系统正在初始化。",
-                )
-            return "长期记忆系统正在初始化。"
-        raw = mem.get_all(filters={"user_id": self.scope_id}, top_k=limit)
-        memories = _normalize_memory_results(raw, default_scope=self.scope_id)
-        if core_profile is not None:
-            memories.insert(0, core_profile)
-        if not memories:
-            return "暂无长期记忆。"
-        lines = ["长期记忆："]
-        for memory in memories:
-            memory_id = str(memory.get("id", ""))
-            content = str(memory.get("content", ""))
-            layer = str(memory.get("layer") or DEFAULT_MEMORY_LAYER)
-            lines.append(f"- [{memory_id}] {_memory_layer_label(layer)}：{content}")
-        return "\n".join(lines)
-
     def list_memories(self, *, limit: int | None = DEFAULT_MEMORY_LIMIT) -> list[dict[str, Any]]:
         mem = self._get_memory()
         top_k = DEFAULT_MEMORY_LIMIT if limit is None else limit
@@ -1090,50 +1005,6 @@ class MemoryStore:
         if not isinstance(previous, dict):
             return None
         return _normalize_memory_record(previous, default_scope=self.scope_id)
-
-    def build_memory_context(self, query: str = "", *, mode: str = "chat") -> str:
-        """按当前对话场景构建分层记忆注入文本。"""
-
-        query_text = query.strip()
-        status = ""
-        search = self.search_memory(
-            {"query": query_text, "limit": 48},
-            wait=False,
-        )
-        if str(search.get("status") or "") in {"loading", "failed"}:
-            status = str(search.get("message") or "")
-        memories = [
-            memory
-            for memory in search.get("memories", [])
-            if isinstance(memory, dict)
-        ]
-        core_profile = self.core_profile()
-        if core_profile is None:
-            core_candidates = [
-                memory
-                for memory in memories
-                if str(memory.get("layer") or "") == MEMORY_LAYER_CORE_PROFILE
-            ]
-            core_profile = core_candidates[0] if core_candidates else None
-
-        grouped: dict[str, list[dict[str, Any]]] = {
-            layer: [] for layer in VECTOR_MEMORY_LAYERS
-        }
-        for memory in memories:
-            layer = _normalize_memory_layer(memory.get("layer"))
-            if layer in grouped:
-                grouped[layer].append(memory)
-
-        include_procedural = _query_needs_procedural_memory(query_text, mode)
-        include_episodic = _query_needs_episodic_memory(query_text, mode)
-        return _format_memory_context(
-            core_profile=core_profile,
-            semantic=grouped[MEMORY_LAYER_SEMANTIC][:8],
-            episodic=grouped[MEMORY_LAYER_EPISODIC][:3] if include_episodic else [],
-            procedural=grouped[MEMORY_LAYER_PROCEDURAL][:3] if include_procedural else [],
-            session=grouped[MEMORY_LAYER_SESSION][:3],
-            status=status,
-        )
 
     def search_memory(
         self,
@@ -1260,9 +1131,6 @@ class MemoryStore:
                 )
         return {"memory": memory, "ok": True}
 
-    def remember_memory(self, arguments: dict[str, Any], *, wait: bool = True) -> dict[str, Any]:
-        return self.create_memory(arguments, allow_sensitive=False, wait=wait)
-
     def update_memory(
         self,
         arguments: dict[str, Any],
@@ -1331,18 +1199,6 @@ class MemoryStore:
         )
         return {"memory": memory, "ok": True}
 
-    def delete_memory(self, arguments: dict[str, Any]) -> dict[str, Any]:
-        memory_id = _required_text(arguments, "id")
-        if _is_core_profile_id(memory_id):
-            previous = self.delete_core_profile()
-            return {"memory": previous or {"id": memory_id, "content": ""}, "curation_cache_reset": {"messages": 0, "history": 0}}
-        mem = self._get_memory()
-        previous = _require_owned_memory(mem, memory_id, self.scope_id, allow_missing=True)
-        already_missing = _delete_memory_idempotently(mem, memory_id)
-        cache_reset = self._reset_scope_curation_cache(mem, memory_ids=[memory_id])
-        memory = previous or {"id": memory_id, "content": ""}
-        return {"memory": memory, "curation_cache_reset": cache_reset, "already_missing": already_missing}
-
     def forget_memory(self, arguments: dict[str, Any], *, wait: bool = True) -> dict[str, Any]:
         memory_id = _required_text(arguments, "id")
         if _is_core_profile_id(memory_id):
@@ -1367,14 +1223,6 @@ class MemoryStore:
             "curation_cache_reset": cache_reset,
             "already_missing": already_missing,
         }
-
-    def reset_curation_cache(self, *, wait: bool = True) -> dict[str, int]:
-        """清理当前角色的 mem0 整理缓存，不影响 Sakura 自己的聊天历史文件。"""
-
-        mem = self._get_memory(wait=wait)
-        if mem is None:
-            return {"messages": 0, "history": 0}
-        return self._reset_scope_curation_cache(mem)
 
     def _load_core_profiles(self) -> dict[str, Any]:
         assert self.memory_dir is not None
@@ -1908,90 +1756,6 @@ def _project_embedding_cache_folder(
     return StoragePaths(root).memory_cache_dir
 
 
-def import_embedding_model_archive(
-    path: Path,
-    base_dir: Path | None = None,
-    *,
-    cache_dir: Path | None = None,
-    progress: Callable[[str, int], None] | None = None,
-    cancel: threading.Event | None = None,
-) -> EmbeddingModelImportResult:
-    """导入 all-MiniLM-L6-v2 的固定 FastEmbed ONNX snapshot ZIP。"""
-
-    _check_model_task_cancelled(cancel)
-    _report_model_progress(progress, "validating", 5)
-    archive_path = Path(path)
-    if not archive_path.exists():
-        raise FileNotFoundError(f"记忆模型包不存在：{archive_path}")
-    destination_root = _project_embedding_cache_folder(
-        base_dir,
-        cache_dir=cache_dir,
-    )
-    destination_model_dir = destination_root / DEFAULT_EMBEDDING_MODEL_CACHE_NAME
-    destination_root.mkdir(parents=True, exist_ok=True)
-
-    temp_root = destination_root / f".memory_model_import_{int(time.time() * 1000)}_{threading.get_ident()}"
-    staging_model_dir = temp_root / DEFAULT_EMBEDDING_MODEL_CACHE_NAME
-    backup_model_dir = destination_root / f".{DEFAULT_EMBEDDING_MODEL_CACHE_NAME}.backup"
-    try:
-        with zipfile.ZipFile(archive_path, "r") as zf:
-            try:
-                validate_zip_resource_limits(
-                    zf,
-                    destination=destination_root,
-                    label="记忆模型包",
-                )
-            except ValueError as exc:
-                raise MemoryModelImportError(str(exc)) from exc
-            model_prefix = _validate_embedding_model_zip_members(zf)
-            temp_root.mkdir(parents=True, exist_ok=False)
-            _extract_embedding_model_zip(
-                zf,
-                model_prefix,
-                staging_model_dir,
-                progress=progress,
-                cancel=cancel,
-            )
-            snapshot = (
-                staging_model_dir
-                / "snapshots"
-                / DEFAULT_EMBEDDING_ARTIFACT_REVISION
-            )
-            if not snapshot.is_dir() or not all(
-                (snapshot / filename).is_file()
-                for filename in DEFAULT_EMBEDDING_MODEL_REQUIRED_FILES
-            ):
-                raise MemoryModelImportError(
-                    "记忆模型包不完整：缺少固定 revision 的 model.onnx 或 tokenizer/config 文件。"
-                )
-            _validate_fastembed_snapshot_artifacts(snapshot)
-
-        _check_model_task_cancelled(cancel)
-        _report_model_progress(progress, "installing", 90)
-        _replace_embedding_model_dir(
-            staging_model_dir,
-            destination_model_dir,
-            backup_model_dir,
-        )
-    except zipfile.BadZipFile as exc:
-        raise MemoryModelImportError("不是有效的记忆模型 ZIP 包。") from exc
-    finally:
-        shutil.rmtree(temp_root, ignore_errors=True)
-
-    snapshot_count = sum(
-        1
-        for child in (destination_model_dir / "snapshots").iterdir()
-        if child.is_dir()
-    )
-    _report_model_progress(progress, "completed", 100)
-    return EmbeddingModelImportResult(
-        model_name=DEFAULT_EMBEDDING_MODEL,
-        cache_folder=destination_root,
-        model_dir=destination_model_dir,
-        snapshot_count=snapshot_count,
-    )
-
-
 def download_embedding_model(
     base_dir: Path | None = None,
     *,
@@ -2132,107 +1896,6 @@ def _download_modelscope_snapshot(
             )
 
 
-def _validate_embedding_model_zip_members(zf: zipfile.ZipFile) -> PurePosixPath:
-    """校验 ZIP 只包含目标模型目录，并返回模型目录在 ZIP 内的前缀。"""
-
-    paths: list[PurePosixPath] = []
-    file_paths: list[PurePosixPath] = []
-    for info in zf.infolist():
-        rel = _safe_zip_member_path(info)
-        paths.append(rel)
-        if not info.is_dir():
-            file_paths.append(rel)
-    if not file_paths:
-        raise MemoryModelImportError("记忆模型包为空。")
-
-    prefixes = [
-        PurePosixPath(DEFAULT_EMBEDDING_MODEL_CACHE_NAME),
-        PurePosixPath("fastembed-cache", DEFAULT_EMBEDDING_MODEL_CACHE_NAME),
-        PurePosixPath("hub", DEFAULT_EMBEDDING_MODEL_CACHE_NAME),
-    ]
-    for prefix in prefixes:
-        if not any(_zip_path_is_under(path, prefix) for path in file_paths):
-            continue
-        allowed_parents = set(prefix.parents)
-        for path in paths:
-            if path == PurePosixPath("."):
-                continue
-            if path in allowed_parents:
-                continue
-            if not _zip_path_is_under(path, prefix):
-                raise MemoryModelImportError(
-                    "记忆模型包只能包含 "
-                    f"{DEFAULT_EMBEDDING_MODEL_CACHE_NAME} 模型缓存目录。"
-                )
-        return prefix
-    if any(path.parts[0] == "snapshots" for path in file_paths):
-        allowed_root_parts = {"blobs", "refs", "snapshots", ".no_exist"}
-        for path in paths:
-            if path.parts[0] not in allowed_root_parts:
-                raise MemoryModelImportError(
-                    "记忆模型包根目录只能包含 blobs/、refs/、snapshots/ 或 .no_exist/。"
-                )
-        return PurePosixPath(".")
-    raise MemoryModelImportError(
-        f"记忆模型包缺少 {DEFAULT_EMBEDDING_MODEL_CACHE_NAME} 目录。"
-    )
-
-
-def _safe_zip_member_path(info: zipfile.ZipInfo) -> PurePosixPath:
-    member = str(info.filename or "").replace("\\", "/").rstrip("/")
-    if not member:
-        raise MemoryModelImportError("记忆模型包包含空 ZIP 成员名。")
-    if _is_zip_symlink(info):
-        raise MemoryModelImportError(f"记忆模型包不允许包含符号链接：{member}")
-    if "\x00" in member or member.startswith("/") or _WINDOWS_DRIVE_RE.match(member):
-        raise MemoryModelImportError(f"ZIP 成员必须是安全的相对路径：{member!r}")
-    parts = member.split("/")
-    if any(part in ("", ".", "..") for part in parts):
-        raise MemoryModelImportError(f"ZIP 成员包含不安全路径片段：{member!r}")
-    return PurePosixPath(*parts)
-
-
-def _zip_path_is_under(path: PurePosixPath, prefix: PurePosixPath) -> bool:
-    if prefix == PurePosixPath("."):
-        return True
-    return path == prefix or path.is_relative_to(prefix)
-
-
-def _extract_embedding_model_zip(
-    zf: zipfile.ZipFile,
-    model_prefix: PurePosixPath,
-    destination_model_dir: Path,
-    *,
-    progress: Callable[[str, int], None] | None = None,
-    cancel: threading.Event | None = None,
-) -> None:
-    """只把目标模型目录抽取到 staging 目录，避免 zipfile.extractall 的路径风险。"""
-
-    destination_model_dir.mkdir(parents=True, exist_ok=True)
-    members = zf.infolist()
-    total = max(1, len(members))
-    for index, info in enumerate(members, start=1):
-        _check_model_task_cancelled(cancel)
-        rel = _safe_zip_member_path(info)
-        if not _zip_path_is_under(rel, model_prefix) or rel == model_prefix:
-            continue
-        prefix_length = 0 if model_prefix == PurePosixPath(".") else len(model_prefix.parts)
-        target_rel = PurePosixPath(*rel.parts[prefix_length:])
-        target = destination_model_dir.joinpath(*target_rel.parts)
-        if info.is_dir():
-            target.mkdir(parents=True, exist_ok=True)
-            continue
-        target.parent.mkdir(parents=True, exist_ok=True)
-        with zf.open(info, "r") as source, target.open("wb") as output:
-            while True:
-                _check_model_task_cancelled(cancel)
-                chunk = source.read(1024 * 1024)
-                if not chunk:
-                    break
-                output.write(chunk)
-        _report_model_progress(progress, "extracting", 10 + int(index * 75 / total))
-
-
 def _replace_embedding_model_dir(
     staging_model_dir: Path,
     destination_model_dir: Path,
@@ -2272,11 +1935,6 @@ def _report_model_progress(
         progress(stage, max(0, min(100, int(percent))))
 
 
-def _is_zip_symlink(info: zipfile.ZipInfo) -> bool:
-    mode = (info.external_attr >> 16) & 0o170000
-    return mode == stat.S_IFLNK
-
-
 def _classify_memory_load_exception(exc: Exception, *, stage: str) -> str:
     if isinstance(exc, (ModuleNotFoundError, ImportError)):
         return "dependency_import_failed"
@@ -2304,12 +1962,7 @@ def _format_memory_load_error(exc: Exception, *, embedding_download: bool) -> st
     if not embedding_download:
         return f"长期记忆系统初始化失败：{raw_message}"
     return (
-        "长期记忆系统初始化失败：本地嵌入模型下载失败，"
-        "请前往项目 Release 下载 models--qdrant--all-MiniLM-L6-v2-onnx.zip，"
-        "然后在设置页手动导入：\n"
-        "https://github.com/Rvosy/Sakura/releases/download/v0.9.7/"
-        "models--qdrant--all-MiniLM-L6-v2-onnx.zip\n"
-        "也可以配置代理后重启 Sakura 重新下载。"
+        "本地嵌入模型下载失败，请检查网络或代理后，在长期记忆设置中点击“下载本地模型”重试。"
         f"\n\n原始错误：{raw_message}"
     )
 
@@ -2440,10 +2093,6 @@ def _optional_memory_layer(value: Any) -> str | None:
     return text if text in MEMORY_LAYERS else None
 
 
-def _memory_layer_label(layer: str) -> str:
-    return MEMORY_LAYER_LABELS.get(layer, layer)
-
-
 def _metadata_mapping(raw: dict[str, Any]) -> dict[str, Any]:
     metadata = raw.get("metadata")
     return dict(metadata) if isinstance(metadata, dict) else {}
@@ -2544,84 +2193,12 @@ def _merged_source_entry_ids(existing: object, added: object) -> list[str]:
 
 
 def looks_like_sensitive_memory(content: str) -> bool:
-    """粗粒度识别不应自动进入长期记忆的敏感凭据和身份信息。"""
-
-    text = content.strip()
-    lowered = text.lower()
-    keyword_patterns = (
-        "password",
-        "passwd",
-        "api_key",
-        "apikey",
-        "secret",
-        "token",
-        "access key",
-        "private key",
-        "密钥",
-        "密码",
-        "口令",
-        "令牌",
-        "身份证",
-        "银行卡",
-        "信用卡",
-    )
-    if any(keyword in lowered for keyword in keyword_patterns):
-        return True
-    regexes = (
-        r"\bsk-[A-Za-z0-9_-]{16,}\b",
-        r"\b[A-Za-z0-9_=-]{32,}\.[A-Za-z0-9_=-]{16,}\.[A-Za-z0-9_=-]{16,}\b",
-        r"\b\d{15}(\d{2}[0-9Xx])?\b",
-        r"\b(?:\d[ -]*?){13,19}\b",
-    )
-    return any(re.search(pattern, text) for pattern in regexes)
-
-
-def _query_needs_procedural_memory(query: str, mode: str) -> bool:
-    if mode in {"tool", "screen_awareness"}:
-        return True
-    text = query.lower()
-    keywords = (
-        "格式",
-        "风格",
-        "习惯",
-        "偏好",
-        "默认",
-        "规则",
-        "协作",
-        "流程",
-        "怎么做",
-        "以后",
-        "下次",
-        "format",
-        "style",
-        "preference",
-        "workflow",
-        "rule",
-    )
-    return any(keyword in text for keyword in keywords)
-
-
-def _query_needs_episodic_memory(query: str, mode: str) -> bool:
-    if mode in {"event", "recap"}:
-        return True
-    text = query.lower()
-    keywords = (
-        "之前",
-        "上次",
-        "刚才",
-        "历史",
-        "进展",
-        "回顾",
-        "发生",
-        "做过",
-        "项目状态",
-        "remember when",
-        "last time",
-        "previous",
-        "history",
-        "progress",
-    )
-    return any(keyword in text for keyword in keywords)
+    """识别带有明确凭据格式的文本。"""
+    return bool(re.search(
+        r"sk-[A-Za-z0-9_-]{12,}|\bBearer\s+\S+|-----BEGIN [A-Z ]*PRIVATE KEY-----"
+        r"|api[_-]?key\s*[:=]|\beyJ[\w-]+\.[\w-]+\.[\w-]+",
+        content, re.IGNORECASE,
+    ))
 
 
 def _memory_matches_query(memory: dict[str, Any], query: str) -> bool:
@@ -2673,76 +2250,6 @@ def _parse_iso_timestamp(value: str) -> float:
         return datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp()
     except ValueError:
         return 0.0
-
-
-def _format_memory_context(
-    *,
-    core_profile: dict[str, Any] | None,
-    semantic: list[dict[str, Any]],
-    episodic: list[dict[str, Any]],
-    procedural: list[dict[str, Any]],
-    session: list[dict[str, Any]],
-    status: str = "",
-) -> str:
-    sections: list[str] = []
-    if status.strip():
-        sections.append(f"记忆系统状态：{status.strip()}")
-    if core_profile is not None:
-        content = _clip_text(str(core_profile.get("content") or ""), CORE_PROFILE_CONTEXT_BUDGET)
-        if content:
-            sections.append(f"【常驻档案】\n{content}")
-    sections.extend(
-        _format_memory_section(
-            title,
-            memories,
-            budget=budget,
-        )
-        for title, memories, budget in (
-            ("【当前任务记忆】", session, SESSION_CONTEXT_BUDGET),
-            ("【相关长期事实】", semantic, MEMORY_SECTION_CHAR_BUDGET),
-            ("【协作规则与偏好】", procedural, MEMORY_SECTION_CHAR_BUDGET),
-            ("【过往事件总结】", episodic, MEMORY_SECTION_CHAR_BUDGET),
-        )
-        if memories
-    )
-    if not sections:
-        return "暂无可注入的长期记忆。"
-    sections.append("注入说明：以上记忆按相关性选择；低置信或过时内容应结合当前对话核实。")
-    return "\n\n".join(sections)
-
-
-def _format_memory_section(
-    title: str,
-    memories: list[dict[str, Any]],
-    *,
-    budget: int,
-) -> str:
-    lines: list[str] = []
-    used = 0
-    for memory in memories:
-        content = str(memory.get("content") or "").strip()
-        if not content:
-            continue
-        category = str(memory.get("category") or "").strip()
-        confidence = _bounded_float(memory.get("confidence"), default=DEFAULT_MEMORY_CONFIDENCE)
-        prefix = f"- [{category}]" if category else "-"
-        line = f"{prefix} {content}"
-        if confidence < 0.7:
-            line += f"（置信度 {confidence:.2f}）"
-        if used + len(line) > budget and lines:
-            break
-        lines.append(line)
-        used += len(line) + 1
-    if not lines:
-        return ""
-    return f"{title}\n" + "\n".join(lines)
-
-
-def _clip_text(text: str, budget: int) -> str:
-    value = text.strip()
-    if len(value) <= budget:
-        return value
-    return value[: max(0, budget - 1)].rstrip() + "…"
 
 
 def _normalize_memory_results(raw: Any, *, default_scope: str = DEFAULT_MEMORY_SCOPE) -> list[dict[str, Any]]:

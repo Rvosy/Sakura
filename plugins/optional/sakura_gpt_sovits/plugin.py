@@ -1,4 +1,7 @@
 from __future__ import annotations
+
+from app.plugin_sdk.sakura_cancellation import OperationCancelled
+from app.plugin_sdk.sakura_storage import tts_directories
 from sakura_provider_errors import provider_failure
 
 import os
@@ -12,10 +15,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 from urllib.parse import urlparse
 
-try:
-    from . import _support
-except ImportError:
-    import _support  # type: ignore[no-redef]
+from . import _support
 
 DEFAULT_GPT_SOVITS_BASE_URL = _support.DEFAULT_GPT_SOVITS_BASE_URL
 DEFAULT_GPT_SOVITS_TTS_PATH = _support.DEFAULT_GPT_SOVITS_TTS_PATH
@@ -23,8 +23,6 @@ DEFAULT_TONE = _support.DEFAULT_TONE
 GPTSoVITSTTSSettings = _support.GPTSoVITSTTSSettings
 GPTSoVITSSynthesisEngine = _support.GPTSoVITSSynthesisEngine
 GptSovitsEndpointResolver = _support.GptSovitsEndpointResolver
-GptSovitsEndpointSupervisor = _support.GptSovitsEndpointSupervisor
-OperationCancelled = _support.OperationCancelled
 TTSBundleResource = _support.TTSBundleResource
 ToneReference = _support.ToneReference
 _TTSRequest = _support._TTSRequest
@@ -217,54 +215,17 @@ class _Warmup:
             raise OperationCancelled("TTS warmup cancelled")
 
 
-class _JobSupervisor:
-    def __init__(self, supervisor: object, job: _Job) -> None:
-        self._supervisor = supervisor
-        self._job = job
-        self.settings = getattr(supervisor, "settings")
-        self.endpoint_kind = getattr(supervisor, "endpoint_kind", "managed")
-
-    def _ensure_service_available(self, fail: object) -> bool:
-        self._job.check_cancelled()
-        result = getattr(self._supervisor, "_ensure_service_available")(fail)
-        self._job.check_cancelled()
-        return bool(result)
-
-    def _ensure_character_weights(self, fail: object) -> bool:
-        return bool(
-            getattr(self._supervisor, "_ensure_character_weights")(
-                fail,
-                cancel_checker=self._job.check_cancelled,
-            )
-        )
-
-    def _restart_local_service_after_http_failure(self, status: int, body: str) -> bool:
-        self._job.check_cancelled()
-        return bool(
-            getattr(self._supervisor, "_restart_local_service_after_http_failure")(
-                status,
-                body,
-            )
-        )
-
-    def _restart_owned_runtime(self) -> bool:
-        self._job.check_cancelled()
-        restart = getattr(self._supervisor, "_restart_owned_runtime", None)
-        return bool(restart()) if callable(restart) else False
-
-
 class _EngineQueue:
     def __init__(
         self,
-        supervisor: _JobSupervisor,
+        resolver: GptSovitsEndpointResolver,
         settings: GPTSoVITSTTSSettings,
         job: _Job,
         diagnostic=None,
     ) -> None:
-        self._supervisor = supervisor
+        self.resolver = resolver
         self.settings = settings
         self._cache_dir = job.output_path.parent
-        self._job = job
         self._tone_indices: dict[str, int] = {}
         self._report = diagnostic
 
@@ -302,7 +263,6 @@ class _Coordinator:
         self._lock = threading.RLock()
         self._active: _Job | _Warmup | None = None
         self._resolver: GptSovitsEndpointResolver | None = None
-        self._supervisor: GptSovitsEndpointSupervisor | None = None
         self._loaded_weights: tuple[str, str] | None = None
         self._pending_config: _ProviderConfig | None = None
         self._paused = False
@@ -422,7 +382,6 @@ class _Coordinator:
             resolver = self._resolver if reset_endpoint else None
             if reset_endpoint:
                 self._resolver = None
-                self._supervisor = None
                 self._loaded_weights = None
             self._config = config
         if resolver is not None:
@@ -435,7 +394,7 @@ class _Coordinator:
         failure: tuple[str, BaseException | None] = ("TTS_SYNTHESIS_FAILED", None)
         try:
             job.check_cancelled()
-            settings, supervisor = self._configure(job.voice)
+            settings, resolver = self._configure(job.voice)
             request = _TTSRequest(
                 text=str(job.request["text"]),
                 tone=str(job.request.get("options", {}).get("tone", DEFAULT_TONE)),
@@ -453,7 +412,7 @@ class _Coordinator:
 
             source = GPTSoVITSSynthesisEngine().synthesize(
                 _EngineQueue(
-                    _JobSupervisor(supervisor, job),
+                    resolver,
                     settings,
                     job,
                     self._report_runtime_lifecycle,
@@ -488,14 +447,14 @@ class _Coordinator:
         stage = "configuration"
         try:
             warmup.check_cancelled()
-            settings, supervisor = self._configure(warmup.voice)
+            settings, resolver = self._configure(warmup.voice)
             errors: list[str] = []
             stage = "runtime_start"
-            if not supervisor._ensure_service_available(errors.append):
+            if not resolver.ensure_available(errors.append):
                 return
             warmup.check_cancelled()
             stage = "weights"
-            if not supervisor._ensure_character_weights(
+            if not resolver.ensure_character_weights(
                 errors.append,
                 cancel_checker=warmup.check_cancelled,
             ):
@@ -549,7 +508,7 @@ class _Coordinator:
     def _configure(
         self,
         voice: _CharacterVoice,
-    ) -> tuple[GPTSoVITSTTSSettings, GptSovitsEndpointSupervisor]:
+    ) -> tuple[GPTSoVITSTTSSettings, GptSovitsEndpointResolver]:
         settings = voice.settings(self._config)
         settings.validate()
         if self._resolver is None:
@@ -560,20 +519,15 @@ class _Coordinator:
                 is_closed=self._operation_cancelled,
                 diagnostic=self._report_runtime_lifecycle,
             )
-            self._supervisor = GptSovitsEndpointSupervisor(self._resolver)
         else:
             resolved = replace(settings, api_url=self._resolver.endpoint.synthesis_url)
             self._resolver.settings = resolved
-            assert self._supervisor is not None
-            self._supervisor.settings = resolved
             runtime = self._resolver.runtime
             if runtime is not None:
                 runtime.settings = resolved
                 if self._loaded_weights != _weight_key(resolved):
                     runtime._weights_ready = False
-            settings = resolved
-        assert self._supervisor is not None
-        return settings, self._supervisor
+        return self._resolver.settings, self._resolver
 
     def _report_runtime_lifecycle(
         self,
@@ -808,15 +762,15 @@ class GPTSoVITSPlugin:
         diagnostics = context.get("sakura.host.diagnostics")
         settings = context.get("sakura.host.settings")
         surface = context.get("sakura.host.settings.surface-v0")
-        user_root = Path(context.data_path(".")).parents[2]
-        config_patch = _startup_config_patch(context.config.get(), user_root)
+        resolve_dir = tts_directories(context)
+        config_patch = _startup_config_patch(context.config.get(), resolve_dir)
         if config_patch:
             context.config.update(config_patch)
 
         def save_runtime_settings(values: Mapping[str, Any]) -> object:
             patch = _settings_values(values)
             merged = {**context.config.get(), **patch}
-            patch.update(_startup_config_patch(merged, user_root))
+            patch.update(_startup_config_patch(merged, resolve_dir))
             return context.config.update(patch)
 
         provider = GPTSoVITSProvider(context, character, artifacts, diagnostics, context.get("sakura.host.logging"))
@@ -865,7 +819,7 @@ class GPTSoVITSPlugin:
         )
         surface.register("runtime", "voice")
         bundle = TTSBundleResource(
-            user_root=user_root,
+            resolve_dir=resolve_dir,
             config_get=context.config.get,
             config_update=context.config.update,
             entry=recommend_gpt_sovits_bundle,
@@ -943,7 +897,7 @@ def _uses_custom_endpoint(value: Mapping[str, Any]) -> bool:
 
 def _startup_config_patch(
     value: Mapping[str, Any],
-    user_root: Path,
+    resolve_dir: Callable[[str], Path],
 ) -> dict[str, object]:
     """Normalize stored paths and bind an already installed managed bundle."""
 
@@ -953,7 +907,7 @@ def _startup_config_patch(
     mode = raw_mode or ("custom" if custom else "managed")
     path_keys = ("workDir", "pythonPath", "ttsConfigPath")
     if mode == "managed":
-        installed = installed_bundle_result(user_root)
+        installed = installed_bundle_result(resolve_dir)
         if installed is not None:
             expected = {
                 "workDir": user_facing_path(installed.work_dir),

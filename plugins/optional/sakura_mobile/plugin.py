@@ -1,19 +1,18 @@
 from __future__ import annotations
 
+from app.plugin_sdk.sakura_plugin_api import PluginConfig, PluginContext
+
 import threading
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-try:
-    from .server import (
-        DEFAULT_HOST,
-        DEFAULT_PORT,
-        mobile_access_urls,
-        run_mobile_server,
-    )
-except ImportError:
-    from server import DEFAULT_HOST, DEFAULT_PORT, mobile_access_urls, run_mobile_server
+from .server import (
+    DEFAULT_HOST,
+    DEFAULT_PORT,
+    mobile_access_urls,
+    run_mobile_server,
+)
 
 
 PLUGIN_ID = "sakura_mobile"
@@ -26,7 +25,7 @@ class SakuraMobilePlugin:
 
     def __init__(self) -> None:
         self._logger: Any = None
-        self._config: object | None = None
+        self._config: PluginConfig | None = None
         self._conversation: object | None = None
         self._artifacts: object | None = None
         self._character: object | None = None
@@ -36,18 +35,18 @@ class SakuraMobilePlugin:
         self._last_error = ""
         self._data_dir: Path | None = None
 
-    def setup(self, context: object) -> None:
-        self._logger = getattr(context, "get")("sakura.host.logging")
-        self._data_dir = Path(getattr(context, "data_path")(".")).resolve()
-        self._config = getattr(context, "config")
-        self._conversation = getattr(context, "get")(CONVERSATION_SERVICE)
-        self._artifacts = getattr(context, "get")("sakura.host.artifacts")
-        self._character = getattr(context, "get")("sakura.host.character")
-        self._timeline = getattr(context, "get")("sakura.host.timeline")
-        getattr(context, "effect")(self.stop)
-        getattr(context, "on")("sakura.host.app.started", lambda _event: self.start())
-        getattr(self._config, "on_change")(self._apply_config)
-        getattr(context, "get")("sakura.host.settings").register(
+    def setup(self, context: PluginContext) -> None:
+        self._logger = context.get("sakura.host.logging")
+        self._data_dir = Path(context.data_path(".")).resolve()
+        self._config = context.config
+        self._conversation = context.get(CONVERSATION_SERVICE)
+        self._artifacts = context.get("sakura.host.artifacts")
+        self._character = context.get("sakura.host.character")
+        self._timeline = context.get("sakura.host.timeline")
+        context.effect(self.stop)
+        context.on("sakura.host.app.started", lambda _event: self.start())
+        self._config.on_change(self._apply_config)
+        context.get("sakura.host.settings").register(
             _settings_descriptor(),
             load=self.settings_values,
             save=self.save_settings_values,
@@ -56,7 +55,7 @@ class SakuraMobilePlugin:
 
     def config(self) -> dict[str, Any]:
         config = self._require_config()
-        return _normalized_config(getattr(config, "get")())
+        return _normalized_config(config.get())
 
     def settings_values(self) -> dict[str, Any]:
         status = self.status()
@@ -83,7 +82,7 @@ class SakuraMobilePlugin:
         if merged["enabled"] and not str(values.get("token", current["token"])).strip():
             raise ValueError("启用手机网页端时访问令牌不能为空。")
         updates = {key: merged[key] for key in values if key in merged}
-        return getattr(self._require_config(), "update")(updates)
+        return self._require_config().update(updates)
 
     def refresh_settings_status(self, _values: Mapping[str, Any]) -> dict[str, Any]:
         values = self.settings_values()
@@ -176,7 +175,7 @@ class SakuraMobilePlugin:
         config = self.config()
         return "error" if config["enabled"] and self._server is None else "applied"
 
-    def _require_config(self) -> object:
+    def _require_config(self) -> PluginConfig:
         if self._config is None:
             raise RuntimeError("手机端插件尚未初始化。")
         return self._config

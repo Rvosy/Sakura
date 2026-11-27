@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from sakura_cancellation import OperationCancelled as Cancelled
+
 import json
 import http.client
 import os
@@ -23,10 +25,6 @@ FILES = (
     ("silero_vad.onnx", "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx", 643854),
 )
 GITHUB_MIRRORS = ("https://gh-proxy.com/", "https://ghproxy.vip/")
-
-
-class Cancelled(Exception):
-    pass
 
 
 def log_event(logger, level, event, message, **fields):

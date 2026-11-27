@@ -438,11 +438,11 @@ def test_managed_gpt_warmup_prepares_service_and_weights_in_coordinator(
     calls: list[str] = []
 
     class Supervisor:
-        def _ensure_service_available(self, _fail) -> bool:  # type: ignore[no-untyped-def]
+        def ensure_available(self, _fail) -> bool:  # type: ignore[no-untyped-def]
             calls.append("service")
             return True
 
-        def _ensure_character_weights(
+        def ensure_character_weights(
             self,
             _fail,
             *,
@@ -906,7 +906,7 @@ def test_bundle_install_clears_stale_optional_runtime_overrides(tmp_path: Path) 
     updates: list[dict[str, object]] = []
     work_dir = tmp_path / "tts" / "gpt"
     resource = _bundle.TTSBundleResource(
-        user_root=tmp_path,
+        resolve_dir=(tmp_path / "tts").joinpath,
         config_get=lambda: {
             "endpointMode": "managed",
             "pythonPath": str(tmp_path / "old-python.exe"),
@@ -1044,9 +1044,9 @@ def test_coordinator_keeps_stable_code_and_source_failure(tmp_path, monkeypatch,
         work_dir=tmp_path, python_path=tmp_path / "python")
     runtime = provider._support._ManagedRuntime(settings, base_dir=tmp_path, is_closed=lambda: False)
     supervisor = SimpleNamespace(settings=settings,
-        _ensure_service_available=runtime.ensure_available if failure_kind == "start" else lambda fail: True,
-        _ensure_character_weights=runtime.ensure_weights if failure_kind == "weights" else lambda fail, **kw: True,
-        _restart_local_service_after_http_failure=lambda *a: False, _restart_owned_runtime=lambda: False)
+        ensure_available=runtime.ensure_available if failure_kind == "start" else lambda fail: True,
+        ensure_character_weights=runtime.ensure_weights if failure_kind == "weights" else lambda fail, **kw: True,
+        restart_owned_after_http_failure=lambda *a: False, restart_owned=lambda: False)
     coordinator = object.__new__(provider._Coordinator)
     coordinator._configure = lambda voice: (settings, supervisor)
     coordinator._diagnostic = None
@@ -1105,23 +1105,16 @@ def test_managed_coordinator_serializes_weight_switch_and_synthesis(
             self.runtime = FakeRuntime(settings)
             resolvers.append(self)
 
-    class FakeSupervisor:
-        endpoint_kind = "managed"
-
-        def __init__(self, resolver: FakeResolver) -> None:
-            self.resolver = resolver
-            self.settings = resolver.settings
-
-        def _ensure_service_available(self, _fail: object) -> bool:
+        def ensure_available(self, _fail: object) -> bool:
             return True
 
-        def _ensure_character_weights(
+        def ensure_character_weights(
             self,
             _fail: object,
             *,
             cancel_checker: Callable[[], None] | None = None,
         ) -> bool:
-            if self.resolver.runtime._weights_ready:
+            if self.runtime._weights_ready:
                 return True
             if cancel_checker is not None:
                 cancel_checker()
@@ -1131,21 +1124,21 @@ def test_managed_coordinator_serializes_weight_switch_and_synthesis(
                     ("sovits", str(self.settings.sovits_model_path)),
                 ]
             )
-            self.resolver.runtime._weights_ready = True
+            self.runtime._weights_ready = True
             return True
 
-        def _restart_local_service_after_http_failure(self, _status: int, _body: str) -> bool:
+        def restart_owned_after_http_failure(self, _status: int, _body: str) -> bool:
             return False
 
-        def _restart_owned_runtime(self) -> bool:
+        def restart_owned(self) -> bool:
             return False
 
     class FakeEngine:
         def synthesize(self, queue: object, request: object, *, fail: object, skip: object) -> Path:
             del fail, skip
-            supervisor = getattr(queue, "_supervisor")
-            assert supervisor._ensure_service_available(lambda _message: None)
-            assert supervisor._ensure_character_weights(lambda _message: None)
+            supervisor = queue.resolver
+            assert supervisor.ensure_available(lambda _message: None)
+            assert supervisor.ensure_character_weights(lambda _message: None)
             settings = getattr(queue, "settings")
             events.append(("tts", str(settings.gpt_model_path)))
             target = getattr(queue, "_cache_dir") / f"{getattr(request, 'request_id')}.wav"
@@ -1153,7 +1146,6 @@ def test_managed_coordinator_serializes_weight_switch_and_synthesis(
             return target
 
     monkeypatch.setattr(provider_module, "GptSovitsEndpointResolver", FakeResolver)
-    monkeypatch.setattr(provider_module, "GptSovitsEndpointSupervisor", FakeSupervisor)
     monkeypatch.setattr(provider_module, "GPTSoVITSSynthesisEngine", FakeEngine)
 
     package = tmp_path / "character"
@@ -1357,7 +1349,7 @@ def test_bundle_status_reads_reuse_recommendation_and_clear_download_progress(tm
         callbacks["check_cancel"]()
         raise AssertionError("installation must be cancelled")
     resource = _bundle.TTSBundleResource(
-        user_root=tmp_path, config_get=lambda: {}, config_update=lambda _value: None,
+        resolve_dir=(tmp_path / "tts").joinpath, config_get=lambda: {}, config_update=lambda _value: None,
         entry=entry, custom_endpoint=lambda _value: False, installer=install,
     )
     try:

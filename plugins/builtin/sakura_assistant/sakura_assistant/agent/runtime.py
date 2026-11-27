@@ -37,7 +37,6 @@ from sakura_assistant.llm.reply_schema import reply_response_format
 from sakura_cancellation import CancelChecker, OperationCancelled, check_cancelled
 from sakura_assistant.diagnostics import (
     diagnostic_attributes,
-    log_body_enabled,
     log_event,
     summarize_messages,
 )
@@ -51,7 +50,7 @@ from sakura_assistant.agent.runtime_limits import (
     RuntimeLoopSettings,
     normalize_runtime_loop_settings,
 )
-from sakura_assistant.llm.prompt_templates import (
+from sakura_assistant.llm.prompts.recipes import (
     build_agent_reply_protocol,
     build_context_acquisition_strategy,
     build_event_system_prompt,
@@ -236,7 +235,7 @@ class AgentRuntime:
                 inspection = self._last_prompt_inspection
         if inspection is None:
             return None
-        return inspection.to_dict(include_content=log_body_enabled())
+        return inspection.to_dict()
 
     def _record_prompt_inspection(self, inspection: PromptInspection) -> None:
         lock = getattr(self, "_prompt_inspection_lock", None)
@@ -248,7 +247,7 @@ class AgentRuntime:
         log_event(
             "PromptInspector",
             "Prompt 构建完成",
-            inspection.to_dict(include_content=log_body_enabled()),
+            inspection.to_dict(),
             severity="debug",
         )
 
@@ -1265,85 +1264,56 @@ class AgentRuntime:
                         ),
                     },
                 )
-                try:
-                    fallback_messages = _build_text_tool_summary_messages(
-                        messages,
-                        execution_results,
-                        include_images=self.model_vision_enabled,
-                    )
-                    fallback_request = build_context_request(
-                        fallback_messages,
-                        source=context_source,
-                        mode="normal",
-                        event_type=event_type,
-                        step_index=loop_settings.max_agent_steps_per_turn,
-                        remaining_steps=0,
-                        available_tools=(),
-                        event_payload=event_payload,
-                        character_id=self.character_id,
-                        character_name=self.character_name,
-                    )
-                    fallback_client = self._client_for_messages(fallback_messages)
-                    base_fallback_prompt = self._build_final_reply_result()
-                    fallback_snapshot = self.context_orchestrator.build_snapshot(
-                        fallback_request,
-                        providers=self.context_providers,
-                        session_fragments=self._session_state_fragments(fallback_request),
-                        messages=fallback_messages,
-                        static_prompt=_chat_provider_system_prompt(
-                            base_fallback_prompt.system_prompt,
-                            self.reply_tones,
-                            self.reply_visual,
-                        ),
-                        tools=(),
-                        **_client_context_budget_settings(fallback_client),
-                    )
-                    fallback_prompt = self._build_final_reply_result(fallback_snapshot)
-                    filtered_fallback_messages = self.context_orchestrator.messages_for_snapshot(
-                        fallback_messages, fallback_snapshot
-                    )
-                    self._record_prompt_inspection(fallback_prompt.inspection)
-                    final_reply, final_visual_observation = self._complete_final_reply_with_chat(
-                        fallback_prompt.system_prompt,
-                        filtered_fallback_messages,
-                        runtime_context=fallback_prompt.runtime_context,
-                        trace_metadata=PromptTraceMetadata(
-                            purpose="final_reply",
-                            inspection=fallback_prompt.inspection,
-                            snapshot=fallback_snapshot,
-                        ),
-                        cancel_checker=cancel_checker,
-                    )
-                except (OperationCancelled, ContextWindowExceededError, ContextContributionError):
-                    raise
-                except Exception as retry_exc:
-                    if self.strict_provider_errors:
-                        raise
-                    log_event(
-                        "AgentRuntime",
-                        "工具结果文本总结失败，使用本地兜底回复",
-                        diagnostic_attributes(
-                            retry_exc,
-                            reason_code="TOOL_TEXT_SUMMARY_FAILED",
-                            stage="tool_text_summary",
-                        ),
-                    )
-                    final_reply = _build_fallback_tool_reply(execution_results)
-                    final_visual_observation = None
-            else:
-                if self.strict_provider_errors:
-                    raise
-                log_event(
-                    "AgentRuntime",
-                    "工具结果总结失败，使用本地兜底回复",
-                    diagnostic_attributes(
-                        exc,
-                        reason_code="TOOL_SUMMARY_FAILED",
-                        stage="tool_summary",
-                    ),
+                fallback_messages = _build_text_tool_summary_messages(
+                    messages,
+                    execution_results,
+                    include_images=self.model_vision_enabled,
                 )
-                final_reply = _build_fallback_tool_reply(execution_results)
-                final_visual_observation = None
+                fallback_request = build_context_request(
+                    fallback_messages,
+                    source=context_source,
+                    mode="normal",
+                    event_type=event_type,
+                    step_index=loop_settings.max_agent_steps_per_turn,
+                    remaining_steps=0,
+                    available_tools=(),
+                    event_payload=event_payload,
+                    character_id=self.character_id,
+                    character_name=self.character_name,
+                )
+                fallback_client = self._client_for_messages(fallback_messages)
+                base_fallback_prompt = self._build_final_reply_result()
+                fallback_snapshot = self.context_orchestrator.build_snapshot(
+                    fallback_request,
+                    providers=self.context_providers,
+                    session_fragments=self._session_state_fragments(fallback_request),
+                    messages=fallback_messages,
+                    static_prompt=_chat_provider_system_prompt(
+                        base_fallback_prompt.system_prompt,
+                        self.reply_tones,
+                        self.reply_visual,
+                    ),
+                    tools=(),
+                    **_client_context_budget_settings(fallback_client),
+                )
+                fallback_prompt = self._build_final_reply_result(fallback_snapshot)
+                filtered_fallback_messages = self.context_orchestrator.messages_for_snapshot(
+                    fallback_messages, fallback_snapshot
+                )
+                self._record_prompt_inspection(fallback_prompt.inspection)
+                final_reply, final_visual_observation = self._complete_final_reply_with_chat(
+                    fallback_prompt.system_prompt,
+                    filtered_fallback_messages,
+                    runtime_context=fallback_prompt.runtime_context,
+                    trace_metadata=PromptTraceMetadata(
+                        purpose="final_reply",
+                        inspection=fallback_prompt.inspection,
+                        snapshot=fallback_snapshot,
+                    ),
+                    cancel_checker=cancel_checker,
+                )
+            else:
+                raise
         log_event(
             "AgentRuntime",
             "最终回复生成完成",
@@ -2244,51 +2214,6 @@ def _build_screen_observation_request_reply() -> ChatReply:
     )
 
 
-def _build_fallback_tool_reply(results: list[ToolExecutionResult]) -> ChatReply:
-    if not results:
-        return parse_chat_reply("ツール結果の確認に失敗したよ。")
-
-    succeeded = [result for result in results if result.success]
-    failed = [result for result in results if not result.success]
-    if succeeded and not failed:
-        summary = _summarize_tool_results(succeeded)
-        return parse_chat_reply(
-            json.dumps(
-                {
-                    "segments": [
-                        {
-                            "ja": f"処理は終わったよ。{summary}",
-                            "zh": f"已经处理好了。{summary}",
-                            "tone": "请求",
-
-                        }
-                    ]
-                },
-                ensure_ascii=False,
-            )
-        )
-
-    error_text = "；".join(
-        f"{result.tool_name}: {result.error or '执行失败'}"
-        for result in failed
-    )
-    return parse_chat_reply(
-        json.dumps(
-            {
-                "segments": [
-                    {
-                        "ja": "処理中に問題が起きたみたい。設定かネットワークを確認して。",
-                        "zh": f"工具执行时出了点问题：{error_text}",
-                        "tone": "困惑",
-
-                    }
-                ]
-            },
-            ensure_ascii=False,
-        )
-    )
-
-
 def _build_vision_unsupported_reply() -> ChatReply:
     return parse_chat_reply(
         json.dumps(
@@ -2305,35 +2230,6 @@ def _build_vision_unsupported_reply() -> ChatReply:
             ensure_ascii=False,
         )
     )
-
-
-def _summarize_tool_results(results: list[ToolExecutionResult]) -> str:
-    parts: list[str] = []
-    for result in results:
-        if isinstance(result.content, dict):
-            if isinstance(result.content.get("reminder"), dict):
-                reminder = result.content["reminder"]
-                text = reminder.get("text", "")
-                trigger_at = reminder.get("trigger_at", "")
-                parts.append(f"提醒「{text}」已设置在 {trigger_at}。")
-            elif isinstance(result.content.get("task"), dict):
-                task = result.content["task"]
-                parts.append(f"待办「{task.get('text', '')}」已更新。")
-            elif result.content.get("status") == "loading":
-                parts.append(str(result.content.get("message", "工具正在初始化。")))
-            elif result.tool_name == "open_url":
-                parts.append(f"网页已打开：{result.content.get('url', '')}。")
-            elif result.tool_name == "open_local_folder":
-                parts.append(f"文件夹已打开：{result.content.get('path', '')}。")
-            elif result.tool_name == "read_note":
-                parts.append(f"笔记「{result.content.get('name', '')}」已读取。")
-            elif result.tool_name == "write_note":
-                parts.append(f"笔记「{result.content.get('name', '')}」已保存。")
-            else:
-                parts.append(f"{result.tool_name} 已完成。")
-        else:
-            parts.append(f"{result.tool_name} 已完成。")
-    return " ".join(part for part in parts if part).strip()
 
 
 def _build_event_messages(event: AgentEvent) -> list[ChatMessage]:

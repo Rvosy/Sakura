@@ -62,7 +62,7 @@ def test_genie_process_boundaries_remove_verbatim_paths() -> None:
         work_dir=Path(r"\\?\D:\Sakura\tts\cpu")
     )
     resource = genie_bundle.TTSBundleResource(
-        user_root=Path(r"D:\Sakura"),
+        resolve_dir=Path(r"D:\Sakura\tts").joinpath,
         config_get=lambda: {},
         config_update=lambda patch: patches.append(dict(patch)),
         entry=lambda: genie_bundle.GENIE_TTS,
@@ -92,7 +92,7 @@ def test_installed_managed_genie_binds_bundle_without_verbatim_path(
 
     patch = provider_module._startup_config_patch(
         {"endpointMode": "managed", "workDir": ""},
-        verbatim_root,
+        (verbatim_root / "tts").joinpath,
     )
 
     assert patch == {"workDir": str(user_root.resolve() / "tts" / "cpu")}

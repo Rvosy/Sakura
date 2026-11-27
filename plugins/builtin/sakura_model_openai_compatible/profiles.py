@@ -6,10 +6,9 @@ from copy import deepcopy
 from pathlib import Path
 import re
 import threading
-import uuid
 from urllib.parse import urlparse
 
-from sakura_model_client import decode_model_result
+from sakura_cancellation import CancellationToken, OperationCancelled
 from sakura_provider_errors import provider_failure
 
 
@@ -103,9 +102,8 @@ class ProviderProfiles:
         self._lock = threading.RLock()
         self._active = deepcopy(_profiles(self._config.get()))
         self._service = None
-        self._probe = None
         self._probe_thread = None
-        self._probe_cancel = threading.Event()
+        self._probe_cancel = CancellationToken()
         self._probe_result = {}
 
     def set_service(self, service):
@@ -114,86 +112,44 @@ class ProviderProfiles:
 
     def close(self):
         with self._lock:
-            operation, worker = self._probe, self._probe_thread
-        if operation:
-            self._probe_cancel.set()
+            worker = self._probe_thread
+            self._probe_cancel.cancel()
         if worker is not None and worker is not threading.current_thread():
             worker.join(timeout=2)
 
     def _start_probe(self, values, *, operation):
         with self._lock:
-            if self._probe is not None:
+            if self._probe_thread is not None and self._probe_thread.is_alive():
                 raise ProfileError("MODEL_PROBE_BUSY", "模型测试仍在进行。")
             if self._service is None:
                 raise ProfileError("MODEL_PROVIDER_UNAVAILABLE")
-            operation_id = "probe-" + uuid.uuid4().hex
-            secrets = [profile["api_key"] for profile in self._saved()]
-            credential = values.get("credential", {})
-            if isinstance(credential, Mapping) and isinstance(credential.get("value"), str):
-                secrets.append(credential["value"])
-            # Settings callbacks do not carry a model caller scope. Calling our
-            # own published service through bind uses the same authenticated
-            # owner contract as every other model consumer.
-            bound = self._context.bind(SERVICE_KEY)
-            try:
-                bound.invoke("begin_probe", {"operationId": operation_id, "operation": operation,
-                                             "profileId": values.get("profileId", ""), "values": {key: value for key, value in values.items() if key in {"modelId", "base_url", "credential", "timeout_seconds"}}})
-            except Exception:
-                try:
-                    bound.invoke("release", operation_id)
-                except Exception:
-                    pass
-                raise
-            self._probe = operation_id
-            self._probe_result = {"requestId": values.get("requestId", ""), "state": "running"}
-            self._probe_cancel.clear()
+            settings = self.resolve_probe(values.get("profileId"), values, require_model=operation == "test_connection")
+            secrets = [profile["api_key"] for profile in self._saved()] + [settings["api_key"]]
+            cancel = self._probe_cancel = CancellationToken()
+            request_id = values.get("requestId", "")
+            self._probe_result = {"requestId": request_id, "state": "running"}
+            self._probe_thread = threading.Thread(
+                target=self._run_probe, args=(request_id, operation, settings, secrets, cancel),
+                name="model-settings-probe", daemon=True,
+            )
+            self._probe_thread.start()
 
-        def run():
-            failure_code = ""
-            failure_message = ""
-            diagnostics = {}
-            try:
-                sequence = 0
-                while True:
-                    if self._probe_cancel.is_set():
-                        bound.invoke("cancel", operation_id)
-                    result = bound.invoke("poll", operation_id, sequence, 500)
-                    sequence = result["sequence"]
-                    if result["state"] != "running":
-                        break
-                completed = bound.invoke("result", operation_id)
-                result = decode_model_result(completed, self._context.get("sakura.host.artifacts"), bound.identity, operation_id)
-                if operation == "list_models":
-                    result = {"models": _models(result["models"])}
-            except Exception as error:
-                result = {}
-                code = getattr(error, "code", "MODEL_PROBE_FAILED")
-                failure_code = code if isinstance(code, str) and re.fullmatch(r"[A-Z_]{1,80}", code) else "MODEL_PROBE_FAILED"
-                diagnostics = provider_failure(failure_code, error, secrets=secrets)["diagnostics"]
-                failure_message = diagnostics["diagnostic"]
-            finally:
-                try:
-                    bound.invoke("release", operation_id)
-                except Exception as error:
-                    cleanup = provider_failure("MODEL_PROBE_CLEANUP_FAILED", error, secrets=secrets)["diagnostics"]
-                    diagnostics["recovery_diagnostic"] = cleanup.get("exception_stack", cleanup["diagnostic"])
-                    self._context.get("sakura.host.logging").warning("模型测试任务回收失败", fields={
-                        "operation_id": operation_id, "profile_id": values.get("profileId", ""), **cleanup})
-                finally:
-                    with self._lock:
-                        self._probe = None
-                        self._probe_result = {"requestId": values.get("requestId", ""),
-                                              "state": "failed" if failure_code else "completed",
-                                              "code": failure_code,
-                                              "message": failure_message,
-                                              "diagnostics": diagnostics,
-                                              "models": result.get("models", [])}
-
-        worker = threading.Thread(target=run, name="model-settings-probe", daemon=True)
+    def _run_probe(self, request_id, operation, settings, secrets, cancel):
+        result = {"requestId": request_id, "state": "completed", "code": "", "message": "", "diagnostics": {}, "models": []}
+        try:
+            response = self._service.execute(settings, {}, cancel_checker=cancel.throw_if_cancelled,
+                                             progress=lambda event: None, operation=operation)
+            cancel.throw_if_cancelled()
+            if operation == "list_models":
+                result["models"] = _models(response["models"])
+        except Exception as error:
+            code = "OPERATION_CANCELLED" if isinstance(error, OperationCancelled) else getattr(error, "code", "MODEL_PROBE_FAILED")
+            if not isinstance(code, str) or not re.fullmatch(r"[A-Z_]{1,80}", code):
+                code = "MODEL_PROBE_FAILED"
+            diagnostics = provider_failure(code, error, secrets=secrets)["diagnostics"]
+            result.update(state="failed", code=code, message=diagnostics["diagnostic"], diagnostics=diagnostics)
         with self._lock:
-            self._probe_thread = worker
-        worker.start()
-        return self.editor_probe_status({})
+            self._probe_result = result
 
     def catalog(self):
         public_keys = {"modelId", "label", "contextWindowTokens", "inputModalities", "supportsTools"}
@@ -320,7 +276,7 @@ class ProviderProfiles:
         with self._lock:
             request_id = values.get("probeRequest", {}).get("requestId")
             if request_id == self._probe_result.get("requestId"):
-                self._probe_cancel.set()
+                self._probe_cancel.cancel()
         return self.editor_probe_status({})
 
     def register_settings(self):

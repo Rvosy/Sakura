@@ -2,10 +2,7 @@ from __future__ import annotations
 
 import re
 
-try:
-    from .component import Component, MCPComponentError
-except ImportError:
-    from component import Component, MCPComponentError
+from .component import Component, MCPComponentError
 
 
 EXPORTS = ("capabilities", "registerServer", "unregisterServer", "status", "begin", "inspect", "readResult", "cancel", "release", "events", "readEvent", "readInput", "respond")

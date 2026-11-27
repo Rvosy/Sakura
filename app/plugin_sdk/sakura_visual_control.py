@@ -7,7 +7,7 @@ import re
 
 
 def validate_visual_control(value: object) -> dict:
-    if not isinstance(value, dict) or set(value) - {"version", "resourceId", "bindingId", "state", "actions", "deferred"}:
+    if not isinstance(value, dict):
         raise ValueError("VISUAL_CONTROL_INVALID")
     if (type(value.get("version")) is not int or value["version"] != 1
         or not isinstance(value.get("bindingId"), str) or not re.fullmatch(r"[0-9a-f]{32}", value["bindingId"])
@@ -16,7 +16,7 @@ def validate_visual_control(value: object) -> dict:
     if "deferred" in value:
         deferred = value["deferred"]
         if ({"state", "actions"} & set(value) or not isinstance(deferred, dict)
-            or set(deferred) != {"control", "portrait", "tone"}
+            or not {"control", "portrait", "tone"} <= deferred.keys()
             or not isinstance(deferred["portrait"], str) or not isinstance(deferred["tone"], str)):
             raise ValueError("VISUAL_CONTROL_INVALID")
     elif (not ({"state", "actions"} & set(value))

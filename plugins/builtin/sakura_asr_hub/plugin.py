@@ -10,10 +10,7 @@ from dataclasses import dataclass, field
 from typing import Any
 from pathlib import Path
 
-try:
-    from .input_controller import InputController, InputError
-except ImportError:
-    from input_controller import InputController, InputError
+from .input_controller import InputController, InputError
 
 _ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,199}$")
 _CODE = re.compile(r"^[A-Z][A-Z0-9_]{0,79}$")
@@ -91,8 +88,8 @@ class SakuraASRHub:
 
     def _proxy(self, descriptor):
         proxy = self.context.bind(descriptor["serviceKey"])
-        scope = self.audio.verifyProvider(descriptor["providerId"], descriptor["serviceKey"])["scopeId"]
-        if scope != descriptor["scopeId"]:
+        identity = proxy.identity
+        if identity["scopeId"] != descriptor["scopeId"] or identity["providerId"] != descriptor["providerId"]:
             raise ValueError("ASR_PROVIDER_UNAVAILABLE")
         return proxy
 
@@ -291,6 +288,7 @@ class SakuraASRHubPlugin:
         hub = SakuraASRHub(context)
         context.provide("sakura.asr", hub, exports=("registerProvider", "unregisterProvider", "listProviders", "status", "configure", "warmup", "begin", "poll", "cancel", "input", "load_settings"))
         context.effect(hub.close)
+        context.on("sakura.host.scope.closed", hub.inputs.scope_closed)
         settings = context.get("sakura.host.settings")
         settings.register({
             "sectionId": "input", "title": "语音输入", "order": 80,

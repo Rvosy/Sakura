@@ -1,10 +1,7 @@
 """将引擎缓存移到用户数据根下的短目录，失败时沿用原目录。"""
 from __future__ import annotations
 
-try:
-    from ._bundle import filesystem_path
-except ImportError:
-    from _bundle import filesystem_path
+from ._bundle import filesystem_path
 
 
 def runtime_directory(directory, destination, log):

@@ -1,4 +1,4 @@
-"""Runtime v2 plugin manifest data models."""
+"""Plugin API v4 plugin manifest data models."""
 
 from __future__ import annotations
 
@@ -16,7 +16,6 @@ class PluginSpec:
 
     entry: str
     enabled: bool = True
-    priority: int = 100
     plugin_id: str = ""
     name: str = ""
     author: str = ""
@@ -24,7 +23,6 @@ class PluginSpec:
     version: str = "0.0.0"
     api_version: int = PLUGIN_API_V4_VERSION
     required: bool = False
-    permissions: tuple[str, ...] = field(default_factory=tuple)
     provides: tuple[str, ...] = field(default_factory=tuple)
     requires: tuple[str, ...] = field(default_factory=tuple)
     plugin_root: Path | None = None

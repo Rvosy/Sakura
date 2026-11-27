@@ -10,18 +10,11 @@ import time
 import uuid
 from urllib.parse import urlencode
 
-try:
-    from ._bundle import BundleStore, Cancelled
-    from ._runtime import Runtime, probe
-    from ._updates import UpdateAnnouncement
-    from ._diagnostics import operation
-    from ._storage import runtime_directory
-except ImportError:
-    from _bundle import BundleStore, Cancelled
-    from _runtime import Runtime, probe
-    from _updates import UpdateAnnouncement
-    from _diagnostics import operation
-    from _storage import runtime_directory
+from ._bundle import BundleStore, Cancelled
+from ._runtime import Runtime, probe
+from ._updates import UpdateAnnouncement
+from ._diagnostics import operation
+from ._storage import runtime_directory
 
 PROVIDER_ID = 'sakura.tts.sakuratts'
 SERVICE_KEY = 'sakura.tts.provider.sakuratts'

@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from app.plugin_sdk.sakura_cancellation import OperationCancelled
+from app.plugin_sdk.sakura_process import normalize_windows_path
+
 import importlib
-import json
 import logging
 import os
 import re
@@ -20,29 +22,16 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterator, Mapping
 
-from sakura_http import urlopen_direct_for_loopback as urlopen_current_proxy
+from app.plugin_sdk.sakura_http import urlopen_direct_for_loopback as urlopen_current_proxy
 
-try:
-    from ._runtime_profile import managed_profile_path, prepare_managed_profile
-except ImportError:  # pragma: no cover - loose plugin execution
-    from _runtime_profile import managed_profile_path, prepare_managed_profile
+from ._runtime_profile import managed_profile_path, prepare_managed_profile
 
 
 logger = logging.getLogger(__name__)
 
 
 def _external_path(value: str | Path) -> str:
-    text = str(value)
-    if sys.platform == "win32":
-        if text.startswith("\\\\?\\UNC\\"):
-            text = "\\\\" + text[8:]
-        elif text.startswith("\\\\?\\"):
-            text = text[4:]
-    return os.path.normpath(text)
-
-
-class DownloadCancelledError(RuntimeError):
-    pass
+    return os.path.normpath(normalize_windows_path(value))
 
 
 class BundleInstallError(RuntimeError):
@@ -155,20 +144,9 @@ def recommend_gpt_sovits_bundle() -> TTSBundleEntry | None:
     return GPT_SOVITS_STANDARD
 
 
-def _tts_root(user_root: Path) -> Path:
-    try:
-        payload = json.loads((user_root / "config" / "storage.json").read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        payload = {}
-    value = payload.get("ttsRoot") if isinstance(payload, Mapping) else None
-    if isinstance(value, str) and value.strip() and Path(value).is_absolute():
-        return Path(value).resolve(strict=False)
-    return user_root / "tts"
-
-
-def _install_dir(entry: TTSBundleEntry, user_root: Path) -> Path:
+def _install_dir(entry: TTSBundleEntry, resolve_dir: Callable[[str], Path]) -> Path:
     short = {GPT_SOVITS_STANDARD.key: "gpt", GPT_SOVITS_NVIDIA50.key: "g50"}.get(entry.key, entry.key)
-    return _tts_root(user_root) / short
+    return resolve_dir(short)
 
 
 def _result(entry: TTSBundleEntry, installed: Path) -> TTSBundleInstallResult:
@@ -191,22 +169,22 @@ def _result(entry: TTSBundleEntry, installed: Path) -> TTSBundleInstallResult:
     )
 
 
-def _installed(entry: TTSBundleEntry, user_root: Path) -> bool:
+def _installed(entry: TTSBundleEntry, resolve_dir: Callable[[str], Path]) -> bool:
     try:
-        _result(entry, _install_dir(entry, user_root))
+        _result(entry, _install_dir(entry, resolve_dir))
     except RuntimeError:
         return False
     return True
 
 
-def installed_bundle_result(user_root: Path) -> TTSBundleInstallResult | None:
+def installed_bundle_result(resolve_dir: Callable[[str], Path]) -> TTSBundleInstallResult | None:
     """Return the currently recommended managed bundle when it is ready."""
 
     entry = recommend_gpt_sovits_bundle()
     if entry is None:
         return None
     try:
-        return _result(entry, _install_dir(entry, user_root))
+        return _result(entry, _install_dir(entry, resolve_dir))
     except RuntimeError:
         return None
 
@@ -375,16 +353,15 @@ def _terminate(process: subprocess.Popen[bytes]) -> None:
 
 def _install_archive(
     entry: TTSBundleEntry,
-    user_root: Path,
+    resolve_dir: Callable[[str], Path],
     *,
     check_cancel: Callable[[], None],
     on_progress: Callable[[int], None],
     on_status: Callable[[str], None],
     on_download_progress: Callable[[TTSBundleDownloadProgress], None],
 ) -> TTSBundleInstallResult:
-    root = _tts_root(user_root)
-    archive = root / "_dl" / entry.filename
-    staging = root / "_tmp" / entry.key
+    archive = resolve_dir("downloads") / entry.filename
+    staging = resolve_dir("staging") / entry.key
     archive.parent.mkdir(parents=True, exist_ok=True)
     on_status("verify")
     on_progress(0)
@@ -406,12 +383,12 @@ def _install_archive(
             check_cancel=check_cancel,
         )
         check_cancel()
-    _replace_directory(extracted, _install_dir(entry, user_root))
+    _replace_directory(extracted, _install_dir(entry, resolve_dir))
     shutil.rmtree(staging, ignore_errors=True)
     archive.unlink(missing_ok=True)
     on_status("cleanup")
     on_progress(100)
-    return _result(entry, _install_dir(entry, user_root))
+    return _result(entry, _install_dir(entry, resolve_dir))
 
 
 def _script_output(
@@ -452,7 +429,7 @@ def _script_output(
 
 def _install_script(
     entry: TTSBundleEntry,
-    user_root: Path,
+    resolve_dir: Callable[[str], Path],
     *,
     check_cancel: Callable[[], None],
     on_progress: Callable[[int], None],
@@ -463,8 +440,7 @@ def _install_script(
     script = Path(__file__).with_name(entry.installer_script)
     if not script.is_file():
         raise RuntimeError("TTS_BUNDLE_INSTALLER_MISSING")
-    root = _tts_root(user_root)
-    staging = root / "_tmp" / entry.key
+    staging = resolve_dir("staging") / entry.key
     shutil.rmtree(staging, ignore_errors=True)
     staging.mkdir(parents=True)
     env = os.environ.copy()
@@ -474,7 +450,7 @@ def _install_script(
             env[f"{scheme.upper()}_PROXY"] = proxy
             env[f"{scheme}_proxy"] = proxy
     env["SAKURA_TTS_INSTALL_DIR"] = _external_path(staging)
-    env["SAKURA_TTS_DOWNLOADS_DIR"] = _external_path(root / "_dl")
+    env["SAKURA_TTS_DOWNLOADS_DIR"] = _external_path(resolve_dir("downloads"))
     process = subprocess.Popen(
         ["bash", _external_path(script), _external_path(staging)],
         cwd=_external_path(Path(__file__).parent),
@@ -505,8 +481,8 @@ def _install_script(
         if exit_code != 0:
             raise BundleInstallError(exit_code, "".join(output))
         _result(entry, staging)
-        _replace_directory(staging, _install_dir(entry, user_root))
-        return _result(entry, _install_dir(entry, user_root))
+        _replace_directory(staging, _install_dir(entry, resolve_dir))
+        return _result(entry, _install_dir(entry, resolve_dir))
     except Exception:
         _terminate(process)
         shutil.rmtree(staging, ignore_errors=True)
@@ -518,7 +494,7 @@ def _install_script(
 
 def install_bundle(
     entry: TTSBundleEntry,
-    user_root: Path,
+    resolve_dir: Callable[[str], Path],
     *,
     check_cancel: Callable[[], None],
     on_progress: Callable[[int], None],
@@ -528,10 +504,10 @@ def install_bundle(
     if not _supported(entry):
         raise RuntimeError("TTS_BUNDLE_PLATFORM_UNSUPPORTED")
     if entry.install_method == "script":
-        return _install_script(entry, user_root, check_cancel=check_cancel, on_progress=on_progress, on_status=on_status)
+        return _install_script(entry, resolve_dir, check_cancel=check_cancel, on_progress=on_progress, on_status=on_status)
     return _install_archive(
         entry,
-        user_root,
+        resolve_dir,
         check_cancel=check_cancel,
         on_progress=on_progress,
         on_status=on_status,
@@ -540,8 +516,8 @@ def install_bundle(
 
 
 class TTSBundleResource:
-    def __init__(self, *, user_root: Path, config_get: Callable[[], Mapping[str, Any]], config_update: Callable[[Mapping[str, Any]], object], entry: Callable[[], TTSBundleEntry | None], custom_endpoint: Callable[[Mapping[str, Any]], bool], installer: Callable[..., TTSBundleInstallResult] = install_bundle, diagnostic: Callable[[str, str, Mapping[str, str]], None] | None = None) -> None:
-        self._user_root, self._config_get, self._config_update = Path(user_root), config_get, config_update
+    def __init__(self, *, resolve_dir: Callable[[str], Path], config_get: Callable[[], Mapping[str, Any]], config_update: Callable[[Mapping[str, Any]], object], entry: Callable[[], TTSBundleEntry | None], custom_endpoint: Callable[[Mapping[str, Any]], bool], installer: Callable[..., TTSBundleInstallResult] = install_bundle, diagnostic: Callable[[str, str, Mapping[str, str]], None] | None = None) -> None:
+        self._resolve_dir, self._config_get, self._config_update = resolve_dir, config_get, config_update
         self._entry, self._custom_endpoint, self._installer = entry(), custom_endpoint, installer
         self._diagnostic = diagnostic
         self._lock, self._cancel = threading.RLock(), threading.Event()
@@ -571,7 +547,7 @@ class TTSBundleResource:
                 if self._stage == "download" and self._downloaded and self._total
                 else ""
             )
-        if state in {"idle", "succeeded"} and _installed(entry, self._user_root):
+        if state in {"idle", "succeeded"} and _installed(entry, self._resolve_dir):
             return {"bundleResource": self._value("required", f"{entry.label} · {_format_size(entry)}", True, "已安装", "", [], terminal="succeeded")}
         actions = ["cancelBundle"] if state in {"queued", "running"} else ["retryBundle"] if state in {"failed", "cancelled"} else ["installBundle"]
         stage_message = {
@@ -616,7 +592,7 @@ class TTSBundleResource:
 
     def _run(self, entry: TTSBundleEntry) -> None:
         try:
-            result = self._installer(entry, self._user_root, check_cancel=self._check_cancel, on_progress=self._set_progress, on_status=self._set_stage, on_download_progress=self._set_download)
+            result = self._installer(entry, self._resolve_dir, check_cancel=self._check_cancel, on_progress=self._set_progress, on_status=self._set_stage, on_download_progress=self._set_download)
             patch: dict[str, object] = {
                 "workDir": _external_path(result.work_dir),
                 # Clear optional overrides left by an older/different runtime.
@@ -633,7 +609,7 @@ class TTSBundleResource:
             }
             self._config_update(patch)
             self._set_state("succeeded", "安装完成", 100)
-        except DownloadCancelledError:
+        except OperationCancelled:
             self._set_state("cancelled", "已取消", None)
         except Exception as error:
             with self._lock:
@@ -660,7 +636,7 @@ class TTSBundleResource:
 
     def _check_cancel(self) -> None:
         if self._cancel.is_set():
-            raise DownloadCancelledError()
+            raise OperationCancelled()
 
     def _set_state(self, state: str, stage: str, progress: int | None) -> None:
         with self._lock:

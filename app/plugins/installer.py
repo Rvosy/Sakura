@@ -21,15 +21,14 @@ import yaml
 from app.plugins.app_compatibility import app_version_reason
 from app.plugins.dependencies import PluginDependencyError, PluginDependencyRoots
 from app.plugins.models import PLUGIN_API_V4_VERSION, PluginSpec
-from app.plugins.inventory import PluginDesiredStateStore, PluginInventory
+from app.plugins.inventory import PLUGIN_ID_PATTERN, SERVICE_KEY_PATTERN, PluginDesiredStateStore, PluginInventory
 from app.plugins.visuals import visual_capabilities_from_manifest
+from app.storage.archive_security import validate_zip_resource_limits
 from app.storage.atomic import atomic_write_text
 from app.storage.paths import StoragePaths, sanitize_directory_component
 from app.storage.runtime_roots import RuntimeRoots, coerce_runtime_roots
 
 
-_PLUGIN_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
-_SERVICE_KEY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,199}$")
 _PYTHON_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _INVALID_COMPONENT = re.compile(r'[<>:"\\|?*\x00-\x1f]')
 _WINDOWS_RESERVED_NAMES = {
@@ -471,16 +470,15 @@ class LocalPluginInstaller:
         if raw.get("api", 0) != PLUGIN_API_V4_VERSION:
             raise PluginInstallError("API_VERSION_UNSUPPORTED")
         if (
-            not _PLUGIN_ID.fullmatch(plugin_id)
-            or plugin_id.endswith(".")
+            not PLUGIN_ID_PATTERN.fullmatch(plugin_id)
             or raw.get("required", False)
         ):
             raise PluginInstallError("PLUGIN_MANIFEST_INVALID")
         declarations = {
             key: tuple(dict.fromkeys(item.strip() for item in raw.get(key, []) if item.strip()))
-            for key in ("permissions", "provides", "requires")
+            for key in ("provides", "requires")
         }
-        if any(not _SERVICE_KEY.fullmatch(key) for key in (*declarations["provides"], *declarations["requires"])):
+        if any(not SERVICE_KEY_PATTERN.fullmatch(key) for key in (*declarations["provides"], *declarations["requires"])):
             raise PluginInstallError("PLUGIN_MANIFEST_INVALID")
         module_name, separator, class_name = entry.partition(":")
         module_parts = module_name.split(".")
@@ -501,8 +499,6 @@ class LocalPluginInstaller:
             version=raw.get("version", "").strip() or "0.0.0",
             api_version=raw["api"],
             enabled=raw.get("enabled", True),
-            priority=raw.get("priority", 100),
-            permissions=declarations["permissions"],
             provides=declarations["provides"],
             requires=declarations["requires"],
             plugin_root=plugin_root,
@@ -519,15 +515,14 @@ class LocalPluginInstaller:
         for key in ("id", "entry", "name", "author", "description", "version"):
             if key in raw and not isinstance(raw[key], str):
                 raise PluginInstallError("PLUGIN_MANIFEST_INVALID")
-        for key in ("api", "priority"):
-            if key in raw and (not isinstance(raw[key], int) or isinstance(raw[key], bool)):
-                raise PluginInstallError("PLUGIN_MANIFEST_INVALID")
+        if "api" in raw and type(raw["api"]) is not int:
+            raise PluginInstallError("PLUGIN_MANIFEST_INVALID")
         for key in ("enabled", "required"):
             if key in raw and not isinstance(raw[key], bool):
                 raise PluginInstallError("PLUGIN_MANIFEST_INVALID")
         if "optional" in raw:
             raise PluginInstallError("PLUGIN_MANIFEST_INVALID")
-        for key in ("permissions", "provides", "requires"):
+        for key in ("provides", "requires"):
             if key not in raw:
                 continue
             value = raw[key]
@@ -573,13 +568,13 @@ class LocalPluginInstaller:
             if not stat.S_ISREG(node_stat.st_mode):
                 raise PluginInstallError("PLUGIN_INSTALL_FILE_TYPE_INVALID")
             target.parent.mkdir(parents=True, exist_ok=True)
-            with self._open_regular_source(path) as reader:
-                with target.open("xb") as writer:
-                    shutil.copyfileobj(reader, writer)
+            with path.open("rb") as reader, target.open("xb") as writer:
+                shutil.copyfileobj(reader, writer)
 
     def _extract_zip(self, source: Path, destination: Path) -> None:
         with self._open_regular_source(source) as source_file:
             with zipfile.ZipFile(source_file) as archive:
+                validate_zip_resource_limits(archive, destination=destination, label="插件包")
                 self._extract_zip_entries(archive, destination)
 
     def _extract_zip_entries(self, archive: zipfile.ZipFile, destination: Path) -> None:
@@ -608,44 +603,12 @@ class LocalPluginInstaller:
 
     @contextmanager
     def _open_regular_source(self, path: Path) -> Iterator[BinaryIO]:
-        try:
-            before = path.lstat()
-        except OSError as error:
-            raise PluginInstallError("PLUGIN_INSTALL_IO_FAILED") from error
-        if self._unsafe_node(path) or stat.S_ISLNK(before.st_mode):
+        if self._unsafe_node(path):
             raise PluginInstallError("PLUGIN_INSTALL_SYMLINK_FORBIDDEN")
-        if not stat.S_ISREG(before.st_mode):
+        if not path.is_file():
             raise PluginInstallError("PLUGIN_INSTALL_FILE_TYPE_INVALID")
-        flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NONBLOCK", 0)
-        flags |= getattr(os, "O_NOFOLLOW", 0)
-        try:
-            descriptor = os.open(path, flags)
-        except OSError as error:
-            raise PluginInstallError("PLUGIN_INSTALL_IO_FAILED") from error
-        try:
-            opened = os.fstat(descriptor)
-            current = path.lstat()
-            if (
-                not stat.S_ISREG(opened.st_mode)
-                or not stat.S_ISREG(current.st_mode)
-                or self._file_identity(before) != self._file_identity(opened)
-                or self._file_identity(opened) != self._file_identity(current)
-            ):
-                raise PluginInstallError("PLUGIN_INSTALL_SOURCE_CHANGED")
-            with os.fdopen(descriptor, "rb", closefd=True) as stream:
-                descriptor = -1
-                yield stream
-        except OSError as error:
-            raise PluginInstallError("PLUGIN_INSTALL_IO_FAILED") from error
-        finally:
-            if descriptor >= 0:
-                os.close(descriptor)
-
-    @staticmethod
-    def _file_identity(value: os.stat_result) -> tuple[int, int, int]:
-        inode = int(value.st_ino)
-        fallback = int(getattr(value, "st_ctime_ns", int(value.st_ctime * 1_000_000_000)))
-        return (int(value.st_dev), inode if inode else fallback, stat.S_IFMT(value.st_mode))
+        with path.open("rb") as stream:
+            yield stream
 
     @staticmethod
     def _replace_path(source: Path, target: Path) -> None:

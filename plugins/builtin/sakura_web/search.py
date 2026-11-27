@@ -6,10 +6,7 @@ from datetime import datetime, timezone
 from html.parser import HTMLParser
 from urllib.parse import urlencode, urljoin, urlparse
 
-try:
-    from . import web
-except ImportError:
-    import web
+from . import web
 
 PROVIDERS = {"baidu": "百度", "bing": "Bing", "tavily": "Tavily"}
 DEFAULTS = {"provider": "baidu", "tavily_api_key": "", "tavily_depth": "basic"}

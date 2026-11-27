@@ -74,6 +74,19 @@ class TestToolRegistryExecution:
         assert result.success
         assert result.content == {"ok": True, "query": "实际参数"}
 
+    def test_plugin_failure_logs_reason_and_redacted_error(self) -> None:
+        events = []
+        registry = ToolRegistry([
+            _dummy_tool("broken", source="plugin", handler=lambda _: {
+                "isError": True, "reasonCode": "RESOURCE_MISSING",
+                "error": "open failed: api_key=hidden-value", "content": "private result",
+            }),
+        ], logger=lambda _channel, _message, fields: events.append(fields))
+        registry.execute("broken", {})
+        assert events[-1]["reason_code"] == "RESOURCE_MISSING"
+        assert "open failed" in events[-1]["error"]
+        assert "hidden-value" not in repr(events) and "private result" not in repr(events)
+
     def test_execute_unknown_tool(self) -> None:
         registry = ToolRegistry()
         result = registry.execute("unknown", {})

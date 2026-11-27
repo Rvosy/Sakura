@@ -1,4 +1,7 @@
 from __future__ import annotations
+
+from app.plugin_sdk.sakura_cancellation import OperationCancelled
+from app.plugin_sdk.sakura_storage import tts_directories
 from sakura_provider_errors import provider_failure
 
 import json
@@ -16,15 +19,11 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 from urllib.parse import urlparse
 
-try:
-    from . import _support
-except ImportError:
-    import _support  # type: ignore[no-redef]
+from . import _support
 
 DEFAULT_GENIE_TTS_API_URL = _support.DEFAULT_GENIE_TTS_API_URL
 DEFAULT_TONE = _support.DEFAULT_TONE
 GENIE_TTS = _support.GENIE_TTS
-OperationCancelled = _support.OperationCancelled
 TTSBundleResource = _support.TTSBundleResource
 ToneReference = _support.ToneReference
 _TTSRequest = _support._TTSRequest
@@ -956,15 +955,15 @@ class GeniePlugin:
         diagnostics = context.get("sakura.host.diagnostics")
         settings = context.get("sakura.host.settings")
         surface = context.get("sakura.host.settings.surface-v0")
-        user_root = Path(context.data_path(".")).parents[2]
-        config_patch = _startup_config_patch(context.config.get(), user_root)
+        resolve_dir = tts_directories(context)
+        config_patch = _startup_config_patch(context.config.get(), resolve_dir)
         if config_patch:
             context.config.update(config_patch)
 
         def save_runtime_settings(values: Mapping[str, Any]) -> object:
             patch = _settings_values(values)
             merged = {**context.config.get(), **patch}
-            patch.update(_startup_config_patch(merged, user_root))
+            patch.update(_startup_config_patch(merged, resolve_dir))
             return context.config.update(patch)
 
         provider = GenieProvider(context, character, artifacts, diagnostics, context.get("sakura.host.logging"))
@@ -1009,7 +1008,7 @@ class GeniePlugin:
         )
         surface.register("runtime", "voice")
         bundle = TTSBundleResource(
-            user_root=user_root,
+            resolve_dir=resolve_dir,
             config_get=context.config.get,
             config_update=context.config.update,
             entry=lambda: GENIE_TTS if is_bundle_supported(GENIE_TTS) else None,
@@ -1063,7 +1062,7 @@ def _settings_values(value: Mapping[str, Any]) -> dict[str, Any]:
 
 def _startup_config_patch(
     value: Mapping[str, Any],
-    user_root: Path,
+    resolve_dir: Callable[[str], Path],
 ) -> dict[str, object]:
     """Normalize stored paths and bind an already installed managed bundle."""
 
@@ -1071,7 +1070,7 @@ def _startup_config_patch(
     mode = str(value.get("endpointMode") or "managed").strip().lower()
     raw_work_dir = str(value.get("workDir") or "").strip()
     if mode == "managed":
-        installed = installed_bundle_work_dir(user_root)
+        installed = installed_bundle_work_dir(resolve_dir)
         if installed is not None:
             normalized = user_facing_path(installed)
             if normalized != raw_work_dir:

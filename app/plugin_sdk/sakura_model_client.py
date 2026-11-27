@@ -8,10 +8,7 @@ import uuid
 from pathlib import Path
 from collections.abc import Mapping
 
-if __package__:
-    from .sakura_cancellation import OperationCancelled, check_cancelled
-else:
-    from sakura_cancellation import OperationCancelled, check_cancelled
+from sakura_cancellation import OperationCancelled, check_cancelled
 
 
 class ModelError(RuntimeError):

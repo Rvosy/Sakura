@@ -3,10 +3,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-try:
-    from .memory import DEFAULT_MEMORY_CONFIDENCE, DEFAULT_MEMORY_IMPORTANCE
-except ImportError:
-    from memory import DEFAULT_MEMORY_CONFIDENCE, DEFAULT_MEMORY_IMPORTANCE
+from .memory import DEFAULT_MEMORY_CONFIDENCE, DEFAULT_MEMORY_IMPORTANCE
 
 
 class CurationOperation(BaseModel):

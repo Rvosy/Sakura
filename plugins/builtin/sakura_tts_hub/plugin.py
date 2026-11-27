@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from app.plugin_sdk.sakura_plugin_api import PluginContext
+
 import re
 from sakura_provider_errors import provider_failure
 import threading
@@ -7,10 +9,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
-try:
-    from ._idle_fill import IdleFill
-except ImportError:
-    from _idle_fill import IdleFill
+from ._idle_fill import IdleFill
 
 
 _IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,199}$")
@@ -42,7 +41,7 @@ class _Selection:
 class SakuraTTSHub:
     """Select one descriptor-backed Provider without engine-specific branches."""
 
-    def __init__(self, context: object, config: object, logger: Any = None) -> None:
+    def __init__(self, context: PluginContext, config: object, logger: Any = None) -> None:
         self._logger = logger
         self._context = context
         self._config = config
@@ -216,12 +215,7 @@ class SakuraTTSHub:
         return result
 
     def _begin(self, request: Mapping[str, Any]) -> dict[str, Any]:
-        if not isinstance(request, Mapping) or set(request) != {
-            "requestId",
-            "characterId",
-            "text",
-            "options",
-        }:
+        if not isinstance(request, Mapping):
             return self._failed("", None, "TTS_REQUEST_INVALID")
         character_id = request.get("characterId")
         request_id = request.get("requestId")
@@ -254,7 +248,7 @@ class SakuraTTSHub:
             return {"stage": "provider_selection", **self._failed(request_id, provider_id, "TTS_PROVIDER_UNAVAILABLE", provider_failure(
                 "TTS_PROVIDER_UNAVAILABLE", f"语音引擎 {provider_id} 未向 TTS Hub 注册")["diagnostics"])}
         try:
-            provider = getattr(self._context, "bind")(descriptor.service_key)
+            provider = self._context.bind(descriptor.service_key)
         except Exception as error:
             self._log("error", "语音引擎绑定失败", request_id=request_id, provider=provider_id)
             return self._failed(request_id, provider_id, "TTS_PROVIDER_UNAVAILABLE", provider_failure("TTS_PROVIDER_UNAVAILABLE", error)["diagnostics"])
@@ -443,15 +437,11 @@ class SakuraTTSHub:
         return self._provider_by_key(descriptor.service_key)
 
     def _provider_by_key(self, service_key: str) -> object:
-        return getattr(self._context, "get")(service_key)
+        return self._context.get(service_key)
 
     @classmethod
     def _descriptor(cls, value: Mapping[str, Any]) -> _ProviderDescriptor:
-        if not isinstance(value, Mapping) or set(value) != {
-            "providerId",
-            "serviceKey",
-            "label",
-        }:
+        if not isinstance(value, Mapping):
             raise ValueError("TTS_PROVIDER_INVALID")
         provider_id = value.get("providerId")
         service_key = value.get("serviceKey")
@@ -472,9 +462,9 @@ class SakuraTTSHub:
 
 
 class SakuraTTSHubPlugin:
-    def setup(self, context: object) -> None:
+    def setup(self, context: PluginContext) -> None:
         logger = context.get("sakura.host.logging")
-        getattr(context, "provide")(
+        context.provide(
             "sakura.tts",
             SakuraTTSHub(context, context.config, logger),
             exports=(

@@ -204,10 +204,7 @@ class Component:
 
                     auth = None
                     if config.get("oauth") is not None and config.get("oauth") is not False:
-                        try:
-                            from .oauth import authorization
-                        except ImportError:
-                            from oauth import authorization
+                        from .oauth import authorization
                         auth = await stack.enter_async_context(authorization(
                             config, self.auth_path(credential_key) if self.auth_path and credential_key else None,
                             lambda url: self._authorization(conn, url),

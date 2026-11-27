@@ -136,7 +136,7 @@ class PortraitService:
     def parseControl(self, request, parserData, payload, legacy):
         keys = parserData["keys"]
         if payload is not None or legacy is None:
-            if not isinstance(payload, dict) or set(payload) != {"key"}:
+            if not isinstance(payload, dict) or "key" not in payload:
                 raise ValueError("VISUAL_CONTROL_INVALID: 立绘控制必须且只能包含 key")
             key = payload["key"]
             if not isinstance(key, str) or key not in keys:

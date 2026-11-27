@@ -13,15 +13,10 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request
 
 from sakura_http import urlopen_direct_for_loopback
-from sakura_process import terminate_process_tree
-try:
-    from ._bundle import Cancelled
-    from ._diagnostics import nvidia_device, operation
-    from ._storage import runtime_directory
-except ImportError:
-    from _bundle import Cancelled
-    from _diagnostics import nvidia_device, operation
-    from _storage import runtime_directory
+from sakura_process import normalize_windows_path, terminate_process_tree
+from ._bundle import Cancelled
+from ._diagnostics import nvidia_device, operation
+from ._storage import runtime_directory
 
 
 class RuntimeFailure(RuntimeError):
@@ -52,13 +47,8 @@ class RuntimeFailure(RuntimeError):
 
 
 def process_path(path):
-    value = str(path)
-    if os.name == 'nt' and value.startswith('\\\\?\\'):
-        plain = '\\\\' + value[8:] if value[4:8].upper() == 'UNC\\' else value[4:]
-        # 短路径不把扩展前缀带入引擎；超过 Win32 MAX_PATH 的路径仍保留前缀。
-        if len(plain) < 260:
-            return plain
-    return value
+    plain = normalize_windows_path(path)
+    return plain if len(plain) < 260 else str(path)
 
 
 def command(root, release, *args):

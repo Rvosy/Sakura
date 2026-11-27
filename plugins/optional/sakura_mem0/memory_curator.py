@@ -7,40 +7,22 @@ from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any
 
-try:
-    from .curation_schema import CurationOutput
-    from .support import (
-        CancelChecker,
-        OperationCancelled,
-        atomic_write_text,
-        check_cancelled,
-        log_event,
-    )
-    from .domain_types import ChatHistoryEntry, PromptTraceMetadata
-    from .memory import (
-        DEFAULT_MEMORY_CONFIDENCE,
-        DEFAULT_MEMORY_IMPORTANCE,
-        MEMORY_LAYER_SEMANTIC,
-        MemoryStore,
-        looks_like_sensitive_memory,
-    )
-except ImportError:
-    from curation_schema import CurationOutput
-    from support import (
-        CancelChecker,
-        OperationCancelled,
-        atomic_write_text,
-        check_cancelled,
-        log_event,
-    )
-    from domain_types import ChatHistoryEntry, PromptTraceMetadata
-    from memory import (
-        DEFAULT_MEMORY_CONFIDENCE,
-        DEFAULT_MEMORY_IMPORTANCE,
-        MEMORY_LAYER_SEMANTIC,
-        MemoryStore,
-        looks_like_sensitive_memory,
-    )
+from .curation_schema import CurationOutput
+from .support import (
+    CancelChecker,
+    OperationCancelled,
+    atomic_write_text,
+    check_cancelled,
+    log_event,
+)
+from .domain_types import ChatHistoryEntry, PromptTraceMetadata
+from .memory import (
+    DEFAULT_MEMORY_CONFIDENCE,
+    DEFAULT_MEMORY_IMPORTANCE,
+    MEMORY_LAYER_SEMANTIC,
+    MemoryStore,
+    looks_like_sensitive_memory,
+)
 
 
 DEFAULT_AUTO_MEMORY_TRIGGER_TURNS = 8
@@ -138,45 +120,6 @@ class MemoryCurationState:
         state["pending_turns"] = max(0, pending_turns)
         state["backfill_completed"] = True
         self._save(state)
-
-    def increment_pending_turns(self) -> int:
-        state = self.snapshot()
-        state["pending_turns"] = int(state["pending_turns"]) + 1
-        self._save(state)
-        return int(state["pending_turns"])
-
-    def mark_processed(
-        self,
-        processed_history_count: int,
-        *,
-        consumed_turns: int = 0,
-        backfill_completed: bool | None = None,
-    ) -> None:
-        state = self.snapshot()
-        state["processed_history_count"] = max(0, processed_history_count)
-        state["pending_turns"] = max(0, int(state["pending_turns"]) - max(0, consumed_turns))
-        if backfill_completed is not None:
-            state["backfill_completed"] = bool(backfill_completed)
-        self._save(state)
-
-    def consume_pending_turns(self, consumed_turns: int) -> None:
-        state = self.snapshot()
-        state["pending_turns"] = max(0, int(state["pending_turns"]) - max(0, consumed_turns))
-        self._save(state)
-
-    def mark_history_cleared(self) -> None:
-        state = self.snapshot()
-        state["processed_history_count"] = 0
-        state["pending_turns"] = 0
-        state["backfill_completed"] = True
-        self._save(state)
-
-    def unprocessed_entries(self, entries: list[ChatHistoryEntry]) -> list[ChatHistoryEntry]:
-        state = self.snapshot()
-        processed = int(state["processed_history_count"])
-        if processed < 0 or processed > len(entries):
-            processed = 0
-        return entries[processed:]
 
     def _save(self, state: dict[str, Any]) -> None:
         atomic_write_text(
@@ -532,7 +475,7 @@ class MemoryCurator:
                         log_event("Memory", "跳过无效的记忆删除操作", {"id": memory_id})
                         ignored += 1
                         continue
-                    self.memory_store.delete_memory({"id": memory_id})
+                    self.memory_store.forget_memory({"id": memory_id})
                     existing_ids.discard(memory_id)
                     archived += 1
                     event_counts["DELETE"] = event_counts.get("DELETE", 0) + 1

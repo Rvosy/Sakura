@@ -4,10 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-if __package__:
-    from .sakura_visual_control import raw_visual_control
-else:
-    from sakura_visual_control import raw_visual_control
+from sakura_visual_control import raw_visual_control
 
 DEFAULT_TONE = "中性"
 

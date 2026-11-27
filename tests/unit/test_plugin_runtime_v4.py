@@ -608,6 +608,19 @@ def test_raw_plugin_diagnostics_do_not_imply_failure(output, monkeypatch) -> Non
     assert row["fields"]["diagnostic"] == output
 
 
+def test_sdk_logging_keeps_long_fields_and_redacts_object_text(tmp_path):
+    from app.plugins.sakura_plugin_sdk import prepare_log_payload
+
+    detail = "x" * 1024
+    _, fields = prepare_log_payload("插件诊断", {
+        "first": detail, "second": detail, "path": tmp_path,
+        "error": ValueError("load failed: api_key=hidden-value"),
+    })
+    assert fields["first"] == fields["second"] == detail
+    assert fields["path"] == str(tmp_path)
+    assert "load failed" in fields["error"] and "hidden-value" not in fields["error"]
+
+
 def test_unified_logging_sdk_queue_is_bounded_and_does_not_block(tmp_path: Path) -> None:
     from app.plugins.sakura_plugin_sdk import PluginContext
 
@@ -730,7 +743,7 @@ import time
 import conflictdep
 
 try:
-    import app
+    import app.core
 except ModuleNotFoundError:
     CORE_VISIBLE = False
 else:
@@ -752,6 +765,8 @@ else:
 
 import __main__
 import sakura_plugin_api
+from app.plugin_sdk import sakura_plugin_api as qualified_api
+assert qualified_api is sakura_plugin_api
 
 class Service:
     def __init__(self):
@@ -2671,7 +2686,7 @@ def test_generation_close_cancels_screen_awareness_operation_before_scope_revoke
 
     roots = _roots(tmp_path)
     plugin = _plugin_source(roots.distribution_root / "plugins/builtin", "fixture.screen", "fixture.screen.service", body='''
-from awareness import ScreenAwarenessRuntime
+from .awareness import ScreenAwarenessRuntime
 class Plugin:
     def setup(self, context):
         runtime = ScreenAwarenessRuntime(object(), context.get("sakura.host.chat"), context.config)

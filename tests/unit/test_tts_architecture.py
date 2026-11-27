@@ -69,7 +69,7 @@ def _queue(settings: _support.GPTSoVITSTTSSettings) -> SimpleNamespace:
     resolver._custom_checked = True
     return SimpleNamespace(
         settings=settings,
-        _supervisor=_support.GptSovitsEndpointSupervisor(resolver),
+        resolver=resolver,
         _select_reference=lambda _tone: _support.ToneReference(
             "neutral", settings.ref_audio_path, "reference", "ja"
         ),
@@ -122,9 +122,9 @@ def test_managed_synthesis_restarts_owned_runtime_after_connection_failure(
     queue = _queue(settings)
     queue._cache_dir = tmp_path
     restarts: list[bool] = []
-    queue._supervisor._ensure_service_available = lambda _fail: True
-    queue._supervisor._ensure_character_weights = lambda _fail, cancel_checker=None: True
-    queue._supervisor._restart_owned_runtime = lambda: restarts.append(True) or True
+    queue.resolver.ensure_available = lambda _fail: True
+    queue.resolver.ensure_character_weights = lambda _fail, cancel_checker=None: True
+    queue.resolver.restart_owned = lambda: restarts.append(True) or True
 
     result = _support.GPTSoVITSSynthesisEngine().synthesize(
         queue,

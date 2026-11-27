@@ -16,7 +16,6 @@ from plugins.optional.sakura_mem0.plugin import (
     SakuraMem0Plugin,
     SakuraMem0Runtime,
     _default_runtime,
-    _context_request,
     _tool_registrations,
 )
 
@@ -29,20 +28,20 @@ def test_recall_logs_distinguish_matches_empty_and_skipped(monkeypatch):
                         lambda channel, message, fields, **options: logs.append((message, fields, options)))
     boundary = FakeBoundary()
     service = memory_recall.MemoryRecallService(boundary)
-    result = service.recall(_context_request({"current_input": "你记得什么"}))
+    result = service.recall(ContextRequest.from_payload({"current_input": "你记得什么"}))
     assert len(result.fragments) == 1
     assert "1" in logs[-1][0] and logs[-1][1]["selected"] == 1
     boundary.search_memory = lambda *_args, **_kwargs: {"status": "ready", "memories": []}
-    service.recall(_context_request({"current_input": "你记得什么"}))
+    service.recall(ContextRequest.from_payload({"current_input": "你记得什么"}))
     assert logs[-1][1]["selected"] == 0
     assert logs[-1][0] != logs[-2][0]
-    service.recall(_context_request({}))
+    service.recall(ContextRequest.from_payload({}))
     assert logs[-1][1]["status"] == "skipped"
     assert logs[-1][2]["severity"] == "debug"
 
 
-def test_context_request_keeps_latest_eight_messages_and_timeline_identity() -> None:
-    request = _context_request(
+def test_context_request_keeps_messages_and_timeline_identity() -> None:
+    request = ContextRequest.from_payload(
         {
             "current_input": "现在的问题",
             "character_id": "sakura",
@@ -56,10 +55,24 @@ def test_context_request_keeps_latest_eight_messages_and_timeline_identity() -> 
         }
     )
     assert [message.content for message in request.recent_messages] == [
-        f"message-{index}" for index in range(4, 12)
+        f"message-{index}" for index in range(12)
     ]
     assert request.current_turn_id == "turn-9"
     assert request.source_entry_ids == ("human-9",)
+
+
+@pytest.mark.parametrize(("content", "sensitive"), [
+    ("密码管理器和 token 教程，订单号 1234567890123456789，银行卡已寄出", False),
+    ("secret 是配置字段名，密钥需要轮换", False),
+    ("sk-abcdefghijkl", True),
+    ("Authorization: Bearer abc123", True),
+    ("-----BEGIN RSA PRIVATE KEY-----", True),
+    ("api_key=example", True),
+])
+def test_sensitive_memory_recognizes_credentials(content, sensitive):
+    from plugins.optional.sakura_mem0.memory import looks_like_sensitive_memory
+
+    assert looks_like_sensitive_memory(content) is sensitive
 
 
 class FakeStore:

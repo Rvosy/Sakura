@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-from sakura_provider_errors import public_provider_http_message
+from app.plugin_sdk.sakura_cancellation import OperationCancelled
+from app.plugin_sdk.sakura_process import normalize_windows_path
+
+from app.plugin_sdk.sakura_provider_errors import public_provider_http_message
 
 import ipaddress
 import json
@@ -22,22 +25,15 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Callable, Mapping
 from urllib.parse import urlencode, urlparse, urlunparse
 
-from sakura_http import urlopen_direct_for_loopback as urlopen_current_proxy
+from app.plugin_sdk.sakura_http import urlopen_direct_for_loopback as urlopen_current_proxy
 
-try:
-    from ._runtime_profile import RuntimeProfileError, prepare_managed_profile
-except ImportError:  # pragma: no cover - loose plugin execution
-    from _runtime_profile import RuntimeProfileError, prepare_managed_profile
+from ._runtime_profile import RuntimeProfileError, prepare_managed_profile
 
 
 DEFAULT_TONE = "中性"
 DEFAULT_GPT_SOVITS_BASE_URL = "http://127.0.0.1:9880"
 DEFAULT_GPT_SOVITS_TTS_PATH = "/tts"
 _LATIN = re.compile(r"[A-Za-z]")
-
-
-class OperationCancelled(RuntimeError):
-    pass
 
 
 @dataclass(frozen=True)
@@ -186,13 +182,7 @@ def find_usable_runtime_python(runtime_dir: Path) -> Path | None:
 
 
 def _subprocess_path(value: str | Path) -> str:
-    text = str(value)
-    if sys.platform == "win32":
-        if text.startswith("\\\\?\\UNC\\"):
-            text = "\\\\" + text[8:]
-        elif text.startswith("\\\\?\\"):
-            text = text[4:]
-    return os.path.normpath(text)
+    return os.path.normpath(normalize_windows_path(value))
 
 
 def user_facing_path(value: str | Path) -> str:
@@ -598,37 +588,6 @@ class GptSovitsEndpointResolver:
             self.runtime.close()
 
 
-class GptSovitsEndpointSupervisor:
-    def __init__(self, resolver: GptSovitsEndpointResolver) -> None:
-        self.resolver = resolver
-        self.settings = resolver.settings
-
-    @property
-    def endpoint_kind(self) -> str:
-        return self.resolver.endpoint.kind
-
-    def _ensure_service_available(self, fail: Callable[[str], None]) -> bool:
-        self.resolver.settings = self.settings
-        return self.resolver.ensure_available(fail)
-
-    def _ensure_character_weights(
-        self,
-        fail: Callable[[str], None],
-        *,
-        cancel_checker: Callable[[], None] | None = None,
-    ) -> bool:
-        return self.resolver.ensure_character_weights(
-            fail,
-            cancel_checker=cancel_checker,
-        )
-
-    def _restart_local_service_after_http_failure(self, status: int, body: str) -> bool:
-        return self.resolver.restart_owned_after_http_failure(status, body)
-
-    def _restart_owned_runtime(self) -> bool:
-        return self.resolver.restart_owned()
-
-
 class GPTSoVITSSynthesisEngine:
     def synthesize(
         self,
@@ -639,7 +598,7 @@ class GPTSoVITSSynthesisEngine:
         skip: Callable[[str], None],
     ) -> Path | None:
         del skip
-        supervisor = getattr(queue, "_supervisor")
+        resolver = queue.resolver
         settings = getattr(queue, "settings")
 
         def check_cancelled() -> None:
@@ -671,9 +630,10 @@ class GPTSoVITSSynthesisEngine:
         restart_attempted = False
         while True:
             check_cancelled()
-            if not supervisor._ensure_service_available(fail):
+            if not resolver.ensure_available(fail):
                 return None
-            if not supervisor._ensure_character_weights(fail):
+            check_cancelled()
+            if not resolver.ensure_character_weights(fail, cancel_checker=check_cancelled):
                 return None
             reference = getattr(queue, "_select_reference")(request.tone)
             try:
@@ -713,13 +673,14 @@ class GPTSoVITSSynthesisEngine:
                 )
                 break
             except urllib.error.HTTPError as error:
+                check_cancelled()
                 body = error.read().decode("utf-8", errors="replace")
                 error.diagnostics = {"diagnostic": public_provider_http_message(
                     RuntimeError(f"API HTTP {error.code}: {body or error.reason}"), error.code,
                 )}
                 if (
                     not restart_attempted
-                    and supervisor._restart_local_service_after_http_failure(
+                    and resolver.restart_owned_after_http_failure(
                         error.code, body
                     )
                 ):
@@ -733,12 +694,13 @@ class GPTSoVITSSynthesisEngine:
                 )
                 return None
             except (urllib.error.URLError, TimeoutError, OSError) as error:
+                check_cancelled()
                 cause = getattr(error, "reason", error)
                 timed_out = isinstance(error, TimeoutError) or isinstance(cause, TimeoutError)
                 if (
                     not timed_out
                     and not restart_attempted
-                    and supervisor._restart_owned_runtime()
+                    and resolver.restart_owned()
                 ):
                     restart_attempted = True
                     continue
@@ -823,15 +785,8 @@ def _probe_http(api_url: str, timeout: float) -> bool:
     return True
 
 
-try:
-    from ._bundle import (
-        TTSBundleResource,
-        installed_bundle_result,
-        recommend_gpt_sovits_bundle,
-    )
-except ImportError:
-    from _bundle import (  # type: ignore[no-redef]
-        TTSBundleResource,
-        installed_bundle_result,
-        recommend_gpt_sovits_bundle,
-    )
+from ._bundle import (
+    TTSBundleResource,
+    installed_bundle_result,
+    recommend_gpt_sovits_bundle,
+)

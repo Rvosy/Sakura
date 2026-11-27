@@ -91,14 +91,6 @@ class InputController:
             return self._submit(task)
         if name in {"poll", "capture_status"}:
             with self._lock:
-                if task.state in _ACTIVE | {"succeeded"}:
-                    try:
-                        self._require_binding(task)
-                    except Exception as error:
-                        task.state, task.error_code, task.text = "failed", "ASR_PROVIDER_UNAVAILABLE", ""
-                        task.diagnostics = provider_failure(task.error_code, error)["diagnostics"]
-                        task.cancelled.set()
-                        task.changed.set()
                 return self._snapshot(task)
         raise InputError("ASR_REQUEST_INVALID")
 
@@ -140,12 +132,11 @@ class InputController:
             return self._snapshot(task)
 
     def _run(self, task: _Input) -> None:
-        call = lambda method, *args: getattr(self.hub, method)(*args)
         try:
             with self._lock:
                 self._require_context(task)
-            status = (call("status", task.requested_provider_id) if task.requested_provider_id
-                      else call("status"))
+            status = (self.hub.status(task.requested_provider_id) if task.requested_provider_id
+                      else self.hub.status())
             if not isinstance(status, Mapping) or not status.get("providerId") or not status.get("serviceKey"):
                 raise InputError(status.get("reasonCode", status.get("errorCode", "ASR_PROVIDER_NOT_SELECTED")) if isinstance(status, Mapping) else "ASR_PROVIDER_UNAVAILABLE", status.get("diagnostics") if isinstance(status, Mapping) else None)
             if task.requested_provider_id and status["providerId"] != task.requested_provider_id:
@@ -160,11 +151,10 @@ class InputController:
                 if identity["providerId"] != task.provider_id:
                     raise InputError("ASR_PROVIDER_IDENTITY_INVALID")
                 task.scope_id = identity["scopeId"]
-            call("warmup", task.provider_id)
+            self.hub.warmup(task.provider_id)
             while True:
                 self._require_context(task)
-                self._require_binding(task)
-                status = call("status", task.provider_id)
+                status = self.hub.status(task.provider_id)
                 if status.get("configVersion") != task.config_version:
                     raise InputError("ASR_PROVIDER_CONFIGURATION_CHANGED")
                 if status.get("state") == "ready" and status.get("available"):
@@ -178,21 +168,19 @@ class InputController:
                 self._log_state(task, "ready")
             while not task.submitted:
                 self._require_context(task)
-                self._require_binding(task)
-                task.changed.wait(0.1)
+                task.changed.wait()
                 task.changed.clear()
             self._require_context(task)
             audio = self.audio.finish(task.resource_id)
             self._require_context(task)
-            started = call("begin", {"requestId": task.recording_id, "providerId": task.provider_id,
+            started = self.hub.begin({"requestId": task.recording_id, "providerId": task.provider_id,
                                                    "configVersion": task.config_version, "language": task.language,
                                                    "audio": audio})
             if started.get("state") != "running":
                 raise InputError(started.get("errorCode", "ASR_PROVIDER_UNAVAILABLE"), started.get("diagnostics"))
             while True:
                 self._require_context(task)
-                self._require_binding(task)
-                result = call("poll", task.recording_id)
+                result = self.hub.poll(task.recording_id)
                 if result.get("requestId") != task.recording_id or result.get("providerId") != task.provider_id:
                     raise InputError("ASR_RESULT_INVALID")
                 state = result.get("state")
@@ -202,7 +190,6 @@ class InputController:
                         raise InputError("ASR_NO_SPEECH")
                     with self._lock:
                         self._require_context(task)
-                        self._require_binding(task)
                         task.text, task.state = text.strip(), "succeeded"
                         self._log_state(task, "succeeded")
                     break
@@ -232,7 +219,7 @@ class InputController:
                     self.audio.producerDone(task.resource_id)
             if task.state not in {"succeeded", "consumed"}:
                 try:
-                    call("cancel", task.recording_id)
+                    self.hub.cancel(task.recording_id)
                 except Exception:
                     pass
 
@@ -290,9 +277,13 @@ class InputController:
             if task.worker:
                 task.worker.join(max(0, deadline - monotonic()))
 
-    def _require_binding(self, task):
-        if task.service_key and self.audio.verifyProvider(task.provider_id, task.service_key) != {"providerId": task.provider_id, "scopeId": task.scope_id}:
-            raise InputError("ASR_PROVIDER_UNAVAILABLE")
+    def scope_closed(self, event):
+        with self._lock:
+            for task in self._tasks.values():
+                if task.scope_id == event["scopeId"] and task.provider_id == event["pluginId"] and task.state in _ACTIVE | {"succeeded"}:
+                    task.state, task.error_code, task.text = "failed", "ASR_PROVIDER_UNAVAILABLE", ""
+                    task.cancelled.set()
+                    task.changed.set()
 
     def _require_context(self, task):
         if self._closed or task.cancelled.is_set():

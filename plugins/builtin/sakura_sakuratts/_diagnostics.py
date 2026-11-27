@@ -8,10 +8,7 @@ import time
 
 from sakura_provider_errors import provider_exception_diagnostics
 
-try:
-    from ._bundle import Cancelled
-except ImportError:
-    from _bundle import Cancelled
+from ._bundle import Cancelled
 
 
 def nvidia_device():

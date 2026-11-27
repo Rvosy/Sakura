@@ -5,6 +5,8 @@ from __future__ import annotations
 import argparse
 import importlib
 import importlib.abc
+import importlib.machinery
+import importlib.util
 import os
 import sys
 import threading
@@ -15,20 +17,34 @@ from typing import Any, Mapping, Sequence
 
 _PRIVATE_RUNTIME_ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(_PRIVATE_RUNTIME_ROOT))
-from process_paths import process_path
+_SDK_ROOT = _PRIVATE_RUNTIME_ROOT.parent / "plugin_sdk"
+sys.path.insert(0, str(_SDK_ROOT))
+from sakura_process import normalize_windows_path
 from dependency_imports import dependency_import_paths, dependency_dll_handles
 from sakura_plugin_sdk import PluginApiError, PluginContext, RpcPeer, _diagnostic_text
-sys.modules.pop("process_paths", None)
 sys.modules.pop("dependency_imports", None)
 sys.modules.pop("sakura_plugin_sdk", None)
 
 
-class _CoreImportBlocker(importlib.abc.MetaPathFinder):
-    def find_spec(self, fullname: str, path: object = None, target: object = None) -> None:
-        if fullname == "app" or fullname.startswith("app."):
+class _PluginImports(importlib.abc.MetaPathFinder):
+    def __init__(self, root: Path, entry: str) -> None:
+        self.root = root
+        self.entry_module = entry.partition(":")[0]
+
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname == "app":
+            return importlib.machinery.ModuleSpec(fullname, loader=None, is_package=True)
+        if fullname == "app.plugin_sdk":
+            return importlib.util.spec_from_file_location(fullname, _SDK_ROOT / "__init__.py")
+        if fullname.startswith("app.") and not fullname.startswith("app.plugin_sdk."):
             raise ModuleNotFoundError(
                 "Plugin API v4 processes cannot import Sakura Core private modules"
             )
+        if path is None and fullname == self.entry_module:
+            entry = self.root / (fullname + ".py")
+            if entry.is_file():
+                # A flat manifest entry can import siblings relative to its own root.
+                return importlib.util.spec_from_file_location(fullname, entry, submodule_search_locations=[str(self.root)])
         return None
 
 
@@ -45,9 +61,9 @@ class PluginRunner:
     ) -> None:
         self.plugin_id = plugin_id
         self.generation_id = generation_id
-        self.plugin_root = Path(process_path(plugin_root))
-        self.dependency_root = Path(process_path(dependency_root)) if dependency_root is not None else None
-        self.data_dir = Path(process_path(data_dir))
+        self.plugin_root = Path(normalize_windows_path(plugin_root))
+        self.dependency_root = Path(normalize_windows_path(dependency_root)) if dependency_root is not None else None
+        self.data_dir = Path(normalize_windows_path(data_dir))
         self.entry = entry
         self._context: PluginContext | None = None
         self._initialized = False
@@ -92,7 +108,7 @@ class PluginRunner:
             importlib.import_module(module_name)
 
     def _prepare_import_path(self) -> None:
-        sdk_root = process_path(Path(__file__).resolve().parents[1] / "plugin_sdk")
+        sdk_root = normalize_windows_path(_SDK_ROOT)
         roots = [sdk_root, str(self.plugin_root)]
         if self.dependency_root is not None:
             roots.extend(
@@ -103,7 +119,7 @@ class PluginRunner:
                 )
             )
         stdlib = [
-            process_path(item)
+            normalize_windows_path(item)
             for item in sys.path
             if item
             and "site-packages" not in item
@@ -114,7 +130,7 @@ class PluginRunner:
         sys.path[:] = list(dict.fromkeys([*roots, *stdlib]))
         if self.dependency_root is not None:
             self._windows_dll_handles = dependency_dll_handles(self.dependency_root)
-        sys.meta_path.insert(0, _CoreImportBlocker())
+        sys.meta_path.insert(0, _PluginImports(self.plugin_root, self.entry))
         sys.modules["__main__"] = types.ModuleType("__main__")
 
     def _handle_request(self, name: str, payload: Mapping[str, Any]) -> object:

@@ -4,7 +4,6 @@ import io
 import json
 import threading
 import time
-import zipfile
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -17,7 +16,8 @@ from plugins.optional.sakura_mem0 import support as memory_support_module
 from plugins.optional.sakura_mem0.memory_curator import MemoryCurationResult, MemoryCurator
 from plugins.optional.sakura_mem0.memory_recall import MemoryRecallService
 from plugins.optional.sakura_mem0.plugin import _tool_registrations
-from plugins.optional.sakura_mem0.domain_types import ContextRequest, ChatHistoryEntry
+from app.plugin_sdk.sakura_context import ContextRequest
+from plugins.optional.sakura_mem0.domain_types import ChatHistoryEntry
 from plugins.optional.sakura_mem0.boundary import MemoryBoundary, MemoryBoundaryError
 from app.storage.timeline import (
     NewTimelineEntry,
@@ -123,11 +123,6 @@ class FakeMemoryStore:
                 raise memory_module.MemoryModelTaskCancelled("cancelled")
         if self.download_error:
             raise OSError("private cache path must not escape")
-        if progress:
-            progress("completed", 100)
-        return object()
-
-    def import_embedding_model_archive(self, _archive, *, progress=None, cancel=None):
         if progress:
             progress("completed", 100)
         return object()
@@ -488,9 +483,9 @@ def test_recall_preserves_explicit_source_case_compatibility(tmp_path: Path, sou
         result = MemoryRecallService(boundary).recall(ContextRequest(current_input="我的喜好"))
         assert [fragment.metadata["memory_id"] for fragment in result.fragments] == ["explicit", "inferred"]
         explicit, inferred = result.fragments
-        assert explicit.trust == "trusted" and explicit.priority == 80
+        assert explicit.priority == 80
         assert explicit.metadata["source"] == "explicit"
-        assert inferred.trust == "untrusted" and inferred.priority == 70
+        assert inferred.metadata["source"] == "inferred" and inferred.priority == 70
         assert boundary.search({"query": "喜好", "limit": 5})["memories"][1]["source"] == source
     finally:
         boundary.close()
@@ -1581,33 +1576,6 @@ def test_modelscope_download_uses_pinned_revision_and_flattens_onnx_data(
         for url in requested
     )
     assert progress[-1] == ("downloading", 85)
-
-
-def test_model_import_rejects_bad_onnx_artifacts_and_keeps_previous_cache(
-    tmp_path: Path,
-) -> None:
-    cache = (
-        tmp_path
-        / "runtime"
-        / "fastembed-cache"
-        / memory_module.DEFAULT_EMBEDDING_MODEL_CACHE_NAME
-    )
-    cache.mkdir(parents=True)
-    (cache / "old.bin").write_bytes(b"previous-readable-cache")
-    archive = tmp_path / "bad-onnx.zip"
-    prefix = (
-        f"{memory_module.DEFAULT_EMBEDDING_MODEL_CACHE_NAME}/snapshots/"
-        f"{memory_module.DEFAULT_EMBEDDING_ARTIFACT_REVISION}"
-    )
-    with zipfile.ZipFile(archive, "w") as zf:
-        for filename in memory_module.DEFAULT_EMBEDDING_MODEL_REQUIRED_FILES:
-            zf.writestr(f"{prefix}/{filename}", b"not-the-pinned-artifact")
-
-    with pytest.raises(memory_module.MemoryModelImportError, match="文件大小不匹配"):
-        memory_module.import_embedding_model_archive(archive, tmp_path)
-
-    assert (cache / "old.bin").read_bytes() == b"previous-readable-cache"
-    assert not list(cache.parent.glob(".memory_model_import_*"))
 
 
 def test_fixed_model_snapshot_checks_sizes_without_reading_weights(tmp_path: Path, monkeypatch) -> None:
