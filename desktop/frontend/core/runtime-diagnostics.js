@@ -115,18 +115,21 @@ function logFields(input) {
     }
     return "[unsupported]";
   }
-  const result = clean(input, 0);
-  return new TextEncoder().encode(JSON.stringify(result)).length <= 1800 ? result : { record_truncated: true };
+  return clean(input, 0);
 }
 
 const ERROR_TYPES = new Set(["Error", "TypeError", "ReferenceError", "SyntaxError", "RangeError", "URIError", "EvalError", "AggregateError", "DOMException"]);
 function applicationFile(value) {
   if (typeof value !== "string") return undefined;
   try {
-    const url = new URL(value, "tauri://localhost/");
+    // URL resolves dot segments, so check the supplied path before parsing it.
+    if (decodeURIComponent(value.split(/[?#]/, 1)[0]).includes("..")) return undefined;
+    const location = globalThis.location;
+    const url = new URL(value, location?.href || "tauri://localhost/");
+    if (location && (url.protocol !== location.protocol || url.host !== location.host)) return undefined;
     if (!["tauri:", "http:", "https:"].includes(url.protocol) || !["localhost", "tauri.localhost"].includes(url.hostname)) return undefined;
     const path = url.pathname.replace(/^\//, "");
-    if (!/^(?:(?:core|chat|settings|history|studio|onboarding|runtime-log|pet|shared|styles)\/)*[A-Za-z0-9_.-]+\.(?:js|css|html)$/.test(path) || path.includes("..")) return undefined;
+    if (!/\.(?:m?js|css|html)$/i.test(path)) return undefined;
     return `desktop/frontend/${path}`;
   } catch { return undefined; }
 }
@@ -185,7 +188,7 @@ function controlledEntry(input) {
     if (!d || typeof d !== "object" || !["javascript","promise","resource"].includes(d.stage)) return null;
     entry.details = { stage: d.stage };
     if (ERROR_TYPES.has(d.causeType)) entry.details.causeType = d.causeType;
-    if (typeof d.file === "string" && d.file.startsWith("desktop/frontend/") && applicationFile(d.file.slice(17)) === d.file) {
+    if (typeof d.file === "string" && d.file.startsWith("desktop/frontend/") && applicationFile(d.file.slice("desktop/frontend".length)) === d.file) {
       entry.details.file = d.file;
       for (const key of ["line","column"]) if (Number.isSafeInteger(d[key]) && d[key] > 0 && d[key] <= 10000000) entry.details[key] = d[key];
     }

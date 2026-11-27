@@ -266,3 +266,29 @@ test("native failures without a Core response envelope remain reportable", async
     assert.equal(entries.find(entry => entry.outcome === "failed").level, "warn");
   }
 });
+
+test("plugin frames and resources keep their application paths", async () => {
+  const env = harness();
+  const paths = [
+    "tauri://localhost/plugins/optional/demo/panel.mjs?cache=1",
+    "http://localhost:1420/new/module/theme.css",
+    "https://tauri.localhost/plugins/../private.js",
+    "tauri://localhost/plugins/%2e%2e/private.js",
+    "https://external.example/module.js",
+  ];
+  for (const src of paths) env.listeners.get("error")({ target: { src } });
+  await env.diagnostics.flush();
+  const entries = env.calls[0][1].entries;
+  assert.deepEqual(entries.map(entry => entry.details.file), [
+    "desktop/frontend/plugins/optional/demo/panel.mjs", "desktop/frontend/new/module/theme.css",
+    undefined, undefined, undefined,
+  ]);
+});
+
+test("custom fields larger than 1800 bytes survive the IPC batch", async () => {
+  const env = harness();
+  const fields = Object.fromEntries(Array.from({ length: 8 }, (_, i) => [`field_${i}`, "x".repeat(240)]));
+  env.diagnostics.message("warn", "加载诊断", fields);
+  await env.diagnostics.flush();
+  assert.deepEqual({ ...env.calls[0][1].entries[0].fields }, fields);
+});

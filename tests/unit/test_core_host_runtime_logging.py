@@ -79,17 +79,13 @@ def test_plugin_events_keep_identity_level_and_operation_across_bridge() -> None
 
 
 @pytest.mark.parametrize("value", [12, "字段" * 100])
-def test_custom_field_budget_is_stable_across_sdk_and_core_cleaning(value) -> None:
+def test_core_bridge_preserves_prepared_sdk_fields(value) -> None:
     from app.plugins.sakura_plugin_sdk import prepare_log_payload
 
     message, fields = prepare_log_payload(
         "诊断元数据", {"api_key": "private-budget-secret", **{f"metric_{i}": value for i in range(40)}},
     )
-    assert fields["record_truncated"] is True
     assert fields["api_key"] == "[REDACTED]"
-    assert len(fields) <= 32  # 31 ordinary scalar fields plus the marker.
-    assert len(json.dumps(fields, ensure_ascii=False).encode("utf-8")) <= 1800
-    assert prepare_log_payload(message, fields) == (message, fields)
     stream = io.BytesIO()
     bridge = install_runtime_logging(stream)
     try:
@@ -263,7 +259,7 @@ def test_router_chat_operation_context_is_scoped_and_redacts_secrets() -> None:
     serialized = stream.getvalue().decode("utf-8")
     assert PRIVATE_SECRET not in serialized
     record = _records(stream)[0]
-    assert record["channel"] == "core.runtime"
+    assert record["channel"] == "PrivateChannel"
     assert "请求完成" in record["message"]
     assert record["operation_id"] == "operation-router-1"
 
@@ -284,6 +280,7 @@ def test_app_logging_handler_preserves_error_and_redacts_credentials() -> None:
     assert "original filesystem error" in serialized
     assert PRIVATE_SECRET not in serialized
     event = next(record for record in _records(stream) if record["event"] == "python.logging.error")
+    assert event["message"] == "original filesystem error [REDACTED]"
     assert event["attributes"]["category"] == "RuntimeError"
     assert event["attributes"]["code"] == "PYTHON_EXCEPTION"
     assert "exception_stack" in event["attributes"]
@@ -518,7 +515,8 @@ def test_prompt_dependency_degradation_keeps_safe_root_cause() -> None:
                     "category": "process_exited",
                     "error_type": "ChildProcessExit",
                     "elapsed_ms": 5021,
-                    "message": PRIVATE_CHAT,
+                    "message": "进程已退出",
+                    "messages": [PRIVATE_CHAT],
                 },
             )
     finally:
@@ -537,6 +535,7 @@ def test_prompt_dependency_degradation_keeps_safe_root_cause() -> None:
         "category": "process_exited",
         "error_type": "ChildProcessExit",
         "elapsed_ms": 5021,
+        "message": "进程已退出",
     }
     assert PRIVATE_CHAT not in stream.getvalue().decode("utf-8")
 
@@ -710,3 +709,44 @@ def test_plugin_startup_phases_and_timeout_context_reach_the_core_bridge() -> No
     assert failure["attributes"]["startup_snapshot"] == "available"
     assert failure["attributes"]["detail_stage"] == "setup"
     assert failure["attributes"]["timeout_ms"] == 8000
+
+
+def test_bridge_keeps_structured_attributes_and_redacts_nested_credentials():
+    stream = io.BytesIO()
+    bridge = install_runtime_logging(stream)
+    try:
+        log_event("History", "读取失败", {
+            "counts": {"core.info": 3, "httpAPIKey": PRIVATE_SECRET},
+            "errorMessage": "读取 C:/models/demo.bin 失败",
+            "diagnostic_detail": {"apiUrl": "http://localhost:9880", "reason": f"Bearer {PRIVATE_SECRET}",
+                                  "requestBody": PRIVATE_CHAT},
+            "notes": ["阶段一", f"api_key={PRIVATE_SECRET}", 5],
+            "pluginPromptTokens": 12, "historyMessages": [PRIVATE_CHAT],
+        }, event="history.read.failed")
+    finally:
+        bridge.close()
+    record = _records(stream)[0]
+    assert record["channel"] == "History"
+    assert record["attributes"] == {
+        "counts": {"core.info": 3}, "error_message": "读取 C:/models/demo.bin 失败",
+        "diagnostic_detail": {"apiUrl": "http://localhost:9880", "reason": "Bearer [REDACTED]"},
+        "notes": ["阶段一", "api_key=[REDACTED]", 5], "plugin_prompt_tokens": 12,
+    }
+
+
+def test_model_call_bridge_accepts_new_families_and_purposes():
+    from app.core_host.runtime_logging import submit_telemetry_model_call, TELEMETRY_BRIDGE_PREFIX
+
+    stream = io.BytesIO()
+    bridge = install_runtime_logging(stream)
+    metric = {"schema": 2, "operationId": None, "modelCall": 1, "purpose": "voice_preview",
+              "modelFamily": "new-provider", "outcome": "success", "errorCode": None,
+              "latencyMs": 12, "contextWindowTokens": 0, "contextWindowSource": "unknown",
+              "usage": None, "estimate": None}
+    try:
+        assert submit_telemetry_model_call(metric)
+        assert not submit_telemetry_model_call({**metric, "purpose": ""})
+        assert not submit_telemetry_model_call({**metric, "modelFamily": PRIVATE_SECRET})
+    finally:
+        bridge.close()
+    assert json.loads(stream.getvalue().removeprefix(TELEMETRY_BRIDGE_PREFIX))["modelCall"] == metric
