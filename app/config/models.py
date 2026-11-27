@@ -1,10 +1,4 @@
-"""app/config/models.py — 集中管理的配置数据模型。
-
-将所有配置 dataclass 集中到此模块，便于：
-- 统一管理默认值
-- 配置迁移
-- 测试验证
-"""
+"""角色主题设置与配置映射。"""
 
 from __future__ import annotations
 
@@ -95,24 +89,6 @@ def normalize_hex_color(value: object, default: str) -> str:
     return text.lower()
 
 
-def mix_theme_color(color: str, other: str, weight: float) -> str:
-    """Blend two theme colors and return a normalized ``#rrggbb`` value."""
-
-    def rgb(value: str) -> tuple[int, int, int]:
-        normalized = normalize_hex_color(value, DEFAULT_PRIMARY_COLOR).lstrip("#")
-        return int(normalized[0:2], 16), int(normalized[2:4], 16), int(normalized[4:6], 16)
-
-    red, green, blue = rgb(color)
-    other_red, other_green, other_blue = rgb(other)
-    clamped = max(0.0, min(1.0, weight))
-    mixed = (
-        round(red * (1 - clamped) + other_red * clamped),
-        round(green * (1 - clamped) + other_green * clamped),
-        round(blue * (1 - clamped) + other_blue * clamped),
-    )
-    return "#{:02x}{:02x}{:02x}".format(*mixed)
-
-
 def theme_from_mapping(data: Any) -> ThemeSettings:
     if not isinstance(data, dict):
         return DEFAULT_THEME_SETTINGS
@@ -156,23 +132,3 @@ def _theme_bool_value(value: object, default: bool) -> bool:
     if normalized in {"0", "false", "no", "off", "disabled"}:
         return False
     return default
-
-
-# ---- 运行日志 ----
-
-@dataclass(frozen=True)
-class DebugLogSettings:
-    """运行日志配置。"""
-
-    enabled: bool = True
-    body_enabled: bool = False
-    file_enabled: bool = True
-    profile: str = "info"
-    # 开发者选项:舞台调试框(画窗口/布局/实际立绘三框 + DPR 数值,排查布局/HiDPI)。
-    stage_debug_overlay: bool = False
-    # 舞台碰撞遮罩(默认开):setMask 到内容矩形并集,立绘四周空白点击穿透,避免误拖/挡点击。
-    stage_collision_mask: bool = True
-
-
-# ---- 主动屏幕感知 ----
-# ScreenAwarenessSettings 在 app/agent/screen_awareness.py 中定义

@@ -15,7 +15,7 @@ from app.config.character_studio import (
 )
 from app.config.models import DEFAULT_THEME_SETTINGS, THEME_COLOR_FIELDS, theme_to_mapping
 from app.config.settings_service import AppSettingsService
-from app.core_host.protocol import error_payload, require_generation_identity, response
+from app.core_host.protocol import error_payload, response
 from app.core.diagnostics import exception_diagnostics
 from app.core.runtime_log import log_event
 from app.core_host.visual_host import VisualHostError, VISUAL_INACTIVE_REASONS
@@ -113,7 +113,6 @@ class CharacterStudioBoundary:
         plugin_application_provider: Callable[[], object | None] = lambda: None,
     ) -> None:
         self._generation_id = generation_id
-        self._generation_credential = generation_credential
         self._user_root = Path(user_root)
         self._settings = AppSettingsService(self._user_root)
         self._service_instance: CharacterStudioService | None = None
@@ -148,7 +147,6 @@ class CharacterStudioBoundary:
                 raise
 
     def handle(self, request: dict[str, Any]) -> dict[str, Any]:
-        require_generation_identity(request, self._generation_id, self._generation_credential)
         try:
             name = request.get("name")
             payload = request.get("payload")
@@ -157,8 +155,6 @@ class CharacterStudioBoundary:
             result = self._dispatch(str(name or ""), dict(payload))
             return response(
                 request,
-                generation_id=self._generation_id,
-                generation_credential=self._generation_credential,
                 protocol_minor=2,
                 payload=result,
             )
@@ -166,16 +162,12 @@ class CharacterStudioBoundary:
             public_error = error.public_error()
             return response(
                 request,
-                generation_id=self._generation_id,
-                generation_credential=self._generation_credential,
                 protocol_minor=2,
                 error=public_error,
             )
         except CharacterStudioOperationCancelled:
             return response(
                 request,
-                generation_id=self._generation_id,
-                generation_credential=self._generation_credential,
                 protocol_minor=2,
                 error=CharacterStudioError(
                     "STUDIO_OPERATION_CANCELLED",
@@ -185,8 +177,7 @@ class CharacterStudioBoundary:
         except (VisualHostError, PluginRuntimeError) as error:
             public_error = CharacterStudioError(error.code, str(error), field=getattr(error, "field", "")).public_error()
             return response(
-                request, generation_id=self._generation_id,
-                generation_credential=self._generation_credential, protocol_minor=2,
+                request, protocol_minor=2,
                 error=public_error,
             )
         except (CharacterConfigError, OSError, ValueError) as error:
@@ -196,8 +187,6 @@ class CharacterStudioBoundary:
             ).public_error()
             return response(
                 request,
-                generation_id=self._generation_id,
-                generation_credential=self._generation_credential,
                 protocol_minor=2,
                 error=public_error,
             )
@@ -224,7 +213,6 @@ class CharacterStudioBoundary:
             result = application.preview_character_presentation(self._text(payload["characterId"]))
             return {**result, "generationId": self._generation_id}
         if name == "studio.bootstrap":
-            self._keys(payload, optional={"initialCharacterId"})
             characters = self._service.list_characters(current_character_id=current)
             requested = self._text(payload.get("initialCharacterId"), required=False)
             ids = {str(item.get("id") or "") for item in characters}
@@ -284,7 +272,7 @@ class CharacterStudioBoundary:
                 result = self._service.release_workspace(self._text(payload["workspaceId"]))
             return {"schemaVersion": 1, "released": bool(result.get("released"))}
         if name == "studio.character.publish":
-            self._keys(payload, required={"workspaceId", "doc"}, optional={"operationId"})
+            self._keys(payload, required={"workspaceId", "doc"})
             workspace_id = self._text(payload["workspaceId"])
             operation = self._begin_operation(payload)
             try:
@@ -344,7 +332,6 @@ class CharacterStudioBoundary:
             self._keys(
                 payload,
                 required={"workspaceId", "path", "includeVoice"},
-                optional={"operationId"},
             )
             if not isinstance(payload["includeVoice"], bool):
                 raise CharacterStudioError("STUDIO_REQUEST_INVALID", "includeVoice 必须是布尔值。")
@@ -395,9 +382,8 @@ class CharacterStudioBoundary:
             raise CharacterStudioError("STUDIO_CORE_UNAVAILABLE", "表现插件暂不可用。")
         host = application.visuals
         if name == "studio.visual.catalog":
-            self._keys(payload)
             return {"schemaVersion": 1, "items": host.catalog()}
-        self._keys(payload, required={"workspaceId"}, optional={"resourceId", "type", "providerId", "path", "operationId", "relativePath", "name"})
+        self._keys(payload, required={"workspaceId"})
         workspace = self._text(payload["workspaceId"])
         with self._mutation_lock:
             package, doc = self._service.workspace_document(workspace)
@@ -491,7 +477,6 @@ class CharacterStudioBoundary:
         self._keys(
             payload,
             required={"workspaceId", "kind", "path"},
-            optional={"label", "refLang", "operationId", "resourceId"},
         )
         workspace_id = self._text(payload["workspaceId"])
         kind = self._text(payload["kind"])
@@ -597,9 +582,9 @@ class CharacterStudioBoundary:
 
     @staticmethod
     def _keys(
-        payload: Mapping[str, Any], *, required: set[str] = set(), optional: set[str] = set()
+        payload: Mapping[str, Any], *, required: set[str]
     ) -> None:
-        if set(payload) != required | (set(payload) & optional) or not required.issubset(payload):
+        if not required.issubset(payload):
             raise CharacterStudioError("STUDIO_REQUEST_INVALID", "角色工坊请求字段无效。")
 
     @staticmethod
@@ -640,28 +625,24 @@ def _keys_to_camel(value: Any) -> Any:
 
 
 def _doc_to_internal(value: Mapping[str, Any]) -> dict[str, Any]:
-    unknown = set(value) - _DOC_FIELDS
-    if unknown:
-        raise CharacterStudioError(
-            "STUDIO_REQUEST_INVALID",
-            "角色文档包含不支持的字段。",
-            field=str(sorted(unknown)[0]),
-        )
+    value = {key: item for key, item in value.items() if key in _DOC_FIELDS}
     expressions = value.get("expressions")
     if expressions is not None and not isinstance(expressions, Mapping):
         raise CharacterStudioError("STUDIO_REQUEST_INVALID", "expressions 必须是对象。", field="expressions")
     theme = value.get("theme")
     if theme is not None:
-        if not isinstance(theme, Mapping) or set(theme) - _THEME_FIELDS:
+        if not isinstance(theme, Mapping):
             raise CharacterStudioError("STUDIO_REQUEST_INVALID", "theme 字段无效。", field="theme")
+        value["theme"] = {key: item for key, item in theme.items() if key in _THEME_FIELDS}
     voice = value.get("voice")
     if voice is not None:
-        if not isinstance(voice, Mapping) or set(voice) - _VOICE_FIELDS:
+        if not isinstance(voice, Mapping):
             raise CharacterStudioError("STUDIO_REQUEST_INVALID", "voice 字段无效。", field="voice")
+        value["voice"] = {key: item for key, item in voice.items() if key in _VOICE_FIELDS}
     references = value.get("referenceAudios")
     if references is not None:
         if not isinstance(references, list) or any(
-            not isinstance(item, Mapping) or set(item) - _REFERENCE_AUDIO_FIELDS
+            not isinstance(item, Mapping)
             for item in references
         ):
             raise CharacterStudioError(
@@ -669,6 +650,7 @@ def _doc_to_internal(value: Mapping[str, Any]) -> dict[str, Any]:
                 "referenceAudios 字段无效。",
                 field="referenceAudios",
             )
+        value["referenceAudios"] = [{key: v for key, v in item.items() if key in _REFERENCE_AUDIO_FIELDS} for item in references]
     result = _mapping_to_internal({key: item for key, item in value.items() if key not in {"visualData", "visuals"}})
     if "visualData" in value: result["visual_data"] = value["visualData"]
     if "visuals" in value: result["visuals"] = value["visuals"]

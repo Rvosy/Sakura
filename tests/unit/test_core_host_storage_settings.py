@@ -27,7 +27,7 @@ def _request(name: str, payload: dict[str, object]) -> dict[str, object]:
 
 def test_default_custom_missing_and_reset_states(tmp_path: Path) -> None:
     user_root = tmp_path / "user"
-    boundary = StorageSettingsBoundary(GENERATION, CREDENTIAL, user_root)
+    boundary = StorageSettingsBoundary(user_root)
 
     default = boundary.handle(_request("storage.settings.get", {}))["payload"]
     assert default["ttsRoot"] == str(user_root.resolve() / "tts")
@@ -54,7 +54,7 @@ def test_default_custom_missing_and_reset_states(tmp_path: Path) -> None:
 
 
 def test_custom_root_must_exist(tmp_path: Path) -> None:
-    boundary = StorageSettingsBoundary(GENERATION, CREDENTIAL, tmp_path / "user")
+    boundary = StorageSettingsBoundary(tmp_path / "user")
     result = boundary.handle(
         _request(
             "storage.settings.choose_tts_root",

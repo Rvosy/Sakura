@@ -14,7 +14,6 @@ from app.core_host.plugin_host_services import PluginHostServices
 from app.core_host.visual_host import VisualHost, VISUAL_INACTIVE_REASONS
 from app.core.runtime_log import log_event
 from app.core.diagnostics import exception_diagnostics
-from app.core_host.mobile_host import MobileHostService
 from app.core_host.conversation_host import ConversationHostService
 from app.core_host.speech_host import SpeechHostService
 from app.core_host.chat_host import ChatHost, HOST_CHAT_SERVICE
@@ -32,7 +31,6 @@ from app.plugins.host_services import (
     HOST_MODEL_SLOTS_SERVICE,
     HOST_CONVERSATION_SERVICE,
     HOST_SPEECH_SERVICE,
-    HOST_MOBILE_SERVICE,
     HOST_SETTINGS_COLLECTION_V0_SERVICE,
     HOST_SETTINGS_SERVICE,
     HOST_SETTINGS_SURFACE_V0_SERVICE,
@@ -189,6 +187,15 @@ class PluginRuntimeApplication:
             active_model_resolver=self.active_models,
             commit_plugin_scope=self._manager.commit_plugin_scope,
         )
+        self.settings_collection = self._host_services.settings_collection
+        self.settings_sections = self._host_services.settings_sections
+        self.model_slots = self._host_services.model_slots
+        self.model_slot_save = self._host_services.model_slot_save
+        self.composer_tools = self._host_services.composer_tools
+        self.invoke_composer_tool = self._host_services.invoke_composer_tool
+        self.resolve_committed_artifact = self._host_services.resolve_committed_artifact
+        self.release_committed_artifact = self._host_services.release_committed_artifact
+        self.model_catalog = self._host_services.model_catalog
         for service_key in self._host_services.available_keys:
             self._manager.install_host_service(
                 service_key,
@@ -213,12 +220,6 @@ class PluginRuntimeApplication:
         )
         self._manager.install_host_service(HOST_CONVERSATION_SERVICE, self.conversation,
             exports=("begin", "poll", "cancel", "release"))
-        self._manager.install_host_service(
-            HOST_MOBILE_SERVICE,
-            MobileHostService(roots.user_root, session_provider=lambda: self._session,
-                conversation=self.conversation, characters=self._character_store),
-            exports=("characters", "history", "begin", "poll", "cancel", "theme"),
-        )
         self.screen = ScreenHost(generation_id, commit_scope=commit_scope,
             session_provider=lambda: self._chat_boundary.current_host_state()["sessionId"] if self._chat_boundary else None,
             emit_callback=self._emit_desktop_event)
@@ -716,9 +717,6 @@ class PluginRuntimeApplication:
     def bind_tts_boundary(self, boundary: object) -> None:
         self._tts_boundary = boundary
 
-    def pause_service_providers(self, prefix: str):
-        return self._manager.pause_service_providers(prefix)
-
     @contextmanager
     def prepare_voice_resources(self):
         hot, fallback = [], []
@@ -848,43 +846,6 @@ class PluginRuntimeApplication:
         return {**result, "applicationState": "applied" if active else "error",
                 "reasonCode": "READY" if active else (record["reasonCode"] if record else "PLUGIN_NOT_FOUND")}
 
-    def settings_collection(
-        self,
-        operation: str,
-        plugin_id: str,
-        section_id: str,
-        collection_id: str,
-        payload: Mapping[str, Any],
-    ) -> object:
-        return self._host_services.settings_collection(
-            operation,
-            plugin_id,
-            section_id,
-            collection_id,
-            payload,
-        )
-
-    def settings_sections(self, surface: str) -> list[dict[str, Any]]:
-        return self._host_services.settings_sections(surface)
-
-    def model_slots(self) -> list[dict[str, Any]]:
-        return self._host_services.model_slots()
-
-    def model_slot_save(self, identity: str, selection: Mapping[str, Any]) -> object:
-        return self._host_services.model_slot_save(identity, selection)
-
-    def composer_tools(self) -> list[dict[str, object]]:
-        return self._host_services.composer_tools()
-
-    def invoke_composer_tool(self, public_id: str) -> dict[str, str]:
-        return self._host_services.invoke_composer_tool(public_id)
-
-    def resolve_committed_artifact(self, artifact_id: str) -> object:
-        return self._host_services.resolve_committed_artifact(artifact_id)
-
-    def release_committed_artifact(self, artifact_id: str) -> bool:
-        return self._host_services.release_committed_artifact(artifact_id)
-
     def quiesce(self) -> None:
         self.speech.close()
 
@@ -915,9 +876,6 @@ class PluginRuntimeApplication:
     def _current_character_id(self) -> str | None:
         character_id = getattr(getattr(self._session, "character", None), "id", None)
         return character_id if isinstance(character_id, str) and character_id else None
-
-    def model_catalog(self) -> list[dict[str, object]]:
-        return self._host_services.model_catalog()
 
     def active_models(self):
         try:

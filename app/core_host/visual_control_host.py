@@ -78,7 +78,7 @@ class HostVisualService:
         with self._lock:
             activity_revision = self._activity_revision
             owner_revision = self._owner_revisions.get(owner[0], 0)
-        if not isinstance(request, Mapping) or set(request) != {"target", "control"}:
+        if not isinstance(request, Mapping) or not {"target", "control"}.issubset(request):
             raise VisualHostError("VISUAL_CONTROL_INVALID")
         target, binding, _ = self._binding()
         if request["target"] != target:
@@ -137,7 +137,6 @@ class HostVisualService:
 
     def complete(self, payload: Mapping) -> dict:
         if (not isinstance(payload, Mapping) or not {"requestId", "target", "status"}.issubset(payload)
-                or set(payload) - {"requestId", "target", "status", "errorCode"}
                 or payload["status"] not in {"displayed", "failed"}):
             raise VisualHostError("VISUAL_RECEIPT_INVALID")
         with self._lock:
@@ -183,7 +182,7 @@ class HostVisualService:
 
     def select(self, request: Mapping) -> dict:
         caller_identity()
-        if (not isinstance(request, Mapping) or set(request) != {"target", "resourceId"}
+        if (not isinstance(request, Mapping) or not {"target", "resourceId"}.issubset(request)
                 or (request["resourceId"] is not None
                     and (not isinstance(request["resourceId"], str) or not request["resourceId"]))):
             raise VisualHostError("VISUAL_RESOURCE_INVALID")

@@ -46,7 +46,7 @@ def _tool_settings() -> dict[str, object]:
 
 
 def test_tool_settings_defaults_and_save_preserve_unknown_fields(tmp_path) -> None:
-    boundary = ToolSettingsBoundary("generation-1", "c" * 32, tmp_path)
+    boundary = ToolSettingsBoundary(tmp_path)
     default = boundary.handle(_settings_request("tools.settings.get", {}))
     assert default["ok"] is True
     assert default["payload"] == {
@@ -113,13 +113,13 @@ def test_tool_settings_defaults_and_save_preserve_unknown_fields(tmp_path) -> No
             },
             "runtimeLimits",
         ),
-        ({**_tool_settings(), "unknown": True}, None),
+        ({"unknown": True}, None),
     ],
 )
 def test_tool_settings_reject_invalid_bounds_and_fields(
     tmp_path, settings: dict[str, object], field: str | None
 ) -> None:
-    boundary = ToolSettingsBoundary("generation-1", "c" * 32, tmp_path)
+    boundary = ToolSettingsBoundary(tmp_path)
     result = boundary.handle(
         _settings_request("tools.settings.save", {"settings": settings})
     )
@@ -142,7 +142,7 @@ def test_tool_settings_damaged_or_unsupported_schema_is_read_only(
     config = tmp_path / "config" / "system_config.yaml"
     config.parent.mkdir(parents=True)
     config.write_text(content, encoding="utf-8")
-    boundary = ToolSettingsBoundary("generation-1", "c" * 32, tmp_path)
+    boundary = ToolSettingsBoundary(tmp_path)
 
     for name, payload in (
         ("tools.settings.get", {}),
@@ -168,33 +168,20 @@ def test_tool_settings_atomic_failure_keeps_previous_file(
         "atomic_write_text",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("disk full")),
     )
-    boundary = ToolSettingsBoundary("generation-1", "c" * 32, tmp_path)
+    boundary = ToolSettingsBoundary(tmp_path)
     result = boundary.handle(
         _settings_request("tools.settings.save", {"settings": _tool_settings()})
     )
 
     assert result["ok"] is False
+    assert "disk full" in result["error"]["message"]
     assert result["error"]["code"] == "CONFIG_SAVE_FAILED"
     assert result["error"]["retryable"] is True
     assert config.read_text(encoding="utf-8") == original
 
 
-def test_tool_settings_requires_exact_generation_identity(tmp_path) -> None:
-    boundary = ToolSettingsBoundary("generation-1", "c" * 32, tmp_path)
-    with pytest.raises(RuntimeError, match="GENERATION_IDENTITY_MISMATCH"):
-        boundary.handle(
-            _settings_request(
-                "tools.settings.get", {}, generation_credential="d" * 32
-            )
-        )
-    with pytest.raises(RuntimeError, match="GENERATION_IDENTITY_MISMATCH"):
-        boundary.handle(
-            _settings_request("tools.settings.get", {}, generation_id="generation-old")
-        )
-
-
 def test_saved_tool_settings_feed_the_next_core_generation(tmp_path) -> None:
-    boundary = ToolSettingsBoundary("generation-1", "c" * 32, tmp_path)
+    boundary = ToolSettingsBoundary(tmp_path)
     result = boundary.handle(
         _settings_request("tools.settings.save", {"settings": _tool_settings()})
     )

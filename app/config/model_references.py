@@ -20,7 +20,7 @@ EMPTY_REFERENCE = {"serviceKey": "", "profileId": "", "modelId": ""}
 
 
 def model_reference(value: object) -> dict[str, str]:
-    if not isinstance(value, Mapping) or set(value) - set(EMPTY_REFERENCE):
+    if not isinstance(value, Mapping):
         raise ValueError("MODEL_SLOT_SELECTION_INVALID")
     result = {key: value.get(key, "") for key in EMPTY_REFERENCE}
     if any(not isinstance(item, str) or "\x00" in item for item in result.values()):
@@ -196,7 +196,7 @@ class ModelReferenceRepository:
         return {name: model_reference(raw["slots"].get(name, {})) for name in ("chat", "vision_chat")}
 
     def save(self, selections: Mapping, *, replace_invalid: bool = False) -> None:
-        if set(selections) != {"chat", "vision_chat"}:
+        if not {"chat", "vision_chat"}.issubset(selections):
             raise ValueError("MODEL_SLOTS_INVALID")
         try:
             self.load()
@@ -205,7 +205,7 @@ class ModelReferenceRepository:
             if not replace_invalid:
                 raise
             raw = {}
-        _write(self.path, {**raw, "schemaVersion": 1, "slots": {name: model_reference(value) for name, value in selections.items()}})
+        _write(self.path, {**raw, "schemaVersion": 1, "slots": {name: model_reference(selections[name]) for name in ("chat", "vision_chat")}})
 
     def active(self) -> dict[str, dict[str, str] | None]:
         selections = self.load()

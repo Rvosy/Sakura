@@ -142,7 +142,7 @@ class VisualBinding:
             if control is not None:
                 if (
                     not isinstance(control, Mapping)
-                    or set(control) != {"version", "resourceId", "payload"}
+                    or not {"version", "resourceId", "payload"}.issubset(control)
                     or type(control.get("version")) is not int
                     or control["version"] != VISUAL_CONTRACT_VERSION
                     or control.get("resourceId") != self._request["resource"]["id"]

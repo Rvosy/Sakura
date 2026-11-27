@@ -367,7 +367,7 @@ def test_voice_service_runtime_errors_are_not_normal_plugin_absence(tmp_path: Pa
     assert result["error"]["code"] == "TTS_SERVICE_UNAVAILABLE"
 
 
-def test_voice_settings_reject_provider_configuration_from_the_selection_channel(
+def test_voice_settings_ignore_provider_configuration_from_the_selection_channel(
     tmp_path: Path,
 ) -> None:
     class Worker:
@@ -439,10 +439,9 @@ def test_voice_settings_reject_provider_configuration_from_the_selection_channel
         )
     )
 
-    assert result["ok"] is False
-    assert result["error"]["code"] == "INVALID_TTS_SETTINGS"
+    assert result["ok"]
     assert worker.saved == []
-    assert worker.configure_calls == 0
+    assert worker.configure_calls == 1
 
 
 def test_voice_settings_reads_only_selection_and_provider_catalog(tmp_path: Path) -> None:
@@ -1630,10 +1629,10 @@ def test_untrusted_text_or_segment_cannot_be_submitted(tmp_path: Path) -> None:
     assert not (tmp_path / "data" / "voice").exists()
 
 
-def test_stale_generation_is_rejected(tmp_path: Path) -> None:
+def test_closed_generation_is_rejected(tmp_path: Path) -> None:
     boundary = _boundary(tmp_path, [])
     request = _request("tts.status.get", {})
-    request["generationId"] = "old-generation"
+    boundary.close()
     result = boundary.handle(request)
     assert result["ok"] is False
     assert result["error"]["code"] == "STALE_GENERATION"

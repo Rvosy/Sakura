@@ -65,3 +65,12 @@ def test_invalid_collection_scope_is_rejected_without_registration(settings, sco
         _register(service, {"scope": scope})
     section, = service.sections_for_plugin("fixture.plugin")
     assert section["collections"] == []
+
+
+def test_collection_keeps_all_registered_columns(settings):
+    service, _ = settings
+    columns = [{"key": f"col{i}", "label": str(i), "type": "string"} for i in range(15)]
+    _register(service, {"columns": columns, "extension": True})
+    section, = service.sections_for_plugin("fixture.plugin")
+    collection, = section["collections"]
+    assert [item["key"] for item in collection["columns"]] == [item["key"] for item in columns]

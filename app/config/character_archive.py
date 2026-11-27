@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import stat
@@ -193,7 +194,6 @@ def import_character_voice_archive(
             try:
                 temp_root.mkdir(parents=True, exist_ok=False)
                 extract_dir = temp_root / "extract"
-                staging_package_dir = temp_root / "package"
                 zf.extractall(extract_dir)
 
                 source_voice_dir = extract_dir / VOICE_ARCHIVE_ROOT.as_posix()
@@ -202,27 +202,37 @@ def import_character_voice_archive(
                 _validate_voice_referenced_files(extract_dir, normalized_voice)
 
                 if target_voice_dir.exists():
-                    for resource in (target_voice_dir, *target_voice_dir.rglob("*")):
+                    # Overlay untouched resources onto the extracted tree. Replaced models
+                    # already live in staging and never need to be copied again.
+                    if target_voice_dir.is_symlink():
+                        raise CharacterArchiveError(f"角色包不能包含符号链接：{target_voice_dir}")
+                    for resource in target_voice_dir.rglob("*"):
                         if resource.is_symlink():
                             raise CharacterArchiveError(f"角色包不能包含符号链接：{resource}")
-                    staging_voice_dir = staging_package_dir / "voice"
-                    shutil.copytree(target_voice_dir, staging_voice_dir)
-                    shutil.copytree(source_voice_dir, staging_voice_dir, dirs_exist_ok=True)
-                else:
-                    staging_voice_dir = source_voice_dir
+                        staged = source_voice_dir / resource.relative_to(target_voice_dir)
+                        if resource.is_dir():
+                            staged.mkdir(exist_ok=True, parents=True)
+                        elif not staged.exists():
+                            staged.parent.mkdir(parents=True, exist_ok=True)
+                            try:
+                                os.link(resource, staged)
+                            except OSError:
+                                shutil.copy2(resource, staged)
 
                 old_voice_moved = False
+                installed = False
                 try:
                     if target_voice_dir.exists():
                         rename_with_retry(target_voice_dir, backup_voice_dir)
                         old_voice_moved = True
-                    rename_with_retry(staging_voice_dir, target_voice_dir)
+                    rename_with_retry(source_voice_dir, target_voice_dir)
+                    installed = True
                     _write_character_voice_manifest(target_dir, normalized_voice, requirements)
                     profile = CharacterRegistry(base_dir).get(character_id)
                 except Exception as exc:
                     recovery_errors: list[str] = []
                     try:
-                        if target_voice_dir.exists():
+                        if installed:
                             shutil.rmtree(target_voice_dir)
                     except OSError as recovery_exc:
                         recovery_errors.append(f"清理半成品失败：{recovery_exc}")
@@ -231,10 +241,11 @@ def import_character_voice_archive(
                             rename_with_retry(backup_voice_dir, target_voice_dir)
                         except OSError as recovery_exc:
                             recovery_errors.append(f"恢复原语音目录失败：{recovery_exc}")
-                    try:
-                        atomic_write_text(manifest_path, original_manifest)
-                    except OSError as recovery_exc:
-                        recovery_errors.append(f"恢复角色清单失败：{recovery_exc}")
+                    if installed:
+                        try:
+                            atomic_write_text(manifest_path, original_manifest)
+                        except OSError as recovery_exc:
+                            recovery_errors.append(f"恢复角色清单失败：{recovery_exc}")
                     if recovery_errors:
                         cleanup_temp_root = False
                         raise CharacterArchiveError(
@@ -943,34 +954,14 @@ def _clone_character_data(value: Any) -> dict[str, Any]:
         raise CharacterArchiveError("角色清单必须是 JSON-compatible 对象。") from exc
     if not isinstance(cloned, dict):
         raise CharacterArchiveError("角色清单必须是 JSON 对象。")
-    _opaque_extensions(cloned.get("extensions"))
-    if isinstance(cloned.get("extensions"), dict):
-        cloned["extensions"].pop("sakura.tts", None)
-    return cloned
-
-
-def _opaque_extensions(value: Any) -> dict[str, Any]:
-    if value is None:
-        return {}
-    if not isinstance(value, dict):
-        raise CharacterArchiveError("character.extensions 必须是对象。")
-    try:
-        encoded = json.dumps(
-            value,
-            ensure_ascii=False,
-            separators=(",", ":"),
-            allow_nan=False,
-        ).encode("utf-8")
-        cloned = json.loads(encoded)
-    except (TypeError, ValueError) as exc:
-        raise CharacterArchiveError("character.extensions 必须是 JSON-compatible 对象。") from exc
-    for plugin_id, extension in cloned.items():
-        if (
-            not isinstance(plugin_id, str)
-            or _SAFE_CHARACTER_ID_RE.fullmatch(plugin_id) is None
-            or not isinstance(extension, dict)
-        ):
-            raise CharacterArchiveError("character.extensions 包含无效插件数据。")
+    extensions = cloned.get("extensions")
+    if extensions is not None:
+        if not isinstance(extensions, dict):
+            raise CharacterArchiveError("character.extensions 必须是对象。")
+        for plugin_id, extension in extensions.items():
+            if not _SAFE_CHARACTER_ID_RE.fullmatch(plugin_id) or not isinstance(extension, dict):
+                raise CharacterArchiveError("character.extensions 包含无效插件数据。")
+        extensions.pop("sakura.tts", None)
     return cloned
 
 

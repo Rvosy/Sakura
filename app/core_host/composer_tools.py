@@ -6,7 +6,7 @@ import re
 from collections.abc import Callable, Mapping
 from typing import Any
 
-from app.core_host.protocol import require_generation_identity, response
+from app.core_host.protocol import response
 
 
 COMPOSER_TOOL_REQUEST_NAMES = frozenset(
@@ -36,16 +36,13 @@ class ComposerToolsBoundary:
     def __init__(
         self,
         generation_id: str,
-        generation_credential: str,
         *,
         application_provider: Callable[[], object | None],
     ) -> None:
         self._generation_id = generation_id
-        self._generation_credential = generation_credential
         self._application_provider = application_provider
 
     def handle(self, request: dict[str, Any]) -> dict[str, Any]:
-        require_generation_identity(request, self._generation_id, self._generation_credential)
         try:
             payload = request.get("payload")
             if not isinstance(payload, Mapping):
@@ -55,15 +52,13 @@ class ComposerToolsBoundary:
                 raise ComposerToolsError("COMPOSER_TOOLS_NOT_READY", "扩展工具仍在初始化。")
             name = request.get("name")
             if name == "ui.composer_tools.get":
-                if payload:
-                    raise ComposerToolsError("INVALID_REQUEST", "扩展工具读取请求必须为空。")
                 result: object = {
                     "schemaVersion": 1,
                     "coreGenerationId": self._generation_id,
                     "tools": getattr(application, "composer_tools")(),
                 }
             elif name == "ui.composer_tools.invoke":
-                if set(payload) != {"toolId"}:
+                if "toolId" not in payload:
                     raise ComposerToolsError("INVALID_REQUEST", "扩展工具调用格式无效。")
                 tool_id = payload.get("toolId")
                 if not isinstance(tool_id, str) or not _PUBLIC_TOOL_ID.fullmatch(tool_id):
@@ -73,15 +68,11 @@ class ComposerToolsBoundary:
                 raise ComposerToolsError("INVALID_REQUEST", "扩展工具请求不存在。")
             return response(
                 request,
-                generation_id=self._generation_id,
-                generation_credential=self._generation_credential,
                 payload=result,
             )
         except ComposerToolsError as error:
             return response(
                 request,
-                generation_id=self._generation_id,
-                generation_credential=self._generation_credential,
                 error=error.public_error(),
             )
         except Exception as error:  # noqa: BLE001 - private failures stay behind the boundary
@@ -92,8 +83,6 @@ class ComposerToolsBoundary:
             )
             return response(
                 request,
-                generation_id=self._generation_id,
-                generation_credential=self._generation_credential,
                 error=public.public_error(),
             )
 

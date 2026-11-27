@@ -55,21 +55,14 @@ def setup_host(tmp_path, *, gate_at=None, reply=None):
         requests=requests, events=events, facts=facts, speech=speech, entered=entered, resume=resume)
 
 
-@pytest.mark.parametrize("legacy_mobile", [False, True])
-def test_conversation_keeps_human_text_and_publishes_normal_tts_flow(tmp_path, legacy_mobile):
+def test_conversation_keeps_human_text_and_publishes_normal_tts_flow(tmp_path):
     turn = setup_host(tmp_path)
     try:
         with caller():
-            if legacy_mobile:
-                from app.core_host.mobile_host import MobileHostService
-                mobile = MobileHostService(tmp_path, session_provider=lambda: turn.session,
-                    conversation=turn.host, characters=object())
-                accepted = mobile.begin("input.plugin", "sakura", "我的原始问题")
-            else:
-                accepted = turn.host.begin("sakura", "我的原始问题")
+            accepted = turn.host.begin("sakura", "我的原始问题")
             job = turn.host._jobs[accepted["jobId"]]
             assert job.done.wait(3)
-            result = mobile.poll("input.plugin", accepted["jobId"]) if legacy_mobile else turn.host.poll(accepted["jobId"])
+            result = turn.host.poll(accepted["jobId"])
         assert result["result"]["reply_raw"] == "spoken reply"
         assert turn.requests[0]["message"] == "我的原始问题"
         assert [entry.kind for entry in turn.timeline.read_all("sakura")] == [TimelineKind.HUMAN, TimelineKind.ASSISTANT]

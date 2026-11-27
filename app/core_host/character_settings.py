@@ -25,7 +25,7 @@ from app.config.character_packages import remove_character_installation
 from app.config.settings_service import AppSettingsService
 from app.core.diagnostics import exception_diagnostics, safe_diagnostic_text
 from app.core.runtime_log import log_event
-from app.core_host.protocol import require_generation_identity, response
+from app.core_host.protocol import response
 from app.core_host.real_chat import RealChatRejection
 
 CHARACTER_SETTINGS_REQUEST_NAMES = frozenset(
@@ -70,8 +70,6 @@ class CharacterSettingsBoundary:
         prepare_switch: Callable | None = None,
         apply_switch: Callable[[], None] | None = None,
     ) -> None:
-        self._generation_id = generation_id
-        self._generation_credential = generation_credential
         self._user_root = Path(user_root)
         self._settings = AppSettingsService(self._user_root)
         self._revision = 1
@@ -85,7 +83,6 @@ class CharacterSettingsBoundary:
         self._visual_apply_pending: set[str] = set()
 
     def handle(self, request: dict[str, Any]) -> dict[str, Any]:
-        require_generation_identity(request, self._generation_id, self._generation_credential)
         try:
             name = request.get("name")
             payload = request.get("payload")
@@ -94,19 +91,15 @@ class CharacterSettingsBoundary:
                     "INVALID_REQUEST", "角色设置请求格式无效。"
                 )
             if name == "characters.settings.get":
-                if payload:
-                    raise CharacterSettingsError(
-                        "INVALID_REQUEST", "角色设置读取请求必须为空。"
-                    )
                 result = self.snapshot()
             elif name == "characters.settings.import":
-                if set(payload) != {"path"}:
+                if "path" not in payload:
                     raise CharacterSettingsError(
                         "INVALID_REQUEST", "角色导入请求格式无效。"
                     )
                 result = self.import_archive(payload["path"])
             elif name == "characters.settings.import_voice":
-                if set(payload) != {"path", "characterId"}:
+                if not {"path", "characterId"}.issubset(payload):
                     raise CharacterSettingsError(
                         "INVALID_REQUEST", "语音包导入请求格式无效。"
                     )
@@ -114,7 +107,7 @@ class CharacterSettingsBoundary:
                     payload["path"], payload["characterId"]
                 )
             elif name == "characters.settings.export":
-                if set(payload) != {"path", "characterId", "kind"}:
+                if not {"path", "characterId", "kind"}.issubset(payload):
                     raise CharacterSettingsError(
                         "INVALID_REQUEST", "角色包导出请求格式无效。"
                     )
@@ -124,19 +117,19 @@ class CharacterSettingsBoundary:
                     payload["kind"],
                 )
             elif name == "characters.settings.select":
-                if "characterId" not in payload or set(payload) - {"characterId", "visualSelections"}:
+                if "characterId" not in payload:
                     raise CharacterSettingsError(
                         "INVALID_REQUEST", "角色选择请求格式无效。"
                     )
                 result = self.select(payload["characterId"], payload.get("visualSelections", {}))
             elif name == "characters.settings.delete":
-                if set(payload) != {"characterId"}:
+                if "characterId" not in payload:
                     raise CharacterSettingsError(
                         "INVALID_REQUEST", "角色删除请求格式无效。"
                     )
                 result = self.delete_archive(payload["characterId"])
             elif name == "characters.visuals.get":
-                if set(payload) != {"characterId"}:
+                if "characterId" not in payload:
                     raise CharacterSettingsError("INVALID_REQUEST", "角色形态读取请求格式无效。")
                 result = self.visual_snapshot(payload["characterId"])
             else:
@@ -145,16 +138,12 @@ class CharacterSettingsBoundary:
                 )
             return response(
                 request,
-                generation_id=self._generation_id,
-                generation_credential=self._generation_credential,
                 protocol_minor=2,
                 payload=result,
             )
         except CharacterSettingsError as error:
             return response(
                 request,
-                generation_id=self._generation_id,
-                generation_credential=self._generation_credential,
                 protocol_minor=2,
                 error=error.public_error(),
             )
@@ -344,7 +333,7 @@ class CharacterSettingsBoundary:
             ) as error:
                 raise CharacterSettingsError(
                     "CHARACTER_EXPORT_FAILED",
-                    "角色包导出失败，目标文件未被替换。",
+                    safe_diagnostic_text(error) or "角色包导出失败，目标文件未被替换。",
                     field="path",
                 ) from error
         return {
@@ -393,7 +382,7 @@ class CharacterSettingsBoundary:
             except (OSError, ValueError, CharacterConfigError) as error:
                 raise CharacterSettingsError(
                     "CHARACTER_CONFIG_SAVE_FAILED",
-                    "角色选择保存失败，原配置保持不变。",
+                    safe_diagnostic_text(error) or "角色选择保存失败，原配置保持不变。",
                     field="characterId",
                 ) from error
             self._discard_studio_workspace(character_id)
@@ -473,7 +462,7 @@ class CharacterSettingsBoundary:
                         try:
                             application.validate_visual_choice(profile, resource)
                         except VisualHostError as error:
-                            raise CharacterSettingsError(error.code, "所选形态无法使用，请检查对应插件或选择其他形态。") from error
+                            raise CharacterSettingsError(error.code, safe_diagnostic_text(error) or "所选形态无法使用，请检查对应插件或选择其他形态。") from error
                 needs_switch = current != character_id or self._switch_apply_pending
                 if not needs_switch and not changed and not reapply_visual:
                     return self._change_result("unchanged")
@@ -492,7 +481,7 @@ class CharacterSettingsBoundary:
                             error, reason_code="CHARACTER_SWITCH_FAILED", stage="character.switch"), severity="error")
                         raise CharacterSettingsError(
                             "CHARACTER_SWITCH_APPLY_FAILED" if committed else "CHARACTER_SWITCH_PREPARE_FAILED",
-                            "角色选择已保存，但切换未能完成，请查看运行日志。" if committed else "旧角色任务尚未结束，角色未切换。",
+                            safe_diagnostic_text(error) or ("角色选择已保存，但切换未能完成。" if committed else "旧角色任务尚未结束，角色未切换。"),
                         ) from error
                 else:
                     save = lambda: self._settings.save_character_selection(registry, character_id, changed)
@@ -512,7 +501,7 @@ class CharacterSettingsBoundary:
             except (OSError, ValueError) as error:
                 raise CharacterSettingsError(
                     "CHARACTER_CONFIG_SAVE_FAILED",
-                    "角色选择保存失败，原配置保持不变。",
+                    safe_diagnostic_text(error) or "角色选择保存失败，原配置保持不变。",
                     field="characterId",
                 ) from error
             self._revision += 1

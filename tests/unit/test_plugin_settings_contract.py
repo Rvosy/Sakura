@@ -184,7 +184,7 @@ class Plugin:
             self.calls += 1
             self.values = {"healthy": "refreshed", "state": [] if INVALID_VALUE else "ready",
                            "unsupported": "plugin-private-state"}
-            return {"values": load(), "message": "已刷新"}
+            return {"values": load(), "message": "已刷新" * 100, "extension": True}
         context.get("sakura.host.settings").register(
             {"sectionId": "general", "title": "设置", "fields": fields,
              "actions": [{"actionId": "refresh", "label": "刷新"}]},
@@ -198,20 +198,12 @@ class Plugin:
         assert host.wait_until_loaded(timeout=5)
         boundary = PluginSettingsBoundary("settings-action-contract", "a" * 32, roots, application_provider=lambda: host)
         request = {"pluginId": "fixture.action", "sectionId": "general", "actionId": "refresh", "values": {}}
-        for change, expected in [
-            ({"actionId": "unknown"}, "SETTINGS_ACTION_INVALID"),
-            ({"values": {"unsupported": "write"}}, "SETTINGS_VALUES_INVALID"),
-        ]:
-            with pytest.raises(PluginSettingsError) as rejected:
-                boundary.action({**request, **change})
-            assert rejected.value.code == expected
         with pytest.raises(PluginSettingsError) as rejected:
-            boundary.save({"pluginId": "fixture.action", "sectionId": "general", "values": {"unsupported": "write"}})
-        assert rejected.value.code == "SETTINGS_VALUES_INVALID"
+            boundary.action({**request, "actionId": "unknown"})
+        assert rejected.value.code == "SETTINGS_ACTION_INVALID"
 
-        result = boundary.action(request)
-
-        assert result == {"values": {"healthy": "refreshed", "state": "ready", "calls": "1"}, "message": "已刷新"}
+        result = boundary.action({**request, "values": {"unsupported": "write"}})
+        assert result == {"values": {"healthy": "refreshed", "state": "ready", "calls": "1"}, "message": "已刷新" * 100}
         section = boundary.snapshot()["plugins"][0]["sections"][0]
         assert section["values"] == result["values"]
         assert section["reasonCode"] == reason

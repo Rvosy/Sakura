@@ -15,26 +15,24 @@ from app.core.runtime_log import log_event
 from app.plugin_sdk.sakura_cancellation import OperationCancelled
 from app.plugins.visuals import resolve_resource_path
 
-from .protocol import require_generation_identity, response
+from .protocol import response
 
 
 THEME_REQUEST_NAMES = frozenset({"theme.generate", "theme.cancel"})
 
 
 class ThemeGenerationBoundary:
-    def __init__(self, generation_id, generation_credential, user_root, *, application_provider):
+    def __init__(self, generation_id, user_root, *, application_provider):
         self._generation_id = generation_id
-        self._credential = generation_credential
         self._user_root = Path(user_root)
         self._application_provider = application_provider
         self._lock = threading.Lock()
         self._operations = {}
 
     def _validate(self, request):
-        require_generation_identity(request, self._generation_id, self._credential)
         name, payload = request.get("name"), request.get("payload")
         fields = {"operationId", "characterId"} if name == "theme.generate" else {"operationId"}
-        if name not in THEME_REQUEST_NAMES or not isinstance(payload, dict) or set(payload) != fields:
+        if name not in THEME_REQUEST_NAMES or not isinstance(payload, dict) or not fields.issubset(payload):
             raise ValueError("AI 配色请求格式无效。")
         if not isinstance(payload["operationId"], str):
             raise ValueError("AI 配色任务标识无效。")
@@ -93,8 +91,7 @@ class ThemeGenerationBoundary:
             })
 
     def _response(self, request, **kwargs):
-        return response(request, generation_id=self._generation_id,
-                        generation_credential=self._credential, protocol_minor=2, **kwargs)
+        return response(request, protocol_minor=2, **kwargs)
 
     def _generate(self, payload, cancelled):
         def check():

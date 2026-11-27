@@ -76,7 +76,7 @@ def test_router_queues_settings_bursts_without_blocking_control_and_cancels_queu
             finally:
                 with changed: active -= 1
 
-    class Dispatcher:
+    class Dispatcher(ControlDispatcher):
         def dispatch(self, request):
             return response(request, generation_id=GENERATION_ID, generation_credential=GENERATION_CREDENTIAL,
                 protocol_minor=2, payload={"ok": True}), False
@@ -92,9 +92,9 @@ def test_router_queues_settings_bursts_without_blocking_control_and_cancels_queu
         with changed: assert changed.wait_for(predicate, timeout=3)
 
     boundary = Boundary()
-    router = ConcurrentHostRouter(None, Writer(), Dispatcher(), fixture_handler=boundary.handle,
-        fixture_reserve=boundary.reserve_send, fixture_abandon=boundary.abandon_send,
-        fixture_names=frozenset({"characters.visuals.get", "characters.settings.select"}),
+    router = ConcurrentHostRouter(None, Writer(), Dispatcher(HostConfig(RuntimeRoots(APP_ROOT, APP_ROOT), GENERATION_ID, GENERATION_CREDENTIAL)), worker_handler=boundary.handle,
+        worker_reserve=boundary.reserve_send, worker_abandon=boundary.abandon_send,
+        worker_names=frozenset({"fixture.blocking", "characters.visuals.get", "characters.settings.select"}),
         read_frame_fn=lambda _: incoming.get())
     thread = threading.Thread(target=router.run)
     thread.start()
@@ -324,7 +324,8 @@ def test_failed_business_request_does_not_close_router_or_block_next_request() -
                         generation_credential=GENERATION_CREDENTIAL, payload={"ready": True})
 
     router = ConcurrentHostRouter(
-        None, Writer(), object(), fixture_handler=handle,
+        None, Writer(), ControlDispatcher(HostConfig(RuntimeRoots(APP_ROOT, APP_ROOT), GENERATION_ID, GENERATION_CREDENTIAL)),
+        worker_handler=handle, worker_names=frozenset({"fixture.save", "fixture.read"}),
         read_frame_fn=lambda _: incoming.get(),
     )
     thread = threading.Thread(target=router.run)
@@ -363,7 +364,7 @@ def test_voice_update_pauses_only_active_voice_providers(monkeypatch):
                 calls.append((prefix, "restore"))
     dispatcher = ControlDispatcher(HostConfig(RuntimeRoots(APP_ROOT, APP_ROOT), GENERATION_ID, GENERATION_CREDENTIAL))
     dispatcher.attach_tts_boundary(TTS())
-    monkeypatch.setattr(dispatcher, "published_plugin_application", lambda: PluginApplication())
+    monkeypatch.setattr(dispatcher._readiness, "published_plugin_application", lambda: PluginApplication())
     with pytest.raises(OSError):
         with dispatcher.prepare_voice_resource_update():
             calls.append("publish")
@@ -565,9 +566,7 @@ def test_run_host_raises_first_cleanup_failure_and_attaches_sanitized_later_note
     first = RuntimeError("PRIVATE_DISPATCHER_CLOSE")
     second = ValueError("PRIVATE_WRITER_CLOSE")
 
-    class Dispatcher:
-        def __init__(self, _config: HostConfig) -> None:
-            pass
+    class Dispatcher(ControlDispatcher):
 
         def close(self) -> None:
             events.append("dispatcher")
@@ -604,9 +603,7 @@ def test_run_host_preserves_primary_failure_and_attempts_every_cleanup(
     events: list[str] = []
     primary = OSError("PRIVATE_PRIMARY")
 
-    class Dispatcher:
-        def __init__(self, _config: HostConfig) -> None:
-            pass
+    class Dispatcher(ControlDispatcher):
 
         def close(self) -> None:
             events.append("dispatcher")
@@ -645,9 +642,7 @@ def test_run_host_writer_failure_keeps_dispatcher_then_writer_cleanup_order(
     events: list[str] = []
     writer_failure = WriterError("TRANSPORT_WRITE_FAILED", "sanitized")
 
-    class Dispatcher:
-        def __init__(self, _config: HostConfig) -> None:
-            pass
+    class Dispatcher(ControlDispatcher):
 
         def dispatch(self, _request: dict[str, object]) -> tuple[dict[str, object], bool]:
             return {"response": True}, False
@@ -790,9 +785,7 @@ def test_real_writer_failure_is_observed_before_waiting_for_peer_eof(
         def flush(self) -> None:
             return None
 
-    class Dispatcher:
-        def __init__(self, _config: HostConfig) -> None:
-            pass
+    class Dispatcher(ControlDispatcher):
 
         def dispatch(self, incoming: dict[str, object]) -> tuple[dict[str, object], bool]:
             return (
@@ -846,3 +839,30 @@ def test_real_writer_failure_is_observed_before_waiting_for_peer_eof(
     assert len(failures) == 1
     assert getattr(failures[0], "code", None) == "TRANSPORT_WRITE_FAILED"
     input_stream.release.set()
+
+
+@pytest.mark.parametrize(("field", "value", "code"), [
+    ("generationCredential", "错误凭据", "GENERATION_CREDENTIAL_MISMATCH"),
+    ("generationId", "retired", "GENERATION_MISMATCH"),
+])
+def test_worker_authentication_precedes_reservation_and_execution(tmp_path, field, value, code):
+    config = HostConfig(RuntimeRoots(tmp_path, tmp_path), GENERATION_ID, GENERATION_CREDENTIAL)
+    dispatcher = ControlDispatcher(config)
+    incoming = request("rejected", "chat.send")
+    incoming[field] = value
+    output = io.BytesIO()
+    writer = ResponseWriter(output)
+    def unexpected(_request):
+        pytest.fail("rejected request reached the chat boundary")
+    router = ConcurrentHostRouter(io.BytesIO(encode_frame(incoming)), writer, dispatcher,
+        worker_names=frozenset({"chat.send"}), worker_handler=unexpected,
+        worker_reserve=unexpected, worker_abandon=unexpected)
+    try:
+        router.run()
+    finally:
+        dispatcher.close()
+        writer.close()
+    rejected = decode_frame(output.getvalue())
+    assert rejected["error"]["code"] == code
+    if field == "generationCredential":
+        assert GENERATION_CREDENTIAL not in repr(rejected)

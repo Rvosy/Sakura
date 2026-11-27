@@ -33,7 +33,7 @@ def request(name, operation_id, **payload):
 
 
 def test_cancel_queued_generation_before_loading_character_or_model(tmp_path):
-    boundary = ThemeGenerationBoundary("theme-test", "credential", tmp_path, application_provider=lambda: None)
+    boundary = ThemeGenerationBoundary("theme-test", tmp_path, application_provider=lambda: None)
     operation_id = uuid.uuid4().hex
     queued = request("theme.generate", operation_id, characterId="alpha")
     boundary.reserve(queued)
@@ -97,7 +97,7 @@ def theme_runtime(tmp_path, monkeypatch, assistant_dependencies):
     ModelReferenceRepository(user).save(references)
     AppSettingsService(user).save_current_character_id(CharacterRegistry(user), "alpha")
     app = PluginApplicationHost(RuntimeRoots(distribution, user), "theme-test", ToolRegistry())
-    boundary = ThemeGenerationBoundary("theme-test", "credential", user, application_provider=lambda: app)
+    boundary = ThemeGenerationBoundary("theme-test", user, application_provider=lambda: app)
     try:
         app.start()
         assert app.wait_until_loaded(timeout=10)

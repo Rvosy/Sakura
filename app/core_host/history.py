@@ -8,7 +8,7 @@ from pathlib import Path
 from time import perf_counter
 from typing import Any
 
-from app.core_host.protocol import require_generation_identity, response
+from app.core_host.protocol import response
 from app.storage.paths import StoragePaths
 from app.storage.history_images import HistoryImages
 from app.storage.timeline import TimelineDataError, TimelineEntry, TimelineStore, timeline_record
@@ -48,7 +48,6 @@ class HistoryBoundary:
         application_provider: Callable[[], object | None] = lambda: None,
     ) -> None:
         self._generation_id = generation_id
-        self._generation_credential = generation_credential
         self._character_provider = character_provider
         self._application_provider = application_provider
         self._timeline = TimelineStore(StoragePaths(user_root).timeline_database())
@@ -56,24 +55,19 @@ class HistoryBoundary:
         self._import_identities = user_root / "data" / "import-identities.sqlite3"
 
     def handle(self, request: dict[str, Any]) -> dict[str, Any]:
-        require_generation_identity(request, self._generation_id, self._generation_credential)
         try:
             if request.get("name") == "ui.history.image":
                 result = self._image(request.get("payload"))
-                return response(request, generation_id=self._generation_id,
-                    generation_credential=self._generation_credential, payload=result)
+                return response(request, payload=result)
             if request.get("name") == "ui.history.dates":
                 result = self._dates(request["payload"])
-                return response(request, generation_id=self._generation_id,
-                    generation_credential=self._generation_credential, payload=result)
+                return response(request, payload=result)
             if request.get("name") == "ui.history.transfer":
                 result = self._transfer(request["payload"])
-                return response(request, generation_id=self._generation_id,
-                    generation_credential=self._generation_credential, payload=result)
+                return response(request, payload=result)
             if request.get("name") == "ui.history.open_record":
                 self._open_record(request.get("payload"))
-                return response(request, generation_id=self._generation_id,
-                    generation_credential=self._generation_credential, payload={"opened": True})
+                return response(request, payload={"opened": True})
             if request.get("name") != "ui.history.page":
                 raise HistoryBoundaryError("UNKNOWN_COMMAND", "不支持的聊天记录请求。")
             payload = request.get("payload")
@@ -138,8 +132,6 @@ class HistoryBoundary:
             }
             return response(
                 request,
-                generation_id=self._generation_id,
-                generation_credential=self._generation_credential,
                 protocol_minor=2,
                 payload=result,
             )
@@ -200,7 +192,7 @@ class HistoryBoundary:
 
     def _image(self, payload) -> dict:
         if (not isinstance(payload, Mapping)
-                or set(payload) != {"expectedCharacterId", "entryId", "imageId", "variant"}
+                or not {"expectedCharacterId", "entryId", "imageId", "variant"}.issubset(payload)
                 or not isinstance(payload["entryId"], str) or not isinstance(payload["imageId"], str)
                 or payload["variant"] not in ("original", "thumbnail", "preview")):
             raise HistoryBoundaryError("INVALID_REQUEST", "图片请求格式无效。")
@@ -260,7 +252,7 @@ class HistoryBoundary:
         return result
 
     def _open_record(self, payload) -> None:
-        if (not isinstance(payload, Mapping) or set(payload) != {"expectedCharacterId", "entryId"}
+        if (not isinstance(payload, Mapping) or not {"expectedCharacterId", "entryId"}.issubset(payload)
                 or not isinstance(payload["entryId"], str)):
             raise HistoryBoundaryError("INVALID_REQUEST", "活动记录请求格式无效。")
         character_id = self._current_character_id()
@@ -296,8 +288,6 @@ class HistoryBoundary:
     ) -> dict[str, Any]:
         return response(
             request,
-            generation_id=self._generation_id,
-            generation_credential=self._generation_credential,
             protocol_minor=2,
             error=error.public_error(),
         )

@@ -53,9 +53,7 @@ class PluginArtifactStore:
         self._artifacts: dict[str, _Artifact] = {}
 
     def allocate(self, plugin_id: str, descriptor: Mapping[str, Any]) -> dict[str, Any]:
-        if not isinstance(descriptor, Mapping) or any(
-            key not in {"mediaType", "suffix"} for key in descriptor
-        ):
+        if not isinstance(descriptor, Mapping):
             raise PluginArtifactError("ARTIFACT_DESCRIPTOR_INVALID")
         media_type = descriptor.get("mediaType")
         suffix = descriptor.get("suffix", ".bin")

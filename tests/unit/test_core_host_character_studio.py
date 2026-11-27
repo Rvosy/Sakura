@@ -261,23 +261,17 @@ def test_publish_failure_keeps_generation_available(tmp_path: Path, monkeypatch)
     assert boundary.handle(_request("studio.bootstrap", {}))["ok"]
 
 
-def test_boundary_rejects_unknown_dto_fields_and_generation(tmp_path: Path) -> None:
+def test_boundary_ignores_unknown_dto_fields(tmp_path: Path) -> None:
     boundary = CharacterStudioBoundary(GENERATION, CREDENTIAL, tmp_path)
-    invalid = boundary.handle(
+    result = boundary.handle(
         _request(
             "studio.character.create",
             {"doc": {"id": "new", "displayName": "New", "packageDir": "/tmp/private"}},
         )
     )
 
-    assert invalid["ok"] is False
-    assert invalid["error"]["code"] == "STUDIO_REQUEST_INVALID"
-    assert invalid["error"]["details"]["field"] == "packageDir"
-
-    wrong_generation = _request("studio.bootstrap", {})
-    wrong_generation["generationId"] = "old-generation"
-    with pytest.raises(RuntimeError, match="GENERATION_IDENTITY_MISMATCH"):
-        boundary.handle(wrong_generation)
+    assert result["ok"]
+    assert "packageDir" not in result["payload"]["doc"]
 
 
 def test_operation_cancel_reaches_active_copy_and_has_stable_terminal_state(

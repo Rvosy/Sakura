@@ -6,7 +6,7 @@ import threading
 from types import SimpleNamespace
 
 from app.core_host.protocol import decode_frame
-from app.core_host.server import ControlDispatcher, HostConfig, run_host
+from app.core_host.server import ReadinessController, HostConfig, run_host
 from app.core_host.visual_host import VisualControlResult
 from app.storage.timeline import TimelineKind
 from app.storage.runtime_roots import RuntimeRoots
@@ -96,7 +96,7 @@ def test_visual_parse_uses_concurrent_lane_and_checks_generation(tmp_path, monke
         assert release.wait(4)
         return VisualControlResult(None, "VISUAL_BINDING_EXPIRED")
     application = SimpleNamespace(visuals=SimpleNamespace(resolve_control=resolve))
-    monkeypatch.setattr(ControlDispatcher, "published_plugin_application", lambda self: application)
+    monkeypatch.setattr(ReadinessController, "published_plugin_application", lambda self: application)
     monkeypatch.setattr("app.core_host.server.read_frame", lambda _stream: incoming.get())
     class Output(io.BytesIO):
         def write(self, data):

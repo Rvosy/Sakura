@@ -235,8 +235,6 @@ def test_statistics_counts_human_turns_across_characters_without_counting_reply_
     assert all_turns["turns"] == 2
     assert all_turns["daily"] == [{"day": yesterday.date().isoformat(), "turns": 1}, {"day": now.date().isoformat(), "turns": 1}]
     assert boundary.handle({**request, "payload": {"period": "bad"}})["ok"] is False
-    with pytest.raises(RuntimeError, match="GENERATION_IDENTITY_MISMATCH"):
-        boundary.handle({**request, "generationCredential": "expired"})
 
 
 def test_single_day_groups_actual_usage_and_human_turns_by_hour(tmp_path):

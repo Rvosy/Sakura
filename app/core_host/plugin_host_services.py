@@ -10,7 +10,6 @@ import secrets
 import shutil
 import threading
 from dataclasses import asdict, dataclass
-from copy import deepcopy
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
@@ -103,11 +102,11 @@ class _LoggingHostService:
         plugin_name, provides = HOST_CALLER_LOG_METADATA.get()
         channel = "tts" if any(key == "sakura.tts" or key.startswith("sakura.tts.provider.") for key in provides) else "plugin"
         batch, dropped = args
-        if (not isinstance(batch, list) or not 1 <= len(batch) <= 8
+        if (not isinstance(batch, list) or not batch
                 or type(dropped) is not int or not 0 <= dropped <= 2**63 - 1):
             raise HostServiceError("LOG_PAYLOAD_INVALID")
         for item in batch:
-            if (not isinstance(item, Mapping) or set(item) != {"severity", "message", "fields"}
+            if (not isinstance(item, Mapping) or not {"severity", "message", "fields"}.issubset(item)
                     or item["severity"] not in {"debug", "info", "warning", "error"}
                     or not isinstance(item["message"], str) or not isinstance(item["fields"], Mapping)):
                 raise HostServiceError("LOG_PAYLOAD_INVALID")
@@ -227,22 +226,22 @@ class _TimelineHostService:
             raise HostServiceError("TIMELINE_CHARACTER_UNAVAILABLE")
         try:
             if method == "latest_cursor" and not args:
-                return {"cursor": getattr(self._store, "latest_cursor")(character_id)}
+                return {"cursor": self._store.latest_cursor(character_id)}
             if method == "get_entry" and len(args) == 1:
                 from app.storage.timeline import MAX_ID_CHARS
 
                 request = _mapping(args[0], "TIMELINE_ARGUMENTS_INVALID")
                 entry_id = request.get("entryId")
-                if (set(request) != {"entryId"} or not isinstance(entry_id, str)
+                if ("entryId" not in request or not isinstance(entry_id, str)
                         or not entry_id.strip() or len(entry_id) > MAX_ID_CHARS):
                     raise HostServiceError("TIMELINE_ARGUMENTS_INVALID")
                 entry = self._store.get_entry(character_id, entry_id)
                 return {"entry": _timeline_entry_mapping(entry) if entry is not None else None}
             if method == "read_recent" and len(args) == 1:
                 request = _mapping(args[0], "TIMELINE_ARGUMENTS_INVALID")
-                if set(request) != {"limit"}:
+                if "limit" not in request:
                     raise HostServiceError("TIMELINE_ARGUMENTS_INVALID")
-                entries, cursor = getattr(self._store, "read_recent")(
+                entries, cursor = self._store.read_recent(
                     character_id,
                     request["limit"],
                     max_bytes=_TIMELINE_RESPONSE_ENTRY_BYTES,
@@ -253,9 +252,9 @@ class _TimelineHostService:
                 }
             if method == "read_since" and len(args) == 1:
                 request = _mapping(args[0], "TIMELINE_ARGUMENTS_INVALID")
-                if set(request) != {"cursor", "limit"}:
+                if not {"cursor", "limit"}.issubset(request):
                     raise HostServiceError("TIMELINE_ARGUMENTS_INVALID")
-                entries, cursor, has_more = getattr(self._store, "read_since")(
+                entries, cursor, has_more = self._store.read_since(
                     character_id,
                     request["cursor"],
                     request["limit"],
@@ -326,12 +325,12 @@ class _ArtifactsHostService:
                     self._resolve_received(str(args[0]), releasing=True)
                     return {"released": self.release_committed(str(args[0]))}
             if method == "allocate" and len(args) == 2:
-                return getattr(self._store, "allocate")(
+                return self._store.allocate(
                     _bounded_identifier(args[0], "PLUGIN_ID_INVALID", 64),
                     _mapping(args[1], "ARTIFACT_DESCRIPTOR_INVALID"),
                 )
             if method == "commit" and len(args) == 2:
-                return getattr(self._store, "commit")(
+                return self._store.commit(
                     _bounded_identifier(args[0], "PLUGIN_ID_INVALID", 64),
                     _bounded_identifier(args[1], "ARTIFACT_NOT_FOUND", 200),
                 )
@@ -350,7 +349,7 @@ class _ArtifactsHostService:
     def _deliver(self, raw_id, raw_receiver, raw_operation):
         artifact_id = _bounded_identifier(raw_id, "ARTIFACT_NOT_FOUND", 200)
         receiver = _mapping(raw_receiver, "ARTIFACT_RECEIVER_INVALID")
-        if set(receiver) != {"providerId", "scopeId"}:
+        if not {"providerId", "scopeId"}.issubset(receiver):
             raise HostServiceError("ARTIFACT_RECEIVER_INVALID")
         receiver_id = _bounded_identifier(receiver["providerId"], "ARTIFACT_RECEIVER_INVALID", 64)
         receiver_scope = _bounded_identifier(receiver["scopeId"], "ARTIFACT_RECEIVER_INVALID", 200)
@@ -452,7 +451,7 @@ class _ArtifactsHostService:
             self._deliveries.clear()
             self._speech_exports.clear()
             self._revoked_speech.clear()
-            getattr(self._store, "clear")()
+            self._store.clear()
 
     def revoke_scope(self, plugin_id: str) -> None:
         with self._received_lock:
@@ -463,10 +462,10 @@ class _ArtifactsHostService:
                               if identity[0] != plugin_id}
             self._speech_exports.intersection_update(self._received)
             self._revoked_speech.intersection_update(self._received)
-            getattr(self._store, "release_plugin")(plugin_id)
+            self._store.release_plugin(plugin_id)
 
     def resolve_committed(self, artifact_id: str) -> object:
-        return getattr(self._store, "resolve_committed_by_id")(artifact_id)
+        return self._store.resolve_committed_by_id(artifact_id)
 
     def release_committed(self, artifact_id: str) -> bool:
         with self._received_lock:
@@ -476,7 +475,7 @@ class _ArtifactsHostService:
             self._revoked_speech.discard(artifact_id)
             artifact = self.resolve_committed(artifact_id)
             return bool(
-                getattr(self._store, "release")(
+                self._store.release(
                     getattr(artifact, "plugin_id"), artifact_id,
                 )
             )
@@ -484,7 +483,7 @@ class _ArtifactsHostService:
     def consume_tool_result(self, value: object, *, source_plugin_id: str | None = None) -> object:
         """Resolve one explicit tool artifact envelope without crossing it back over RPC."""
 
-        if not isinstance(value, Mapping) or set(value) != {"content", "artifact"}:
+        if not isinstance(value, Mapping) or not {"content", "artifact"}.issubset(value):
             return value
         descriptor = _mapping(value.get("artifact"), "TOOL_ARTIFACT_INVALID")
         artifact_id = descriptor.get("artifactId")
@@ -499,7 +498,7 @@ class _ArtifactsHostService:
             media_type = getattr(artifact, "media_type", "")
             byte_length = getattr(artifact, "byte_length", -1)
             if (
-                set(descriptor) != {"artifactId", "mediaType", "byteLength"}
+                not {"artifactId", "mediaType", "byteLength"}.issubset(descriptor)
                 or descriptor.get("mediaType") != media_type
                 or descriptor.get("byteLength") != byte_length
                 or not isinstance(media_type, str)
@@ -550,11 +549,11 @@ class _CharacterHostService:
             if method in {"list", "presentation"} and not args:
                 return getattr(self._store, method)()
             if method == "current" and len(args) == 1:
-                return getattr(self._store, "current")(
+                return self._store.current(
                     _bounded_identifier(args[0], "PLUGIN_ID_INVALID", 64),
                 )
             if method == "get" and len(args) == 2:
-                return getattr(self._store, "get")(
+                return self._store.get(
                     _bounded_identifier(args[0], "PLUGIN_ID_INVALID", 64),
                     _bounded_identifier(args[1], "CHARACTER_NOT_FOUND", 128),
                 )
@@ -575,7 +574,7 @@ class _CharacterHostService:
                     if workspace[0] != args[0]:
                         raise HostServiceError("VISUAL_WORKSPACE_DENIED")
                     return str(resolve_resource_path(workspace[1], relative_resource_path(args[2])))
-                return getattr(self._store, "resolve_resource")(
+                return self._store.resolve_resource(
                     _bounded_identifier(args[1], "CHARACTER_NOT_FOUND", 128),
                     args[2],
                 )
@@ -599,7 +598,7 @@ class _StorageHostService:
             raise HostServiceError("HOST_METHOD_INVALID")
         _bounded_identifier(args[0], "PLUGIN_ID_INVALID", 64)
         descriptor = _mapping(args[1], "STORAGE_DESCRIPTOR_INVALID")
-        if set(descriptor) != {"scope", "name"}:
+        if not {"scope", "name"}.issubset(descriptor):
             raise HostServiceError("STORAGE_DESCRIPTOR_INVALID")
         scope = descriptor.get("scope")
         name = _bounded_identifier(
@@ -697,7 +696,7 @@ class _ToolsHostService:
             or not isinstance(parameters, Mapping)
         ):
             raise HostServiceError("TOOL_DESCRIPTOR_INVALID")
-        if getattr(self._tool_registry, "get")(name) is not None:
+        if self._tool_registry.get(name) is not None:
             raise HostServiceError("TOOL_NAME_CONFLICT")
         group = descriptor.get("group", "plugin")
         risk = descriptor.get("risk", "low")
@@ -735,7 +734,7 @@ class _ToolsHostService:
         )
         registration_id = _new_registration_id(self._registrations)
         try:
-            getattr(self._tool_registry, "register")(tool, replace=False)
+            self._tool_registry.register(tool, replace=False)
         except ValueError as error:
             raise HostServiceError("TOOL_NAME_CONFLICT") from error
         self._registrations[registration_id] = _ToolRegistration(name, tool)
@@ -746,7 +745,7 @@ class _ToolsHostService:
         if registration is None:
             return False
         return bool(
-            getattr(self._tool_registry, "unregister")(
+            self._tool_registry.unregister(
                 registration.name,
                 expected=registration.tool,
             )
@@ -928,7 +927,7 @@ class _ModelSlotsHostService:
         if method == "register_provider" and len(args) == 3:
             plugin_id = _bounded_identifier(args[0], "PLUGIN_ID_INVALID", 64)
             descriptor = _mapping(args[1], "MODEL_PROVIDER_INVALID")
-            if set(descriptor) != {"serviceKey", "label"}:
+            if not {"serviceKey", "label"}.issubset(descriptor):
                 raise HostServiceError("MODEL_PROVIDER_INVALID")
             service_key = _bounded_identifier(descriptor["serviceKey"], "MODEL_PROVIDER_INVALID", 200)
             label = descriptor["label"]
@@ -968,9 +967,9 @@ class _ModelSlotsHostService:
     def _register(self, raw_plugin_id: object, raw_descriptor: object, raw_handles: object) -> dict[str, str]:
         plugin_id = _bounded_identifier(raw_plugin_id, "PLUGIN_ID_INVALID", 64)
         descriptor = _mapping(raw_descriptor, "MODEL_SLOT_DESCRIPTOR_INVALID")
-        if set(descriptor) != {
+        if not {
             "slotId", "label", "description", "modelKind", "required", "order"
-        }:
+        }.issubset(descriptor):
             raise HostServiceError("MODEL_SLOT_DESCRIPTOR_INVALID")
         slot_id = _bounded_identifier(descriptor.get("slotId"), "MODEL_SLOT_DESCRIPTOR_INVALID", 64)
         label = descriptor.get("label")
@@ -987,7 +986,7 @@ class _ModelSlotsHostService:
         ):
             raise HostServiceError("MODEL_SLOT_DESCRIPTOR_INVALID")
         handles = _mapping(raw_handles, "MODEL_SLOT_CALLBACK_INVALID")
-        if set(handles) != {"load", "save"}:
+        if not {"load", "save"}.issubset(handles):
             raise HostServiceError("MODEL_SLOT_CALLBACK_INVALID")
         load_handle = _callback_handle(handles.get("load"))
         save_handle = _callback_handle(handles.get("save"))
@@ -1233,7 +1232,7 @@ class _SettingsHostService:
                 field["enabledWhen"] = None
                 descriptor_invalid = True
         handles = _mapping(raw_handles, "SETTINGS_CALLBACK_INVALID")
-        if set(handles) != {"load", "save", "actions"}:
+        if not {"load", "save", "actions"}.issubset(handles):
             raise HostServiceError("SETTINGS_CALLBACK_INVALID")
         load_handle = _optional_callback_handle(handles.get("load"))
         save_handle = _optional_callback_handle(handles.get("save"))
@@ -1582,7 +1581,7 @@ class _SettingsHostService:
                 "SETTINGS_COLLECTION_VALUES_INVALID",
             ))
             if operation == "create":
-                if set(payload) != {"values"} or collection.create_handle is None:
+                if "values" not in payload or collection.create_handle is None:
                     raise HostServiceError("SETTINGS_COLLECTION_OPERATION_UNAVAILABLE")
                 if any(
                     field["required"]
@@ -1600,7 +1599,7 @@ class _SettingsHostService:
                     values,
                 )
             else:
-                if set(payload) != {"itemId", "values"} or collection.update_handle is None:
+                if not {"itemId", "values"}.issubset(payload) or collection.update_handle is None:
                     raise HostServiceError("SETTINGS_COLLECTION_OPERATION_UNAVAILABLE")
                 item_id = _collection_item_id(payload.get("itemId"))
                 result = self._invoke_callback(
@@ -1613,7 +1612,7 @@ class _SettingsHostService:
             item = _collection_item(collection, result)
             return {**item, "applicationState": state} if state is not None else item
         if operation == "delete":
-            if set(payload) != {"itemId"} or collection.delete_handle is None:
+            if "itemId" not in payload or collection.delete_handle is None:
                 raise HostServiceError("SETTINGS_COLLECTION_OPERATION_UNAVAILABLE")
             result = self._invoke_callback(
                 collection.delete_handle,
@@ -1621,7 +1620,7 @@ class _SettingsHostService:
                 _collection_item_id(payload.get("itemId")),
             )
             result, state = self._collection_application_state(registration, result)
-            if not isinstance(result, Mapping) or set(result) != {"deleted"} or not isinstance(
+            if not isinstance(result, Mapping) or "deleted" not in result or not isinstance(
                 result.get("deleted"), bool
             ):
                 raise HostServiceError("SETTINGS_COLLECTION_RESULT_INVALID")
@@ -1698,11 +1697,9 @@ class _SettingsHostService:
         if handle is None:
             raise HostServiceError("SETTINGS_ACTION_INVALID")
         result = self._invoke_callback(handle, "settings.action", editable)
-        if not isinstance(result, Mapping) or any(
-            key not in {"values", "message", "applicationState"} for key in result
-        ):
+        if not isinstance(result, Mapping):
             raise HostServiceError("SETTINGS_ACTION_RESULT_INVALID")
-        public = dict(result)
+        public = {key: result[key] for key in ("values", "message", "applicationState") if key in result}
         state = _application_state(public) if "applicationState" in public else None
         invalid_value = False
         if "values" in public:
@@ -1713,12 +1710,7 @@ class _SettingsHostService:
             # already executed action; absent fields must not reset UI drafts.
             fields = [field for field in registration.fields if field["key"] in public["values"]]
             public["values"], invalid_value = _settings_display_values(fields, public["values"])
-        if "message" in public and (
-            not isinstance(public["message"], str)
-            or len(public["message"]) > 240
-        ):
-            raise HostServiceError("SETTINGS_ACTION_RESULT_INVALID")
-        if not _json_compatible(public):
+        if "message" in public and not isinstance(public["message"], str):
             raise HostServiceError("SETTINGS_ACTION_RESULT_INVALID")
         if state is not None:
             with self._lock:
@@ -1760,40 +1752,17 @@ class _SettingsHostService:
             self._collection_registrations.clear()
 
 
-class _SettingsSurfaceV0HostService:
-    def __init__(self, settings: _SettingsHostService) -> None:
-        self._settings = settings
+class _SettingsRegistrationService:
+    def __init__(self, register, unregister, argument_count):
+        self.register = register
+        self.unregister = unregister
+        self.argument_count = argument_count
 
     def call(self, method: str, args: Sequence[Any]) -> object:
-        if method == "register" and len(args) == 3:
-            return self._settings.register_surface(args[0], args[1], args[2])
+        if method == "register" and len(args) == self.argument_count:
+            return self.register(*args)
         if method == "unregister" and len(args) == 1:
-            return {
-                "removed": self._settings.unregister_surface(
-                    _registration_id(args[0])
-                )
-            }
-        raise HostServiceError("HOST_METHOD_INVALID")
-
-
-class _SettingsCollectionV0HostService:
-    def __init__(self, settings: _SettingsHostService) -> None:
-        self._settings = settings
-
-    def call(self, method: str, args: Sequence[Any]) -> object:
-        if method == "register" and len(args) == 4:
-            return self._settings.register_collection(
-                args[0],
-                args[1],
-                args[2],
-                args[3],
-            )
-        if method == "unregister" and len(args) == 1:
-            return {
-                "removed": self._settings.unregister_collection(
-                    _registration_id(args[0])
-                )
-            }
+            return {"removed": self.unregister(_registration_id(args[0]))}
         raise HostServiceError("HOST_METHOD_INVALID")
 
 
@@ -1836,10 +1805,6 @@ class _ComposerToolsV0HostService:
         plugin_id = _bounded_identifier(raw_plugin_id, "PLUGIN_ID_INVALID", 64)
         descriptor = _mapping(raw_descriptor, "COMPOSER_TOOL_DESCRIPTOR_INVALID")
         handle = _callback_handle(raw_handle)
-        if not set(descriptor).issubset(
-            {"toolId", "label", "description", "icon", "order"}
-        ):
-            raise HostServiceError("COMPOSER_TOOL_DESCRIPTOR_INVALID")
         tool_id = descriptor.get("toolId")
         label = descriptor.get("label")
         description = descriptor.get("description", "")
@@ -1913,11 +1878,11 @@ class _ComposerToolsV0HostService:
         )
         if result is None:
             return {"status": "completed", "message": ""}
-        if not isinstance(result, Mapping) or not set(result).issubset({"status", "message"}):
+        if not isinstance(result, Mapping):
             raise HostServiceError("COMPOSER_TOOL_RESULT_INVALID")
         status = result.get("status", "completed")
         message = result.get("message", "")
-        if status != "completed" or not isinstance(message, str) or len(message) > 200:
+        if status != "completed" or not isinstance(message, str):
             raise HostServiceError("COMPOSER_TOOL_RESULT_INVALID")
         return {"status": status, "message": message}
 
@@ -1968,8 +1933,6 @@ class PluginHostServices:
         )
         self._context = _ContextHostService(invoke_callback)
         self._settings = _SettingsHostService(invoke_callback)
-        self._settings_surface_v0 = _SettingsSurfaceV0HostService(self._settings)
-        self._settings_collection_v0 = _SettingsCollectionV0HostService(self._settings)
         self._model_slots = _ModelSlotsHostService(
             invoke_callback,
             resolver=model_resolver,
@@ -1979,6 +1942,21 @@ class PluginHostServices:
             _StorageHostService(storage_root) if storage_root is not None else None
         )
         self._composer_tools_v0 = _ComposerToolsV0HostService(invoke_callback)
+        self.settings_collection = self._settings.collection
+        self.settings_save = self._settings.save
+        self.settings_action = self._settings.action
+        self.settings_sections = self._settings.sections_for_surface
+        self.composer_tools = self._composer_tools_v0.snapshot
+        self.invoke_composer_tool = self._composer_tools_v0.invoke
+        self.model_slots = self._model_slots.snapshot
+        self.model_catalog = self._model_slots.catalog
+        self.create_json_artifact = self._artifacts.create_json
+        self.export_speech_audio = self._artifacts.export_speech
+        self.release_speech_audio = self._artifacts.release_speech
+        self.revoke_speech_audio = self._artifacts.revoke_speech
+        self.resolve_committed_artifact = self._artifacts.resolve_committed
+        self.release_committed_artifact = self._artifacts.release_committed
+        self.grant_history = self._timeline.grant
         self._services = {
             HOST_LOGGING_SERVICE: _LoggingHostService(),
             HOST_ARTIFACTS_SERVICE: self._artifacts,
@@ -1989,8 +1967,12 @@ class PluginHostServices:
             HOST_HOOKS_SERVICE: self.hooks,
             HOST_MODEL_SLOTS_SERVICE: self._model_slots,
             HOST_SETTINGS_SERVICE: self._settings,
-            HOST_SETTINGS_SURFACE_V0_SERVICE: self._settings_surface_v0,
-            HOST_SETTINGS_COLLECTION_V0_SERVICE: self._settings_collection_v0,
+            HOST_SETTINGS_SURFACE_V0_SERVICE: _SettingsRegistrationService(
+                self._settings.register_surface, self._settings.unregister_surface, 3,
+            ),
+            HOST_SETTINGS_COLLECTION_V0_SERVICE: _SettingsRegistrationService(
+                self._settings.register_collection, self._settings.unregister_collection, 4,
+            ),
             HOST_COMPOSER_TOOLS_V0_SERVICE: self._composer_tools_v0,
             HOST_TIMELINE_SERVICE: self._timeline,
         }
@@ -2008,12 +1990,6 @@ class PluginHostServices:
             raise HostServiceError("HOST_SERVICE_UNAVAILABLE")
         return service.call(method, args)
 
-    def model_catalog(self):
-        return self._model_slots.catalog()
-
-    def grant_history(self, plugin_id: str, character_id: str, snapshot_cursor: str | None = None) -> dict[str, str]:
-        return self._timeline.grant(plugin_id, character_id, snapshot_cursor)
-
     def revoke_history(self, history_token: str) -> None:
         self._timeline.revoke(history_token)
 
@@ -2030,78 +2006,11 @@ class PluginHostServices:
             ],
         }
 
-    def settings_save(
-        self,
-        plugin_id: str,
-        section_id: str,
-        values: Mapping[str, Any],
-    ) -> tuple[bool, object]:
-        return self._settings.save(plugin_id, section_id, values)
-
-    def settings_action(
-        self,
-        plugin_id: str,
-        section_id: str,
-        action_id: str,
-        values: Mapping[str, Any],
-    ) -> tuple[bool, object]:
-        return self._settings.action(plugin_id, section_id, action_id, values)
-
-    def settings_collection(
-        self,
-        operation: str,
-        plugin_id: str,
-        section_id: str,
-        collection_id: str,
-        payload: Mapping[str, Any],
-    ) -> object:
-        return self._settings.collection(
-            operation,
-            plugin_id,
-            section_id,
-            collection_id,
-            payload,
-        )
-
-    def settings_sections(self, surface: str) -> list[dict[str, Any]]:
-        """Return declarative sections for a capability-owned settings shell."""
-
-        return self._settings.sections_for_surface(surface)
-
-    def model_slots(self) -> list[dict[str, Any]]:
-        return self._model_slots.snapshot()
-
     def model_slot_save(self, identity: str, selection: Mapping[str, Any]) -> object:
         return self._model_slots.save(identity, selection)
 
-    def composer_tools(self) -> list[dict[str, object]]:
-        return self._composer_tools_v0.snapshot()
-
-    def invoke_composer_tool(self, public_id: str) -> dict[str, str]:
-        return self._composer_tools_v0.invoke(public_id)
-
-    def resolve_committed_artifact(self, artifact_id: str) -> object:
-        """Core-only lookup; this method is never routed through host.call."""
-
-        return self._artifacts.resolve_committed(artifact_id)
-
-    def create_json_artifact(self, plugin_id, value):
-        return self._artifacts.create_json(plugin_id, value)
-
-    def export_speech_audio(self, owner, recording):
-        return self._artifacts.export_speech(owner, recording)
-
-    def release_speech_audio(self, artifact_id):
-        self._artifacts.release_speech(artifact_id)
-
-    def revoke_speech_audio(self, plugin_id=None):
-        self._artifacts.revoke_speech(plugin_id)
-
     def release_owned_artifact(self, plugin_id, artifact_id):
         return self._artifacts._store.release(plugin_id, artifact_id)
-
-    def release_committed_artifact(self, artifact_id: str) -> bool:
-        return self._artifacts.release_committed(artifact_id)
 
     def revoke_scope(self, service_key: str, plugin_id: str) -> None:
         service = self._services.get(service_key)
@@ -2414,20 +2323,6 @@ def _settings_action(value: object) -> dict[str, Any]:
 
 def _settings_collection(value: object) -> dict[str, Any]:
     raw = _mapping(value, "SETTINGS_DESCRIPTOR_INVALID")
-    allowed = {
-        "collectionId",
-        "title",
-        "description",
-        "scope",
-        "columns",
-        "fields",
-        "filters",
-        "searchable",
-        "pageSize",
-        "deleteConfirmation",
-    }
-    if any(key not in allowed for key in raw):
-        raise HostServiceError("SETTINGS_DESCRIPTOR_INVALID")
     collection_id = _bounded_identifier(
         raw.get("collectionId"),
         "SETTINGS_DESCRIPTOR_INVALID",
@@ -2458,7 +2353,7 @@ def _settings_collection(value: object) -> dict[str, Any]:
         or not isinstance(delete_confirmation, str)
 
         or not isinstance(raw_columns, list)
-        or not 1 <= len(raw_columns) <= 12
+        or not raw_columns
         or not isinstance(raw_fields, list)
 
         or not isinstance(raw_filters, list)
@@ -2497,8 +2392,6 @@ def _settings_collection(value: object) -> dict[str, Any]:
 
 def _collection_column(value: object) -> dict[str, Any]:
     raw = _mapping(value, "SETTINGS_DESCRIPTOR_INVALID")
-    if any(key not in {"key", "label", "type", "maxLength", "format"} for key in raw):
-        raise HostServiceError("SETTINGS_DESCRIPTOR_INVALID")
     key = _bounded_identifier(raw.get("key"), "SETTINGS_DESCRIPTOR_INVALID", 64)
     label = raw.get("label")
     kind = raw.get("type")
@@ -2527,7 +2420,7 @@ def _collection_column(value: object) -> dict[str, Any]:
 
 def _collection_filter(value: object) -> dict[str, Any]:
     raw = _mapping(value, "SETTINGS_DESCRIPTOR_INVALID")
-    if set(raw) != {"key", "label", "options"}:
+    if not {"key", "label", "options"}.issubset(raw):
         raise HostServiceError("SETTINGS_DESCRIPTOR_INVALID")
     key = _bounded_identifier(raw.get("key"), "SETTINGS_DESCRIPTOR_INVALID", 64)
     label = raw.get("label")
@@ -2544,7 +2437,7 @@ def _collection_with_handles(
     raw_handles: object,
 ) -> _SettingsCollection:
     handles = _mapping(raw_handles, "SETTINGS_CALLBACK_INVALID")
-    if set(handles) != {"query", "create", "update", "delete"}:
+    if not {"query", "create", "update", "delete"}.issubset(handles):
         raise HostServiceError("SETTINGS_CALLBACK_INVALID")
     query_handle = _optional_callback_handle(handles.get("query"))
     if query_handle is None:
@@ -2594,7 +2487,7 @@ def _collection_query_request(
     collection: _SettingsCollection,
     payload: Mapping[str, Any],
 ) -> dict[str, Any]:
-    if set(payload) != {"cursor", "limit", "search", "filters"}:
+    if not {"cursor", "limit", "search", "filters"}.issubset(payload):
         raise HostServiceError("SETTINGS_COLLECTION_QUERY_INVALID")
     cursor = payload.get("cursor")
     limit = payload.get("limit")
@@ -2632,7 +2525,7 @@ def _collection_query_result(
     limit: int,
 ) -> dict[str, Any]:
     raw = _mapping(value, "SETTINGS_COLLECTION_RESULT_INVALID")
-    if set(raw) != {"items", "nextCursor", "total"}:
+    if not {"items", "nextCursor", "total"}.issubset(raw):
         raise HostServiceError("SETTINGS_COLLECTION_RESULT_INVALID")
     items = raw.get("items")
     next_cursor = raw.get("nextCursor")
@@ -2649,8 +2542,6 @@ def _collection_query_result(
         "nextCursor": next_cursor,
         "total": total,
     }
-    if not _json_compatible(result):
-        raise HostServiceError("SETTINGS_COLLECTION_RESULT_INVALID")
     return result
 
 
@@ -2659,7 +2550,7 @@ def _collection_item(
     value: object,
 ) -> dict[str, Any]:
     raw = _mapping(value, "SETTINGS_COLLECTION_RESULT_INVALID")
-    if set(raw) != {"itemId", "values"}:
+    if not {"itemId", "values"}.issubset(raw):
         raise HostServiceError("SETTINGS_COLLECTION_RESULT_INVALID")
     item_id = _collection_item_id(raw.get("itemId"))
     values = _mapping(raw.get("values"), "SETTINGS_COLLECTION_RESULT_INVALID")
@@ -2667,10 +2558,10 @@ def _collection_item(
         **{item["key"]: ("column", item) for item in collection.columns},
         **{item["key"]: ("field", item) for item in collection.fields},
     }
-    if any(key not in allowed for key in values):
-        raise HostServiceError("SETTINGS_COLLECTION_RESULT_INVALID")
     projected: dict[str, Any] = {}
     for key, item in values.items():
+        if key not in allowed:
+            continue
         source, spec = allowed[key]
         if source == "field":
             valid = _settings_value_valid(spec, item)
@@ -2680,8 +2571,6 @@ def _collection_item(
             raise HostServiceError("SETTINGS_COLLECTION_RESULT_INVALID")
         projected[key] = item
     result = {"itemId": item_id, "values": projected}
-    if not _json_compatible(result):
-        raise HostServiceError("SETTINGS_COLLECTION_RESULT_INVALID")
     return result
 
 
@@ -2722,7 +2611,7 @@ def _settings_value_valid(field: Mapping[str, Any], value: object) -> bool:
         return not bool(field.get("required"))
     kind = field.get("type")
     if kind == "data":
-        return isinstance(value, (list, dict)) and _json_compatible(value)
+        return isinstance(value, (list, dict))
     if kind == "image":
         return _settings_image_value_valid(value)
     if kind == "status":
@@ -2755,7 +2644,7 @@ def _settings_value_valid(field: Mapping[str, Any], value: object) -> bool:
 
 
 def _settings_image_value_valid(value: object) -> bool:
-    if not isinstance(value, Mapping) or set(value) != {"dataUrl", "alt"}:
+    if not isinstance(value, Mapping) or not {"dataUrl", "alt"}.issubset(value):
         return False
     if not isinstance(value["alt"], str) or not isinstance(value["dataUrl"], str):
         return False
@@ -2771,7 +2660,7 @@ def _settings_image_value_valid(value: object) -> bool:
 
 
 def _settings_status_value_valid(value: object) -> bool:
-    if not isinstance(value, Mapping) or set(value) != {"state", "label", "message"}:
+    if not isinstance(value, Mapping) or not {"state", "label", "message"}.issubset(value):
         return False
     state = value.get("state")
     label = value.get("label")
@@ -2782,7 +2671,6 @@ def _settings_status_value_valid(value: object) -> bool:
         and isinstance(label, str)
         and 1 <= len(label) <= 120
         and isinstance(message, str)
-        and len(message) <= 240
     )
 
 
@@ -2790,7 +2678,7 @@ def _settings_resource_value_valid(
     field: Mapping[str, Any],
     value: object,
 ) -> bool:
-    if not isinstance(value, Mapping) or set(value) != {
+    if not isinstance(value, Mapping) or not {
         "applicability",
         "subtitle",
         "ready",
@@ -2799,7 +2687,7 @@ def _settings_resource_value_valid(
         "detail",
         "progress",
         "availableActionIds",
-    }:
+    }.issubset(value):
         return False
     progress = value.get("progress")
     available_action_ids = value.get("availableActionIds")
@@ -2813,9 +2701,7 @@ def _settings_resource_value_valid(
         and isinstance(value.get("taskState"), str)
         and value.get("taskState") in _SETTINGS_RESOURCE_TASK_STATES
         and isinstance(value.get("message"), str)
-        and len(value["message"]) <= 240
         and isinstance(value.get("detail"), str)
-        and len(value["detail"]) <= 240
         and (
             progress is None
             or (
@@ -2825,7 +2711,6 @@ def _settings_resource_value_valid(
             )
         )
         and isinstance(available_action_ids, list)
-        and len(available_action_ids) <= 8
         and all(isinstance(action_id, str) for action_id in available_action_ids)
         and len(set(available_action_ids)) == len(available_action_ids)
         and all(
@@ -2855,10 +2740,10 @@ def _editable_settings_values(
     values: Mapping[str, Any],
 ) -> dict[str, Any]:
     by_key = {field["key"]: field for field in fields}
-    if any(key not in by_key for key in values):
-        raise HostServiceError("SETTINGS_VALUES_INVALID")
     editable: dict[str, Any] = {}
     for key, value in values.items():
+        if key not in by_key:
+            continue
         field = by_key[key]
         if field["readonly"] or field["type"] in {"readonly", "status", "resource"}:
             continue
@@ -2903,14 +2788,6 @@ def _application_state(value: object) -> str:
     return "applied"
 
 
-def _json_compatible(value: object) -> bool:
-    try:
-        json.dumps(value, ensure_ascii=False, allow_nan=False)
-    except (TypeError, ValueError):
-        return False
-    return True
-
-
 def _timeline_entry_mapping(entry: TimelineEntry) -> dict[str, Any]:
     return {
         "entryId": entry.entry_id,
@@ -2919,7 +2796,7 @@ def _timeline_entry_mapping(entry: TimelineEntry) -> dict[str, Any]:
         "kind": entry.kind.value,
         "origin": entry.origin,
         "createdAt": entry.created_at,
-        "payload": deepcopy(entry.payload),
+        "payload": entry.payload,
     }
 
 

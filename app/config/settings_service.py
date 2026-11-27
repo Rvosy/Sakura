@@ -1,19 +1,11 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from app.plugin_sdk.sakura_assistant_contract import RuntimeLoopSettings, normalize_runtime_loop_settings
 from app.config.character_loader import CharacterRegistry
 from app.config.yaml_config import load_yaml_mapping, save_yaml_mapping
-from app.config.models import (
-    DEFAULT_THEME_SETTINGS,
-    DebugLogSettings,
-    ThemeSettings,
-    theme_colors_to_mapping,
-    theme_from_mapping,
-)
 from app.storage.paths import StoragePaths
 from app.agent.screen_awareness import (
     SCREEN_AWARENESS_DEFAULT_CHECK_INTERVAL_MINUTES,
@@ -24,69 +16,9 @@ from app.agent.screen_awareness import (
 )
 
 
-API_CONFIG_FILE = "api.yaml"
 CHARACTERS_CONFIG_FILE = "characters.yaml"
 SYSTEM_CONFIG_FILE = "system_config.yaml"
 SYSTEM_CONFIG_VERSION = 1
-
-
-@dataclass(frozen=True)
-class StartupSettings:
-    """启动行为配置。"""
-
-    launch_at_login: bool = False
-
-
-BUBBLE_AUTO_HIDE_DEFAULT_DELAY_SECONDS = 5
-
-
-@dataclass(frozen=True)
-class BubbleSettings:
-    """对话气泡无操作自动隐藏配置。"""
-
-    auto_hide_enabled: bool = True
-    auto_hide_delay_seconds: int = BUBBLE_AUTO_HIDE_DEFAULT_DELAY_SECONDS
-
-
-BACKCHANNEL_MIN_DELAY_MS = 100
-BACKCHANNEL_MAX_DELAY_MS = 5000
-BACKCHANNEL_DEFAULT_DELAY_MS = 600
-BACKCHANNEL_MODES = ("off", "rules", "hybrid")
-BACKCHANNEL_DEFAULT_MODE = "rules"
-
-
-
-@dataclass(frozen=True)
-class BackchannelSettings:
-    """本地快速接话层配置。
-
-    默认关闭;rules 为纯规则模式,hybrid 为 rules-first + 本地 embedding 意图泛化。
-    """
-
-    enabled: bool = False
-    mode: str = BACKCHANNEL_DEFAULT_MODE
-    delay_ms: int = BACKCHANNEL_DEFAULT_DELAY_MS
-    probability: float = 1.0
-    tts_enabled: bool = False
-
-    @property
-    def active(self) -> bool:
-        return self.enabled and self.mode != "off"
-
-    def normalized(self) -> "BackchannelSettings":
-        mode = self.mode if self.mode in BACKCHANNEL_MODES else BACKCHANNEL_DEFAULT_MODE
-        delay = max(
-            BACKCHANNEL_MIN_DELAY_MS,
-            min(BACKCHANNEL_MAX_DELAY_MS, int(self.delay_ms)),
-        )
-        probability = max(0.0, min(1.0, float(self.probability)))
-        return BackchannelSettings(
-            enabled=bool(self.enabled),
-            mode=mode,
-            delay_ms=delay,
-            probability=probability,
-            tts_enabled=bool(self.tts_enabled),
-        )
 
 
 @dataclass(frozen=True)
@@ -100,76 +32,12 @@ class AppSettingsService:
         return StoragePaths(self.base_dir).config_dir
 
     @property
-    def api_config_path(self) -> Path:
-        return self.config_dir / API_CONFIG_FILE
-
-    @property
     def characters_config_path(self) -> Path:
         return self.config_dir / CHARACTERS_CONFIG_FILE
 
     @property
     def system_config_path(self) -> Path:
         return self.config_dir / SYSTEM_CONFIG_FILE
-
-    def load_runtime_loop_settings(self) -> RuntimeLoopSettings:
-        tool_loop = self._system_section("tool_loop")
-        defaults = RuntimeLoopSettings()
-        return normalize_runtime_loop_settings(
-            RuntimeLoopSettings(
-                max_agent_steps_per_turn=_int_value(
-                    tool_loop.get("max_agent_steps_per_turn"),
-                    defaults.max_agent_steps_per_turn,
-                ),
-                max_tool_calls_per_step=_int_value(
-                    tool_loop.get("max_tool_calls_per_step"),
-                    defaults.max_tool_calls_per_step,
-                ),
-                max_tool_calls_per_turn=_int_value(
-                    tool_loop.get("max_tool_calls_per_turn"),
-                    defaults.max_tool_calls_per_turn,
-                ),
-            )
-        )
-
-    def load_debug_log_settings(self) -> DebugLogSettings:
-        debug = self._system_section("debug")
-        return DebugLogSettings(
-            enabled=_bool_value(debug.get("enabled"), True),
-            body_enabled=_bool_value(debug.get("body_enabled"), False),
-            file_enabled=_bool_value(debug.get("file_enabled"), True),
-            profile=_log_level_value(debug.get("profile"), "info"),
-            stage_debug_overlay=_bool_value(debug.get("stage_debug_overlay"), False),
-            stage_collision_mask=_bool_value(debug.get("stage_collision_mask"), True),
-        )
-
-    def load_startup_settings(self) -> StartupSettings:
-        startup = self._system_section("startup")
-        return StartupSettings(
-            launch_at_login=_bool_value(startup.get("launch_at_login"), False),
-        )
-
-    def load_theme_settings(self) -> ThemeSettings:
-        ui = self._system_section("ui")
-        saved = theme_from_mapping(ui.get("theme"))
-        return replace(
-            DEFAULT_THEME_SETTINGS,
-            ai_enabled=saved.ai_enabled,
-            visual_effect_mode=saved.visual_effect_mode,
-        )
-
-    def load_character_theme_overrides(self) -> dict[str, ThemeSettings]:
-        ui = self._system_section("ui")
-        raw = ui.get("character_theme_overrides")
-        if not isinstance(raw, dict):
-            return {}
-        overrides: dict[str, ThemeSettings] = {}
-        for character_id, value in raw.items():
-            key = str(character_id).strip()
-            if not key or not isinstance(value, dict):
-                continue
-            theme = theme_from_mapping(value).normalized()
-            overrides[key] = ThemeSettings(**theme_colors_to_mapping(theme))
-        return overrides
 
     def load_screen_awareness_settings(self) -> ScreenAwarenessSettings:
         screen_awareness = self._system_section("screen_awareness")
@@ -200,29 +68,9 @@ class AppSettingsService:
             ),
         )
 
-    def load_bubble_settings(self) -> BubbleSettings:
-        ui = self._system_section("ui")
-        return BubbleSettings(
-            auto_hide_enabled=_bool_value(ui.get("bubble_auto_hide_enabled"), True),
-            auto_hide_delay_seconds=_int_value(
-                ui.get("bubble_auto_hide_delay_seconds"),
-                BUBBLE_AUTO_HIDE_DEFAULT_DELAY_SECONDS,
-            ),
-        )
-
     def load_audio_input_device(self) -> str:
         value = self._system_section("audio_input").get("device_id", "")
         return value if isinstance(value, str) else ""
-
-    def load_backchannel_settings(self) -> BackchannelSettings:
-        section = self._system_section("backchannel")
-        return BackchannelSettings(
-            enabled=_bool_value(section.get("enabled"), False),
-            mode=str(section.get("mode", BACKCHANNEL_DEFAULT_MODE) or BACKCHANNEL_DEFAULT_MODE),
-            delay_ms=_int_value(section.get("delay_ms"), BACKCHANNEL_DEFAULT_DELAY_MS),
-            probability=_float_value(section.get("probability"), 1.0),
-            tts_enabled=_bool_value(section.get("tts_enabled"), False),
-        ).normalized()
 
     def load_current_character_id(
         self,
@@ -329,24 +177,9 @@ def _int_value(value: Any, default: int) -> int:
         return default
 
 
-def _float_value(value: Any, default: float) -> float:
-    try:
-        return float(str(value).strip())
-    except (TypeError, ValueError):
-        return default
-
-
 def _bool_value(value: Any, default: bool) -> bool:
     if value is None:
         return default
     if isinstance(value, bool):
         return value
-    return default
-
-
-def _log_level_value(value: Any, default: str) -> str:
-    """验证并规范化当前日志级别值。"""
-    raw = str(value or default).strip().lower()
-    if raw in {"error", "warn", "info", "debug", "trace"}:
-        return raw
     return default

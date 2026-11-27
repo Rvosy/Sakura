@@ -49,26 +49,26 @@ def _require_non_negative_int(mapping: Mapping[str, Any], key: str) -> int:
     return value
 
 
-def verify_generation_identity(
-    request: Mapping[str, Any],
-    generation_id: str,
-    generation_credential: str,
-) -> bool:
-    supplied = request.get("generationCredential")
-    return (
-        request.get("generationId") == generation_id
-        and isinstance(supplied, str)
-        and hmac.compare_digest(supplied, generation_credential)
-    )
+class TransportFailure(RuntimeError):
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(f"{code}: {message}")
+        self.code = code
+        self.message = message
 
 
 def require_generation_identity(
-    request: Mapping[str, Any],
-    generation_id: str,
-    generation_credential: str,
+    request: Mapping[str, Any], generation_id: str, generation_credential: str,
 ) -> None:
-    if not verify_generation_identity(request, generation_id, generation_credential):
-        raise RuntimeError("GENERATION_IDENTITY_MISMATCH")
+    credential = request.get("generationCredential")
+    if not isinstance(credential, str) or not hmac.compare_digest(
+        credential.encode("utf-8", "surrogatepass"), generation_credential.encode()
+    ):
+        raise TransportFailure("GENERATION_CREDENTIAL_MISMATCH", "request credential does not match the active generation")
+    supplied_id = request.get("generationId")
+    if not isinstance(supplied_id, str) or not hmac.compare_digest(
+        supplied_id.encode("utf-8", "surrogatepass"), generation_id.encode()
+    ):
+        raise TransportFailure("GENERATION_MISMATCH", "request belongs to another generation")
 
 
 def validate_envelope(message: Mapping[str, Any]) -> None:
@@ -120,7 +120,6 @@ def encode_frame(message: Mapping[str, Any]) -> bytes:
             dict(message),
             ensure_ascii=False,
             separators=(",", ":"),
-            sort_keys=True,
         ).encode("utf-8")
     except (TypeError, ValueError) as error:
         raise ProtocolError("INVALID_JSON", "message is not JSON serializable") from error
@@ -254,12 +253,16 @@ def write_frame(stream: BinaryIO, message: Mapping[str, Any]) -> None:
 def response(
     request: Mapping[str, Any],
     *,
-    generation_id: str,
-    generation_credential: str,
+    generation_id: str | None = None,
+    generation_credential: str | None = None,
     protocol_minor: int = PROTOCOL_MINOR,
     payload: Mapping[str, Any] | None = None,
     error: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
+    if generation_id is None:
+        generation_id = request["generationId"]
+    if generation_credential is None:
+        generation_credential = request["generationCredential"]
     succeeded = error is None
     message: dict[str, Any] = {
         "protocolMajor": PROTOCOL_MAJOR,
@@ -306,7 +309,6 @@ def response(
             details = dict(error.get("details") or {})
             details["diagnostics"] = diagnostics
             message["error"]["details"] = details
-    validate_envelope(message)
     return message
 
 
@@ -334,7 +336,6 @@ def event(
         "name": name or str(request.get("name", "unknown")),
         "payload": dict(payload or {}),
     }
-    validate_envelope(message)
     return message
 
 

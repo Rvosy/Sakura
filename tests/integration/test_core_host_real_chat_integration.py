@@ -438,8 +438,6 @@ def test_chat_never_applies_or_retries_a_previous_settings_save(tmp_path: Path) 
         runtime.runtime_loop_settings = limits
 
     tools = ToolSettingsBoundary(
-        GENERATION_ID,
-        GENERATION_CREDENTIAL,
         tmp_path,
         runtime_apply=lambda limits: boundary.apply_runtime_update(
             lambda: apply_tools(limits)

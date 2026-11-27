@@ -70,10 +70,11 @@ class SpeechHostService:
         if not isinstance(character_id, str):
             raise SpeechHostError("SPEECH_REQUEST_INVALID")
         options = {} if options is None else options
-        if (not isinstance(options, Mapping) or set(options) - {"background", "exportAudio"}
-                or any(type(value) is not bool for value in options.values())):
+        if not isinstance(options, Mapping):
             raise SpeechHostError("SPEECH_REQUEST_INVALID")
         background, export_audio = options.get("background", False), options.get("exportAudio", True)
+        if type(background) is not bool or type(export_audio) is not bool:
+            raise SpeechHostError("SPEECH_REQUEST_INVALID")
         operation_id = "speech-" + uuid.uuid4().hex
         job_id = "speech-job-" + uuid.uuid4().hex
         with self._lock:

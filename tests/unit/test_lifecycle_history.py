@@ -54,7 +54,7 @@ def test_published_session_and_confirmed_app_exit_write_character_history(tmp_pa
         assert hello["ok"]
         assert dispatcher.dispatch(request("core.initialize", {}))[0]["ok"]
         dispatcher._readiness._worker.join(3)
-        assert dispatcher.published_session() is session
+        assert dispatcher._readiness.published_session() is session
         assert [row.payload["eventType"] for row in rows(tmp_path)] == ["app.started"]
         dispatcher.dispatch(request("core.initialize", {}))  # No duplicate opening.
         if shutdown_payload is not None:
