@@ -28,10 +28,13 @@ class BrowserRouter:
         self.input = queue.Queue()
         self.pending = {}
         self.errors = []
-        self.router = ConcurrentHostRouter(None, self, object(), fixture_handler=self.handle,
-            fixture_names=CHARACTER_STUDIO_REQUEST_NAMES, read_frame_fn=lambda _: self.input.get())
+        self.router = ConcurrentHostRouter(None, self, self, worker_handler=self.handle,
+            worker_names=CHARACTER_STUDIO_REQUEST_NAMES, read_frame_fn=lambda _: self.input.get())
         self.thread = threading.Thread(target=self.router.run)
         self.thread.start()
+
+    def authorize_request(self, _request):
+        return None
 
     def handle(self, request):
         return self.boundary.handle(request)
