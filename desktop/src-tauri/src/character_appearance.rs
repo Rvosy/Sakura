@@ -59,7 +59,7 @@ impl InputVisualEffectMode {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct AppearanceValues {
     pub portrait_scale_percent: u16,
     pub control_panel_width: u16,

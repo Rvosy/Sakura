@@ -34,7 +34,7 @@ pub struct LayoutContract {
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct RangeU32 {
     pub default: u32,
     pub minimum: u32,
@@ -42,7 +42,7 @@ pub struct RangeU32 {
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct RangeI32 {
     pub default: i32,
     pub minimum: i32,
@@ -50,7 +50,7 @@ pub struct RangeI32 {
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct ControlPanelLayout {
     pub center_x: u32,
     pub bubble_bottom: u32,
@@ -69,7 +69,7 @@ pub struct ControlPanelLayout {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct ControlSurfaceLayout {
     pub bubble_rect: [u32; 4],
     pub input_rect: [u32; 4],
@@ -85,7 +85,7 @@ const fn default_visible() -> bool {
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct InputSurfaceTransition {
     pub duration_ms: u32,
     #[serde(default)]

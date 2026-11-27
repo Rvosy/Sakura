@@ -37,14 +37,14 @@ impl ChatTransport for ConcurrentRequestHandle {
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct ChatSendRequest {
     pub message: String,
     pub attachment_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct ChatCancelRequest {
     pub operation_id: String,
     pub cancel_handle: String,
@@ -907,21 +907,21 @@ mod tests {
     }
 
     #[test]
-    fn command_payloads_reject_extra_transport_and_secret_fields() {
+    fn command_payloads_ignore_unknown_fields_and_keep_required_fields() {
         for field in ["operationId", "generationId", "apiKey", "history"] {
             let mut payload = json!({"message": "hello"});
             payload[field] = json!("forged");
-            assert!(
-                serde_json::from_value::<ChatSendRequest>(payload).is_err(),
-                "{field}"
-            );
+            let parsed: ChatSendRequest = serde_json::from_value(payload).unwrap();
+            assert_eq!(parsed.message, "hello");
         }
-        assert!(serde_json::from_value::<ChatCancelRequest>(json!({
+        let cancel: ChatCancelRequest = serde_json::from_value(json!({
             "operationId": "op",
             "cancelHandle": "opaque",
-            "reason": "forged"
+            "reason": "extra"
         }))
-        .is_err());
+        .unwrap();
+        assert_eq!(cancel.operation_id, "op");
+        assert_eq!(cancel.cancel_handle, "opaque");
     }
 
     struct ControlledRequest {

@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use crate::runtime_log::{RuntimeLogEvent, RuntimeLogService, Severity, Verbosity};
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct InteractionTraceContext {
     pub gesture_id: String,
     pub revision: u64,
@@ -33,7 +33,7 @@ impl InteractionTraceContext {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct FrontendTraceEntry {
     source: String,
     stage: String,

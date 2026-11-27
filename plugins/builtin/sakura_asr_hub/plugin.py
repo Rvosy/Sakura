@@ -52,7 +52,7 @@ class SakuraASRHub:
             pass
 
     def registerProvider(self, descriptor):
-        if not isinstance(descriptor, Mapping) or set(descriptor) != {"providerId", "serviceKey", "label", "processingLocation"}:
+        if not isinstance(descriptor, Mapping) or not {"providerId", "serviceKey", "label", "processingLocation"} <= set(descriptor):
             raise ValueError("ASR_PROVIDER_INVALID")
         if any(not isinstance(descriptor[k], str) or not _ID.fullmatch(descriptor[k]) for k in ("providerId", "serviceKey")):
             raise ValueError("ASR_PROVIDER_INVALID")

@@ -10,7 +10,7 @@ const ERROR_DIALOG_WINDOW_LABEL: &str = "error-dialog";
 const ERROR_DIALOG_UPDATED_EVENT: &str = "sakura://error-dialog-updated";
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct ErrorDialogPayload {
     title: String,
     message: String,

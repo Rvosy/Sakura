@@ -126,7 +126,7 @@ class SakuraTTSHub:
     def configure(self, character_id: str, values: Mapping[str, Any]) -> dict[str, Any]:
         if not isinstance(character_id, str) or not character_id:
             raise ValueError("TTS_CHARACTER_INVALID")
-        if not isinstance(values, Mapping) or set(values) != {"enabled", "provider"}:
+        if not isinstance(values, Mapping) or not {"enabled", "provider"} <= set(values):
             raise ValueError("TTS_SELECTION_INVALID")
         enabled = values.get("enabled")
         provider_id = values.get("provider")

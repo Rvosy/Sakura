@@ -4253,7 +4253,7 @@ fn settings_character_appearance_scale_frame(
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 struct CharacterAppearanceLayoutFrame {
     control_panel_width: u16,
     bubble_max_height: u16,

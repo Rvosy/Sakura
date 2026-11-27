@@ -25,7 +25,7 @@ const BUBBLE_AUTO_HIDE_DELAY_MIN: u16 = 1;
 const BUBBLE_AUTO_HIDE_DELAY_MAX: u16 = 120;
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct ChatPresentationTiming {
     pub subtitle_typing_interval_ms: u16,
     pub reply_segment_pause_ms: u16,
@@ -144,7 +144,7 @@ impl ChatPresentationTimingState {
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct BubbleAutoHideSettings {
     pub auto_hide_enabled: bool,
     pub auto_hide_delay_seconds: u16,

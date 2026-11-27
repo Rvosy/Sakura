@@ -449,7 +449,7 @@ impl Drop for CaptureStatusWatch {
 }
 
 #[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct RecordingRequest {
     recording_id: String,
 }

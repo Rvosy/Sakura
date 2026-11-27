@@ -26,7 +26,7 @@ const THEME_KEYS: [&str; 11] = [
 ];
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct VisualPresentation {
     pub binding_id: String,
     pub resource_id: String,
@@ -40,7 +40,7 @@ pub struct VisualPresentation {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct CharacterPresentation {
     pub schema_version: u32,
     pub generation_id: String,

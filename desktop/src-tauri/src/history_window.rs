@@ -98,7 +98,7 @@ pub(crate) struct HistoryBootstrap {
 }
 
 #[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct HistoryPageRequest {
     core_generation_id: String,
     character_id: String,
@@ -182,7 +182,7 @@ pub(crate) async fn history_page(
 }
 
 #[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct HistoryRecordRequest {
     core_generation_id: String,
     character_id: String,
@@ -190,7 +190,7 @@ pub(crate) struct HistoryRecordRequest {
 }
 
 #[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct HistoryImageRequest {
     core_generation_id: String,
     character_id: String,

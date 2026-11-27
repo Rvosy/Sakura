@@ -39,7 +39,7 @@ pub struct PickerClaim {
 }
 
 #[derive(Clone, Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct ColorPickRequest {
     pub session_id: String,
     pub monitor_id: u32,
@@ -48,7 +48,7 @@ pub struct ColorPickRequest {
 }
 
 #[derive(Clone, Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct ColorCancelRequest {
     pub session_id: String,
 }

@@ -31,7 +31,7 @@ const MAX_TTS_AUDIO_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_DESCRIPTOR_FUTURE_SECONDS: i64 = 10 * 60;
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct AudioDescriptor {
     pub opaque_id: String,
     pub recording_id: Option<String>,
@@ -45,7 +45,7 @@ pub struct AudioDescriptor {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct PlayPreparedRequest {
     pub opaque_id: String,
     pub playback_id: String,
@@ -748,14 +748,14 @@ fn validate_generation_id(value: &str) -> Result<(), String> {
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct TtsPrepareSegmentRequest {
     operation_id: String,
     segment_index: u64,
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct TtsPrepareHistorySegmentRequest {
     operation_id: String,
     history_entry_id: String,
@@ -763,7 +763,7 @@ pub(crate) struct TtsPrepareHistorySegmentRequest {
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct TtsCancelSynthesisRequest {
     operation_id: String,
 }
@@ -1106,7 +1106,7 @@ impl AudioState {
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct VoiceCacheSaveRequest {
     directory: String,
     max_megabytes: u64,
@@ -1620,7 +1620,7 @@ mod tests {
     }
 
     #[test]
-    fn plugin_kernel_v3_tts_cancel_accepts_only_operation_identity() {
+    fn plugin_kernel_v3_tts_cancel_requires_operation_identity_and_ignores_extra_fields() {
         let request: TtsCancelSynthesisRequest =
             serde_json::from_value(json!({"operationId": "operation-1"})).unwrap();
         assert_eq!(request.operation_id, "operation-1");
@@ -1628,11 +1628,12 @@ mod tests {
             "requestId": "tts-private-job"
         }))
         .is_err());
-        assert!(serde_json::from_value::<TtsCancelSynthesisRequest>(json!({
+        let with_extra: TtsCancelSynthesisRequest = serde_json::from_value(json!({
             "operationId": "operation-1",
             "requestId": "tts-private-job"
         }))
-        .is_err());
+        .unwrap();
+        assert_eq!(with_extra.operation_id, "operation-1");
     }
 
     #[test]

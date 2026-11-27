@@ -102,13 +102,13 @@ pub struct ScreenAttachmentItemRemovePublication {
 }
 
 #[derive(Clone, Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct CaptureStartRequest {
     pub capture_revision: u64,
 }
 
 #[derive(Clone, Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct CaptureSelectionRequest {
     pub session_id: String,
     pub monitor_id: u32,
@@ -119,19 +119,19 @@ pub struct CaptureSelectionRequest {
 }
 
 #[derive(Clone, Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct CaptureCancelRequest {
     pub session_id: String,
 }
 
 #[derive(Clone, Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct AttachmentReleaseRequest {
     pub attachment_id: String,
 }
 
 #[derive(Clone, Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct AttachmentItemRemoveRequest {
     pub attachment_id: String,
     pub item_id: String,
