@@ -4,11 +4,7 @@ from typing import Any
 import threading
 import json
 
-try:
-    from . import web, search
-except ImportError:
-    import web
-    import search
+from . import web, search
 
 
 class WebPlugin:

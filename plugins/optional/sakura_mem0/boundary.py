@@ -13,50 +13,27 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Callable, Literal
 
-try:
-    from .memory import (
-        DEFAULT_EMBEDDING_DIMS,
-        DEFAULT_EMBEDDING_MODEL,
-        DEFAULT_MEMORY_CONFIDENCE,
-        DEFAULT_MEMORY_IMPORTANCE,
-        DEFAULT_MEMORY_LAYER,
-        MEMORY_LAYERS,
-        MemoryModelImportError,
-        MemoryModelTaskCancelled,
-        MemoryStore,
-        append_memory_initialization_diagnostic,
-    )
-    from .memory_curator import MemoryCurationState, MemoryCurator
-    from .support import (
-        OperationCancelled,
-        ResourceRegistry,
-        StoragePaths,
-        interaction_context,
-        log_event,
-    )
-    from .domain_types import ChatHistoryEntry
-except ImportError:
-    from memory import (
-        DEFAULT_EMBEDDING_DIMS,
-        DEFAULT_EMBEDDING_MODEL,
-        DEFAULT_MEMORY_CONFIDENCE,
-        DEFAULT_MEMORY_IMPORTANCE,
-        DEFAULT_MEMORY_LAYER,
-        MEMORY_LAYERS,
-        MemoryModelImportError,
-        MemoryModelTaskCancelled,
-        MemoryStore,
-        append_memory_initialization_diagnostic,
-    )
-    from memory_curator import MemoryCurationState, MemoryCurator
-    from support import (
-        OperationCancelled,
-        ResourceRegistry,
-        StoragePaths,
-        interaction_context,
-        log_event,
-    )
-    from domain_types import ChatHistoryEntry
+from .memory import (
+    DEFAULT_EMBEDDING_DIMS,
+    DEFAULT_EMBEDDING_MODEL,
+    DEFAULT_MEMORY_CONFIDENCE,
+    DEFAULT_MEMORY_IMPORTANCE,
+    DEFAULT_MEMORY_LAYER,
+    MEMORY_LAYERS,
+    MemoryModelImportError,
+    MemoryModelTaskCancelled,
+    MemoryStore,
+    append_memory_initialization_diagnostic,
+)
+from .memory_curator import MemoryCurationState, MemoryCurator
+from .support import (
+    OperationCancelled,
+    ResourceRegistry,
+    StoragePaths,
+    interaction_context,
+    log_event,
+)
+from .domain_types import ChatHistoryEntry
 
 
 MEMORY_STATUSES = frozenset({"ready", "loading", "degraded", "read_only", "failed", "stopped"})

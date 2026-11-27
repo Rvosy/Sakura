@@ -9,7 +9,6 @@ import re
 import socket
 import threading
 import time
-from collections import deque
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -22,7 +21,6 @@ MAX_REQUEST_BYTES = 12 * 1024 * 1024
 SOCKET_TIMEOUT_SECONDS = 30
 CHAT_POLL_SECONDS = 0.2
 MAX_CONCURRENT_REQUESTS = 8
-MAX_REQUESTS_PER_MINUTE = 60
 TAILSCALE_CGNAT = ipaddress.ip_network("100.64.0.0/10")
 
 
@@ -37,8 +35,6 @@ class SakuraMobileHTTPServer(ThreadingHTTPServer):
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         self._request_slots = threading.BoundedSemaphore(MAX_CONCURRENT_REQUESTS)
-        self._rate_lock = threading.Lock()
-        self._request_times: dict[str, deque[float]] = {}
         super().__init__(*args, **kwargs)
 
     def process_request(self, request: Any, client_address: Any) -> None:
@@ -52,18 +48,6 @@ class SakuraMobileHTTPServer(ThreadingHTTPServer):
             super().process_request_thread(request, client_address)
         finally:
             self._request_slots.release()
-
-    def allow_client_request(self, client_address: object) -> bool:
-        client = _client_address_text(client_address).rsplit(":", 1)[0]
-        now = time.monotonic()
-        with self._rate_lock:
-            requests = self._request_times.setdefault(client, deque())
-            while requests and now - requests[0] >= 60:
-                requests.popleft()
-            if len(requests) >= MAX_REQUESTS_PER_MINUTE:
-                return False
-            requests.append(now)
-            return True
 
     def get_request(self):  # type: ignore[no-untyped-def]
         request, client_address = super().get_request()
@@ -258,7 +242,6 @@ def _build_handler(service: MobilePluginService, token: str) -> type[BaseHTTPReq
         def do_GET(self) -> None:  # noqa: N802
             try:
                 parsed = urlparse(self.path)
-                self._require_rate_limit()
                 self._log_request_start("GET", parsed.path)
                 if parsed.path in {"", "/"}:
                     self._require_token(parsed)
@@ -289,7 +272,6 @@ def _build_handler(service: MobilePluginService, token: str) -> type[BaseHTTPReq
         def do_POST(self) -> None:  # noqa: N802
             try:
                 parsed = urlparse(self.path)
-                self._require_rate_limit()
                 self._log_request_start("POST", parsed.path)
                 if parsed.path != "/api/chat":
                     self._send_error(HTTPStatus.NOT_FOUND, "Not found")
@@ -357,10 +339,6 @@ def _build_handler(service: MobilePluginService, token: str) -> type[BaseHTTPReq
             ).strip()
             if provided != token:
                 raise ValueError("访问令牌无效。")
-
-        def _require_rate_limit(self) -> None:
-            if not self.server.allow_client_request(self.client_address):  # type: ignore[attr-defined]
-                raise ValueError("请求过于频繁，请稍后再试。")
 
         def _send_json(self, data: dict[str, Any], status: HTTPStatus = HTTPStatus.OK) -> None:
             payload = json.dumps(data, ensure_ascii=False).encode("utf-8")

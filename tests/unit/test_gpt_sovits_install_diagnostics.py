@@ -71,7 +71,7 @@ exit 27
 
     diagnostics = _DiagnosticsProxy(Context())
     resource = _bundle.TTSBundleResource(
-        user_root=user_root, config_get=lambda: config, config_update=config.update,
+        resolve_dir=(user_root / "tts").joinpath, config_get=lambda: config, config_update=config.update,
         entry=lambda: entry, custom_endpoint=lambda _config: False,
         diagnostic=lambda event, severity, attributes: diagnostics.emit({
             "event": event, "severity": severity, "attributes": dict(attributes),
@@ -97,7 +97,7 @@ exit 27
     assert "exit_code" not in failed["detail"]
     assert config == {"workDir": str(installed)}
     assert (installed / "api_v2.py").read_text(encoding="utf-8") == "existing runtime"
-    assert not (user_root / "tts" / "_tmp" / entry.key).exists()
+    assert not (user_root / "tts" / "staging" / entry.key).exists()
     events = [json.loads(line.removeprefix(CORE_BRIDGE_PREFIX)) for line in stream.getvalue().splitlines()
               if line.startswith(CORE_BRIDGE_PREFIX)]
     events = [event for event in events if event.get("attributes", {}).get("event") == "tts.bundle.install.failed"]
@@ -126,7 +126,7 @@ def test_pending_script_cancellation_does_not_replace_existing_install(
     (installed / "api_v2.py").write_text("existing runtime", encoding="utf-8")
     events = []
     resource = _bundle.TTSBundleResource(
-        user_root=tmp_path, config_get=lambda: {}, config_update=lambda _config: pytest.fail("cancelled install"),
+        resolve_dir=(tmp_path / "tts").joinpath, config_get=lambda: {}, config_update=lambda _config: pytest.fail("cancelled install"),
         entry=lambda: entry, custom_endpoint=lambda _config: False,
         diagnostic=lambda *args: events.append(args),
     )
@@ -135,7 +135,7 @@ def test_pending_script_cancellation_does_not_replace_existing_install(
 
     assert resource.load()["bundleResource"]["taskState"] == "cancelled"
     assert (installed / "api_v2.py").read_text(encoding="utf-8") == "existing runtime"
-    assert not (tmp_path / "tts" / "_tmp" / entry.key).exists()
+    assert not (tmp_path / "tts" / "staging" / entry.key).exists()
     assert events == []
 
 
@@ -174,7 +174,7 @@ wait "$child_pid"
 
     monkeypatch.setattr(_bundle.subprocess, "Popen", capture_process)
     resource = _bundle.TTSBundleResource(
-        user_root=tmp_path, config_get=lambda: {}, config_update=lambda _config: pytest.fail("cancelled install"),
+        resolve_dir=(tmp_path / "tts").joinpath, config_get=lambda: {}, config_update=lambda _config: pytest.fail("cancelled install"),
         entry=lambda: entry, custom_endpoint=lambda _config: False,
     )
     set_stage = resource._set_stage
@@ -189,7 +189,7 @@ wait "$child_pid"
     try:
         resource.start({})
         assert ready.wait(3), "installer child never reached its handshake"
-        child_pid = int((tmp_path / "tts" / "_tmp" / entry.key / "child.pid").read_text())
+        child_pid = int((tmp_path / "tts" / "staging" / entry.key / "child.pid").read_text())
         os.kill(child_pid, 0)
         if action == "cancel":
             resource.cancel({})
@@ -206,7 +206,7 @@ wait "$child_pid"
         with pytest.raises(ProcessLookupError):
             os.kill(child_pid, 0)
         assert (installed / "api_v2.py").read_text(encoding="utf-8") == "existing runtime"
-        assert not (tmp_path / "tts" / "_tmp" / entry.key).exists()
+        assert not (tmp_path / "tts" / "staging" / entry.key).exists()
     finally:
         for process in processes:
             _bundle._terminate(process)
@@ -240,7 +240,7 @@ exit 0
 
     monkeypatch.setattr(_bundle.subprocess, "Popen", capture_process)
     resource = _bundle.TTSBundleResource(
-        user_root=tmp_path, config_get=lambda: {}, config_update=lambda _config: pytest.fail("cancelled install"),
+        resolve_dir=(tmp_path / "tts").joinpath, config_get=lambda: {}, config_update=lambda _config: pytest.fail("cancelled install"),
         entry=lambda: entry, custom_endpoint=lambda _config: False,
     )
     set_stage = resource._set_stage
@@ -256,7 +256,7 @@ exit 0
     try:
         resource.start({})
         assert ready.wait(3)
-        child_pid = int((tmp_path / "tts" / "_tmp" / entry.key / "child.pid").read_text())
+        child_pid = int((tmp_path / "tts" / "staging" / entry.key / "child.pid").read_text())
         child = psutil.Process(child_pid)
         assert processes[0].wait(timeout=3) == 0
         retained_pipe = os.dup(processes[0].stdout.fileno())
@@ -272,7 +272,7 @@ exit 0
         except psutil.NoSuchProcess:
             pass
         assert processes[0].stdout.closed
-        assert not (tmp_path / "tts" / "_tmp" / entry.key).exists()
+        assert not (tmp_path / "tts" / "staging" / entry.key).exists()
     finally:
         if child_pid is not None:
             try:

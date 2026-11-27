@@ -81,7 +81,7 @@ def prepare_log_payload(message: object, fields: object = None) -> tuple[str, di
                 return "[invalid number]"
             return value
         if isinstance(value, str):
-            return safe_text(value, 256)
+            return safe_text(value, 1024)
         if isinstance(value, Mapping):
             result = {}
             # Flat diagnostic metadata shares the total budget; the eight-item
@@ -100,8 +100,7 @@ def prepare_log_payload(message: object, fields: object = None) -> tuple[str, di
             if len(value) > 8:
                 truncated = True
             return [visit(item, depth + 1) for item in value[:8]]
-        # Do not stringify arbitrary objects (exceptions can contain private data).
-        return "[unsupported]"
+        return safe_text(str(value), 512)
 
     diagnostics = {key: _diagnostic_text(value, 4096 if key == "diagnostic" else 8192)
                    for key, value in (fields or {}).items()
@@ -110,10 +109,6 @@ def prepare_log_payload(message: object, fields: object = None) -> tuple[str, di
                     if key not in _DIAGNOSTIC_KEYS and key != "record_truncated"}, 0)
     assert isinstance(result, dict)
     if truncated:
-        result["record_truncated"] = True
-    while len(json.dumps(result, ensure_ascii=False).encode("utf-8")) > 1800:
-        result.pop("record_truncated", None)
-        result.pop(next(reversed(result)))
         result["record_truncated"] = True
     result.update(diagnostics)
     return safe_text(message), result
@@ -1236,7 +1231,7 @@ class _DiagnosticsProxy:
             "emit",
             [self._context.plugin_id, dict(descriptor)],
         )
-        if not isinstance(result, Mapping) or set(result) != {"accepted"}:
+        if not isinstance(result, Mapping) or "accepted" not in result:
             raise PluginApiError(
                 "DIAGNOSTIC_RESULT_INVALID",
                 plugin_id=self._context.plugin_id,
@@ -1644,11 +1639,10 @@ class PluginContext:
         binding = self._remote_request("service.bind", {"serviceKey": key})
         if (
             not isinstance(binding, Mapping)
-            or set(binding) != {"providerId", "scopeId"}
-            or any(not isinstance(value, str) or not value for value in binding.values())
+            or any(not isinstance(binding.get(key), str) or not binding[key] for key in ("providerId", "scopeId"))
         ):
             raise PluginApiError("PLUGIN_RESPONSE_INVALID", service_key=key)
-        identity = dict(binding)
+        identity = {key: binding[key] for key in ("providerId", "scopeId")}
 
         def call(service: str, method: str, args: Sequence[Any]) -> object:
             return self._remote_request("service.call", {

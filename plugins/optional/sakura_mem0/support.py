@@ -4,12 +4,11 @@ from __future__ import annotations
 
 import contextlib
 from contextvars import ContextVar
+from app.plugin_sdk.sakura_cancellation import CancelChecker, OperationCancelled, check_cancelled
 import os
-import shutil
 import tempfile
 import threading
 import time
-import zipfile
 from pathlib import Path
 from typing import Any, Callable
 
@@ -36,10 +35,6 @@ def log_event(_channel: str, message: str, attributes: object = None, *, event: 
 
 def external_runtime_sink_active() -> bool:
     return _logger is not None
-
-
-def suppress_runtime_logs() -> contextlib.AbstractContextManager[None]:
-    return contextlib.nullcontext()
 
 
 @contextlib.contextmanager
@@ -115,39 +110,6 @@ def replace_with_retry(source: Path, target: Path) -> None:
             ):
                 raise
             time.sleep(_FILE_OPERATION_RETRY_INITIAL_DELAY_SECONDS * (2**attempt))
-
-
-def validate_zip_resource_limits(
-    archive: zipfile.ZipFile,
-    *,
-    destination: Path,
-    label: str,
-) -> int:
-    members = archive.infolist()
-    if len(members) > 4096:
-        raise ValueError(f"{label}文件数量过多。")
-    total = 0
-    for member in members:
-        if member.is_dir():
-            continue
-        if member.file_size < 0 or member.compress_size < 0:
-            raise ValueError(f"{label}包含无效 ZIP 元数据。")
-        if member.file_size > 2 * 1024 * 1024 * 1024:
-            raise ValueError(f"{label}单个文件过大。")
-        total += member.file_size
-        if total > 8 * 1024 * 1024 * 1024:
-            raise ValueError(f"{label}展开后总大小超过限制。")
-        if (
-            member.file_size > 1024 * 1024
-            and member.file_size / max(1, member.compress_size) > 200
-        ):
-            raise ValueError(f"{label}压缩比异常。")
-    cursor = Path(destination)
-    while not cursor.exists() and cursor != cursor.parent:
-        cursor = cursor.parent
-    if shutil.disk_usage(cursor).free < total + 512 * 1024 * 1024:
-        raise ValueError(f"{label}目标磁盘空间不足。")
-    return total
 
 
 class ThreadGroupResource:
@@ -240,20 +202,6 @@ class StoragePaths:
         )
         return self.memory_dir / "curation_state" / f"{safe}.json"
 
-try:
-    from sakura_cancellation import OperationCancelled
-except ImportError:
-    from app.plugin_sdk.sakura_cancellation import OperationCancelled
-
-
-def check_cancelled(checker: Callable[[], object] | None) -> None:
-    if checker is not None:
-        checker()
-
-
-CancelChecker = Callable[[], object]
-
-
 __all__ = [
     "CancelChecker",
     "OperationCancelled",
@@ -267,6 +215,4 @@ __all__ = [
     "log_event",
     "rename_with_retry",
     "replace_with_retry",
-    "suppress_runtime_logs",
-    "validate_zip_resource_limits",
 ]

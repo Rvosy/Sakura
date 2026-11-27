@@ -183,6 +183,7 @@ def test_hub_keeps_preparation_selection_and_rejects_restarted_scope():
     class BoundEngine:
         def __init__(self, key):
             self.key, self.scope = key, scopes[key]
+            self.identity = {"providerId": key, "scopeId": self.scope}
 
         def __getattr__(self, method):
             def call(*args):
@@ -226,7 +227,7 @@ def test_hub_begin_keeps_failure_without_rebuilding_traceback_and_revokes_audio(
         return failure
 
     revoked = []
-    engine = SimpleNamespace(status=lambda: {"available": True, "configVersion": "v1"}, begin=begin)
+    engine = SimpleNamespace(identity={"providerId": "engine", "scopeId": "scope"}, status=lambda: {"available": True, "configVersion": "v1"}, begin=begin)
     audio = SimpleNamespace(verifyProvider=lambda *_: {"scopeId": "scope"},
         authorize=lambda audio, _: audio, revoke=revoked.append)
     hub = SakuraASRHub(SimpleNamespace(caller_id="engine", config=SimpleNamespace(get=lambda: {}),
@@ -268,7 +269,7 @@ def test_models_status_and_warmup_do_not_download_and_failed_install_preserves_o
 
 def test_cancelled_jobs_do_not_require_a_later_consumer_poll_to_reclaim_capacity():
     config = {"selectedProviderId": "engine", "language": "auto"}
-    engine = SimpleNamespace(status=lambda: {"available": True, "configVersion": "v1"}, begin=lambda _: "job", cancel=lambda _: True)
+    engine = SimpleNamespace(identity={"providerId": "engine", "scopeId": "scope"}, status=lambda: {"available": True, "configVersion": "v1"}, begin=lambda _: "job", cancel=lambda _: True)
     audio = SimpleNamespace(verifyProvider=lambda *_: {"scopeId": "scope"}, authorize=lambda audio, _: audio, revoke=lambda _: True)
     hub = SakuraASRHub(SimpleNamespace(caller_id="engine", config=SimpleNamespace(get=lambda: config),
         get=lambda key: audio if key == "sakura.host.audio_input" else engine, bind=lambda _key: engine))
@@ -615,36 +616,37 @@ def test_hub_permission_wait_does_not_reduce_recording_budget(monkeypatch):
 
     clock = [100.0]
     monkeypatch.setattr(input_controller, "monotonic", lambda: clock[0])
-    cycle = threading.Event()
-    class ObservedWake(threading.Event):
-        def wait(self, timeout=None):
-            cycle.set()
-            return super().wait(timeout)
+    ready = threading.Event()
+    verifications = []
+
+    def verify(provider, service):
+        verifications.append((provider, service))
+        return {"providerId": provider, "scopeId": "scope"}
+
     audio = SimpleNamespace(
-        verifyProvider=lambda *args: {"providerId": "test.asr", "scopeId": "scope"},
+        verifyProvider=verify,
         create=lambda *args: {"resourceId": "resource", "path": "unused.wav"},
         revoke=lambda *args: None, producerDone=lambda *args: None,
     )
     hub = SimpleNamespace(audio=audio, load_settings=lambda: {"inputDeviceId": ""},
         status=lambda *args: {"providerId": "test.asr", "serviceKey": "test.service", "configVersion": "one", "state": "ready", "available": True},
-        warmup=lambda *args: None, cancel=lambda *args: None, _log=lambda *args, **kwargs: None)
+        warmup=lambda *args: None, cancel=lambda *args: None,
+        _log=lambda event, *args, **kwargs: ready.set() if event == "asr.input.ready" else None)
     controller = input_controller.InputController(hub)
     def dispatch(name):
         return controller.dispatch(name, {"recordingId": "permission"})
     try:
         dispatch("prepare")
-        task = controller._tasks["permission"]
-        task.changed = ObservedWake()
-        assert cycle.wait(2)
+        assert ready.wait(2)
         assert dispatch("poll")["state"] == "ready"
         dispatch("capture_target")
         clock[0] += 80
         assert dispatch("capture_ready")["state"] == "recording"
         clock[0] += 40
-        cycle.clear()
-        task.changed.set()
-        assert cycle.wait(2)
         assert dispatch("poll")["state"] == "recording"
+        assert verifications == [("test.asr", "test.service")]
+        controller.scope_closed({"pluginId": "test.asr", "scopeId": "scope"})
+        assert dispatch("poll")["errorCode"] == "ASR_PROVIDER_UNAVAILABLE"
         dispatch("capture_discarded")
     finally:
         controller.close()

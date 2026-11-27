@@ -1,23 +1,17 @@
 from __future__ import annotations
 
+from app.plugin_sdk.sakura_plugin_api import PluginConfig, PluginContext
+
 import json
 from collections.abc import Mapping
 from typing import Any, Callable
 
-try:
-    from . import browser
-    from .config_model import (
-        PlaywrightBrowserConfig,
-        config_from_mapping,
-        config_to_mapping,
-    )
-except ImportError:
-    import browser  # type: ignore[no-redef]
-    from config_model import (  # type: ignore[no-redef]
-        PlaywrightBrowserConfig,
-        config_from_mapping,
-        config_to_mapping,
-    )
+from . import browser
+from .config_model import (
+    PlaywrightBrowserConfig,
+    config_from_mapping,
+    config_to_mapping,
+)
 
 
 PLUGIN_ID = "playwright_browser"
@@ -29,14 +23,14 @@ _TRUNCATED_PREVIEW_BUDGET = 24 * 1024
 class PlaywrightBrowserPlugin:
     """Optional browser automation through ordinary Plugin API v4 Host Services."""
 
-    def setup(self, context: object) -> None:
-        logger = getattr(context, "get")("sakura.host.logging")
+    def setup(self, context: PluginContext) -> None:
+        logger = context.get("sakura.host.logging")
         browser.set_logger(logger)
-        config = getattr(context, "config")
-        runtime_config = config_from_mapping(getattr(config, "get")())
+        config = context.config
+        runtime_config = config_from_mapping(config.get())
 
         def saved_config() -> PlaywrightBrowserConfig:
-            return config_from_mapping(getattr(config, "get")())
+            return config_from_mapping(config.get())
 
         browser.set_config_loader(lambda: runtime_config)
 
@@ -48,7 +42,7 @@ class PlaywrightBrowserPlugin:
                 logger.info("浏览器插件已停止")
                 browser.set_logger(None)
 
-        getattr(context, "effect")(cleanup_browser)
+        context.effect(cleanup_browser)
         def reconfigure(values: Mapping[str, Any]) -> str:
             nonlocal runtime_config
             updated = config_from_mapping(values)
@@ -58,15 +52,15 @@ class PlaywrightBrowserPlugin:
                 logger.info("浏览器配置已更新")
             return "applied"
 
-        getattr(config, "on_change")(reconfigure)
+        config.on_change(reconfigure)
 
-        tools = getattr(context, "get")("sakura.host.tools")
-        artifacts = getattr(context, "get")("sakura.host.artifacts")
+        tools = context.get("sakura.host.tools")
+        artifacts = context.get("sakura.host.artifacts")
         for descriptor, callback in _tool_registrations(artifacts):
             tools.register(descriptor, _logged_tool(logger, descriptor["name"], callback))
 
         logger.info("浏览器工具已就绪")
-        getattr(context, "get")("sakura.host.settings").register(
+        context.get("sakura.host.settings").register(
             _settings_descriptor(),
             load=lambda: config_to_mapping(saved_config()),
             save=lambda values: _save_settings(config, values),
@@ -255,12 +249,12 @@ def _settings_descriptor() -> dict[str, Any]:
     }
 
 
-def _save_settings(config: object, values: Mapping[str, Any]) -> list[str]:
-    current = getattr(config, "get")()
+def _save_settings(config: PluginConfig, values: Mapping[str, Any]) -> list[str]:
+    current = config.get()
     merged = {**dict(current), **dict(values)}
     normalized = config_to_mapping(config_from_mapping(merged))
     updates = {key: normalized[key] for key in values if key in normalized}
-    return getattr(config, "update")(updates)
+    return config.update(updates)
 
 
 def _object_schema(properties: dict[str, Any], required: list[str]) -> dict[str, Any]:

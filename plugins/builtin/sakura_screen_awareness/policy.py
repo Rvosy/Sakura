@@ -9,10 +9,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from time import monotonic
 
-try:
-    from .settings import ScreenAwarenessSettings
-except ImportError:
-    from settings import ScreenAwarenessSettings
+from .settings import ScreenAwarenessSettings
 
 
 class ScreenAwarenessPolicy:

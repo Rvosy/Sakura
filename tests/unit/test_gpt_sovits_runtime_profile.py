@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+import sys
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -11,6 +12,17 @@ import pytest
 import yaml
 
 from plugins.optional.sakura_gpt_sovits import _bundle, _runtime_profile, _support
+
+
+def test_profile_worker_runs_in_a_separate_interpreter(tmp_path):
+    result = subprocess.run(
+        [sys.executable, "-I", _runtime_profile.__file__, "--worker", str(tmp_path)],
+        cwd=tmp_path, capture_output=True, text=True,
+    )
+    payload = json.loads(result.stdout.removeprefix(_runtime_profile._RESULT_PREFIX))
+    assert result.returncode == 2
+    assert payload["code"] == "TTS_PROFILE_GENERATION_FAILED"
+    assert "tts_infer.yaml" in payload["diagnostics"]["diagnostic"]
 
 
 def test_profile_worker_error_survives_output_protocol(tmp_path, monkeypatch, capsys):
@@ -125,13 +137,6 @@ def test_profile_generation_updates_all_versions_and_preserves_source(
         "_probe_candidates",
         lambda: [_candidate(0, "NVIDIA GeForce RTX 5060", (12, 0), 7.96)],
     )
-    validated: list[tuple[Path, _runtime_profile.DeviceProfile]] = []
-    monkeypatch.setattr(
-        _runtime_profile,
-        "_validate_tts_config",
-        lambda _work, path, profile: validated.append((path, profile)),
-    )
-
     generated, profile = _runtime_profile._generate_profile(work_dir, require_cuda=True)
 
     assert generated == _runtime_profile.managed_profile_path(work_dir).resolve()
@@ -145,7 +150,6 @@ def test_profile_generation_updates_all_versions_and_preserves_source(
     assert payload["future"]["unknown"] == {"keep": True}
     assert payload["metadata"] == {"keep": "unchanged"}
     assert yaml.safe_load(source.read_text(encoding="utf-8")) == original
-    assert validated and validated[0][0] != generated
     assert not list(configs.glob(".*.tmp.yaml"))
 
 
@@ -189,24 +193,6 @@ def test_profile_generation_replaces_old_absolute_custom_paths(
     payload = yaml.safe_load(generated.read_text(encoding="utf-8"))
     assert payload["custom"]["t2s_weights_path"] == payload["v2ProPlus"]["t2s_weights_path"]
     assert payload["custom"]["vits_weights_path"] == payload["v2ProPlus"]["vits_weights_path"]
-
-
-def test_profile_validation_is_structural_and_does_not_require_tts_imports(
-    tmp_path: Path,
-) -> None:
-    profile = _runtime_profile.DeviceProfile("cuda:0", True, "GPU")
-    path = tmp_path / "managed.yaml"
-    path.write_text(
-        yaml.safe_dump(
-            {
-                "custom": {"device": "cuda:0", "is_half": True, "version": "v2"},
-                "v2": {"device": "cuda:0", "is_half": True, "version": "v2"},
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    _runtime_profile._validate_tts_config(tmp_path / "runtime-does-not-exist", path, profile)
 
 
 def test_existing_cuda_profile_refuses_silent_cpu_fallback(
@@ -453,7 +439,7 @@ def test_gpt_sovits_process_boundaries_remove_verbatim_paths() -> None:
         tts_config_path=Path(r"\\?\D:\Sakura\tts\g50\tts.yaml"),
     )
     resource = _bundle.TTSBundleResource(
-        user_root=Path(r"D:\Sakura"),
+        resolve_dir=Path(r"D:\Sakura\tts").joinpath,
         config_get=lambda: {},
         config_update=lambda patch: patches.append(dict(patch)),
         entry=lambda: _bundle.GPT_SOVITS_STANDARD,
@@ -478,7 +464,7 @@ def test_bundle_prepares_profile_in_staging_before_replacing_install(
         filename="fixture.7z",
         size=len(payload),
     )
-    archive = tmp_path / "tts" / "_dl" / entry.filename
+    archive = tmp_path / "tts" / "downloads" / entry.filename
     archive.parent.mkdir(parents=True)
     archive.write_bytes(payload)
     prepared: list[Path] = []
@@ -506,14 +492,14 @@ def test_bundle_prepares_profile_in_staging_before_replacing_install(
     )
     result = _bundle._install_archive(
         entry,
-        tmp_path,
+        (tmp_path / "tts").joinpath,
         check_cancel=lambda: None,
         on_progress=lambda _value: None,
         on_status=lambda _value: None,
         on_download_progress=lambda _value: None,
     )
 
-    assert prepared and prepared[0].parent.name == "_tmp"
+    assert prepared and prepared[0].parent.name == "staging"
     assert result.work_dir == (tmp_path / "tts" / "gpt").resolve()
     assert result.tts_config_path == _runtime_profile.managed_profile_path(result.work_dir).resolve()
     assert result.tts_config_path.is_file()
@@ -529,7 +515,7 @@ def test_bundle_profile_failure_keeps_existing_install(
         filename="fixture.7z",
         size=len(payload),
     )
-    archive = tmp_path / "tts" / "_dl" / entry.filename
+    archive = tmp_path / "tts" / "downloads" / entry.filename
     archive.parent.mkdir(parents=True)
     archive.write_bytes(payload)
     installed = tmp_path / "tts" / "g50"
@@ -558,7 +544,7 @@ def test_bundle_profile_failure_keeps_existing_install(
     with pytest.raises(_runtime_profile.RuntimeProfileError, match="TTS_ACCELERATOR_UNAVAILABLE"):
         _bundle._install_archive(
             entry,
-            tmp_path,
+            (tmp_path / "tts").joinpath,
             check_cancel=lambda: None,
             on_progress=lambda _value: None,
             on_status=lambda _value: None,

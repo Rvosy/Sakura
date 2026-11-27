@@ -1,25 +1,20 @@
 from __future__ import annotations
 
+from app.plugin_sdk.sakura_plugin_api import PluginContext
+
 import json
 import threading
 import uuid
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Mapping
 from contextlib import ExitStack
 from pathlib import Path
 from typing import Any
 
-try:
-    from .boundary import MemoryBoundary, _project_memory
-    from .memory import MEMORY_LAYERS
-    from .memory_recall import MemoryRecallService
-    from .domain_types import ContextMessage, ContextRequest
-    from .support import bind_logger, log_event
-except ImportError:
-    from boundary import MemoryBoundary, _project_memory
-    from memory import MEMORY_LAYERS
-    from memory_recall import MemoryRecallService
-    from domain_types import ContextMessage, ContextRequest
-    from support import bind_logger, log_event
+from .boundary import MemoryBoundary, _project_memory
+from .memory import MEMORY_LAYERS
+from .memory_recall import MemoryRecallService
+from app.plugin_sdk.sakura_context import ContextRequest
+from .support import bind_logger, log_event
 
 
 PLUGIN_ID = "sakura.memory.mem0"
@@ -82,7 +77,7 @@ class SakuraMem0Runtime:
         return self._character_id
 
     def context(self, request: object) -> list[dict[str, object]]:
-        context_request = _context_request(request)
+        context_request = ContextRequest.from_payload(request)
         if context_request.character_id != self._character_id:
             return []
         recalled = self._recall.recall(context_request)
@@ -592,15 +587,15 @@ class SakuraMem0Plugin:
         self._runtime: SakuraMem0Runtime | None = None
         self._closed = False
 
-    def setup(self, context: object) -> None:
+    def setup(self, context: PluginContext) -> None:
         try:
-            bind_logger(getattr(context, "get")("sakura.host.logging"))
-            getattr(context, "effect")(lambda: bind_logger(None))
+            bind_logger(context.get("sakura.host.logging"))
+            context.effect(lambda: bind_logger(None))
         except Exception:
             bind_logger(None)
-        getattr(context, "effect")(self.close)
-        getattr(context, "on")("sakura.host.character.changed", lambda event: self._bind_character(context, event))
-        getattr(context, "on")(HOST_CHAT_COMPLETED_EVENT, self._note_completed_chat)
+        context.effect(self.close)
+        context.on("sakura.host.character.changed", lambda event: self._bind_character(context, event))
+        context.on(HOST_CHAT_COMPLETED_EVENT, self._note_completed_chat)
         self._bind_character(context)
 
     def close(self) -> None:
@@ -614,7 +609,7 @@ class SakuraMem0Plugin:
             if self._runtime is not None:
                 self._runtime.note_completed_chat(event)
 
-    def _bind_character(self, context: object, event: Mapping[str, object] | None = None) -> None:
+    def _bind_character(self, context: PluginContext, event: Mapping[str, object] | None = None) -> None:
         with self._lock:
             if self._closed or (event is not None and self._runtime is not None
                                and event["characterId"] == self._runtime.character_id):
@@ -624,7 +619,7 @@ class SakuraMem0Plugin:
             with ExitStack() as scope:
                 runtime = self._runtime_factory(context)
                 if runtime is None:
-                    scope.callback(getattr(context, "get")("sakura.host.settings").register({
+                    scope.callback(context.get("sakura.host.settings").register({
                         "sectionId": MEMORY_SETTINGS_SECTION_ID, "title": "长期记忆", "order": 40,
                         "fields": [{"key": "status", "label": "运行状态", "type": "status",
                                     "default": {"state": "neutral", "label": "等待选择角色",
@@ -636,8 +631,8 @@ class SakuraMem0Plugin:
                 self._runtime = runtime
                 self._scope = scope.pop_all()
 
-    def _register(self, context: object, runtime: SakuraMem0Runtime, scope: ExitStack) -> None:
-        scope.callback(getattr(context, "get")("sakura.host.context").register(
+    def _register(self, context: PluginContext, runtime: SakuraMem0Runtime, scope: ExitStack) -> None:
+        scope.callback(context.get("sakura.host.context").register(
             {
                 "providerId": MEMORY_CONTEXT_PROVIDER_ID,
                 "description": "从当前角色的本地长期记忆中选择与本轮相关的少量事实。",
@@ -645,10 +640,10 @@ class SakuraMem0Plugin:
             },
             runtime.context,
         ))
-        tools = getattr(context, "get")("sakura.host.tools")
+        tools = context.get("sakura.host.tools")
         for descriptor, callback in _tool_registrations(runtime):
             scope.callback(tools.register(descriptor, callback))
-        settings = getattr(context, "get")("sakura.host.settings")
+        settings = context.get("sakura.host.settings")
         scope.callback(settings.register(
             runtime.settings_descriptor(),
             load=runtime.load_settings,
@@ -663,16 +658,16 @@ class SakuraMem0Plugin:
                 "cancelEmbedding": runtime.cancel_model_download,
             },
         ))
-        scope.callback(getattr(context, "get")("sakura.host.settings.surface-v0").register(
+        scope.callback(context.get("sakura.host.settings.surface-v0").register(
             MEMORY_COMPONENT_SECTION_ID,
             "about",
         ))
         scope.callback(settings.register(runtime.memory_management_descriptor()))
-        scope.callback(getattr(context, "get")("sakura.host.settings.surface-v0").register(
+        scope.callback(context.get("sakura.host.settings.surface-v0").register(
             MEMORY_MANAGEMENT_SECTION_ID,
             "memory",
         ))
-        scope.callback(getattr(context, "get")("sakura.host.settings.collection-v0").register(
+        scope.callback(context.get("sakura.host.settings.collection-v0").register(
             MEMORY_MANAGEMENT_SECTION_ID,
             runtime.memory_collection_descriptor(),
             query=runtime.query_collection,
@@ -680,7 +675,7 @@ class SakuraMem0Plugin:
             update=runtime.update_collection_item,
             delete=runtime.delete_collection_item,
         ))
-        scope.callback(getattr(context, "get")("sakura.host.model_slots.v2").register(
+        scope.callback(context.get("sakura.host.model_slots.v2").register(
             {
                 "slotId": "curation",
                 "label": "记忆整理模型",
@@ -701,31 +696,28 @@ class SakuraMem0Plugin:
         ).start()
 
 
-def _default_runtime(context: object) -> SakuraMem0Runtime | None:
+def _default_runtime(context: PluginContext) -> SakuraMem0Runtime | None:
     from sakura_model_client import ModelClient
-    plugin_data_root = Path(getattr(context, "data_path")("."))
-    storage = getattr(context, "get")("sakura.host.storage")
+    plugin_data_root = Path(context.data_path("."))
+    storage = context.get("sakura.host.storage")
     try:
-        character = getattr(context, "get")("sakura.host.character").current()
+        character = context.get("sakura.host.character").current()
     except Exception as error:
         if getattr(error, "code", None) == "CHARACTER_NOT_FOUND":
             return None
         raise
-    model_slots = getattr(context, "get")("sakura.host.model_slots.v2")
+    model_slots = context.get("sakura.host.model_slots.v2")
     character_id = str(character.get("id", ""))
     system_prompt = str(character.get("systemPrompt", ""))
     if not character_id or not system_prompt:
         raise RuntimeError("MEMORY_CHARACTER_UNAVAILABLE")
-    plugin_config = getattr(context, "config")
-    config_getter = getattr(plugin_config, "get")
-    config_updater = getattr(plugin_config, "update")
     return SakuraMem0Runtime(
         plugin_data_root,
         character_id,
         system_prompt=system_prompt,
-        timeline=getattr(context, "get")("sakura.host.timeline"),
-        config_getter=config_getter,
-        config_updater=config_updater,
+        timeline=context.get("sakura.host.timeline"),
+        config_getter=context.config.get,
+        config_updater=context.config.update,
         memory_dir=Path(storage.resolve("data", "memory")),
         memory_cache_dir=Path(storage.resolve("cache", "memory")),
         model_catalog_getter=model_slots.catalog,
@@ -857,83 +849,12 @@ def _mapping(value: object) -> Mapping[str, Any]:
     return value if isinstance(value, Mapping) else {}
 
 
-def _context_request(value: object) -> ContextRequest:
-    if isinstance(value, ContextRequest):
-        return value
-    raw = _mapping(value)
-    recent: list[ContextMessage] = []
-    messages = raw.get("recent_messages", [])
-    if isinstance(messages, Sequence) and not isinstance(messages, (str, bytes)):
-        for item in messages[-8:]:
-            message = _mapping(item)
-            role = str(message.get("role", ""))
-            content = message.get("content")
-            if role in {"user", "assistant"} and isinstance(content, str):
-                recent.append(ContextMessage(role, content[:2000]))
-    return ContextRequest(
-        current_input=str(raw.get("current_input", ""))[:4096],
-        character_id=str(raw.get("character_id", ""))[:128],
-        character_name=str(raw.get("character_name", ""))[:120],
-        current_turn_id=str(raw.get("current_turn_id", ""))[:128],
-        source_entry_ids=tuple(
-            str(item)[:128]
-            for item in (
-                raw.get("source_entry_ids", [])
-                if isinstance(raw.get("source_entry_ids"), (list, tuple))
-                else []
-            )[:16]
-        ),
-        human_entry_id=str(raw.get("human_entry_id", ""))[:128],
-        observation_entry_ids=tuple(
-            str(item)[:128]
-            for item in (
-                raw.get("observation_entry_ids", [])
-                if isinstance(raw.get("observation_entry_ids"), (list, tuple))
-                else []
-            )[:16]
-        ),
-        source=(
-            raw.get("source")
-            if raw.get("source") in {"chat", "event"}
-            else "chat"
-        ),
-        mode=(
-            raw.get("mode")
-            if raw.get("mode") in {"normal", "screen_awareness"}
-            else "normal"
-        ),
-        event_type=str(raw.get("event_type", ""))[:64],
-        step_index=_bounded_context_int(raw.get("step_index"), 0, 32),
-        remaining_steps=_bounded_context_int(raw.get("remaining_steps"), 0, 32),
-        recent_messages=tuple(recent),
-        available_tools=tuple(
-            str(item)[:64]
-            for item in (
-                raw.get("available_tools", [])
-                if isinstance(raw.get("available_tools"), list)
-                else []
-            )[:64]
-        ),
-        screen_context_available=bool(raw.get("screen_context_available")),
-        current_time=str(raw.get("current_time", ""))[:80],
-    )
-
-
-def _bounded_context_int(value: object, minimum: int, maximum: int) -> int:
-    if isinstance(value, int) and not isinstance(value, bool):
-        return min(maximum, max(minimum, value))
-    return minimum
-
-
 def _json_fits(value: object, maximum: int) -> bool:
     return len(json.dumps(value, ensure_ascii=False).encode("utf-8")) <= maximum
 
 
 def _parse_model_slot_selection(value: object) -> dict[str, str]:
-    try:
-        from .boundary import _resolved_model
-    except ImportError:
-        from boundary import _resolved_model
+    from .boundary import _resolved_model
     return _resolved_model(value)
 
 

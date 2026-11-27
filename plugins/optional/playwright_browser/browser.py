@@ -8,10 +8,7 @@ from pathlib import Path
 from typing import Any, Callable, TypeVar
 from urllib.parse import quote_plus, urlparse
 
-try:
-    from .config_model import PlaywrightBrowserConfig, default_config_path, load_config
-except ImportError:
-    from config_model import PlaywrightBrowserConfig, default_config_path, load_config
+from .config_model import PlaywrightBrowserConfig, default_config_path, load_config
 
 
 T = TypeVar("T")

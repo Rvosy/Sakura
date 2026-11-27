@@ -9,14 +9,8 @@ from html.parser import HTMLParser
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlencode, urljoin, urlparse
 
-try:
-    from sakura_http import proxy_for_url
-except ImportError:
-    from app.plugin_sdk.sakura_http import proxy_for_url
-try:
-    from sakura_provider_errors import sanitize_provider_diagnostic
-except ImportError:
-    from app.plugin_sdk.sakura_provider_errors import sanitize_provider_diagnostic
+from app.plugin_sdk.sakura_http import proxy_for_url
+from app.plugin_sdk.sakura_provider_errors import sanitize_provider_diagnostic
 
 
 DEFAULT_TIMEOUT_SECONDS = 12

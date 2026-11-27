@@ -4,12 +4,8 @@ from dataclasses import dataclass
 from time import monotonic
 from typing import Any, Protocol
 
-try:
-    from .support import log_event
-    from .domain_types import ContextFragment, ContextRequest
-except ImportError:
-    from support import log_event
-    from domain_types import ContextFragment, ContextRequest
+from .support import log_event
+from app.plugin_sdk.sakura_context import ContextFragment, ContextRequest
 
 
 DEFAULT_MEMORY_RECALL_LIMIT = 5
@@ -107,7 +103,6 @@ class MemoryRecallService:
                 fragment_id=f"memory.{memory['id']}",
                 source="memory",
                 content=f"与本轮相关的长期记忆：{memory['content']}",
-                trust="trusted" if source == "explicit" else "untrusted",
                 priority=80 if source == "explicit" else 70,
                 freshness=memory["updatedAt"],
                 token_budget=512,

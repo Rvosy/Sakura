@@ -5,10 +5,7 @@ from __future__ import annotations
 import threading
 from time import monotonic
 
-try:
-    from ._device_load import device_below_peak
-except ImportError:
-    from _device_load import device_below_peak
+from ._device_load import device_below_peak
 
 
 IDLE_FILL_PAGE_LIMIT = 40

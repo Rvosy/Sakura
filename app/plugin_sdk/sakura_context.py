@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from typing import Any, Iterable, Literal, Mapping, Sequence
 
 
@@ -61,6 +61,19 @@ class ContextRequest:
     seconds_since_pet_interaction: float | None = None
     service_status: Mapping[str, str] = field(default_factory=dict)
     current_time: str = ""
+
+    @classmethod
+    def from_payload(cls, value: Mapping[str, Any] | ContextRequest) -> ContextRequest:
+        if isinstance(value, cls):
+            return value
+        data = {item.name: value[item.name] for item in fields(cls) if item.name in value}
+        data["recent_messages"] = tuple(
+            ContextMessage(message["role"], message["content"]) for message in data.get("recent_messages", ())
+        )
+        for key in ("source_entry_ids", "observation_entry_ids", "available_tools", "visual_summaries"):
+            if key in data:
+                data[key] = tuple(data[key])
+        return cls(**data)
 
 
 @dataclass(frozen=True)

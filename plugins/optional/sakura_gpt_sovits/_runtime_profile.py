@@ -81,14 +81,11 @@ def managed_profile_path(work_dir: Path) -> Path:
     return Path(work_dir) / "GPT_SoVITS" / "configs" / PROFILE_FILENAME
 
 
-def _native_windows_path(value: object) -> str:
-    text = str(value)
-    if sys.platform == "win32":
-        if text.startswith("\\\\?\\UNC\\"):
-            text = "\\\\" + text[8:]
-        elif text.startswith("\\\\?\\"):
-            text = text[4:]
-    return os.path.normpath(text)
+def _native_windows_path(value: Path) -> str:
+    # Only the plugin-side launcher needs the SDK. The worker runs in the TTS Python.
+    from app.plugin_sdk.sakura_process import normalize_windows_path
+
+    return os.path.normpath(normalize_windows_path(value))
 
 
 def _path_identity(value: Path) -> str:
@@ -479,36 +476,9 @@ def _absolute_runtime_path(value: object) -> bool:
     return bool(text) and (Path(text).is_absolute() or PureWindowsPath(text).is_absolute())
 
 
-def _validate_tts_config(work_dir: Path, path: Path, profile: DeviceProfile) -> None:
-    """Validate the generated YAML without importing or loading TTS models."""
-
-    del work_dir
-    import yaml
-
-    try:
-        payload = yaml.safe_load(path.read_text(encoding="utf-8"))
-    except Exception as error:
-        raise RuntimeProfileError("TTS_PROFILE_GENERATION_FAILED") from error
-    if not isinstance(payload, Mapping):
-        raise RuntimeProfileError("TTS_PROFILE_GENERATION_FAILED")
-    sections = [
-        value
-        for value in payload.values()
-        if isinstance(value, Mapping) and ({"device", "is_half", "version"} & set(value))
-    ]
-    if not sections or any(
-        str(section.get("device")) != profile.device
-        or section.get("is_half") is not profile.is_half
-        for section in sections
-    ):
-        raise RuntimeProfileError("TTS_PROFILE_GENERATION_FAILED")
-
-
 def _write_profile(
-    work_dir: Path,
     target: Path,
     payload: Mapping[str, Any],
-    profile: DeviceProfile,
 ) -> None:
     import yaml
 
@@ -524,15 +494,12 @@ def _write_profile(
             dir=str(target.parent),
             delete=False,
         ) as handle:
+            temporary = Path(handle.name)
             yaml.safe_dump(payload, handle, allow_unicode=True, sort_keys=False)
             handle.flush()
             os.fsync(handle.fileno())
-            temporary = Path(handle.name)
-        _validate_tts_config(work_dir, temporary, profile)
         os.replace(temporary, target)
         temporary = None
-    except RuntimeProfileError:
-        raise
     except Exception as error:
         raise RuntimeProfileError("TTS_PROFILE_GENERATION_FAILED") from error
     finally:
@@ -575,7 +542,7 @@ def _reuse_existing_profile(work_dir: Path, *, require_cuda: bool) -> tuple[Path
         raise RuntimeProfileError("TTS_PROFILE_GENERATION_FAILED")
     profile = _profile_from_existing(payload, require_cuda=require_cuda)
     updated = _update_profile_payload(payload, profile)
-    _write_profile(work_dir, target, updated, profile)
+    _write_profile(target, updated)
     return target.resolve(), profile
 
 
@@ -595,7 +562,7 @@ def _generate_profile(work_dir: Path, *, require_cuda: bool) -> tuple[Path, Devi
         require_cuda=require_cuda or (source == target and _profile_requires_cuda(payload)),
     )
     updated = _update_profile_payload(payload, profile)
-    _write_profile(work_dir, target, updated, profile)
+    _write_profile(target, updated)
     return target.resolve(), profile
 
 

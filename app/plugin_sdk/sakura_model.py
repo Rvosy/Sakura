@@ -3,10 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-if __package__:
-    from .sakura_model_client import ModelClient, ModelError
-else:
-    from sakura_model_client import ModelClient, ModelError
+from sakura_model_client import ModelClient, ModelError
 
 
 class ApiConfigError(RuntimeError):

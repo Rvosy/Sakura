@@ -31,9 +31,12 @@ class UpdateAnnouncement:
 
     def _run(self):
         previous_error = None
-        while not self.stop.wait(.5):
+        delay = 30.0
+        while not self.stop.wait(delay):
+            delay = 30.0
             try:
-                self.tick()
+                if self.tick():
+                    delay = 3 * 60 * 60
             except Exception as error:
                 diagnostic = str(error)
                 if diagnostic != previous_error:
@@ -51,7 +54,7 @@ class UpdateAnnouncement:
             return
         notice = {'releaseId': package['releaseId'], 'date': datetime.now().astimezone().date().isoformat()}
         if notice == self.announced or notice == self.attempted:
-            return
+            return True
         facts = self.chat.current()
         key = (facts['sessionId'], facts['activityRevision'], facts['interactionRevision'])
         if not facts['idle'] or not facts['sessionId']:

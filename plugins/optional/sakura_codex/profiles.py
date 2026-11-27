@@ -12,10 +12,7 @@ import webbrowser
 from sakura_cancellation import OperationCancelled
 from sakura_model import ModelError
 
-if __package__:
-    from .oauth import Account, DEVICE_URL
-else:
-    from oauth import Account, DEVICE_URL
+from .oauth import Account, DEVICE_URL
 
 
 SERVICE_KEY = "sakura.model.codex"

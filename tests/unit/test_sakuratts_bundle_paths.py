@@ -17,7 +17,8 @@ from plugins.builtin.sakura_sakuratts import _bundle, _runtime
     ('C:\\' + 'long-directory\\' * 20, True),
 ])
 def test_process_paths_keep_extended_prefix_only_when_needed(monkeypatch, plain, preserve_prefix):
-    monkeypatch.setattr(_runtime, 'os', SimpleNamespace(name='nt'))
+    from app.plugin_sdk import sakura_process
+    monkeypatch.setattr(sakura_process, 'os', SimpleNamespace(name='nt'))
     extended = '\\\\?\\UNC\\' + plain[2:] if plain.startswith('\\\\') else '\\\\?\\' + plain
     assert _runtime.process_path(extended) == (extended if preserve_prefix else plain)
 

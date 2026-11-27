@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from app.plugin_sdk.sakura_cancellation import OperationCancelled
+from app.plugin_sdk.sakura_process import normalize_windows_path
+
 import importlib
-import json
 import logging
 import os
 import shutil
@@ -16,24 +18,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
-from sakura_http import urlopen_direct_for_loopback as urlopen_current_proxy
+from app.plugin_sdk.sakura_http import urlopen_direct_for_loopback as urlopen_current_proxy
 
 
 logger = logging.getLogger(__name__)
 
 
 def _external_path(value: str | Path) -> str:
-    text = str(value)
-    if sys.platform == "win32":
-        if text.startswith("\\\\?\\UNC\\"):
-            text = "\\\\" + text[8:]
-        elif text.startswith("\\\\?\\"):
-            text = text[4:]
-    return os.path.normpath(text)
-
-
-class DownloadCancelledError(RuntimeError):
-    pass
+    return os.path.normpath(normalize_windows_path(value))
 
 
 @dataclass(frozen=True)
@@ -78,20 +70,8 @@ def is_bundle_supported(entry: TTSBundleEntry) -> bool:
     return not entry.supported_systems or _system_name() in entry.supported_systems
 
 
-def _tts_root(user_root: Path) -> Path:
-    config_path = user_root / "config" / "storage.json"
-    try:
-        payload = json.loads(config_path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        payload = {}
-    value = payload.get("ttsRoot") if isinstance(payload, Mapping) else None
-    if isinstance(value, str) and value.strip() and Path(value).is_absolute():
-        return Path(value).resolve(strict=False)
-    return user_root / "tts"
-
-
-def _install_dir(user_root: Path) -> Path:
-    return _tts_root(user_root) / "cpu"
+def _install_dir(resolve_dir: Callable[[str], Path]) -> Path:
+    return resolve_dir("cpu")
 
 
 def _runtime_ready(path: Path) -> bool:
@@ -99,10 +79,10 @@ def _runtime_ready(path: Path) -> bool:
     return any((path / "runtime" / name).is_file() for name in names)
 
 
-def installed_bundle_work_dir(user_root: Path) -> Path | None:
+def installed_bundle_work_dir(resolve_dir: Callable[[str], Path]) -> Path | None:
     """Return the managed bundle directory only when its runtime is present."""
 
-    candidate = _install_dir(user_root)
+    candidate = _install_dir(resolve_dir)
     return candidate if _runtime_ready(candidate) else None
 
 
@@ -243,7 +223,7 @@ def _replace_directory(source: Path, target: Path) -> None:
 
 def install_bundle(
     entry: TTSBundleEntry,
-    user_root: Path,
+    resolve_dir: Callable[[str], Path],
     *,
     check_cancel: Callable[[], None],
     on_progress: Callable[[int], None],
@@ -252,9 +232,8 @@ def install_bundle(
 ) -> TTSBundleInstallResult:
     if not is_bundle_supported(entry):
         raise RuntimeError("TTS_BUNDLE_PLATFORM_UNSUPPORTED")
-    root = _tts_root(user_root)
-    archive = root / "_dl" / entry.filename
-    staging = root / "_tmp" / entry.key
+    archive = resolve_dir("downloads") / entry.filename
+    staging = resolve_dir("staging") / entry.key
     archive.parent.mkdir(parents=True, exist_ok=True)
     on_status("verify")
     on_progress(0)
@@ -273,26 +252,26 @@ def install_bundle(
     _extract(archive, staging)
     check_cancel()
     on_status("install")
-    _replace_directory(_extracted_root(staging), _install_dir(user_root))
+    _replace_directory(_extracted_root(staging), _install_dir(resolve_dir))
     shutil.rmtree(staging, ignore_errors=True)
     archive.unlink(missing_ok=True)
     on_status("cleanup")
     on_progress(100)
-    return TTSBundleInstallResult(_install_dir(user_root).resolve())
+    return TTSBundleInstallResult(_install_dir(resolve_dir).resolve())
 
 
 class TTSBundleResource:
     def __init__(
         self,
         *,
-        user_root: Path,
+        resolve_dir: Callable[[str], Path],
         config_get: Callable[[], Mapping[str, Any]],
         config_update: Callable[[Mapping[str, Any]], object],
         entry: Callable[[], TTSBundleEntry | None],
         custom_endpoint: Callable[[Mapping[str, Any]], bool],
         installer: Callable[..., TTSBundleInstallResult] = install_bundle,
     ) -> None:
-        self._user_root = Path(user_root)
+        self._resolve_dir = resolve_dir
         self._config_get = config_get
         self._config_update = config_update
         self._entry = entry
@@ -348,7 +327,7 @@ class TTSBundleResource:
         with self._lock:
             state = self._state
             error_code = self._error_code
-        if state in {"idle", "succeeded"} and _runtime_ready(_install_dir(self._user_root)):
+        if state in {"idle", "succeeded"} and _runtime_ready(_install_dir(self._resolve_dir)):
             return {"bundleResource": self._value("required", f"{entry.label} · {_format_size(entry.size)}", True, "已安装", "", [], terminal="succeeded")}
         actions = ["cancelBundle"] if state in {"queued", "running"} else ["retryBundle"] if state in {"failed", "cancelled"} else ["installBundle"]
         message = {"queued": "等待下载", "running": self._stage or "正在安装", "failed": "安装失败", "cancelled": "已取消"}.get(state, "尚未安装")
@@ -400,7 +379,7 @@ class TTSBundleResource:
         try:
             result = self._installer(
                 entry,
-                self._user_root,
+                self._resolve_dir,
                 check_cancel=self._check_cancel,
                 on_progress=self._set_progress,
                 on_status=self._set_stage,
@@ -408,7 +387,7 @@ class TTSBundleResource:
             )
             self._config_update({"workDir": _external_path(result.work_dir)})
             self._set_state("succeeded", "安装完成", 100)
-        except DownloadCancelledError:
+        except OperationCancelled:
             self._set_state("cancelled", "已取消", None)
         except Exception as error:
             with self._lock:
@@ -426,7 +405,7 @@ class TTSBundleResource:
 
     def _check_cancel(self) -> None:
         if self._cancel.is_set():
-            raise DownloadCancelledError()
+            raise OperationCancelled()
 
     def _set_state(self, state: str, stage: str, progress: int | None) -> None:
         with self._lock:

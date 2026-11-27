@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from app.plugin_sdk.sakura_process import normalize_windows_path
+
 import array
 import base64
 import ipaddress
@@ -18,15 +20,11 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 from urllib.parse import urlparse, urlunparse
 
-from sakura_http import urlopen_direct_for_loopback as urlopen_current_proxy
+from app.plugin_sdk.sakura_http import urlopen_direct_for_loopback as urlopen_current_proxy
 
 
 DEFAULT_TONE = "中性"
 DEFAULT_GENIE_TTS_API_URL = "http://127.0.0.1:9881/"
-
-
-class OperationCancelled(RuntimeError):
-    pass
 
 
 @dataclass(frozen=True)
@@ -116,13 +114,7 @@ def terminate_process_tree(process: subprocess.Popen[Any], *, timeout: float) ->
 
 
 def _subprocess_path(value: str | Path) -> str:
-    text = str(value)
-    if sys.platform == "win32":
-        if text.startswith("\\\\?\\UNC\\"):
-            text = "\\\\" + text[8:]
-        elif text.startswith("\\\\?\\"):
-            text = text[4:]
-    return os.path.normpath(text)
+    return os.path.normpath(normalize_windows_path(value))
 
 
 def _local_tts_subprocess_env(python_exe: Path | None = None) -> dict[str, str]:
@@ -258,17 +250,9 @@ def _write_genie_audio(audio_data: bytes, output_path: Path) -> bool:
     return verify_generated_audio(output_path) is None
 
 
-try:
-    from ._bundle import (
-        GENIE_TTS,
-        TTSBundleResource,
-        installed_bundle_work_dir,
-        is_bundle_supported,
-    )
-except ImportError:
-    from _bundle import (  # type: ignore[no-redef]
-        GENIE_TTS,
-        TTSBundleResource,
-        installed_bundle_work_dir,
-        is_bundle_supported,
-    )
+from ._bundle import (
+    GENIE_TTS,
+    TTSBundleResource,
+    installed_bundle_work_dir,
+    is_bundle_supported,
+)

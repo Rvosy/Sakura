@@ -17,10 +17,7 @@ from typing import Any, Callable
 
 import uuid
 
-try:
-    from .sakura_provider_errors import sanitize_provider_diagnostic
-except ImportError:
-    from sakura_provider_errors import sanitize_provider_diagnostic
+from sakura_provider_errors import sanitize_provider_diagnostic
 
 
 ToolHandler = Callable[[dict[str, Any]], Any]
@@ -532,6 +529,7 @@ def _safe_result_log(
     return {
         "tool_name": result.tool_name,
         "success": result.success,
+        **({"error": sanitize_provider_diagnostic(result.error)} if not result.success else {}),
         "reason_code": "READY" if result.success else (result.reason_code or "TOOL_EXECUTION_FAILED"),
         "elapsed_ms": int((time.perf_counter() - started_at) * 1000),
     }

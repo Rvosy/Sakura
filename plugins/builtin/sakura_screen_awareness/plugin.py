@@ -3,14 +3,9 @@ from __future__ import annotations
 import threading
 from time import monotonic
 
-try:
-    from .policy import ScreenAwarenessPolicy
-    from .prompts import PROACTIVE_PROMPT
-    from .settings import ScreenAwarenessSettings, settings_descriptor
-except ImportError:
-    from policy import ScreenAwarenessPolicy
-    from prompts import PROACTIVE_PROMPT
-    from settings import ScreenAwarenessSettings, settings_descriptor
+from .policy import ScreenAwarenessPolicy
+from .prompts import PROACTIVE_PROMPT
+from .settings import ScreenAwarenessSettings, settings_descriptor
 
 
 class ScreenAwarenessRuntime:

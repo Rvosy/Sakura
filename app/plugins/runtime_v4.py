@@ -11,19 +11,17 @@ import sys
 import threading
 import time
 import codecs
-from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
-from app.plugin_sdk.sakura_process import terminate_process_tree
+from app.plugin_sdk.sakura_process import normalize_windows_path, terminate_process_tree
 from app.plugins.dependencies import PluginDependencyError, PluginDependencyRoots
 from app.plugins.inventory import RuntimePluginSpec
 from app.plugins.models import PLUGIN_API_V4_VERSION, PluginSpec
-from app.plugins.process_paths import process_path
 from app.plugins.host_services import HOST_CALLER, HOST_CALLER_LOG_METADATA, HOST_CALLER_SCOPE
-from app.plugins.sakura_plugin_sdk import PluginApiError, RpcPeer, json_value
+from app.plugins.sakura_plugin_sdk import PluginApiError, RpcPeer
 from app.storage.paths import StoragePaths
 from app.storage.runtime_roots import RuntimeRoots, coerce_runtime_roots
 
@@ -298,7 +296,7 @@ class _PluginProcess:
                     # directory open as its CWD. API v4 exposes explicit
                     # plugin data/config paths, so the private data directory
                     # is the stable working directory for the runner.
-                    cwd=process_path(data_dir),
+                    cwd=normalize_windows_path(data_dir),
                     env=environment,
                     bufsize=0,
                     start_new_session=os.name != "nt",
@@ -781,7 +779,6 @@ class PluginRuntimeManager:
         *args: object,
         timeout: float | None = None,
     ) -> object:
-        detached_args = deepcopy(list(args))
         with self._lock:
             binding = self._callbacks.get(handle)
             if binding is None:
@@ -794,7 +791,7 @@ class PluginRuntimeManager:
         return binding.process.invoke_callback(
             handle,
             shape,
-            detached_args,
+            args,
             timeout=timeout,
         )
 
@@ -1057,16 +1054,13 @@ class PluginRuntimeManager:
             return self.snapshot()
 
     def apply_config(self, plugin_id: str, values: Mapping[str, Any]) -> dict[str, Any]:
-        detached = json_value(dict(values))
-        if not isinstance(detached, dict):
-            raise PluginRuntimeError("CONFIG_VALUE_INVALID", plugin_id=plugin_id)
         with self._operation_lock:
             with self._lock:
                 record = self._records.get(plugin_id)
                 process = record.process if record is not None else None
                 if process is None or record is None or record.state != "active":
                     raise PluginRuntimeError("PLUGIN_PROCESS_UNAVAILABLE", plugin_id=plugin_id)
-            result = process.apply_config(detached)
+            result = process.apply_config(values)
             state = result.get("applicationState")
             if state == "restart_required":
                 self._reload_plugin_locked(plugin_id)
@@ -1078,7 +1072,6 @@ class PluginRuntimeManager:
     def emit_host_event(self, name: str, payload: object) -> None:
         if not isinstance(name, str) or not name.startswith("sakura.host."):
             raise PluginRuntimeError("HOST_EVENT_NAME_INVALID")
-        detached = json_value(payload)
         with self._lock:
             processes = [
                 record.process
@@ -1087,7 +1080,7 @@ class PluginRuntimeManager:
             ]
         for process in processes:
             try:
-                process.emit(name, detached)
+                process.emit(name, payload)
             except PluginRuntimeError:
                 continue
 
@@ -1096,13 +1089,12 @@ class PluginRuntimeManager:
         if (not isinstance(name, str) or not name.startswith("sakura.host.")
                 or name == "sakura.host.scope.closed"):
             raise PluginRuntimeError("HOST_EVENT_NAME_INVALID")
-        detached = json_value(payload)
         with self._lock:
             recipients = [(record, record.process) for record in self._records.values()
                           if record.state == "active" and record.process is not None]
         for record, process in recipients:
             try:
-                process.notify(name, detached)
+                process.notify(name, payload)
             except PluginRuntimeError as error:
                 self._log_lifecycle(record, "plugin.notification.dropped", "插件观察通知未入队",
                     diagnostics={"event_name": name, "notification_reason": error.code})
@@ -1668,12 +1660,11 @@ class PluginRuntimeManager:
             isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or not math.isfinite(timeout) or timeout <= 0
         ):
             raise PluginApiError("PLUGIN_DEADLINE_INVALID", plugin_id=caller_id)
-        if "binding" in payload and (
-            not isinstance(identity, Mapping)
-            or set(identity) != {"providerId", "scopeId"}
-            or any(not isinstance(value, str) or not value for value in identity.values())
-        ):
-            raise PluginApiError("PLUGIN_PROTOCOL_INVALID", plugin_id=caller_id)
+        if "binding" in payload:
+            keys = ("providerId", "scopeId")
+            if not isinstance(identity, Mapping) or any(not isinstance(identity.get(key), str) or not identity[key] for key in keys):
+                raise PluginApiError("PLUGIN_PROTOCOL_INVALID", plugin_id=caller_id)
+            identity = {key: identity[key] for key in keys}
         try:
             if name == "service.bind":
                 with self._lock:
@@ -1707,7 +1698,6 @@ class PluginRuntimeManager:
         expected_identity: Mapping[str, str] | None = None,
         caller_scope: str | None = None,
     ) -> object:
-        detached_args = deepcopy(list(args))
         with self._lock:
             binding = self._services.get(service_key)
             draining = self._draining_processes.get(caller_id)
@@ -1722,8 +1712,8 @@ class PluginRuntimeManager:
             # before Core performs the final scope sweep.
             draining_unregister = (binding is not None and binding.host_service is not None
                 and draining is not None
-                and len(detached_args) == 1
-                and any(item.service_key == service_key and item.registration_id == detached_args[0]
+                and len(args) == 1
+                and any(item.service_key == service_key and item.registration_id == args[0]
                         and item.unregister_method == method
                         for item in self._host_registrations.get(caller_id, ())))
             # Host owners may keep specific cancellation methods available.
@@ -1770,7 +1760,7 @@ class PluginRuntimeManager:
             result = binding.process.call_service(
                 service_key,
                 method,
-                detached_args,
+                args,
                 timeout=timeout,
                 caller_id=caller_id,
                 caller_scope=caller_scope,
@@ -1793,8 +1783,8 @@ class PluginRuntimeManager:
         caller_token = HOST_CALLER.set(caller_id)
         scope_token = HOST_CALLER_SCOPE.set(caller_scope)
         try:
-            result = callback(*detached_args)
-            self._track_host_effect(caller_id, service_key, method, detached_args, result)
+            result = callback(*args)
+            self._track_host_effect(caller_id, service_key, method, args, result)
             return result
         except PluginRuntimeError:
             raise

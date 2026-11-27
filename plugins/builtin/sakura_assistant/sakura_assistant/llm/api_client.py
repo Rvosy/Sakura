@@ -9,7 +9,7 @@ import re
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Any, Callable, Sequence
+from typing import Any, Sequence
 
 from sakura_cancellation import CancelChecker, OperationCancelled, check_cancelled
 from sakura_assistant.diagnostics import submit_telemetry_model_call
@@ -19,7 +19,7 @@ from sakura_assistant.llm.chat_reply import (
     sanitize_reply_tones,
 )
 from sakura_assistant.diagnostics import diagnostic_attributes, log_event
-from sakura_assistant.llm.prompt_templates import build_segmented_reply_instruction
+from sakura_assistant.llm.prompts.recipes import build_segmented_reply_instruction
 from sakura_assistant.agent.trace import (
     AgentTraceRecorder,
     MessageProvenance,
@@ -111,7 +111,6 @@ class AssistantModelClient:
         self._configuration = _ClientConfiguration(settings)
         self._model_client = model_client
         # 可选事件发射器（由宿主注入），用于派发 llm.request.* 插件事件。
-        self._event_emit: Callable[[str, dict[str, Any] | None], None] | None = None
         self._agent_trace_recorder = agent_trace_recorder
         self._trace_local = threading.local()
 
@@ -157,23 +156,6 @@ class AssistantModelClient:
     def last_trace_call(self) -> TraceCall | None:
         value = getattr(self._trace_local, "last_call", None)
         return value if isinstance(value, TraceCall) else None
-
-    def set_event_emitter(
-        self,
-        emitter: Callable[[str, dict[str, Any] | None], None] | None,
-    ) -> None:
-        """注入插件事件发射器；传 None 关闭。"""
-        self._event_emit = emitter
-
-    def _emit_llm_event(self, event_name: str, payload: dict[str, Any] | None = None) -> None:
-        """安全派发 LLM 请求事件，发射器异常不影响请求本身。"""
-        emitter = self._event_emit
-        if emitter is None:
-            return
-        try:
-            emitter(event_name, payload)
-        except Exception:  # noqa: BLE001 — 事件派发不得影响 LLM 请求
-            pass
 
     @property
     def runtime_context_role(self) -> str:
@@ -586,29 +568,11 @@ class AssistantModelClient:
     ) -> dict[str, Any]:
         """调用 OpenAI 兼容的 chat/completions 接口并返回 JSON 数据。"""
         check_cancelled(cancel_checker)
-        model_name = payload.get("model")
-        self._emit_llm_event("llm.request.started", {"model": model_name})
-        try:
-            data = self._send_request(payload, cancel_checker=cancel_checker)
-            check_cancelled(cancel_checker)
-            choice = data["choices"][0]
-            require_complete_response({"message": choice["message"], "finishReason": choice.get("finish_reason"),
-                                       "usage": data.get("usage")})
-        except Exception as exc:  # noqa: BLE001 — 仅用于派发失败事件，随后原样抛出
-            self._emit_llm_event(
-                "llm.request.failed",
-                {
-                    "model": model_name,
-                    **diagnostic_attributes(
-                        exc,
-                        reason_code="LLM_REQUEST_FAILED",
-                        stage="llm_request",
-                    ),
-                },
-            )
-            raise
-
-        self._emit_llm_event("llm.request.finished", {"model": model_name})
+        data = self._send_request(payload, cancel_checker=cancel_checker)
+        check_cancelled(cancel_checker)
+        choice = data["choices"][0]
+        require_complete_response({"message": choice["message"], "finishReason": choice.get("finish_reason"),
+                                   "usage": data.get("usage")})
         return data
 
     def _send_request(self, payload, *, cancel_checker=None):
@@ -747,18 +711,18 @@ def _has_system_runtime_facts(
     )
 
 
-def _is_runtime_context_role_unsupported_error(exc: ApiRequestError) -> bool:
-    text = str(exc).lower()
-    if re.search(r"\bsystem messages? must be at the beginning(?:[.!\"']|$)", text):
-        return True
-    role_markers = ("system", "role", "messages")
-    rejection_markers = (
-        "unsupported", "not support", "invalid", "must be first",
-        "only one", "not allowed", "unexpected", "order",
-    )
-    return any(marker in text for marker in role_markers) and any(
-        marker in text for marker in rejection_markers
-    )
+def _is_runtime_context_role_unsupported_error(exc: BaseException) -> bool:
+    text = str(exc).lower().replace('"', "").replace("'", "")
+    role = r"(?:system|developer)"
+    return any(re.search(pattern, text) for pattern in (
+        r"\b(?:unsupported|invalid|unknown|unexpected) (?:message )?role\b",
+        rf"\b(?:does not support|unsupported) (?:the )?(?:role {role}|{role} (?:role|messages?))\b",
+        rf"\brole does not support {role}\b",
+        rf"\b{role} (?:role|messages?) (?:is |are )?(?:unsupported|not (?:supported|allowed))\b",
+        rf"\b{role} messages? (?:must (?:be|come)|(?:is|are) only (?:allowed|supported)) "
+        r"(?:first|at the (?:start|beginning)|as the first)\b",
+        rf"\bonly one {role} message\b",
+    ))
 
 
 def _filter_supported_chat_params(params: dict[str, Any]) -> dict[str, Any]:

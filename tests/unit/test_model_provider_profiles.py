@@ -30,10 +30,6 @@ class Context:
         self.host = _SettingsHostService(lambda handle, _shape, *args: self.callbacks[handle](*args))
     def effect(self, _cleanup):
         pass
-    def bind(self, key):
-        assert key == SERVICE_KEY
-        return SimpleNamespace(identity={"providerId": SERVICE_KEY, "scopeId": "fixture-scope"},
-                               invoke=lambda method, *args: getattr(self.service, method)(*args))
     def handle(self, callback):
         if callback is None:
             return None
@@ -196,86 +192,49 @@ def test_existing_long_connection_values_can_be_saved_without_shortening(provide
     assert profiles.load_editor()["connections"][0]["alias"] == draft["connections"][0]["alias"]
 
 
-def test_discovery_uses_unsaved_connection_without_writing_and_releases(provider):
+def test_discovery_uses_unsaved_connection_without_writing(provider):
     profiles, context = provider
     before = context.config.get()
-    released = threading.Event()
     calls = []
-    context.service = SimpleNamespace(begin_probe=lambda descriptor: calls.append(descriptor),
-        poll=lambda *args: {"sequence": 1, "state": "completed"},
-        result=lambda operation: {"response": {"models": ["new-model"]}}, release=lambda operation: released.set())
-    profiles.set_service(context.service)
+
+    def execute(settings, request, *, operation, **kwargs):
+        calls.append((settings, operation))
+        return {"models": ["new-model"]}
+
+    profiles.set_service(SimpleNamespace(execute=execute))
     request = {"operation": "list_models", "requestId": "test", "profileId": "unsaved",
                "base_url": "https://unsaved.invalid/v1", "credential": {"action": "replace", "value": "draft-key"}, "timeout_seconds": 17}
     context.host.action(SERVICE_KEY, "connections", "probe", {"probeRequest": request})
-    assert released.wait(2)
-    profiles.close()
+    profiles._probe_thread.join(2)
     result = profiles.editor_probe_status({})["values"]["probeResult"]
     assert result["state"] == "completed" and result["requestId"] == "test"
     assert result["models"][0]["modelId"] == "new-model"
     assert context.config.get() == before
-    assert calls[0]["profileId"] == "unsaved"
-    assert calls[0]["values"]["credential"]["value"] == "draft-key"
+    settings, operation = calls[0]
+    assert operation == "list_models"
+    assert settings["base_url"] == request["base_url"] and settings["api_key"] == "draft-key"
     assert "draft-key" not in repr(result)
 
 
-@pytest.mark.parametrize("cleanup_fails", [False, True])
-def test_probe_failure_preserves_reason_redacts_credentials_and_always_releases(provider, cleanup_fails):
+def test_probe_failure_preserves_reason_and_redacts_credentials(provider):
+    from sakura_model import ModelError
+
     profiles, context = provider
-    released = threading.Event()
     draft_secret = 'draft-key-with-"quotes"'
-    def release(operation):
-        released.set()
-        if cleanup_fails:
-            raise OSError(5, f"cleanup failed: {draft_secret}")
-    context.service = SimpleNamespace(begin_probe=lambda descriptor: None, poll=lambda *args: {"sequence": 1, "state": "failed"},
-        result=lambda operation: {"failure": {"code": "MODEL_AUTHENTICATION_FAILED",
-            "message": f"API HTTP 403: model access denied; {SECRET}; {draft_secret}",
-            "diagnostics": {"http_status": 403, "errno": 61, "winerror": 10061, "exit_code": 1}}}, release=release)
-    profiles.set_service(context.service)
+
+    def execute(*args, **kwargs):
+        raise ModelError("MODEL_AUTHENTICATION_FAILED", f"model access denied {SECRET} {draft_secret}",
+                         diagnostics={"http_status": 403, "errno": 61, "winerror": 10061, "exit_code": 1})
+
+    profiles.set_service(SimpleNamespace(execute=execute))
     profiles.editor_probe({"probeRequest": {"operation": "test_connection", "requestId": "test", "profileId": "fixture", "modelId": "model",
                                            "credential": {"action": "replace", "value": draft_secret}}})
-    assert released.wait(2)
-    profiles.close()
-    result = profiles.editor_probe_status({})
-    assert result["values"]["probeResult"]["state"] == "failed"
-    assert result["values"]["probeResult"]["code"] == "MODEL_AUTHENTICATION_FAILED"
-    diagnostics = result["values"]["probeResult"]["diagnostics"]
-    assert {key: diagnostics[key] for key in ("http_status", "errno", "winerror", "exit_code")} == {
-        "http_status": 403, "errno": 61, "winerror": 10061, "exit_code": 1,
-    }
-    if cleanup_fails:
-        assert "cleanup failed" in diagnostics["recovery_diagnostic"]
-    assert "API HTTP 403: model access denied" in result["values"]["probeResult"]["message"]
-    assert SECRET not in repr(result)
-    assert draft_secret not in str(result)
-
-
-def test_successful_probe_keeps_models_when_cleanup_fails(provider):
-    profiles, context = provider
-    released = threading.Event()
-
-    def release(operation):
-        released.set()
-        raise OSError(5, f"cleanup failed: {SECRET}")
-
-    context.service = SimpleNamespace(
-        begin_probe=lambda descriptor: None,
-        poll=lambda *args: {"sequence": 1, "state": "completed"},
-        result=lambda operation: {"response": {"models": ["model"]}}, release=release,
-    )
-    profiles.set_service(context.service)
-    profiles.editor_probe({"probeRequest": {"operation": "list_models", "requestId": "cleanup", "profileId": "fixture"}})
-    assert released.wait(2)
-    profiles.close()
+    profiles._probe_thread.join(2)
     result = profiles.editor_probe_status({})["values"]["probeResult"]
-    assert result["state"] == "completed"
-    assert result["models"] == [{"modelId": "model", "label": "model"}]
-    assert "cleanup failed" in result["diagnostics"]["recovery_diagnostic"]
-    assert context.logs[-1][1]["fields"]["errno"] == 5
-    assert "cleanup failed" in str(context.logs)
-    assert SECRET not in repr(result)
-    assert SECRET not in str(context.logs)
+    assert result["state"] == "failed" and result["code"] == "MODEL_AUTHENTICATION_FAILED"
+    assert "model access denied" in result["message"]
+    assert result["diagnostics"]["http_status"] == 403
+    assert SECRET not in repr(result) and draft_secret not in str(result)
 
 
 def test_global_timeout_is_applied_only_on_explicit_edit(provider):
@@ -291,32 +250,24 @@ def test_global_timeout_is_applied_only_on_explicit_edit(provider):
     assert context.config.get()["profiles"][-1]["timeout_seconds"] == 23
 
 
-def test_probe_cancel_is_request_scoped_and_releases_without_saving(provider):
+def test_probe_cancel_is_request_scoped_without_saving(provider):
     profiles, context = provider
-    polling, resume, released = threading.Event(), threading.Event(), threading.Event()
-    cancelled = []
+    running, resume = threading.Event(), threading.Event()
     before = context.config.get()
-    count = 0
-    def poll(*args):
-        nonlocal count
-        count += 1
-        if count == 1:
-            polling.set()
-            assert resume.wait(2)
-            return {"sequence": 1, "state": "running"}
-        return {"sequence": 2, "state": "cancelled"}
-    context.service = SimpleNamespace(begin_probe=lambda descriptor: None, poll=poll,
-        cancel=lambda operation: cancelled.append(operation),
-        result=lambda operation: {"failure": {"code": "MODEL_CANCELLED", "message": "cancelled"}}, release=lambda operation: released.set())
-    profiles.set_service(context.service)
-    profiles.editor_probe({"probeRequest": {"operation": "list_models", "requestId": "current"}})
-    assert polling.wait(2)
+
+    def execute(settings, request, *, cancel_checker, **kwargs):
+        running.set()
+        assert resume.wait(2)
+        cancel_checker()
+        return {}
+
+    profiles.set_service(SimpleNamespace(execute=execute))
+    profiles.editor_probe({"probeRequest": {"operation": "list_models", "requestId": "current", "profileId": "fixture"}})
+    assert running.wait(2)
     profiles.editor_cancel({"probeRequest": {"requestId": "old"}})
-    assert not profiles._probe_cancel.is_set()
+    assert not profiles._probe_cancel.is_cancelled()
     profiles.editor_cancel({"probeRequest": {"requestId": "current"}})
     resume.set()
-    assert released.wait(2)
-    profiles.close()
-    assert len(cancelled) == 1
+    profiles._probe_thread.join(2)
     assert context.config.get() == before
-    assert profiles.editor_probe_status({})["values"]["probeResult"]["state"] == "failed"
+    assert profiles.editor_probe_status({})["values"]["probeResult"]["code"] == "OPERATION_CANCELLED"

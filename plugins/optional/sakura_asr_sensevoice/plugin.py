@@ -12,10 +12,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 
-try:
-    from ._resources import ModelResources, VERSION, Cancelled, log_event
-except ImportError:
-    from _resources import ModelResources, VERSION, Cancelled, log_event
+from ._resources import ModelResources, VERSION, Cancelled, log_event
 
 PROVIDER_ID = "sakura.asr.sensevoice"
 SERVICE_KEY = "sakura.asr.provider.sensevoice"
@@ -78,7 +75,7 @@ class SenseVoiceProvider:
             return {"language": self.language}
 
     def save_settings(self, values):
-        if not isinstance(values, Mapping) or set(values) != {"language"} or values["language"] not in LANGUAGES:
+        if not isinstance(values, Mapping) or values.get("language") not in LANGUAGES:
             raise ValueError("ASR_LANGUAGE_UNSUPPORTED")
         with self.lock:
             self.context.config.update({"language": values["language"]})

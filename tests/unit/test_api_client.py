@@ -280,6 +280,10 @@ def test_proactive_history_fallback_preserves_context_and_provider_defaults(
     ("message", "runtime_context", "messages", "attempts"),
     [
         ("System message must be at the beginning.", "", [{"role": "user", "content": "hi"}], 1),
+        ("unsupported system parameter: image_size", "context", [{"role": "user", "content": "hi"}], 1),
+        ("messages[2]: invalid image url", "context", [{"role": "user", "content": "hi"}], 1),
+        ("Unsupported value: 'messages[2].role' does not support 'system' with this model.", "context", [{"role": "user", "content": "hi"}], 2),
+        ("Unsupported role: developer", "context", [{"role": "user", "content": "hi"}], 2),
         ("Unknown model", "context", [{"role": "user", "content": "hi"}], 1),
         ("System message must be at the beginning.", "", [{"role": "system", "content": "unmarked input"}], 1),
         ("System message must be at the beginning.", "context", [{"role": "user", "content": "hi"}], 2),
