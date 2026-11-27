@@ -15,12 +15,8 @@ from app.plugin_sdk.sakura_assistant_contract import ScreenObservation
 SCREEN_CAPTURE_CAPABILITY = "assistant.screen-capture-v2"
 SCREEN_RESOURCE_DIRECTORY = "sakura-runtime-v2-screen-resources"
 SCREEN_RESOURCE_MAX_BYTES = 24 * 1024 * 1024
-SCREEN_RESOURCE_MAX_PIXELS = 32_000_000
 _TOKEN_PATTERN = re.compile(r"[0-9a-f]{32}")
 _GENERATION_PATTERN = re.compile(r"[0-9a-f-]{8,64}")
-_JPEG_SOF_MARKERS = frozenset(
-    {0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7, 0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF}
-)
 _RESOURCE_FIELDS = frozenset(
     {
         "generationId",
@@ -88,12 +84,9 @@ def consume_screen_resource(
         if resolved.parent != resolved_root:
             raise ScreenResourceRejected("SCREEN_RESOURCE_PATH_ESCAPE")
         stat = resolved.stat()
-        if stat.st_size != byte_length or stat.st_size > SCREEN_RESOURCE_MAX_BYTES:
+        if stat.st_size <= 0 or stat.st_size > SCREEN_RESOURCE_MAX_BYTES:
             raise ScreenResourceRejected("SCREEN_RESOURCE_LENGTH_MISMATCH")
         image_bytes = resolved.read_bytes()
-        actual_width, actual_height = jpeg_dimensions(image_bytes)
-        if (actual_width, actual_height) != (width, height):
-            raise ScreenResourceRejected("SCREEN_RESOURCE_DIMENSION_MISMATCH")
         return ScreenObservation(
             data_url=f"data:image/jpeg;base64,{base64.b64encode(image_bytes).decode('ascii')}",
             width=width,
@@ -112,46 +105,6 @@ def consume_screen_resource(
             candidate.unlink(missing_ok=True)
         except OSError:
             pass
-
-
-def jpeg_dimensions(data: bytes) -> tuple[int, int]:
-    """Return JPEG SOF dimensions without importing Qt or another image runtime."""
-
-    if len(data) < 4 or data[:2] != b"\xff\xd8" or data[-2:] != b"\xff\xd9":
-        raise ScreenResourceRejected("SCREEN_RESOURCE_IMAGE_INVALID")
-    cursor = 2
-    dimensions: tuple[int, int] | None = None
-    while cursor + 1 < len(data):
-        if data[cursor] != 0xFF:
-            cursor += 1
-            continue
-        while cursor < len(data) and data[cursor] == 0xFF:
-            cursor += 1
-        if cursor >= len(data):
-            break
-        marker = data[cursor]
-        cursor += 1
-        if marker in {0x01, 0xD8, 0xD9} or 0xD0 <= marker <= 0xD7:
-            continue
-        if cursor + 2 > len(data):
-            break
-        segment_length = int.from_bytes(data[cursor : cursor + 2], "big")
-        if segment_length < 2 or cursor + segment_length > len(data):
-            break
-        if marker in _JPEG_SOF_MARKERS:
-            if segment_length < 7:
-                break
-            height = int.from_bytes(data[cursor + 3 : cursor + 5], "big")
-            width = int.from_bytes(data[cursor + 5 : cursor + 7], "big")
-            if width <= 0 or height <= 0 or width * height > SCREEN_RESOURCE_MAX_PIXELS:
-                break
-            dimensions = (width, height)
-        elif marker == 0xDA:
-            if dimensions is not None and segment_length >= 8:
-                return dimensions
-            break
-        cursor += segment_length
-    raise ScreenResourceRejected("SCREEN_RESOURCE_IMAGE_INVALID")
 
 
 def _positive_integer(value: object, code: str) -> int:

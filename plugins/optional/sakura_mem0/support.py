@@ -240,8 +240,10 @@ class StoragePaths:
         )
         return self.memory_dir / "curation_state" / f"{safe}.json"
 
-class OperationCancelled(RuntimeError):
-    pass
+try:
+    from sakura_cancellation import OperationCancelled
+except ImportError:
+    from app.plugin_sdk.sakura_cancellation import OperationCancelled
 
 
 def check_cancelled(checker: Callable[[], object] | None) -> None:

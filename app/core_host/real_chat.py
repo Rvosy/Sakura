@@ -1243,56 +1243,11 @@ class RealChatBoundary:
 
     @staticmethod
     def _validate_update_event(value: Any) -> None:
-        if not isinstance(value, Mapping) or set(value) != {"type", "payload"}:
+        if not isinstance(value, Mapping) or value.get("type") != "update_available":
             raise RealChatRejection("INVALID_CHAT_PAYLOAD", "update event is invalid")
-        if value.get("type") != "update_available":
-            raise RealChatRejection("INVALID_CHAT_PAYLOAD", "update event type is invalid")
         payload = value.get("payload")
-        expected = {"currentVersion", "version", "notes", "pubDate", "mode"}
-        if not isinstance(payload, Mapping) or set(payload) not in (expected, expected | {"plugins"}):
+        if not isinstance(payload, Mapping):
             raise RealChatRejection("INVALID_CHAT_PAYLOAD", "update event payload is invalid")
-        version_pattern = re.compile(
-            r"^v?\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$"
-        )
-        plugins = payload.get("plugins", [])
-        if not isinstance(plugins, list) or any(
-            not isinstance(plugin, Mapping) or set(plugin) != {"id", "name", "currentVersion", "version"}
-            or any(not isinstance(plugin[key], str) or not plugin[key] for key in plugin)
-            for plugin in plugins
-        ):
-            raise RealChatRejection("INVALID_CHAT_PAYLOAD", "plugin update facts are invalid")
-        for key in ("currentVersion", "version"):
-            if key == "version" and payload.get(key) is None and plugins:
-                continue
-            version = payload.get(key)
-            if (
-                not isinstance(version, str)
-                or len(version) > 64
-                or not version_pattern.fullmatch(version)
-            ):
-                raise RealChatRejection("INVALID_CHAT_PAYLOAD", "update version is invalid")
-        if payload.get("mode") not in {"installed", "portable"}:
-            raise RealChatRejection("INVALID_CHAT_PAYLOAD", "update mode is invalid")
-        for key, limit in (("notes", 4000), ("pubDate", 64)):
-            text = payload.get(key)
-            if text is not None and (
-                not isinstance(text, str)
-                or len(text) > limit
-                or any(character in text for character in ("\x00", "\r"))
-            ):
-                raise RealChatRejection("INVALID_CHAT_PAYLOAD", f"update {key} is invalid")
-        pub_date = payload.get("pubDate")
-        if isinstance(pub_date, str):
-            try:
-                parsed_date = datetime.fromisoformat(pub_date.replace("Z", "+00:00"))
-            except ValueError as exc:
-                raise RealChatRejection(
-                    "INVALID_CHAT_PAYLOAD", "update pubDate is invalid"
-                ) from exc
-            if parsed_date.tzinfo is None:
-                raise RealChatRejection(
-                    "INVALID_CHAT_PAYLOAD", "update pubDate is invalid"
-                )
 
 
 class _BoundaryFailure(RuntimeError):

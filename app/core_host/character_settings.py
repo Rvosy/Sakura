@@ -24,7 +24,7 @@ from app.config.character_loader import (
 )
 from app.config.character_packages import remove_character_installation
 from app.config.settings_service import AppSettingsService
-from app.core.diagnostics import exception_diagnostics
+from app.core.diagnostics import exception_diagnostics, safe_diagnostic_text
 from app.core.runtime_log import log_event
 from app.core_host.protocol import response
 from app.core_host.real_chat import RealChatRejection
@@ -215,9 +215,10 @@ class CharacterSettingsBoundary:
                 CharacterConfigError,
                 ValueError,
             ) as error:
+                detail = (safe_diagnostic_text(error, 512) or "").strip()
                 raise CharacterSettingsError(
                     "CHARACTER_IMPORT_FAILED",
-                    "角色包导入失败，现有角色保持不变。",
+                    detail if isinstance(error, (CharacterArchiveError, CharacterConfigError)) and detail else "角色包导入失败，现有角色保持不变。",
                 ) from error
             self._revision += 1
             result = self._change_result(change_plan)
@@ -256,9 +257,10 @@ class CharacterSettingsBoundary:
                 CharacterConfigError,
                 ValueError,
             ) as error:
+                detail = (safe_diagnostic_text(error, 512) or "").strip()
                 raise CharacterSettingsError(
                     "CHARACTER_VOICE_IMPORT_FAILED",
-                    "语音包导入失败。请检查语音包和当前角色的语音文件。",
+                    detail if isinstance(error, (CharacterArchiveError, CharacterConfigError)) and detail else "语音包导入失败。请检查语音包和当前角色的语音文件。",
                     field="path",
                 ) from error
             self._revision += 1

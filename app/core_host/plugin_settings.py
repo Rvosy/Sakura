@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from app.core_host.protocol import response
-from app.core.diagnostics import exception_diagnostics
+from app.core.diagnostics import exception_diagnostics, safe_diagnostic_text
 from app.core.runtime_log import log_event
 from app.plugins.app_compatibility import app_version_reason, compatibility_message
 from app.plugins import update_transaction
@@ -237,10 +237,11 @@ class PluginSettingsBoundary:
             if application is None:
                 raise PluginSettingsError("PLUGIN_SETTINGS_NOT_READY", "插件设置仍在初始化。", retryable=True)
             try:
-                saved = getattr(application, "settings_save")(plugin_id, section_id, values)
+                saved = application.settings_save(plugin_id, section_id, values)
             except Exception as error:
                 code = str(getattr(error, "code", "SETTINGS_SAVE_FAILED"))
-                raise PluginSettingsError(code, "插件详细设置保存失败。") from error
+                detail = (safe_diagnostic_text(error, 512) or "").strip()
+                raise PluginSettingsError(code, detail or "插件详细设置保存失败。") from error
         if _application_state(saved) != "applied":
             raise PluginSettingsError(
                 "CONFIG_APPLY_FAILED",
@@ -268,10 +269,11 @@ class PluginSettingsBoundary:
             if application is None:
                 raise PluginSettingsError("PLUGIN_SETTINGS_NOT_READY", "插件设置仍在初始化。", retryable=True)
             try:
-                result = getattr(application, "set_enabled")(install_id, raw_enabled)
+                result = application.set_enabled(install_id, raw_enabled)
             except Exception as error:
                 code = str(getattr(error, "code", "PLUGIN_LIFECYCLE_FAILED"))
-                raise PluginSettingsError(code, "插件启停未能应用。") from error
+                detail = (safe_diagnostic_text(error, 512) or "").strip()
+                raise PluginSettingsError(code, detail or "插件启停未能应用。") from error
             result = dict(result)
             result["plugins"] = _project_plugins(
                 [item for item in result.get("plugins", []) if isinstance(item, Mapping)],
@@ -292,10 +294,11 @@ class PluginSettingsBoundary:
         action_id = _identifier(payload.get("actionId"))
         values = dict(_object(payload.get("values")))
         try:
-            result = getattr(application, "settings_action")(plugin_id, section_id, action_id, values)
+            result = application.settings_action(plugin_id, section_id, action_id, values)
         except Exception as error:
             code = str(getattr(error, "code", "SETTINGS_ACTION_FAILED"))
-            raise PluginSettingsError(code, "插件设置动作失败。") from error
+            detail = (safe_diagnostic_text(error, 512) or "").strip()
+            raise PluginSettingsError(code, detail or "插件设置动作失败。") from error
         if not isinstance(result, Mapping):
             raise PluginSettingsError("SETTINGS_ACTION_RESULT_INVALID", "插件设置动作响应无效。")
         return dict(result)
@@ -564,13 +567,7 @@ class PluginSettingsBoundary:
         operation: str,
         payload: Mapping[str, Any],
     ) -> dict[str, object]:
-        expected = {
-            "query": {"pluginId", "sectionId", "collectionId", "cursor", "limit", "search", "filters"},
-            "create": {"pluginId", "sectionId", "collectionId", "values"},
-            "update": {"pluginId", "sectionId", "collectionId", "itemId", "values"},
-            "delete": {"pluginId", "sectionId", "collectionId", "itemId"},
-        }.get(operation)
-        if expected is None or set(payload) != expected:
+        if operation not in {"query", "create", "update", "delete"}:
             raise PluginSettingsError("INVALID_REQUEST", "插件 Collection 请求格式无效。")
         application = self._application()
         if application is None:
@@ -584,7 +581,7 @@ class PluginSettingsBoundary:
             if key not in {"pluginId", "sectionId", "collectionId"}
         }
         try:
-            result = getattr(application, "settings_collection")(
+            result = application.settings_collection(
                 operation,
                 plugin_id,
                 section_id,
@@ -593,7 +590,8 @@ class PluginSettingsBoundary:
             )
         except Exception as error:
             code = str(getattr(error, "code", "SETTINGS_COLLECTION_FAILED"))
-            raise PluginSettingsError(code, "插件 Collection 操作失败。") from error
+            detail = (safe_diagnostic_text(error, 512) or "").strip()
+            raise PluginSettingsError(code, detail or "插件 Collection 操作失败。") from error
         if not isinstance(result, Mapping):
             raise PluginSettingsError(
                 "SETTINGS_COLLECTION_RESULT_INVALID",

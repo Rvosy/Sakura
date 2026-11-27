@@ -329,104 +329,34 @@ def test_cursor_reads_are_character_scoped_and_paginated(tmp_path: Path) -> None
     assert [entry.entry_id for entry in recent] == ["entry-1", "entry-2", "entry-3"]
 
 
-def test_context_candidate_read_excludes_expired_observation_turns(
-    tmp_path: Path,
-) -> None:
-    store = TimelineStore(tmp_path / "timeline.sqlite3")
+def test_timeline_read_tolerates_forward_compatible_payload_fields(tmp_path: Path) -> None:
+    import sqlite3
+
+    db_path = tmp_path / "timeline.sqlite3"
+    store = TimelineStore(db_path)
     store.initialize()
-    now = datetime.fromisoformat(NOW)
-    stale_at = (now - timedelta(hours=3)).isoformat(timespec="seconds")
-    recent_at = (now - timedelta(minutes=15)).astimezone(timezone.utc).isoformat(
-        timespec="seconds"
-    )
-    entries = [
-        NewTimelineEntry(
-            entry_id="context-human",
-            turn_id="context-chat",
-            character_id="sakura",
-            kind=TimelineKind.HUMAN,
-            origin="chat",
-            created_at=stale_at,
-            payload={"text": "old but eligible chat"},
-        ),
-        NewTimelineEntry(
-            entry_id="context-chat-reply",
-            turn_id="context-chat",
-            character_id="sakura",
-            kind=TimelineKind.ASSISTANT,
-            origin="chat",
-            created_at=stale_at,
-            payload={"segments": [_segment("chat reply")]},
-        ),
-        *[
+    store.append_many(
+        [
             NewTimelineEntry(
-                entry_id=f"stale-observation-{index}",
-                turn_id=f"stale-turn-{index}",
+                entry_id="entry-1",
+                turn_id="turn-1",
                 character_id="sakura",
-                kind=TimelineKind.OBSERVATION,
-                origin="scheduled_screen",
-                created_at=stale_at,
-                payload={
-                    "text": f"画面摘要：stale {index}",
-                    "visual": {
-                        "imageCount": 1,
-                        "capturedAt": stale_at,
-                        "analysisStatus": "succeeded",
-                    },
-                },
+                kind=TimelineKind.HUMAN,
+                origin="chat",
+                created_at=NOW,
+                payload={"text": "hello"},
             )
-            for index in range(1_000)
-        ],
-        NewTimelineEntry(
-            entry_id="recent-observation",
-            turn_id="recent-turn",
-            character_id="sakura",
-            kind=TimelineKind.OBSERVATION,
-            origin="scheduled_screen",
-            created_at=recent_at,
-            payload={
-                "text": "画面摘要：recent",
-                "visual": {
-                    "imageCount": 1,
-                    "capturedAt": recent_at,
-                    "analysisStatus": "succeeded",
-                },
-            },
-        ),
-        NewTimelineEntry(
-            entry_id="recent-observation-reply",
-            turn_id="recent-turn",
-            character_id="sakura",
-            kind=TimelineKind.ASSISTANT,
-            origin="proactive",
-            created_at=recent_at,
-            payload={"segments": [_segment("recent reply")]},
-        ),
-        NewTimelineEntry(
-            entry_id="assistant-only-proactive",
-            turn_id="assistant-only-turn",
-            character_id="sakura",
-            kind=TimelineKind.ASSISTANT,
-            origin="proactive",
-            created_at=recent_at,
-            payload={"segments": [_segment("update reply")]},
-        ),
-    ]
-    store.append_many(entries)
-
-    candidates = store.read_context_candidates(
-        "sakura",
-        observation_since=now - timedelta(hours=2),
-        proactive_since=now - timedelta(hours=1),
+        ]
     )
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "UPDATE timeline_entries SET payload_json = ? WHERE entry_id = 'entry-1'",
+            ('{"text":"hello","futureExtension":"kept"}',),
+        )
 
-    assert [entry.entry_id for entry in candidates] == [
-        "context-human",
-        "context-chat-reply",
-        "recent-observation",
-        "recent-observation-reply",
-        "assistant-only-proactive",
-    ]
+    entries, _cursor, _after, total = store.read_history_page("sakura", 10)
+    assert total == 1
+    assert entries[0].payload == {"text": "hello", "futureExtension": "kept"}
 
 
 def test_history_pages_walk_backwards_without_exposing_sequence_numbers(tmp_path: Path) -> None:

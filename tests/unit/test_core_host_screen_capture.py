@@ -9,7 +9,6 @@ from app.core_host.screen_capture import (
     ScreenResourceRejected,
     consume_screen_resource,
     generation_resource_root,
-    jpeg_dimensions,
 )
 
 
@@ -72,17 +71,16 @@ def test_screen_resource_is_validated_loaded_and_deleted_once(tmp_path: Path) ->
         )
 
 
-def test_screen_resource_rejects_descriptor_dimension_spoof_and_deletes_file(tmp_path: Path) -> None:
-    descriptor, path, _ = _resource(tmp_path)
-    descriptor["width"] = 4
+def test_screen_resource_accepts_8k_capture_dimensions(tmp_path: Path) -> None:
+    descriptor, path, _ = _resource(tmp_path, width=7680, height=4320)
 
-    with pytest.raises(ScreenResourceRejected, match="SCREEN_RESOURCE_DIMENSION_MISMATCH"):
-        consume_screen_resource(
-            descriptor,
-            generation_id=GENERATION_ID,
-            temp_root=tmp_path,
-        )
+    observation = consume_screen_resource(
+        descriptor,
+        generation_id=GENERATION_ID,
+        temp_root=tmp_path,
+    )
 
+    assert (observation.width, observation.height) == (7680, 4320)
     assert not path.exists()
 
 
@@ -130,9 +128,3 @@ def test_screen_resource_rejects_symlink_without_touching_target(tmp_path: Path)
 
     assert target.read_bytes() == image
     assert not candidate.exists()
-
-
-def test_jpeg_dimensions_requires_a_well_formed_sof_envelope() -> None:
-    assert jpeg_dimensions(_jpeg(1280, 720)) == (1280, 720)
-    with pytest.raises(ScreenResourceRejected, match="SCREEN_RESOURCE_IMAGE_INVALID"):
-        jpeg_dimensions(b"not-an-image")

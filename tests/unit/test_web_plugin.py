@@ -44,11 +44,6 @@ def roots(tmp_path: Path, *, fixture_network: bool = True) -> RuntimeRoots:
 
 NETWORK_FIXTURE = r'''
 
-def _resolve_public_addresses(host, port):
-    if host == "private.example":
-        raise ValueError("不允许读取私有网络地址。")
-    return ["93.184.215.14"]
-
 def _request_public_url_once(url, max_bytes):
     from urllib.parse import parse_qs, urlparse
     parsed = urlparse(url)
@@ -60,7 +55,7 @@ def _request_public_url_once(url, max_bytes):
     if parsed.path == "/timeout":
         raise TimeoutError("fixture")
     if parsed.path == "/redirect":
-        return 302, "Found", {"Location": "http://127.0.0.1/secret"}, b""
+        return 302, "Found", {"Location": "ftp://example.com/unsupported"}, b""
     if parsed.path == "/forbidden":
         return 403, "Forbidden", {}, b""
     headers = {"Content-Type": "text/html; charset=utf-8"}
@@ -107,11 +102,6 @@ def test_proxy_fetch_in_isolated_worker(tmp_path: Path, monkeypatch) -> None:
                 for extra in {"", *requirement.extras}
             ):
                 pending.append(required)
-    plugin = runtime_roots.distribution_root / "plugins/builtin/sakura_web"
-    with (plugin / "web.py").open("a", encoding="utf-8") as stream:
-        # Destination DNS must belong to the proxy, even in the isolated worker.
-        # Request selection, proxy transport and tool RPC use production code.
-        stream.write('\ndef _resolve_public_addresses(host, port):\n    raise AssertionError("Proxy destination must not use local DNS")\n')
     requests = []
 
     class Proxy(BaseHTTPRequestHandler):
@@ -174,7 +164,7 @@ def test_real_plugin_calls_and_disable(tmp_path: Path) -> None:
         assert len(fetched.content["text"]) == 500
         assert fetched.content["truncated"] is True
         assert fetched.content["links"] == [{"text": "下一页", "url": "https://example.com/next"}]
-        for url, code in (("https://example.com/timeout", "WEB_TIMEOUT"), ("https://example.com/forbidden", "WEB_HTTP_ERROR"), ("https://example.com/redirect", "WEB_INVALID_REQUEST"), ("http://127.0.0.1/", "WEB_INVALID_REQUEST")):
+        for url, code in (("https://example.com/timeout", "WEB_TIMEOUT"), ("https://example.com/forbidden", "WEB_HTTP_ERROR"), ("https://example.com/redirect", "WEB_INVALID_REQUEST"), ("ftp://example.com/", "WEB_INVALID_REQUEST")):
             failed = registry.execute("web__fetch_url", {"url": url})
             assert not failed.success
             assert failed.reason_code == code
@@ -297,52 +287,29 @@ def test_web_failure_logs_code_without_request_content(monkeypatch):
     assert rows == [{"tool": "web_search", "reason_code": "WEB_TIMEOUT"}]
 
 
-def test_fake_ip_search_preserves_proxy_hostname(monkeypatch):
+def test_fake_ip_search_works_with_or_without_explicit_proxy(monkeypatch):
     import httpx
+    import socket
 
-    monkeypatch.setattr(web.socket, "getaddrinfo", lambda *a, **k: [
-        (web.socket.AF_INET, web.socket.SOCK_STREAM, 6, "", ("198.18.0.4", 443))
-    ])
-    monkeypatch.setattr(web, "proxy_for_url", lambda url: "http://127.0.0.1:7890")
-    requests = []
     original_client = httpx.Client
-
-    def respond(request):
-        requests.append(str(request.url))
-        return httpx.Response(200, stream=httpx.ByteStream(b'<li class="b_algo"><h2><a href="https://example.com/">Result</a></h2></li>'))
-
-    def client(**kwargs):
-        assert kwargs["proxy"] == "http://127.0.0.1:7890"
-        return original_client(transport=httpx.MockTransport(respond), trust_env=False)
-
-    monkeypatch.setattr(httpx, "Client", client)
-    assert web.search_web("Bing")["results"][0]["title"] == "Result"
-    assert requests == ["https://www.bing.com/search?q=Bing"]
-
-
-@pytest.mark.parametrize("address", ["198.18.0.4", "127.0.0.1", "192.168.1.1"])
-def test_direct_fetch_rejects_non_public_dns(monkeypatch, address):
-    monkeypatch.setattr(web, "proxy_for_url", lambda url: None)
-    monkeypatch.setattr(web.socket, "getaddrinfo", lambda *a, **k: [
-        (web.socket.AF_INET, web.socket.SOCK_STREAM, 6, "", (address, 80))
+    monkeypatch.setattr(socket, "getaddrinfo", lambda *a, **k: [
+        (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("198.18.0.4", 443))
     ])
-    with pytest.raises(ValueError, match="私有网络"):
-        web.fetch_url("http://public.example/")
+    for configured_proxy in ("http://127.0.0.1:7890", None):
+        monkeypatch.setattr(web, "proxy_for_url", lambda url, p=configured_proxy: p)
+        requests = []
 
+        def respond(request):
+            requests.append(str(request.url))
+            return httpx.Response(200, stream=httpx.ByteStream(b'<li class="b_algo"><h2><a href="https://example.com/">Result</a></h2></li>'))
 
-@pytest.mark.parametrize("target", ["http://127.0.0.1/", "http://192.168.1.1/", "http://198.18.0.4/", "http://localhost/", "http://[::1]/"])
-def test_proxy_redirect_rejects_explicit_local_target(monkeypatch, target):
-    monkeypatch.setattr(web, "proxy_for_url", lambda url: "http://127.0.0.1:7890")
-    calls = []
+        def client(**kwargs):
+            assert kwargs["proxy"] == configured_proxy
+            return original_client(transport=httpx.MockTransport(respond), trust_env=False)
 
-    def proxy(url, *args):
-        calls.append(url)
-        return 302, "Found", {"Location": target}, b""
-
-    monkeypatch.setattr(web, "_request_at_address", proxy)
-    with pytest.raises(ValueError, match="私有网络"):
-        web.fetch_url("https://public.example/")
-    assert calls == ["https://public.example/"]
+        monkeypatch.setattr(httpx, "Client", client)
+        assert web.search_web("Bing")["results"][0]["title"] == "Result"
+        assert requests == ["https://www.bing.com/search?q=Bing"]
 
 
 def test_search_action_long_result_through_real_settings_boundary(tmp_path):

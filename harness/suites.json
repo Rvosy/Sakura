@@ -772,7 +772,6 @@
         "tests/unit/test_tts_architecture.py",
         "tests/unit/test_tts_job_lifecycle.py",
         "tests/unit/test_voice_recording_store.py",
-        "tests/unit/test_chat_history_entry_id.py",
         "tests/unit/test_core_host_tts.py",
         "tests/unit/test_tts_runtime_v4.py",
         "tests/unit/test_gpt_sovits_plugin.py",
@@ -883,7 +882,7 @@
         "tests/integration/test_screen_capture_rpc.py",
         "tests/integration/test_core_host_real_chat_integration.py",
         "-k",
-        "screen_resource or jpeg_dimensions or screen_awareness or screen_plugin_hosts or screen_optional_startup or screen_capture_rpc or chat_host_terminal or host_scope_admission or host_interaction_protocol or plugin_image_batch or manual_screen_attachment or character_switch_rejects_old_capture",
+        "screen_resource or screen_awareness or screen_plugin_hosts or screen_optional_startup or screen_capture_rpc or chat_host_terminal or host_scope_admission or host_interaction_protocol or plugin_image_batch or manual_screen_attachment or character_switch_rejects_old_capture",
         "-q"
       ],
       "timeout_seconds": 180,

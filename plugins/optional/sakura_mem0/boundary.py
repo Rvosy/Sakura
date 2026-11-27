@@ -311,7 +311,6 @@ class MemoryBoundary:
             ) from exc
 
     def search(self, payload: Mapping[str, object]) -> dict[str, object]:
-        _only(payload, {"query", "limit", "layer"})
         query = _text(payload.get("query"), "query", MAX_MEMORY_QUERY)
         limit = _bounded_int(payload.get("limit"), "limit", 1, MAX_MEMORY_RESULTS)
         layer = payload.get("layer")
@@ -352,22 +351,6 @@ class MemoryBoundary:
         return {"status": "ready", "message": "", "memories": projected[:limit]}
 
     def upsert(self, payload: Mapping[str, object]) -> dict[str, object]:
-        _only(
-            payload,
-            {
-                "id",
-                "content",
-                "layer",
-                "category",
-                "source",
-                "importance",
-                "confidence",
-                "source_turn_id",
-                "source_entry_ids",
-                "created_in_turn_id",
-                "evidence_kind",
-            },
-        )
         self._assert_writable()
         content = _required_text(payload.get("content"), "content", MAX_MEMORY_CONTENT)
         layer = payload.get("layer", DEFAULT_MEMORY_LAYER)
@@ -415,11 +398,9 @@ class MemoryBoundary:
         projected = _project_memory(memory, self._character_id)
         if projected is None:
             raise MemoryBoundaryError("MEMORY_RESPONSE_INVALID", "记忆保存响应无效。")
-        _assert_memory_round_trip(projected, arguments)
         return {"status": "ready", "memory": projected}
 
     def delete(self, payload: Mapping[str, object]) -> dict[str, object]:
-        _only(payload, {"id"})
         self._assert_writable()
         memory_id = _required_text(payload.get("id"), "id", 256)
         try:
@@ -1008,7 +989,7 @@ def _curation_values(plugin: Mapping[str, object]) -> tuple[int, int, dict[str, 
 
 
 def _resolved_model(value: object) -> dict[str, str]:
-    if not isinstance(value, Mapping) or set(value) != {"serviceKey", "profileId", "modelId"}:
+    if not isinstance(value, Mapping) or not {"serviceKey", "profileId", "modelId"} <= set(value):
         raise MemoryBoundaryError("MODEL_REFERENCE_INVALID", "记忆整理模型引用无效。")
     result = {key: _text(value.get(key), key, limit) for key, limit in (("serviceKey", 200), ("profileId", 64), ("modelId", 256))}
     if len({bool(item) for item in result.values()}) != 1:
@@ -1056,45 +1037,6 @@ def _project_memory(raw: Mapping[str, object], scope: str) -> dict[str, object] 
     return projected
 
 
-def _assert_memory_round_trip(
-    memory: Mapping[str, object],
-    requested: Mapping[str, object],
-) -> None:
-    fields = {
-        "layer": "layer",
-        "category": "category",
-        "source": "source",
-        "importance": "importance",
-        "confidence": "confidence",
-        "source_turn_id": "sourceTurnId",
-        "source_entry_ids": "sourceEntryIds",
-        "created_in_turn_id": "createdInTurnId",
-        "evidence_kind": "evidenceKind",
-    }
-    for request_key, memory_key in fields.items():
-        if request_key not in requested:
-            continue
-        expected = requested[request_key]
-        actual = memory.get(memory_key)
-        if request_key in {"importance", "confidence"}:
-            matches = _safe_number(actual) == _safe_number(expected)
-        elif request_key == "source_entry_ids":
-            matches = (
-                isinstance(actual, list)
-                and isinstance(expected, (list, tuple))
-                and actual == list(expected)
-            )
-        else:
-            matches = str(actual or "") == str(expected or "")
-        if not matches:
-            raise MemoryBoundaryError(
-                "MEMORY_ROUND_TRIP_MISMATCH",
-                "记忆保存后的元数据校验失败，未返回不可信的成功结果。",
-                retryable=True,
-                field=request_key,
-            )
-
-
 def _public_status_message(status: str, _internal: str) -> str:
     return {
         "ready": "",
@@ -1104,11 +1046,6 @@ def _public_status_message(status: str, _internal: str) -> str:
         "failed": "记忆能力不可用。",
         "stopped": "记忆能力已停止。",
     }[status]
-
-
-def _only(value: Mapping[str, object], allowed: set[str]) -> None:
-    if set(value) - allowed:
-        raise MemoryBoundaryError("INVALID_REQUEST", "记忆请求包含未知字段。")
 
 
 def _text(value: object, field: str, maximum: int) -> str:

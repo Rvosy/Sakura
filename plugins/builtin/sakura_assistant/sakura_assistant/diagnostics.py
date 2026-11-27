@@ -18,12 +18,22 @@ def add_secret(value):
 def get_interaction_id():
     return _operation.get()
 
+_SECRET_RE = re.compile(
+    r"""(?ix)
+    (\b(?:api[_-]?key|authorization|cookie|password|secret|(?:access[_-]?|refresh[_-]?)?token|credential)
+    ["']?\s*[:=]\s*(?:(?:bearer|basic)\s+)?)(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,;}&]+)
+    |(\bbearer\s+)[^\s,;}&]+|\bsk-[\w.-]{6,}
+    """
+)
+
 def safe_diagnostic_text(value, max_chars=8000, *, secrets=(), **kwargs):
     text = str(value)
     for secret in [*_secrets, *secrets]:
         if secret:
             text = text.replace(secret, "[REDACTED]")
-    return re.sub(r"(?i)(authorization|api[_-]?key|token|password)([=: ]+)[^\s,;]+", r"\1\2[REDACTED]", text)[:max_chars]
+    text = _SECRET_RE.sub(lambda m: (m[1] or m[2] or "") + "[REDACTED]", text)
+    text = re.sub(r"([a-zA-Z][a-zA-Z0-9+.-]*://)[^/\s@]+@", r"\1[REDACTED]@", text)
+    return text[:max_chars]
 
 def diagnostic_attributes(error, **attributes):
     return {**attributes, "error_type": type(error).__name__, "diagnostic": safe_diagnostic_text(error),

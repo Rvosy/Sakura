@@ -17,6 +17,11 @@ from typing import Any, Callable
 
 import uuid
 
+try:
+    from .sakura_provider_errors import sanitize_provider_diagnostic
+except ImportError:
+    from sakura_provider_errors import sanitize_provider_diagnostic
+
 
 ToolHandler = Callable[[dict[str, Any]], Any]
 
@@ -321,7 +326,8 @@ class ToolRegistry:
             content = tool.handler(arguments)
         except Exception as exc:
             reason_code = _safe_plugin_error_code(exc) if tool.source == "plugin" else "TOOL_EXECUTION_FAILED"
-            public_error = "插件工具执行失败。" if tool.source == "plugin" else str(exc)
+            detail = sanitize_provider_diagnostic(str(exc))[:1024].strip()
+            public_error = detail or ("插件工具执行失败。" if tool.source == "plugin" else "工具执行失败。")
             result = ToolExecutionResult(
                 tool_name=name,
                 success=False,

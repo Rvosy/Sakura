@@ -289,22 +289,23 @@ def test_empty_update_reply_fails_without_marking_a_visible_announcement(tmp_pat
     "mutate",
     [
         lambda request: request["payload"].update({"message": "forged"}),
-        lambda request: request["payload"]["event"].update({"prompt": "forged"}),
         lambda request: request["payload"]["event"].update({"type": "reminder_due"}),
-        lambda request: request["payload"]["event"]["payload"].update({"version": "latest"}),
-        lambda request: request["payload"]["event"]["payload"].update({"mode": "unknown"}),
-        lambda request: request["payload"]["event"]["payload"].update({"pubDate": "tomorrow"}),
-        lambda request: request["payload"]["event"]["payload"].update({"notes": "x" * 4001}),
-        lambda request: request["payload"]["event"]["payload"].update({"extra": True}),
+        lambda request: request["payload"]["event"].update({"payload": "not-a-dict"}),
     ],
 )
-def test_update_event_payload_is_an_exact_closed_union(tmp_path: Path, mutate) -> None:  # type: ignore[no-untyped-def]
-    boundary, _store, _events = _boundary(tmp_path, ChatReply([ChatSegment("unused")]))
+def test_update_event_rejects_malformed_envelope_and_allows_crlf_notes(tmp_path: Path, mutate) -> None:  # type: ignore[no-untyped-def]
+    boundary, _store, _events = _boundary(tmp_path, ChatReply([ChatSegment("ok")]))
     request = _update_request("invalid-update")
     mutate(request)
 
     with pytest.raises(ValueError, match="INVALID_CHAT_PAYLOAD"):
         boundary.reserve_send(request)
+
+    valid_crlf = _update_request("crlf-update")
+    valid_crlf["payload"]["event"]["payload"]["notes"] = "第一行\r\n第二行"
+    valid_crlf["payload"]["event"]["payload"]["extraField"] = True
+    boundary.reserve_send(valid_crlf)
+    boundary.handle_send(valid_crlf)
     boundary.close()
 
 

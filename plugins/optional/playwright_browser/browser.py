@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import ipaddress
 import queue
-import socket
 import sys
 import threading
 from concurrent.futures import Future, TimeoutError as FutureTimeoutError
@@ -115,13 +113,12 @@ def set_config_loader(loader: Callable[[], PlaywrightBrowserConfig] | None) -> N
 
 def navigate(url: str) -> dict[str, str]:
     """打开指定网页，浏览器类型由插件配置决定。"""
-    _validate_public_url(url)
+    _validate_http_url(url)
 
     def task() -> dict[str, str]:
         page = _ensure_browser()
         page.goto(url, wait_until="domcontentloaded")
         final_url = str(getattr(page, "url", url))
-        _validate_public_url(final_url)
         return {"url": final_url, "title": _safe_title(page)}
 
     return _run_browser_task(task)
@@ -278,49 +275,20 @@ def _ensure_browser() -> Any:
         _browser = _launch_system_browser(_playwright, cfg.headless)
     if _context is None:
         _context = _browser.new_context()
-        _context.route("**/*", _guard_browser_request)
     _page = _context.new_page()
     _log("info", "浏览器页面已就绪")
     return _page
 
 
-def _guard_browser_request(route: Any, request: Any) -> None:
-    try:
-        _validate_public_url(str(request.url))
-    except (OSError, ValueError):
-        route.abort("blockedbyclient")
-        return
-    route.continue_()
-
-
-def _validate_public_url(url: str) -> None:
+def _validate_http_url(url: str) -> None:
     try:
         parsed = urlparse(str(url).strip())
     except ValueError as exc:
         raise ValueError("浏览器 URL 无效。") from exc
-    if parsed.scheme.lower() not in {"http", "https"}:
-        raise ValueError("浏览器只允许访问公网 HTTP(S) URL。")
+    if parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname:
+        raise ValueError("浏览器只允许访问 HTTP(S) URL。")
     if parsed.username is not None or parsed.password is not None:
         raise ValueError("浏览器 URL 不允许包含凭据。")
-    host = (parsed.hostname or "").rstrip(".").casefold()
-    if not host or host == "localhost" or host.endswith(".localhost") or host.endswith(".local"):
-        raise ValueError("浏览器不允许访问本地或私网地址。")
-    try:
-        addresses = {ipaddress.ip_address(host)}
-    except ValueError:
-        try:
-            addresses = {
-                ipaddress.ip_address(sockaddr[0])
-                for _family, _type, _proto, _canonname, sockaddr in socket.getaddrinfo(
-                    host,
-                    parsed.port or (443 if parsed.scheme.lower() == "https" else 80),
-                    type=socket.SOCK_STREAM,
-                )
-            }
-        except (OSError, ValueError) as exc:
-            raise ValueError("浏览器 URL 的域名无法安全解析。") from exc
-    if not addresses or any(not address.is_global for address in addresses):
-        raise ValueError("浏览器不允许访问本地、私网或保留地址。")
 
 
 class BrowserRuntimeMissing(RuntimeError):

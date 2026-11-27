@@ -2382,10 +2382,18 @@ def _fastembed_snapshot_is_complete(snapshot: Path) -> bool:
 
     if not snapshot.is_dir():
         return False
+
+    def _artifact_ready(path: Path, expected_size: int) -> bool:
+        if not path.is_file():
+            return False
+        size = path.stat().st_size
+        if path.suffix == ".json":
+            return size > 0
+        return size == expected_size
+
     return any(
         all(
-            (snapshot / filename).is_file()
-            and (snapshot / filename).stat().st_size == expected_size
+            _artifact_ready(snapshot / filename, expected_size)
             for filename, expected_size in artifacts.items()
         )
         for artifacts in _embedding_model_artifact_layouts()

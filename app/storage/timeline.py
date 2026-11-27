@@ -412,15 +412,16 @@ class TimelineStore:
                 turns: list[tuple[TimelineEntry, ...]] = []
                 used_bytes = 0
                 for turn_id, _seq, _entry_id in candidates[:limit]:
-                    turn = tuple(_entry_from_row(row) for row in connection.execute(
+                    rows = connection.execute(
                         """SELECT seq, entry_id, turn_id, character_id, kind, origin,
                                   created_at, payload_json
                            FROM timeline_entries
                            WHERE character_id = ? AND turn_id = ? AND seq <= ?
                            ORDER BY julianday(created_at), seq""",
                         (character_id, turn_id, high_water),
-                    ))
-                    turn_bytes = sum(_timeline_transfer_bytes(entry) for entry in turn)
+                    ).fetchall()
+                    turn = tuple(_entry_from_row(row) for row in rows)
+                    turn_bytes = sum(_row_transfer_bytes(row) for row in rows)
                     if turns and max_bytes is not None and used_bytes + turn_bytes > max_bytes:
                         break
                     turns.append(turn)
@@ -433,83 +434,6 @@ class TimelineStore:
                 return TimelineTurnPage(tuple(turns), next_cursor, snapshot_cursor)
         except sqlite3.DatabaseError as exc:
             raise TimelineDataError("TIMELINE_DATABASE_INVALID") from exc
-
-    def read_context_candidates(
-        self,
-        character_id: str,
-        *,
-        observation_since: datetime,
-        proactive_since: datetime,
-    ) -> list[TimelineEntry]:
-        """Read only turns that can participate in the next chat context.
-
-        Human and system turns remain unbounded so the context policy can use large
-        provider windows. Scheduled observations and assistant-only proactive
-        turns are limited at the database boundary, which avoids decoding every
-        expired screenshot observation on each request.
-        """
-
-        _bounded_text("character_id", character_id, MAX_ID_CHARS)
-        observation_since_text = _aware_iso_datetime(
-            "observation_since", observation_since
-        )
-        proactive_since_text = _aware_iso_datetime(
-            "proactive_since",
-            proactive_since,
-        )
-        if not self.path.is_file():
-            raise TimelineDataError("TIMELINE_NOT_ACTIVATED")
-        try:
-            with self._connect_existing() as connection:
-                _assert_activated_connection(connection)
-                rows = connection.execute(
-                    """
-                    WITH eligible_turns(turn_id) AS (
-                        SELECT turn_id
-                        FROM timeline_entries
-                        WHERE character_id = ? AND kind IN ('human', 'system')
-                        UNION
-                        SELECT turn_id
-                        FROM timeline_entries
-                        WHERE character_id = ?
-                          AND kind = 'observation'
-                          AND (origin = 'scheduled_screen' OR (
-                            origin = 'host'
-                            AND json_type(payload_json, '$.sourcePluginId') = 'text'
-                            AND length(json_extract(payload_json, '$.sourcePluginId')) > 0
-                            AND json_type(payload_json, '$.visual.imageCount') = 'integer'
-                            AND json_extract(payload_json, '$.visual.imageCount') > 0
-                            AND json_extract(payload_json, '$.visual.analysisStatus') = 'succeeded'
-                          ))
-                          AND julianday(created_at) >= julianday(?)
-                        UNION
-                        SELECT turn_id
-                        FROM timeline_entries
-                        WHERE character_id = ?
-                          AND kind = 'assistant'
-                          AND origin = 'proactive'
-                          AND julianday(created_at) >= julianday(?)
-                    )
-                    SELECT entry.seq, entry.entry_id, entry.turn_id,
-                           entry.character_id, entry.kind, entry.origin,
-                           entry.created_at, entry.payload_json
-                    FROM timeline_entries AS entry
-                    JOIN eligible_turns USING (turn_id)
-                    WHERE entry.character_id = ?
-                    ORDER BY julianday(entry.created_at), entry.seq
-                    """,
-                    (
-                        character_id,
-                        character_id,
-                        observation_since_text,
-                        character_id,
-                        proactive_since_text,
-                        character_id,
-                    ),
-                ).fetchall()
-        except sqlite3.DatabaseError as exc:
-            raise TimelineDataError("TIMELINE_DATABASE_INVALID") from exc
-        return [_entry_from_row(row) for row in rows]
 
     def latest_cursor(self, character_id: str) -> str:
         _bounded_text("character_id", character_id, MAX_ID_CHARS)
@@ -825,7 +749,7 @@ def _bounded_entries(
         if len(entries) >= limit:
             return entries, True
         entry = _entry_from_row(row)
-        size = _timeline_transfer_bytes(entry)
+        size = _row_transfer_bytes(row)
         if entries and max_bytes is not None and used + size > max_bytes:
             return entries, True
         entries.append(entry)
@@ -833,22 +757,15 @@ def _bounded_entries(
     return entries, False
 
 
-def _timeline_transfer_bytes(entry: TimelineEntry) -> int:
-    return len(
-        json.dumps(
-            {
-                "entryId": entry.entry_id,
-                "turnId": entry.turn_id,
-                "characterId": entry.character_id,
-                "kind": entry.kind.value,
-                "origin": entry.origin,
-                "createdAt": entry.created_at,
-                "payload": entry.payload,
-            },
-            ensure_ascii=False,
-            separators=(",", ":"),
-        ).encode("utf-8")
-    ) + 32
+def _row_transfer_bytes(row: Sequence[Any]) -> int:
+    _seq, entry_id, turn_id, character_id, kind, origin, created_at, payload_json = row
+    return (
+        sum(
+            len(str(part).encode("utf-8"))
+            for part in (entry_id, turn_id, character_id, kind, origin, created_at, payload_json)
+        )
+        + 128
+    )
 
 
 def _encode_cursor(character_id: str, lineage: int, seq: int, entry_id: str) -> str:
@@ -1070,18 +987,20 @@ def _entry_from_row(row: sqlite3.Row | tuple[Any, ...]) -> TimelineEntry:
     try:
         parsed_kind = TimelineKind(kind)
         payload = json.loads(payload_json)
-        if not isinstance(payload, dict):
+        if (
+            not isinstance(payload, dict)
+            or not isinstance(entry_id, str)
+            or not entry_id
+            or not isinstance(turn_id, str)
+            or not turn_id
+            or not isinstance(character_id, str)
+            or not character_id
+            or not isinstance(origin, str)
+            or not origin
+            or not isinstance(created_at, str)
+            or not created_at
+        ):
             raise TypeError
-        entry = NewTimelineEntry(
-            entry_id=entry_id,
-            turn_id=turn_id,
-            character_id=character_id,
-            kind=parsed_kind,
-            origin=origin,
-            created_at=created_at,
-            payload=payload,
-        )
-        _validated_row(entry)
     except (TypeError, ValueError, json.JSONDecodeError) as exc:
         raise TimelineDataError("TIMELINE_ROW_INVALID") from exc
     return TimelineEntry(seq, entry_id, turn_id, character_id, parsed_kind, origin, created_at, payload)

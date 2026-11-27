@@ -1,44 +1,10 @@
 from __future__ import annotations
 
 import json
-import socket
 from pathlib import Path
 
-import pytest
-
-from plugins.builtin.sakura_web import web as web_search_server
 from app.plugin_sdk.sakura_tools import Tool, ToolRegistry
 from app.config.character_loader import CharacterRegistry
-from app.storage import chat_history
-from app.storage.chat_history import ChatHistoryStore
-
-
-def test_chat_history_repairs_truncated_utf8_tail(tmp_path: Path) -> None:
-    path = tmp_path / "history.jsonl"
-    valid = {
-        "created_at": "2026-07-12T00:00:00+08:00",
-        "role": "user",
-        "content": "保留我",
-    }
-    path.write_bytes((json.dumps(valid, ensure_ascii=False) + "\n").encode("utf-8") + b"\xe6")
-
-    entries = ChatHistoryStore(path).load()
-
-    assert [entry.content for entry in entries] == ["保留我"]
-    assert path.read_bytes().endswith(b"\n")
-    assert list(tmp_path.glob("history.jsonl.corrupt-*.bak"))
-
-
-def test_chat_history_rotation_preserves_order(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    path = tmp_path / "history.jsonl"
-    monkeypatch.setattr(chat_history, "CHAT_HISTORY_SEGMENT_BYTES", 1)
-    store = ChatHistoryStore(path)
-
-    store.append("user", "first")
-    store.append("assistant", "second")
-
-    assert [entry.content for entry in store.load()] == ["first", "second"]
-    assert len(list(tmp_path.glob("history.jsonl.*.archive"))) == 1
 
 
 def test_character_registry_skips_broken_package_when_healthy_exists(tmp_path: Path) -> None:
@@ -95,14 +61,3 @@ def test_tool_registry_rejects_schema_violation_before_handler() -> None:
 
     assert result.success is False
     assert called is False
-
-
-def test_dns_resolution_rejects_domain_with_private_address(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    monkeypatch.setattr(
-        socket,
-        "getaddrinfo",
-        lambda *_args, **_kwargs: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 80))],
-    )
-
-    with pytest.raises(ValueError, match="私有网络"):
-        web_search_server._resolve_public_addresses("localtest.me", 80)

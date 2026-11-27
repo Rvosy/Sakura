@@ -86,7 +86,8 @@ class RemoteTools(ToolRegistry):
                           **getattr(error, "diagnostics", {}), "tool_name": name, "reason_code": code}
             diagnostics.log_event("ToolRegistry", "工具执行失败", attributes,
                                   severity="error", event="tool.request.failed")
-            return ToolExecutionResult(name, False, "", "工具执行失败。", code)
+            detail = diagnostics.safe_diagnostic_text(error, 1024).strip()
+            return ToolExecutionResult(name, False, "", detail or "工具执行失败。", code)
 
     def _execute(self, tool, arguments):
         name = tool.name
@@ -432,7 +433,8 @@ def classify_failure(error):
         return {"code": "CONTEXT_WINDOW_EXCEEDED" if isinstance(error, ContextWindowExceededError) else error.code,
                 "message": error.public_message(), "retryable": False, "attributes": error.log_attributes()}
     if isinstance(error, ApiConfigError):
-        return {"code": "PROVIDER_CONFIGURATION_INVALID", "message": "模型服务配置无效。", "retryable": False}
+        detail = diagnostics.safe_diagnostic_text(error, 1024).strip()
+        return {"code": "PROVIDER_CONFIGURATION_INVALID", "message": detail or "模型服务配置无效。", "retryable": False}
     if isinstance(error, (ApiRequestError, ModelError)):
         cause, seen = error, set()
         while cause is not None and id(cause) not in seen:
@@ -452,7 +454,9 @@ def classify_failure(error):
             return {"code": "PROVIDER_REQUEST_FAILED", "message": public_provider_http_message(error, status),
                     "retryable": status == 429 or status >= 500, "attributes": {"http_status": status}}
         text = str(error).lower()
+        detail = diagnostics.safe_diagnostic_text(error, 1024).strip()
         if any(item in text for item in ("格式无法解析", "修复后仍不符合结构", "invalid json", "remained invalid", "missing", "empty response")):
-            return {"code": "PROVIDER_RESPONSE_INVALID", "message": str(error), "retryable": False}
-        return {"code": "PROVIDER_REQUEST_FAILED", "message": "模型请求失败。", "retryable": True}
-    return {"code": code or "CHAT_EXECUTION_FAILED", "message": "对话处理失败。", "retryable": False}
+            return {"code": "PROVIDER_RESPONSE_INVALID", "message": detail or str(error), "retryable": False}
+        return {"code": "PROVIDER_REQUEST_FAILED", "message": detail or "模型请求失败。", "retryable": True}
+    detail = diagnostics.safe_diagnostic_text(error, 1024).strip()
+    return {"code": code or "CHAT_EXECUTION_FAILED", "message": detail or "对话处理失败。", "retryable": False}

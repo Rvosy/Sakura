@@ -113,13 +113,13 @@ class AudioInputResources:
                 if item.path.is_symlink() or item.path.resolve().parent != self.root.resolve():
                     raise AudioInputError("ASR_AUDIO_INVALID")
                 size = item.path.stat().st_size
-                if not 44 < size <= 1_920_128:
+                if size <= 44:
                     raise AudioInputError("ASR_AUDIO_INVALID")
                 with wave.open(str(item.path), "rb") as audio:
                     frames = audio.getnframes()
                     if (audio.getnchannels(), audio.getsampwidth(), audio.getframerate(), audio.getcomptype()) != (1, 2, 16000, "NONE"):
                         raise AudioInputError("ASR_AUDIO_INVALID")
-                    if not 0 < frames <= 960_000 or len(audio.readframes(frames)) != frames * 2:
+                    if frames <= 0 or size < 44 + frames * 2:
                         raise AudioInputError("ASR_AUDIO_INVALID")
                 item.descriptor = {"resourceId": resource_id, "mediaType": "audio/wav",
                                    "byteLength": size, "sampleRate": 16000, "channels": 1,

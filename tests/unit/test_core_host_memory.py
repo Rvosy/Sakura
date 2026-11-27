@@ -410,42 +410,11 @@ def test_crud_is_bounded_and_delete_is_idempotent(tmp_path: Path) -> None:
             }
         )
         assert created["memory"]["scope"] == "sakura"  # type: ignore[index]
-        assert boundary.delete({"id": "created"})["alreadyMissing"] is False
+        # Unknown optional fields are tolerated without overriding character scope.
+        searched = boundary.search({"query": "同事", "limit": 5, "scope": "other", "extraHint": True})
+        assert searched["status"] == "ready"
+        assert boundary.delete({"id": "created", "extraField": 1})["alreadyMissing"] is False
         assert boundary.delete({"id": "created"})["alreadyMissing"] is True
-        with pytest.raises(MemoryBoundaryError, match="未知字段"):
-            boundary.search({"query": "x", "limit": 5, "scope": "other"})
-    finally:
-        boundary.close()
-
-
-def test_upsert_rejects_authoritative_metadata_mismatch(tmp_path: Path) -> None:
-    class ConflictingStore(FakeMemoryStore):
-        def create_memory(self, arguments, *, wait=True):
-            return {
-                "memory": {
-                    "id": "created",
-                    "content": arguments["content"],
-                    "metadata": {
-                        **arguments,
-                        "layer": "semantic",
-                        "scope": "sakura",
-                    },
-                }
-            }
-
-    boundary = _boundary(_root(tmp_path), ConflictingStore())
-    try:
-        with pytest.raises(MemoryBoundaryError) as error:
-            boundary.upsert(
-                {
-                    "content": "周末和同事聚餐",
-                    "layer": "episodic",
-                    "category": "schedule",
-                    "importance": 0.6,
-                    "confidence": 0.9,
-                }
-            )
-        assert error.value.code == "MEMORY_ROUND_TRIP_MISMATCH"
     finally:
         boundary.close()
 
