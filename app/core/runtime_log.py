@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 import sys
 import threading
+from collections.abc import Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
@@ -73,14 +74,9 @@ _WARNING_MARKERS = (
     "警告",
 )
 _SUPPRESSED_MESSAGES = {
-    ("plugineventbus", "订阅事件"),
-    ("plugineventbus", "派发事件"),
-    ("promptinspector", "Prompt 构建完成"),
-    ("promptspector", "Prompt 构建完成"),
     ("api", "准备发送聊天补全请求"),
     ("api", "准备发送原生工具聊天补全请求"),
 }
-_TRACE_MESSAGES: set[tuple[str, str]] = set()
 _DEBUG_MESSAGES = {
     ("latency", "交互阶段"),
     ("api", "准备发送聊天补全请求"),
@@ -88,11 +84,6 @@ _DEBUG_MESSAGES = {
     ("api", "HTTP 请求成功"),
     ("api", "模型原始文本返回"),
     ("api", "原生工具模型返回"),
-    ("promptspector", "Prompt 构建完成"),
-    ("promptinspector", "Prompt 构建完成"),
-    ("tts", "安排 Qt 多媒体播放器预热"),
-    ("tts", "开始预热 Qt 多媒体播放器"),
-    ("tts", "Qt 多媒体播放器已初始化"),
 }
 _LATENCY_STAGE_EVENT = "agent.interaction.stage"
 _KEY_EVENT_MESSAGES = {
@@ -138,17 +129,8 @@ _KEY_EVENT_MESSAGES = {
     ("tts", "后台预热 TTS 服务完成"): ("tts.service.ready", "TTS 服务预热完成"),
     ("tts", "后台预热 TTS 服务失败"): ("tts.service.failed", "TTS 服务预热失败"),
     ("tts", "后台预热 TTS 服务异常"): ("tts.service.failed", "TTS 服务预热异常"),
-    ("petwindow", "开始手动框选截图"): ("screen.capture.started", "开始框选截图"),
-    ("petwindow", "手动框选截图启动失败"): ("screen.capture.failed", "截图启动失败"),
-    ("petwindow", "手动框选截图已附加到下一条消息"): ("screen.capture.attached", "截图已附加到下一条消息"),
-    ("petwindow", "手动框选截图已取消"): ("screen.capture.cancelled", "截图已取消"),
-    ("petwindow", "屏幕观察失败"): ("screen.capture.failed", "屏幕观察失败"),
-    ("petwindow", "屏幕观察 follow-up 已排队"): ("screen.capture.attached", "屏幕观察已附加到模型请求"),
-    ("petwindow", "主动事件屏幕观察 follow-up 已排队"): ("screen.capture.attached", "主动屏幕观察已附加"),
     ("screenawareness", "主动屏幕上下文已缓存"): ("screen.capture.attached", "主动截图已缓存"),
     ("screenawareness", "主动屏幕上下文批次已附加"): ("screen.capture.attached", "截图批次已附加"),
-    ("petwindow", "用户消息入队"): ("chat.request.received", "对话请求已接收"),
-    ("petwindow", "收到 Agent 回复"): ("reply.display.completed", "回复已送达界面"),
     ("tts", "已启动本地 GPT-SoVITS 服务"): ("tts.service.started", "已启动 GPT-SoVITS 服务"),
     ("tts", "本地 GPT-SoVITS 服务启动并探测成功"): ("tts.service.ready", "GPT-SoVITS 服务已就绪"),
     ("tts", "已启动本地 Genie TTS 服务"): ("tts.service.started", "已启动 Genie TTS 服务"),
@@ -158,10 +140,6 @@ _KEY_EVENT_MESSAGES = {
     ("tts", "Genie API 端点探测失败"): ("tts.service.probe.failed", "Genie TTS 服务探测失败"),
     ("tts", "Genie API 端点探测返回非 JSON"): ("tts.service.probe.failed", "Genie TTS 服务探测响应无效"),
     ("tts", "角色权重切换完成"): ("tts.weights.ready", "TTS 角色权重切换完成"),
-    ("startup", "初始主窗口服务已创建"): ("startup.window_services.created", "初始主窗口服务已创建"),
-    ("startup", "后台启动服务已创建"): ("startup.background_services.created", "后台启动服务已创建"),
-    ("startup", "后台启动服务已注入窗口"): ("startup.background_services.injected", "后台启动服务已注入窗口"),
-    ("pluginmanager", "插件已加载"): ("plugin.loaded", "插件已加载"),
     ("context", "Prompt 依赖已就绪"): ("context.dependencies.ready", "Prompt 依赖已就绪"),
     ("context", "Prompt 依赖未就绪，继续降级对话"): ("context.dependencies.degraded", "Prompt 依赖未就绪，继续降级对话"),
     ("memory", "开始后台记忆整理"): ("memory.curation.started", "开始后台记忆整理"),
@@ -172,7 +150,6 @@ _CHANNEL_ALIASES = {
     "api": "api",
     "agentruntime": "agent",
     "chat": "chat",
-    "chatworker": "agent",
     "latency": "agent",
     "context": "context",
     "memory": "memory",
@@ -183,17 +160,13 @@ _CHANNEL_ALIASES = {
     "tool": "tool",
     "tts": "tts",
     "plugin": "plugin",
-    "pluginmanager": "plugin",
-    "plugineventbus": "plugin",
     "startup": "app",
     "crash": "app",
     "config": "config",
     "migration": "config",
-    "history": "storage",
     "storage": "storage",
     "ui": "ui",
     "input": "ui",
-    "petwindow": "ui",
 }
 
 
@@ -293,14 +266,14 @@ def log_event(
         return
     attributes = _attach_interaction_id(attributes)
     timestamp = datetime.now().astimezone().isoformat(timespec="seconds")
-    normalized_channel = _normalize_channel(channel_key)
+    normalized_channel = _CHANNEL_ALIASES.get(channel_key, str(channel or "runtime").strip() or "runtime")
     event_is_fixed = bool(str(event or "").strip()) or (
         channel_key,
         str(message),
     ) in _KEY_EVENT_MESSAGES
     event_name, display_message = _resolve_event(channel_key, normalized_channel, message, event)
-    attributes = _with_body_free_metrics(event_name, attributes)
     display_message = _message_with_attributes(event_name, display_message, attributes)
+    attributes = body_free_log_attributes(event_name, attributes)
     resolved_severity = _normalize_severity(
         severity or _infer_severity(message, attributes)
     )
@@ -365,10 +338,6 @@ def _channel_key(channel: str) -> str:
     return str(channel or "runtime").strip().lower()
 
 
-def _normalize_channel(channel_key: str) -> str:
-    return _CHANNEL_ALIASES.get(channel_key, channel_key or "runtime")
-
-
 def _resolve_event(
     channel_key: str,
     normalized_channel: str,
@@ -426,15 +395,15 @@ def _message_with_attributes(event_name: str, message: str, attributes: Any | No
     return message
 
 
-def _with_body_free_metrics(event_name: str, attributes: Any | None) -> Any:
-    if not isinstance(attributes, dict):
-        return attributes
-    output = attributes
-    if event_name.startswith(("tts.request.", "tts.synthesis.")):
+def body_free_log_attributes(event_name: str, attributes: Any | None) -> Any:
+    if isinstance(attributes, Mapping) and event_name.startswith(("tts.", "chat.")):
         text = attributes.get("text")
-        if isinstance(text, str) and "text_chars" not in attributes:
-            output = {**attributes, "text_chars": len(text)}
-    return output
+        if isinstance(text, str):
+            fields = dict(attributes)
+            del fields["text"]
+            fields.setdefault("text_chars", len(text))
+            return fields
+    return attributes
 
 
 def _tool_call_names(tool_calls: Any) -> str:
@@ -517,8 +486,6 @@ def _default_verbosity(
     if _SEVERITY_RANK.get(severity, 0) >= _SEVERITY_RANK[SEVERITY_WARNING]:
         return 0
     key = (channel_key, str(message))
-    if key in _TRACE_MESSAGES:
-        return 5
     if key in _DEBUG_MESSAGES:
         return 3
     if event_name == _LATENCY_STAGE_EVENT:
@@ -527,7 +494,7 @@ def _default_verbosity(
         return 1
     if event_name.startswith(("startup.", "crash.", "api.", "tts.", "tool.", "plugin.")):
         return 1
-    if channel_key in {"ui", "input", "petwindow"}:
+    if channel_key in {"ui", "input"}:
         return 5
     return 3
 

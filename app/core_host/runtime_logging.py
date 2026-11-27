@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import re
 import sys
@@ -18,6 +19,7 @@ from app.core.diagnostics import DIAGNOSTIC_TEXT_KEYS, TRACE_LIMIT, exception_di
 
 from app.core.runtime_log import (
     LogEvent,
+    body_free_log_attributes,
     register_external_sink,
     submit_external_log_event,
     unregister_external_sink,
@@ -38,7 +40,7 @@ _PRIORITY_SEVERITIES = frozenset({"warning", "error"})
 _TOKEN_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]*$")
 _CODE_RE = re.compile(r"^[A-Z][A-Z0-9_]{0,63}$")
 _FORBIDDEN_KEY_RE = re.compile(
-    r"(?:^|_)(?:authorization|cookie|credential|api_?key|token|secret|password|prompt|body|content|input|output|payload|arguments|query|memory|translation|text|message)(?:_|$)"
+    r"(?:^|_)(?:authorization|cookie|credential|api_?key|token|secret|password|prompt|messages|body|content|payload|arguments)(?:_|$)"
 )
 _CORRELATION_KEYS = {
     "interaction_id": "operation_id",
@@ -54,55 +56,6 @@ _FORWARDED_VERBOSITY = {
     "warn": 1,
     "error": 1,
 }
-_SAFE_KEY_EXCEPTIONS = frozenset(
-    {
-        *DIAGNOSTIC_TEXT_KEYS,
-        "completion_tokens",
-        "context_window_tokens",
-        "current_required_tokens",
-        "dynamic_context_estimated_tokens",
-        "estimated_tokens",
-        "history_messages",
-        "input_target",
-        "input_tokens",
-        "memories",
-        "memory_count",
-        "memory_estimated_tokens",
-        "output_reserve",
-        "output_tokens",
-        "prompt_tokens",
-        "request_estimated_tokens",
-        "required_context_tokens",
-        "required_tokens",
-        "safety_margin",
-        "static_prompt_tokens",
-        "text_chars",
-        "tool_schema_estimated_tokens",
-        "tool_schema_tokens",
-        "total_tokens",
-        "transport",
-    }
-)
-_CORE_CHANNELS = frozenset(
-    {
-        "agent",
-        "api",
-        "app",
-        "chat",
-        "config",
-        "context",
-        "core",
-        "memory",
-        "plugin",
-        "python.logging",
-        "storage",
-        "screen",
-        "reply",
-        "tool",
-        "tts",
-        "ui",
-    }
-)
 
 
 @dataclass(frozen=True)
@@ -122,6 +75,7 @@ class _AppLoggingHandler(logging.Handler):
             return
         severity = _severity_from_logging_level(record.levelno)
         event = f"python.logging.{severity}"
+        message = record.getMessage()
         attributes: dict[str, object] = {
             "category": _safe_category(record.name),
         }
@@ -131,10 +85,11 @@ class _AppLoggingHandler(logging.Handler):
             if isinstance(record.exc_info[1], BaseException):
                 attributes.update(exception_diagnostics(record.exc_info[1], reason_code="PYTHON_EXCEPTION", stage=record.funcName))
         elif severity in {"warning", "error"}:
-            attributes["diagnostic"] = safe_diagnostic_text(record.getMessage())
+            attributes["diagnostic"] = safe_diagnostic_text(message)
         self._bridge.emit_fixed(
             severity=severity,
             channel="python.logging",
+            message=message,
             event=event,
             attributes=attributes,
         )
@@ -234,7 +189,7 @@ class RuntimeLoggingBridge:
             safe = _safe_id(value)
             if safe is not None:
                 wire[key] = safe
-        safe_attributes = _safe_attributes(attributes)
+        safe_attributes = _safe_attributes(body_free_log_attributes(safe_event, attributes))
         if safe_attributes:
             wire["attributes"] = safe_attributes
         return self._enqueue_wire(wire, source="fixed")
@@ -527,7 +482,7 @@ def _wire_record_from_log_event(record: LogEvent) -> dict[str, object]:
     wire: dict[str, object] = {
         "severity": severity,
         "verbosity": _verbosity_for_severity(severity),
-        "channel": _safe_core_channel(record.channel),
+        "channel": _safe_token(record.channel, 64) or "core.runtime",
         "event": event,
         "message": safe_diagnostic_text(record.message, 512) if record.message else event,
     }
@@ -551,51 +506,59 @@ def _wire_record_from_log_event(record: LogEvent) -> dict[str, object]:
         wire.update(custom=True, message=message,
                     event=_safe_token(safe_attributes.get("event"), 96) or "runtime.message")
     else:
-        safe_attributes = _safe_attributes(attributes)
+        safe_attributes = _safe_attributes(body_free_log_attributes(event, attributes))
     if safe_attributes:
         wire["attributes"] = safe_attributes
     return wire
 
 
-def _is_forbidden_attribute_key(key: str) -> bool:
-    if not key or key in _CORRELATION_KEYS:
-        return True
-    if key in _SAFE_KEY_EXCEPTIONS or key.endswith(("_tokens", "_chars", "_count", "_ms", "_bytes")):
+def _is_forbidden_attribute_key(key: str, value: object) -> bool:
+    if key.endswith(("_tokens", "_chars", "_count", "_ms", "_bytes")):
+        return False
+    if key == "history_messages" and isinstance(value, int):
         return False
     return bool(_FORBIDDEN_KEY_RE.search(key))
+
+
+def _safe_attribute_scalar(key: str, value: object) -> object:
+    if isinstance(value, str):
+        limit = TRACE_LIMIT if key in DIAGNOSTIC_TEXT_KEYS else 1024
+        return safe_diagnostic_text(value, 4096 if key == "diagnostic" else limit)
+    if value is None or isinstance(value, (int, float)):
+        if not isinstance(value, float) or math.isfinite(value):
+            return value
+    return NotImplemented
 
 
 def _safe_attributes(attributes: Mapping[str, object] | None) -> dict[str, object]:
     if not isinstance(attributes, Mapping):
         return {}
     safe: dict[str, object] = {}
-    for raw_key, value in list(attributes.items())[:32]:
-        key = _canonical_key(raw_key)
-        if _is_forbidden_attribute_key(key):
+    for raw_key, value in attributes.items():
+        key = _canonical_key(safe_diagnostic_text(raw_key))
+        if not key or key in _CORRELATION_KEYS or _is_forbidden_attribute_key(key, value):
             continue
         if key in {"provider_id", "plugin_id"}:
             token = _safe_token(value, 200 if key == "provider_id" else 64)
             if token is not None:
                 safe[key] = token
-        elif value is None or isinstance(value, bool):
-            safe[key] = value
-        elif isinstance(value, (int, float)) and not isinstance(value, bool):
-            if isinstance(value, float) and (value != value or value in (float("inf"), float("-inf"))):
-                continue
-            safe[key] = value
-        elif isinstance(value, str):
-            if key == "source_file":
-                if ".." not in value and len(value) <= 240:
-                    safe[key] = value
-            else:
-                limit = TRACE_LIMIT if key in DIAGNOSTIC_TEXT_KEYS and key != "diagnostic" else (4096 if key == "diagnostic" else 1024)
-                diagnostic = safe_diagnostic_text(value, limit)
-                if diagnostic:
-                    safe[key] = diagnostic
-        elif isinstance(value, (list, tuple, set, frozenset)):
-            safe[key] = len(value)
         elif isinstance(value, Mapping):
-            safe[key] = len(value)
+            nested = {}
+            for name, item in value.items():
+                if not isinstance(name, str):
+                    continue
+                nested_key = _canonical_key(name)
+                if not _is_forbidden_attribute_key(nested_key, item):
+                    scalar = _safe_attribute_scalar(nested_key, item)
+                    if scalar is not NotImplemented:
+                        nested[safe_diagnostic_text(name)] = scalar
+            safe[key] = nested
+        elif isinstance(value, (list, tuple, set, frozenset)):
+            safe[key] = [scalar for item in value if (scalar := _safe_attribute_scalar(key, item)) is not NotImplemented]
+        else:
+            scalar = _safe_attribute_scalar(key, value)
+            if scalar is not NotImplemented:
+                safe[key] = scalar
     return safe
 
 
@@ -724,11 +687,8 @@ def _valid_model_call_candidate(candidate: Mapping[str, object]) -> bool:
         isinstance(candidate.get("modelCall"), int)
         and not isinstance(candidate.get("modelCall"), bool)
         and candidate["modelCall"] >= 1
-        and candidate.get("purpose") in {
-            "agent_step", "final_reply", "reply_repair", "screen_observation",
-            "proactive_reply", "background_agent", "memory_curation", "memory_curation_repair",
-        }
-        and candidate.get("modelFamily") in {"openai", "anthropic", "gemini", "deepseek", "custom", "unknown"}
+        and _safe_token(candidate.get("purpose"), 128) is not None
+        and _safe_token(candidate.get("modelFamily"), 128) is not None
         and candidate.get("outcome") in {"success", "failed", "cancelled"}
         and candidate.get("contextWindowSource") in {"provider", "configured", "fallback", "unknown"}
         and isinstance(candidate.get("latencyMs"), int)
@@ -771,21 +731,9 @@ def _json_line(wire: Mapping[str, object]) -> bytes:
 
 
 def _canonical_key(value: object) -> str:
-    text = re.sub(r"[^A-Za-z0-9]+", "_", str(value)).strip("_").lower()
-    aliases = {
-        "deadlinems": "deadline_ms",
-        "droppedbytes": "dropped_bytes",
-        "droppedcount": "dropped_count",
-        "droppedrecords": "dropped_records",
-        "elapsedms": "elapsed_ms",
-        "hoststate": "host_state",
-        "recordbytes": "record_bytes",
-        "recordtruncated": "record_truncated",
-        "toolname": "tool_name",
-        "treeempty": "tree_empty",
-        "truncatedrecords": "truncated_records",
-    }
-    return aliases.get(text, text)
+    text = re.sub(r"([A-Z])([A-Z][a-z])", r"\1_\2", str(value))
+    text = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", text)
+    return re.sub(r"[^A-Za-z0-9]+", "_", text).strip("_").lower()
 
 
 def _safe_token(value: object, maximum: int) -> str | None:
@@ -798,13 +746,6 @@ def _safe_token(value: object, maximum: int) -> str | None:
     ):
         return None
     return value if _TOKEN_RE.fullmatch(value) else None
-
-
-def _safe_core_channel(value: object) -> str:
-    channel = _safe_token(value, 64)
-    if channel in _CORE_CHANNELS or (channel is not None and channel.startswith("core.")):
-        return channel
-    return "core.runtime"
 
 
 def _safe_id(value: object) -> str | None:
