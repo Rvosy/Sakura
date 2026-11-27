@@ -190,8 +190,6 @@ class VoiceRecordingStore:
                 json.dumps(metadata, ensure_ascii=False, indent=2) + "\n",
                 backup=False,
             )
-            stage = "validate_staging"
-            _validate_wav(staged_audio)
             _sync_directory(staging)
             stage = "rename"
             rename_with_retry(staging, final_dir)
@@ -362,9 +360,12 @@ class VoiceRecordingStore:
                 raise ValueError("recording identity mismatch")
             if expected_character_id is not None and record.character_id != expected_character_id:
                 raise ValueError("character identity mismatch")
-            _validate_wav(audio_path)
             if audio_path.stat().st_size != record.byte_length:
                 raise ValueError("recording length mismatch")
+            with audio_path.open("rb") as handle:
+                header = handle.read(12)
+            if len(header) < 12 or header[:4] != b"RIFF" or header[8:12] != b"WAVE":
+                raise ValueError("recording is not a valid WAV file")
             return record
         except (OSError, ValueError, TypeError, json.JSONDecodeError, wave.Error, VoiceRecordingError):
             self._report(recording_id, character_hint, "AUDIO_RECORDING_INVALID")

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hmac
 import re
 import threading
 from collections import OrderedDict
@@ -14,7 +13,7 @@ from typing import Callable, Mapping
 
 from app.core_host.audio_input import AudioInputError
 from app.core.runtime_log import diagnostic_attributes
-from app.core_host.protocol import error_payload, response
+from app.core_host.protocol import error_payload, response, verify_generation_identity
 
 ASR_REQUEST_NAMES = frozenset({
     "asr.input.prepare", "asr.input.poll", "asr.input.cancel", "asr.input.capture_target",
@@ -62,9 +61,7 @@ class ASRBoundary:
 
     def handle(self, request: dict) -> dict:
         try:
-            credential = request.get("generationCredential")
-            if (request.get("generationId") != self._generation or not isinstance(credential, str)
-                    or not hmac.compare_digest(credential, self._credential) or self._closed):
+            if not verify_generation_identity(request, self._generation, self._credential) or self._closed:
                 raise AudioInputError("STALE_GENERATION")
             payload = request.get("payload")
             if not isinstance(payload, Mapping):

@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-import hmac
 import re
 from collections.abc import Callable, Mapping
 from typing import Any
 
-from app.core_host.protocol import response
+from app.core_host.protocol import require_generation_identity, response
 
 
 COMPOSER_TOOL_REQUEST_NAMES = frozenset(
@@ -46,13 +45,7 @@ class ComposerToolsBoundary:
         self._application_provider = application_provider
 
     def handle(self, request: dict[str, Any]) -> dict[str, Any]:
-        supplied = request.get("generationCredential")
-        if (
-            request.get("generationId") != self._generation_id
-            or not isinstance(supplied, str)
-            or not hmac.compare_digest(supplied, self._generation_credential)
-        ):
-            raise RuntimeError("GENERATION_IDENTITY_MISMATCH")
+        require_generation_identity(request, self._generation_id, self._generation_credential)
         try:
             payload = request.get("payload")
             if not isinstance(payload, Mapping):

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hmac
 import json
 import threading
 from time import perf_counter
@@ -11,7 +10,7 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
-from app.core_host.protocol import response
+from app.core_host.protocol import require_generation_identity, response
 from app.core.diagnostics import exception_diagnostics, safe_diagnostic_text
 from app.core.runtime_log import log_event
 from app.plugins.app_compatibility import app_version_reason, compatibility_message
@@ -91,13 +90,7 @@ class PluginSettingsBoundary:
         self._install_locks: dict[str, threading.Lock] = {}
 
     def handle(self, request: dict[str, Any]) -> dict[str, Any]:
-        supplied = request.get("generationCredential")
-        if (
-            request.get("generationId") != self._generation_id
-            or not isinstance(supplied, str)
-            or not hmac.compare_digest(supplied, self._generation_credential)
-        ):
-            raise RuntimeError("GENERATION_IDENTITY_MISMATCH")
+        require_generation_identity(request, self._generation_id, self._generation_credential)
         try:
             payload = request.get("payload")
             if not isinstance(payload, Mapping):

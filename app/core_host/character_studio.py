@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hmac
 import re
 import threading
 from collections.abc import Mapping
@@ -16,7 +15,7 @@ from app.config.character_studio import (
 )
 from app.config.models import DEFAULT_THEME_SETTINGS, THEME_COLOR_FIELDS, theme_to_mapping
 from app.config.settings_service import AppSettingsService
-from app.core_host.protocol import error_payload, response
+from app.core_host.protocol import error_payload, require_generation_identity, response
 from app.core.diagnostics import exception_diagnostics
 from app.core.runtime_log import log_event
 from app.core_host.visual_host import VisualHostError, VISUAL_INACTIVE_REASONS
@@ -149,13 +148,7 @@ class CharacterStudioBoundary:
                 raise
 
     def handle(self, request: dict[str, Any]) -> dict[str, Any]:
-        supplied = request.get("generationCredential")
-        if (
-            request.get("generationId") != self._generation_id
-            or not isinstance(supplied, str)
-            or not hmac.compare_digest(supplied, self._generation_credential)
-        ):
-            raise RuntimeError("GENERATION_IDENTITY_MISMATCH")
+        require_generation_identity(request, self._generation_id, self._generation_credential)
         try:
             name = request.get("name")
             payload = request.get("payload")

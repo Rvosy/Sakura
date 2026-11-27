@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import base64
-import hmac
 import json
 from pathlib import Path
 import threading
@@ -16,7 +15,7 @@ from app.core.runtime_log import log_event
 from app.plugin_sdk.sakura_cancellation import OperationCancelled
 from app.plugins.visuals import resolve_resource_path
 
-from .protocol import response
+from .protocol import require_generation_identity, response
 
 
 THEME_REQUEST_NAMES = frozenset({"theme.generate", "theme.cancel"})
@@ -32,10 +31,7 @@ class ThemeGenerationBoundary:
         self._operations = {}
 
     def _validate(self, request):
-        credential = request.get("generationCredential")
-        if (request.get("generationId") != self._generation_id or not isinstance(credential, str)
-                or not hmac.compare_digest(credential, self._credential)):
-            raise RuntimeError("GENERATION_IDENTITY_MISMATCH")
+        require_generation_identity(request, self._generation_id, self._credential)
         name, payload = request.get("name"), request.get("payload")
         fields = {"operationId", "characterId"} if name == "theme.generate" else {"operationId"}
         if name not in THEME_REQUEST_NAMES or not isinstance(payload, dict) or set(payload) != fields:

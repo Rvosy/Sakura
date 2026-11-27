@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hmac
 import json
 import struct
 import sys
@@ -46,6 +47,28 @@ def _require_non_negative_int(mapping: Mapping[str, Any], key: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         raise ProtocolError("INVALID_ENVELOPE", f"{key} must be a non-negative integer")
     return value
+
+
+def verify_generation_identity(
+    request: Mapping[str, Any],
+    generation_id: str,
+    generation_credential: str,
+) -> bool:
+    supplied = request.get("generationCredential")
+    return (
+        request.get("generationId") == generation_id
+        and isinstance(supplied, str)
+        and hmac.compare_digest(supplied, generation_credential)
+    )
+
+
+def require_generation_identity(
+    request: Mapping[str, Any],
+    generation_id: str,
+    generation_credential: str,
+) -> None:
+    if not verify_generation_identity(request, generation_id, generation_credential):
+        raise RuntimeError("GENERATION_IDENTITY_MISMATCH")
 
 
 def validate_envelope(message: Mapping[str, Any]) -> None:

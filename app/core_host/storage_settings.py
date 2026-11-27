@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-import hmac
 import threading
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from app.core_host.protocol import response
+from app.core_host.protocol import require_generation_identity, response
 from app.storage.tts_storage import TtsStorage, TtsStorageUnavailable
 
 
@@ -45,13 +44,7 @@ class StorageSettingsBoundary:
         self._lock = threading.Lock()
 
     def handle(self, request: dict[str, Any]) -> dict[str, Any]:
-        supplied = request.get("generationCredential")
-        if (
-            request.get("generationId") != self._generation_id
-            or not isinstance(supplied, str)
-            or not hmac.compare_digest(supplied, self._generation_credential)
-        ):
-            raise RuntimeError("GENERATION_IDENTITY_MISMATCH")
+        require_generation_identity(request, self._generation_id, self._generation_credential)
         try:
             name = request.get("name")
             payload = request.get("payload")

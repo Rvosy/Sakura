@@ -1,9 +1,8 @@
 """设置统计页的只读查询入口。"""
-import hmac
 
 from app.core.diagnostics import exception_diagnostics
 from app.core.runtime_log import log_event
-from app.core_host.protocol import response
+from app.core_host.protocol import require_generation_identity, response
 from app.storage.paths import StoragePaths
 from app.storage.timeline import TimelineStore
 from app.storage.usage import UsageStore
@@ -17,8 +16,7 @@ class UsageStatisticsBoundary:
         self.timeline = TimelineStore(StoragePaths(user_root).timeline_database())
 
     def handle(self, request):
-        if request.get("generationId") != self.generation_id or not hmac.compare_digest(request.get("generationCredential", ""), self.credential):
-            raise RuntimeError("GENERATION_IDENTITY_MISMATCH")
+        require_generation_identity(request, self.generation_id, self.credential)
         try:
             payload = request["payload"]
             result = self.usage.snapshot(payload.get("period", "30d"), start_date=payload.get("startDate"), end_date=payload.get("endDate"))

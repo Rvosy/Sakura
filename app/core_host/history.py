@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-import hmac
 from collections.abc import Callable, Mapping
 from datetime import date
 from pathlib import Path
 from time import perf_counter
 from typing import Any
 
-from app.core_host.protocol import response
+from app.core_host.protocol import require_generation_identity, response
 from app.storage.paths import StoragePaths
 from app.storage.history_images import HistoryImages
 from app.storage.timeline import TimelineDataError, TimelineEntry, TimelineStore, timeline_record
@@ -57,13 +56,7 @@ class HistoryBoundary:
         self._import_identities = user_root / "data" / "import-identities.sqlite3"
 
     def handle(self, request: dict[str, Any]) -> dict[str, Any]:
-        supplied = request.get("generationCredential")
-        if (
-            request.get("generationId") != self._generation_id
-            or not isinstance(supplied, str)
-            or not hmac.compare_digest(supplied, self._generation_credential)
-        ):
-            raise RuntimeError("GENERATION_IDENTITY_MISMATCH")
+        require_generation_identity(request, self._generation_id, self._generation_credential)
         try:
             if request.get("name") == "ui.history.image":
                 result = self._image(request.get("payload"))

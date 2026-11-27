@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hmac
 import threading
 from collections.abc import Mapping
 from pathlib import Path
@@ -11,7 +10,7 @@ from typing import Any, Callable
 import yaml
 
 from app.plugin_sdk.sakura_assistant_contract import RuntimeLoopSettings, normalize_runtime_loop_settings
-from app.core_host.protocol import error_payload, response
+from app.core_host.protocol import error_payload, require_generation_identity, response
 from app.storage.atomic import atomic_write_text
 from app.storage.paths import StoragePaths
 
@@ -52,13 +51,7 @@ class ToolSettingsBoundary:
         self._runtime_apply = runtime_apply
 
     def handle(self, request: dict[str, Any]) -> dict[str, Any]:
-        supplied = request.get("generationCredential")
-        if (
-            request.get("generationId") != self._generation_id
-            or not isinstance(supplied, str)
-            or not hmac.compare_digest(supplied, self._generation_credential)
-        ):
-            raise RuntimeError("GENERATION_IDENTITY_MISMATCH")
+        require_generation_identity(request, self._generation_id, self._generation_credential)
         try:
             name = request.get("name")
             payload = request.get("payload")

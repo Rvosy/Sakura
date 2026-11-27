@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hmac
 import shutil
 import threading
 from collections.abc import Mapping
@@ -26,7 +25,7 @@ from app.config.character_packages import remove_character_installation
 from app.config.settings_service import AppSettingsService
 from app.core.diagnostics import exception_diagnostics, safe_diagnostic_text
 from app.core.runtime_log import log_event
-from app.core_host.protocol import response
+from app.core_host.protocol import require_generation_identity, response
 from app.core_host.real_chat import RealChatRejection
 
 CHARACTER_SETTINGS_REQUEST_NAMES = frozenset(
@@ -86,13 +85,7 @@ class CharacterSettingsBoundary:
         self._visual_apply_pending: set[str] = set()
 
     def handle(self, request: dict[str, Any]) -> dict[str, Any]:
-        supplied = request.get("generationCredential")
-        if (
-            request.get("generationId") != self._generation_id
-            or not isinstance(supplied, str)
-            or not hmac.compare_digest(supplied, self._generation_credential)
-        ):
-            raise RuntimeError("GENERATION_IDENTITY_MISMATCH")
+        require_generation_identity(request, self._generation_id, self._generation_credential)
         try:
             name = request.get("name")
             payload = request.get("payload")

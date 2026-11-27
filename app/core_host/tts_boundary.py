@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hmac
 import threading
 import uuid
 from dataclasses import dataclass
@@ -11,7 +10,7 @@ from pathlib import Path
 from time import monotonic, sleep
 from typing import Any, Callable, Mapping
 
-from app.core_host.protocol import error_payload, event, response
+from app.core_host.protocol import error_payload, event, response, verify_generation_identity
 from app.core.runtime_log import log_event
 from app.core.diagnostics import exception_diagnostics
 from app.plugins.runtime_v4 import CLOSE_TIMEOUT_SECONDS
@@ -1248,11 +1247,8 @@ class TTSBoundary:
             ) from error
 
     def _validate_generation(self, request: Mapping[str, Any]) -> None:
-        if request.get("generationId") != self._generation_id:
-            raise TTSBoundaryError("STALE_GENERATION", "TTS request belongs to another generation")
-        supplied = request.get("generationCredential")
-        if not isinstance(supplied, str) or not hmac.compare_digest(supplied, self._generation_credential):
-            raise TTSBoundaryError("STALE_GENERATION", "TTS generation credential is invalid")
+        if not verify_generation_identity(request, self._generation_id, self._generation_credential):
+            raise TTSBoundaryError("STALE_GENERATION", "TTS generation identity or credential is invalid")
         with self._lock:
             self._ensure_open_locked()
 

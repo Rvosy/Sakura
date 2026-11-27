@@ -4,13 +4,12 @@ from app.core.diagnostics import exception_diagnostics
 
 import logging
 
-import hmac
 import threading
 from collections.abc import Callable, Mapping
 from pathlib import Path
 
 from app.config.model_references import EMPTY_REFERENCE, ModelReferenceRepository, model_reference
-from .protocol import error_payload, response
+from .protocol import error_payload, require_generation_identity, response
 
 SETTINGS_REQUEST_NAMES = frozenset({"settings.provider_model.get", "settings.provider_model.save"})
 
@@ -41,9 +40,7 @@ class ProviderSettingsBoundary:
         return self._plugin_application_provider() if self._plugin_application_provider else None
 
     def handle(self, request):
-        supplied = request.get("generationCredential")
-        if request.get("generationId") != self._generation_id or not isinstance(supplied, str) or not hmac.compare_digest(supplied, self._generation_credential):
-            raise RuntimeError("GENERATION_IDENTITY_MISMATCH")
+        require_generation_identity(request, self._generation_id, self._generation_credential)
         try:
             with self._lock:
                 if not self._enabled or self._closed:

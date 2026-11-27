@@ -149,19 +149,18 @@ class VisualBinding:
                 ):
                     raise VisualHostError("VISUAL_CONTROL_INVALID")
                 payload = control["payload"]
-            request = deepcopy(self._request)
-            request["segment"] = deepcopy(segment or {})
+            request = dict(self._request)
+            request["segment"] = dict(segment or {})
             parsed = self._runtime.call_service(
                 self.capability.service,
                 "parseControl",
                 request,
-                deepcopy(self._description["parserData"]),
-                deepcopy(payload),
-                deepcopy(legacy) if control is None else None,
+                self._description["parserData"],
+                payload,
+                legacy if control is None else None,
             )
             # A stopped/replaced process must not publish an in-flight result.
             self._check_active()
-            parsed = deepcopy(parsed)
             if (
                 not isinstance(parsed, dict)
                 or not ({"state", "actions"} & parsed.keys())
@@ -431,7 +430,7 @@ class VisualHost:
         if capability.editor is None:
             raise VisualHostError(self._editor_issue(record, capability) or "VISUAL_EDITOR_MISSING")
         identity = self._runtime.service_identity(capability.service)
-        data = deepcopy(self._runtime.call_service(capability.service, "editorData", resource.to_mapping(), deepcopy(raw)))
+        data = self._runtime.call_service(capability.service, "editorData", resource.to_mapping(), raw)
         binding = VisualBinding(self._runtime, capability, identity, {"resource": resource.to_mapping()}, {"rendererData": {}, "assets": {}}, record.install_id)
         binding._check_active()
         return {"visual": binding.presentation(), "data": data, "providerScopeId": identity["scopeId"]}
@@ -440,7 +439,7 @@ class VisualHost:
         """Ask for a static cover without describing or mounting a renderer."""
         _record, capability = self._select(resource.type, provider_id)
         try:
-            path = self._runtime.call_service(capability.service, "previewImage", resource.to_mapping(), deepcopy(raw))
+            path = self._runtime.call_service(capability.service, "previewImage", resource.to_mapping(), raw)
         except PluginRuntimeError as error:
             if error.code == "SERVICE_METHOD_NOT_EXPORTED":
                 return None
@@ -451,9 +450,7 @@ class VisualHost:
         identity = self._runtime.service_identity(capability.service)
         if identity.get("providerId") != record.plugin_id:
             raise VisualHostError("VISUAL_PROVIDER_MISMATCH")
-        description = deepcopy(
-            self._runtime.call_service(capability.service, "describe", request),
-        )
+        description = self._runtime.call_service(capability.service, "describe", request)
         if isinstance(description, dict) and description.get("error") == "VISUAL_RESOURCE_INVALID":
             field = description.get("field", "")
             raise VisualHostError("VISUAL_RESOURCE_INVALID", description.get("message"),

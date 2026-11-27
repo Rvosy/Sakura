@@ -92,14 +92,12 @@ def import_character_archive(path: Path, base_dir: Path) -> CharacterArchiveImpo
             try:
                 temp_root.mkdir(parents=True, exist_ok=False)
                 extract_dir = temp_root / "extract"
-                staging_dir = temp_root / "package"
                 zf.extractall(extract_dir)
 
-                source_character_dir = extract_dir / ARCHIVE_CHARACTER_ROOT.as_posix()
-                if not source_character_dir.is_dir():
+                staging_dir = extract_dir / ARCHIVE_CHARACTER_ROOT.as_posix()
+                if not staging_dir.is_dir():
                     raise CharacterArchiveError("角色包缺少 character/ 资源目录。")
 
-                shutil.copytree(source_character_dir, staging_dir)
                 normalized_character = _normalized_import_character_data(
                     character_data,
                     character_id=target_id,
@@ -203,13 +201,15 @@ def import_character_voice_archive(
                     raise CharacterArchiveError("语音包缺少 voice/ 资源目录。")
                 _validate_voice_referenced_files(extract_dir, normalized_voice)
 
-                staging_voice_dir = staging_package_dir / "voice"
                 if target_voice_dir.exists():
                     for resource in (target_voice_dir, *target_voice_dir.rglob("*")):
                         if resource.is_symlink():
                             raise CharacterArchiveError(f"角色包不能包含符号链接：{resource}")
+                    staging_voice_dir = staging_package_dir / "voice"
                     shutil.copytree(target_voice_dir, staging_voice_dir)
-                shutil.copytree(source_voice_dir, staging_voice_dir, dirs_exist_ok=True)
+                    shutil.copytree(source_voice_dir, staging_voice_dir, dirs_exist_ok=True)
+                else:
+                    staging_voice_dir = source_voice_dir
 
                 old_voice_moved = False
                 try:
