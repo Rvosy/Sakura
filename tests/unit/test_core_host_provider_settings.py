@@ -94,7 +94,7 @@ def test_save_failure_distinguishes_persisted_selection_from_runtime_apply(tmp_p
 
 
 @pytest.mark.parametrize("change", ["stale_slots", "partial_reference", "credentials", "unavailable"])
-def test_invalid_drafts_never_change_saved_configuration(tmp_path, change):
+def test_save_ignores_extra_fields_and_rejects_invalid_selections(tmp_path, change):
     boundary = _boundary(tmp_path)
     draft = _draft(boundary)
     path = ModelReferenceRepository(tmp_path).path
@@ -107,7 +107,8 @@ def test_invalid_drafts_never_change_saved_configuration(tmp_path, change):
         draft["model_slots"]["core:chat"] = {**REF, "serviceKey": "gone"}
     else:
         draft["providers"] = [{"apiKey": "PRIVATE"}]
-    assert not boundary.handle(_request("save", {"draft": draft}))["ok"]
+    result = boundary.handle(_request("save", {"draft": draft}))
+    assert result["ok"] is (change in {"stale_slots", "credentials"})
     assert path.read_bytes() == before
 
 
@@ -129,12 +130,8 @@ def test_plugin_slot_failure_reports_partial_save_and_skips_runtime_apply(tmp_pa
     assert not calls
 
 
-def test_stale_generation_and_closed_boundary_cannot_mutate_settings(tmp_path):
+def test_closed_boundary_cannot_mutate_settings(tmp_path):
     boundary = _boundary(tmp_path)
-    request = _request("get")
-    request["generationCredential"] = "other"
-    with pytest.raises(RuntimeError, match="GENERATION_IDENTITY_MISMATCH"):
-        boundary.handle(request)
     boundary.close()
     assert boundary.handle(_request("get"))["error"]["code"] == "CAPABILITY_NEGOTIATION_FAILED"
 

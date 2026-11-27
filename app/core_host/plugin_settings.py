@@ -10,7 +10,7 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
-from app.core_host.protocol import require_generation_identity, response
+from app.core_host.protocol import response
 from app.core.diagnostics import exception_diagnostics, safe_diagnostic_text
 from app.core.runtime_log import log_event
 from app.plugins.app_compatibility import app_version_reason, compatibility_message
@@ -80,8 +80,6 @@ class PluginSettingsBoundary:
         application_provider: Callable[[], object | None] | None = None,
         initialization_failed: Callable[[], bool] | None = None,
     ) -> None:
-        self._generation_id = generation_id
-        self._generation_credential = generation_credential
         self._roots = coerce_runtime_roots(roots)
         self._user_root = self._roots.user_root
         self._application_provider = application_provider
@@ -90,38 +88,35 @@ class PluginSettingsBoundary:
         self._install_locks: dict[str, threading.Lock] = {}
 
     def handle(self, request: dict[str, Any]) -> dict[str, Any]:
-        require_generation_identity(request, self._generation_id, self._generation_credential)
         try:
             payload = request.get("payload")
             if not isinstance(payload, Mapping):
                 raise PluginSettingsError("INVALID_REQUEST", "插件设置请求格式无效。")
             name = request.get("name")
             if name == "plugins.frontend.get":
-                if set(payload) != {"serviceKey", "moduleName"}:
+                if not {"serviceKey", "moduleName"}.issubset(payload):
                     raise PluginSettingsError("INVALID_REQUEST", "插件界面模块请求格式无效。")
                 result = self.frontend_module(payload["serviceKey"], payload["moduleName"])
             elif name == "plugins.settings.get":
-                if payload:
-                    raise PluginSettingsError("INVALID_REQUEST", "插件设置读取请求必须为空。")
                 result = self.snapshot()
             elif name == "plugins.settings.save":
-                if set(payload) != {"pluginId", "sectionId", "values"}:
+                if not {"pluginId", "sectionId", "values"}.issubset(payload):
                     raise PluginSettingsError("INVALID_REQUEST", "插件设置保存请求格式无效。")
                 result = self.save(payload)
             elif name == "plugins.enabled.set":
-                if set(payload) != {"installId", "enabled"}:
+                if not {"installId", "enabled"}.issubset(payload):
                     raise PluginSettingsError("INVALID_REQUEST", "插件启停请求格式无效。")
                 result = self.set_enabled(
                     payload["installId"],
                     payload["enabled"],
                 )
             elif name == "plugins.settings.action":
-                if set(payload) != {"pluginId", "sectionId", "actionId", "values"}:
+                if not {"pluginId", "sectionId", "actionId", "values"}.issubset(payload):
                     raise PluginSettingsError("INVALID_REQUEST", "插件设置动作格式无效。")
                 result = self.action(payload)
             elif name == "plugins.marketplace.context":
                 application = self._application()
-                if payload or application is None:
+                if application is None:
                     raise PluginSettingsError("PLUGIN_SETTINGS_NOT_READY", "插件服务尚未就绪。")
                 result = application.marketplace_context()
             elif name == "plugins.marketplace.check":
@@ -130,18 +125,18 @@ class PluginSettingsBoundary:
                     raise PluginSettingsError(reason, compatibility_message(reason))
                 result = {}
             elif name == "plugins.marketplace.install":
-                if set(payload) != {"sourcePath", "pluginId", "version"}:
+                if not {"sourcePath", "pluginId", "version"}.issubset(payload):
                     raise PluginSettingsError("INVALID_REQUEST", "市场安装请求格式无效。")
                 result = self.marketplace_install(payload)
             elif name == "plugins.install":
-                if set(payload) != {"sourceKind", "sourcePath"}:
+                if not {"sourceKind", "sourcePath"}.issubset(payload):
                     raise PluginSettingsError("INVALID_REQUEST", "插件安装请求格式无效。")
                 result = self.install(
                     payload["sourceKind"],
                     payload["sourcePath"],
                 )
             elif name == "plugins.uninstall":
-                if set(payload) != {"installId"}:
+                if "installId" not in payload:
                     raise PluginSettingsError("INVALID_REQUEST", "插件卸载请求格式无效。")
                 result = self.uninstall(payload["installId"])
             elif isinstance(name, str) and name.startswith("plugins.collection."):
@@ -150,8 +145,6 @@ class PluginSettingsBoundary:
                 raise PluginSettingsError("UNKNOWN_COMMAND", "不支持的插件设置命令。")
             return response(
                 request,
-                generation_id=self._generation_id,
-                generation_credential=self._generation_credential,
                 protocol_minor=2,
                 payload=result,
             )
@@ -164,8 +157,6 @@ class PluginSettingsBoundary:
                 }, event="plugin.management.failed", severity="info" if error.retryable else "error")
             return response(
                 request,
-                generation_id=self._generation_id,
-                generation_credential=self._generation_credential,
                 protocol_minor=2,
                 error=error.public_error(),
             )

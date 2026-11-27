@@ -60,7 +60,7 @@ class ConversationHostService:
             if artifact_descriptor is not None and artifact_descriptor != {}:
                 try:
                     descriptor = artifact_descriptor
-                    if not isinstance(descriptor, Mapping) or set(descriptor) != {"artifactId", "mediaType", "byteLength"}:
+                    if not isinstance(descriptor, Mapping) or not {"artifactId", "mediaType", "byteLength"}.issubset(descriptor):
                         raise ConversationHostError("CHAT_IMAGE_INVALID")
                     artifact = self._artifact_resolver(str(descriptor["artifactId"]))
                     # Do not release another plugin's resource when a descriptor is forged.

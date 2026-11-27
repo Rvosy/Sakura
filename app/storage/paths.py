@@ -106,7 +106,6 @@ class StoragePaths:
     def characters_config(self) -> Path:
         return self.config_dir / "characters.yaml"
 
-
     def plugins_config(self) -> Path:
         return self.config_dir / "plugins.yaml"
 
@@ -116,52 +115,13 @@ class StoragePaths:
 
         return self.user_root / "plugins" / "user"
 
-    @property
-    def characters_dir(self) -> Path:
-        return self.user_root / "characters"
-
     # ---- 聊天历史 ----
     @property
     def chat_history_dir(self) -> Path:
         return self._data / "chat_history"
 
-    def chat_history_for(self, character_id: str) -> Path:
-        return self.chat_history_dir / f"{sanitize_file_stem(character_id)}.jsonl"
-
     def timeline_database(self) -> Path:
         return self.chat_history_dir / "timeline.sqlite3"
-
-    # ---- 运行时事件 ----
-    @property
-    def runtime_events_dir(self) -> Path:
-        return self._data / "runtime_events"
-
-    def runtime_events_for(self, character_id: str) -> Path:
-        return self.runtime_events_dir / f"{sanitize_file_stem(character_id)}.jsonl"
-
-    # ---- 视觉观察 ----
-    @property
-    def visual_observations_dir(self) -> Path:
-        return self._data / "visual_observations"
-
-    def visual_observations_for(self, character_id: str) -> Path:
-        return self.visual_observations_dir / f"{sanitize_file_stem(character_id)}.jsonl"
-
-    def screen_awareness_state(self) -> Path:
-        return self._data / "screen_awareness_state.json"
-
-    # ---- 提醒 ----
-    def reminders_store(self) -> Path:
-        return self._data / "reminders.json"
-
-    # ---- 待办 ----
-    def tasks_store(self) -> Path:
-        return self._data / "tasks.json"
-
-    # ---- 笔记 ----
-    @property
-    def notes_dir(self) -> Path:
-        return self._data / "notes"
 
     # ---- 缓存 ----
     @property
@@ -190,21 +150,6 @@ class StoragePaths:
     @property
     def voice_recordings_dir(self) -> Path:
         return self._data / "voice" / "recordings"
-
-    def voice_recordings_for(self, character_id: str) -> Path:
-        return self.voice_recordings_dir / sanitize_directory_component(character_id)
-
-    # ---- 日志 ----
-    @property
-    def logs_dir(self) -> Path:
-        return self._data / "logs"
-
-    def runtime_log_file(self) -> Path:
-        return self.logs_dir / "sakura-runtime.log"
-
-    def crash_log_file(self) -> Path:
-        # faulthandler/未捕获异常的崩溃留痕；原生段错误不会进 runtime 日志,单列一份。
-        return self.logs_dir / "sakura-crash.log"
 
     # ---- TTS 整合包 ----
     @property
@@ -248,38 +193,3 @@ class StoragePaths:
     @property
     def uv_cache_dir(self) -> Path:
         return self.uv_dir / "cache"
-
-    @property
-    def uv_tool_dir(self) -> Path:
-        return self.uv_dir / "tools"
-
-    @property
-    def uv_tool_bin_dir(self) -> Path:
-        return self.uv_dir / "bin"
-
-    # ---- 单实例锁 ----
-    def instance_lock(self) -> Path:
-        return self._data / "sakura.lock"
-
-    # ---- 辅助 ----
-    def ensure_dirs(self) -> None:
-        """确保所有存储目录存在。"""
-        from app.storage.tts_storage import TtsStorage
-
-        # A disconnected custom TTS volume is an explicit degraded state.  It
-        # must not block the rest of the user layout or create a second TTS
-        # installation under the default path.
-        TtsStorage(self.user_root).snapshot(create_default=True)
-        for d in [
-            self.config_dir,
-            self.characters_dir,
-            self.chat_history_dir,
-            self.runtime_events_dir,
-            self.visual_observations_dir,
-            self.notes_dir,
-            self.tts_cache_dir,
-            self.voice_recordings_dir,
-            self.logs_dir,
-            self.user_plugins_dir,
-        ]:
-            d.mkdir(parents=True, exist_ok=True)

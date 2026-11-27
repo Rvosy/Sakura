@@ -1,7 +1,7 @@
 """Bounded concurrent transport router for the Runtime v2 chat surface.
 
 The router deliberately owns no Assistant objects.  It only separates frame
-reading, control dispatch, bounded fixture execution, event publication and
+reading, control dispatch, bounded worker execution, event publication and
 the single stdout writer. Assistant domain objects stay behind the injected boundary.
 """
 
@@ -18,12 +18,12 @@ from typing import Any, BinaryIO
 
 from app.plugins.runtime_v4 import CLOSE_TIMEOUT_SECONDS
 
-from .protocol import read_frame, response
+from .protocol import TransportFailure, read_frame, response
 
 
 DISPATCH_QUEUE_LIMIT = 32
-FIXTURE_QUEUE_LIMIT = 8
-FIXTURE_WORKER_COUNT = 4
+WORKER_QUEUE_LIMIT = 8
+WORKER_WORKER_COUNT = 4
 
 _STOP = object()
 
@@ -56,7 +56,7 @@ class RouterFailure(RuntimeError):
 
 
 class ConcurrentHostRouter:
-    """Run one reader, one dispatcher, bounded fixture slots and one writer."""
+    """Run one reader, one dispatcher, bounded worker slots and one writer."""
 
     def __init__(
         self,
@@ -64,22 +64,22 @@ class ConcurrentHostRouter:
         writer: Any,
         dispatcher: Any,
         *,
-        fixture_handler: Callable[[dict[str, Any]], Mapping[str, Any]] | None = None,
-        fixture_reserve: Callable[[dict[str, Any]], None] | None = None,
-        fixture_abandon: Callable[[dict[str, Any]], None] | None = None,
-        fixture_names: frozenset[str] = frozenset(),
+        worker_handler: Callable[[dict[str, Any]], Mapping[str, Any]] | None = None,
+        worker_reserve: Callable[[dict[str, Any]], None] | None = None,
+        worker_abandon: Callable[[dict[str, Any]], None] | None = None,
+        worker_names: frozenset[str] = frozenset(),
         read_frame_fn: Callable[[BinaryIO], dict[str, Any] | None] = read_frame,
     ) -> None:
         self._input = input_stream
         self._writer = writer
         self._dispatcher = dispatcher
-        self._fixture_handler = fixture_handler
-        self._fixture_reserve = fixture_reserve
-        self._fixture_abandon = fixture_abandon
-        self._fixture_names = fixture_names
+        self._worker_handler = worker_handler
+        self._worker_reserve = worker_reserve
+        self._worker_abandon = worker_abandon
+        self._worker_names = worker_names
         self._read_frame = read_frame_fn
         self._dispatch: queue.Queue[_Ticket | object] = queue.Queue(maxsize=DISPATCH_QUEUE_LIMIT)
-        self._fixtures: queue.Queue[_Ticket | object] = queue.Queue(maxsize=FIXTURE_QUEUE_LIMIT)
+        self._work_queue: queue.Queue[_Ticket | object] = queue.Queue(maxsize=WORKER_QUEUE_LIMIT)
         self._stop = threading.Event()
         self._events_closing = threading.Event()
         self._closed = False
@@ -105,7 +105,7 @@ class ConcurrentHostRouter:
     def run(self) -> None:
         self._start_threads()
         try:
-            # This is the sole owner of input reads.  Dispatch and fixture work
+            # This is the sole owner of input reads.  Dispatch and worker work
             # never execute on this reader thread.
             while not self._stop.is_set():
                 if self.fatal_error is not None:
@@ -114,21 +114,28 @@ class ConcurrentHostRouter:
                 if request is None:
                     break
                 ticket = _Ticket(request)
+                worker_request = self._is_worker_request(request)
+                if worker_request:
+                    try:
+                        rejection = self._dispatcher.authorize_request(request)
+                    except TransportFailure as error:
+                        if not request.get("generationCredential"):
+                            raise
+                        self._send_rejection(request, ticket, error)
+                        continue
+                    if rejection is not None:
+                        self._send(rejection)
+                        continue
                 try:
                     self._dispatch.put(ticket, timeout=CLOSE_TIMEOUT_SECONDS)
                 except queue.Full as error:
                     raise RouterFailure("DISPATCH_QUEUE_FULL", "dispatcher queue is full") from error
-                if not self._is_fixture(request):
+                if not worker_request:
                     # Control acknowledgements are bounded and keep the reader
                     # from consuming unbounded input after a writer failure.
                     ticket.done.wait(CLOSE_TIMEOUT_SECONDS)
                     if ticket.error is not None:
                         raise ticket.error
-                if request.get("name") == "system.shutdown":
-                    # Shutdown response is handled by the dispatcher; do not
-                    # read an unbounded stream after the terminal control item.
-                    ticket.done.wait(CLOSE_TIMEOUT_SECONDS)
-                    break
             if self.fatal_error is not None:
                 raise self.fatal_error
         finally:
@@ -146,19 +153,19 @@ class ConcurrentHostRouter:
         if callable(invalidate):
             invalidate()
         self._put_stop(self._dispatch)
-        self._put_stop(self._fixtures)
+        self._put_stop(self._work_queue)
         deadline = monotonic() + CLOSE_TIMEOUT_SECONDS
         for thread in self._threads:
             thread.join(timeout=max(0.0, deadline - monotonic()))
         while True:
             try:
-                queued = self._fixtures.get_nowait()
+                queued = self._work_queue.get_nowait()
             except queue.Empty:
                 break
             if isinstance(queued, _Ticket):
-                self._abandon_fixture(queued.request)
+                self._abandon_work(queued.request)
                 queued.done.set()
-            self._fixtures.task_done()
+            self._work_queue.task_done()
         drain_error: BaseException | None = None
         drain = getattr(self._dispatcher, "drain_generation_work", None)
         if callable(drain):
@@ -182,7 +189,7 @@ class ConcurrentHostRouter:
     def _start_threads(self) -> None:
         specs = (
             ("sakura-core-host-dispatcher", self._dispatch_loop),
-            *((f"sakura-core-host-fixture-{index}", self._fixture_loop) for index in range(FIXTURE_WORKER_COUNT)),
+            *((f"sakura-core-host-worker-{index}", self._worker_loop) for index in range(WORKER_WORKER_COUNT)),
         )
         for name, target in specs:
             thread = threading.Thread(target=target, name=name)
@@ -209,26 +216,27 @@ class ConcurrentHostRouter:
                     return
                 assert isinstance(item, _Ticket)
                 request = item.request
-                if self._is_fixture(request):
+                if self._is_worker_request(request):
                     # Workers bound execution; the queue absorbs short bursts
                     # from settings, Studio and chat instead of rejecting a
                     # fifth request while its waiting queue is still empty.
                     try:
-                        if self._fixture_reserve is not None:
-                            self._fixture_reserve(request)
-                        self._fixtures.put_nowait(item)
+                        if self._worker_reserve is not None:
+                            self._worker_reserve(request)
+                        self._work_queue.put_nowait(item)
                     except (ValueError, RuntimeError) as error:
-                        self._abandon_fixture(request)
-                        self._send_fixture_rejection(request, item, error)
+                        self._abandon_work(request)
+                        self._send_rejection(request, item, error)
                     except queue.Full:
-                        self._abandon_fixture(request)
+                        self._abandon_work(request)
                         self._send_overload(request, item)
                     continue
                 message, should_stop = self._dispatcher.dispatch(request)
                 self._send(message)
-                item.done.set()
                 if should_stop:
                     self._stop.set()
+                item.done.set()
+                if should_stop:
                     return
             except BaseException as error:  # noqa: BLE001 - transferred to owner
                 item.error = error if isinstance(item, _Ticket) else error
@@ -239,10 +247,10 @@ class ConcurrentHostRouter:
             finally:
                 self._dispatch.task_done()
 
-    def _fixture_loop(self) -> None:
+    def _worker_loop(self) -> None:
         while not self._stop.is_set():
             try:
-                item = self._fixtures.get(timeout=0.1)
+                item = self._work_queue.get(timeout=0.1)
             except queue.Empty:
                 continue
             try:
@@ -250,18 +258,18 @@ class ConcurrentHostRouter:
                     return
                 assert isinstance(item, _Ticket)
                 if self._stop.is_set():
-                    self._abandon_fixture(item.request)
+                    self._abandon_work(item.request)
                     item.done.set()
                     return
                 try:
                     try:
                         with _request_interaction_context(item.request):
-                            result = self._fixture_handler(item.request)  # type: ignore[misc]
+                            result = self._worker_handler(item.request)  # type: ignore[misc]
                     except Exception as error:
                         if self.fatal_error is not None:
                             raise
-                        self._abandon_fixture(item.request)
-                        self._send_fixture_rejection(item.request, item, error, fallback_code="REQUEST_FAILED")
+                        self._abandon_work(item.request)
+                        self._send_rejection(item.request, item, error, fallback_code="REQUEST_FAILED")
                         continue
                     self._send(result)
                 finally:
@@ -272,17 +280,15 @@ class ConcurrentHostRouter:
                     item.done.set()
                 self._set_fatal(error)
             finally:
-                self._fixtures.task_done()
+                self._work_queue.task_done()
 
-    def _abandon_fixture(self, request: dict[str, Any]) -> None:
-        if self._fixture_abandon is not None:
-            self._fixture_abandon(request)
+    def _abandon_work(self, request: dict[str, Any]) -> None:
+        if self._worker_abandon is not None:
+            self._worker_abandon(request)
 
-    def _is_fixture(self, request: Mapping[str, Any]) -> bool:
+    def _is_worker_request(self, request: Mapping[str, Any]) -> bool:
         name = request.get("name")
-        return self._fixture_handler is not None and (
-            name in self._fixture_names or (isinstance(name, str) and name.startswith("fixture."))
-        )
+        return self._worker_handler is not None and name in self._worker_names
 
     def _send_overload(self, request: dict[str, Any], ticket: _Ticket) -> None:
         message = response(
@@ -300,7 +306,7 @@ class ConcurrentHostRouter:
         self._send(message)
         ticket.done.set()
 
-    def _send_fixture_rejection(
+    def _send_rejection(
         self,
         request: dict[str, Any],
         ticket: _Ticket,
@@ -354,7 +360,7 @@ class ConcurrentHostRouter:
 __all__ = [
     "ConcurrentHostRouter",
     "DISPATCH_QUEUE_LIMIT",
-    "FIXTURE_QUEUE_LIMIT",
-    "FIXTURE_WORKER_COUNT",
+    "WORKER_QUEUE_LIMIT",
+    "WORKER_WORKER_COUNT",
     "RouterFailure",
 ]

@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Mapping
 
+from app.config.character_loader import CharacterRegistry
 from app.core.diagnostics import exception_diagnostics
 from app.plugins.inventory import (
     InstalledPluginRecord,
@@ -28,22 +29,15 @@ class PluginApplicationHost(PluginRuntimeApplication):
         tool_registry: object,
     ) -> None:
         resolved = coerce_runtime_roots(roots)
-        self._user_root = resolved.user_root
-        self._desired = PluginDesiredStateStore(self._user_root)
-        super().__init__(
-            resolved,
-            generation_id,
-            tool_registry,
-        )
+        super().__init__(resolved, generation_id, tool_registry)
+        self._desired = PluginDesiredStateStore(resolved.user_root)
 
     def bind_character_presentation(self, character_id: str) -> None:
-        from app.config.character_loader import CharacterRegistry
-        character = CharacterRegistry(self._user_root).get(character_id)
+        character = CharacterRegistry(self._roots.user_root).get(character_id)
         self.bind_visual_character(character)
 
     def preview_character_presentation(self, character_id):
-        from app.config.character_loader import CharacterRegistry
-        return super().preview_character_presentation(CharacterRegistry(self._user_root).get(character_id))
+        return super().preview_character_presentation(CharacterRegistry(self._roots.user_root).get(character_id))
 
     def public_snapshot(self) -> dict[str, Any]:
         return self._merge_inventory(super().public_snapshot())

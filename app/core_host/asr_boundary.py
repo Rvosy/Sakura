@@ -13,7 +13,8 @@ from typing import Callable, Mapping
 
 from app.core_host.audio_input import AudioInputError
 from app.core.runtime_log import diagnostic_attributes
-from app.core_host.protocol import error_payload, response, verify_generation_identity
+from app.core.diagnostics import safe_diagnostic_text
+from app.core_host.protocol import error_payload, response
 
 ASR_REQUEST_NAMES = frozenset({
     "asr.input.prepare", "asr.input.poll", "asr.input.cancel", "asr.input.capture_target",
@@ -47,10 +48,9 @@ class _Input:
 
 
 class ASRBoundary:
-    def __init__(self, generation_id: str, generation_credential: str, *,
+    def __init__(self, generation_id: str, *,
                  user_root: Path, plugin_application_provider: Callable, character_presentation_provider: Callable) -> None:
         self._generation = generation_id
-        self._credential = generation_credential
         self._application = plugin_application_provider
         self._character = character_presentation_provider
         self._lock = threading.RLock()
@@ -61,7 +61,7 @@ class ASRBoundary:
 
     def handle(self, request: dict) -> dict:
         try:
-            if not verify_generation_identity(request, self._generation, self._credential) or self._closed:
+            if self._closed:
                 raise AudioInputError("STALE_GENERATION")
             payload = request.get("payload")
             if not isinstance(payload, Mapping):
@@ -127,7 +127,10 @@ class ASRBoundary:
                 code = str(error)
             if not isinstance(code, str) or not re.fullmatch(r"[A-Z0-9_]{1,80}", code):
                 code = "ASR_SERVICE_UNAVAILABLE"
-            return self._response(request, error=error_payload(code, "语音输入未能完成，请检查插件中的语音输入设置后重试。"))
+            diagnostics = getattr(error, "diagnostics", None)
+            detail = diagnostics.get("diagnostic") if isinstance(diagnostics, Mapping) else None
+            message = safe_diagnostic_text(detail or error, secrets=(request["generationCredential"],))
+            return self._response(request, error=error_payload(code, message or "语音输入未能完成。"))
 
     def _prepare(self, payload: Mapping) -> dict:
         purpose = payload.get("purpose", "draft")
@@ -359,5 +362,4 @@ class ASRBoundary:
         return value
 
     def _response(self, request: dict, **kwargs) -> dict:
-        return response(request, generation_id=self._generation, generation_credential=self._credential,
-                        protocol_minor=int(request.get("protocolMinor", 2)), **kwargs)
+        return response(request, protocol_minor=int(request.get("protocolMinor", 2)), **kwargs)

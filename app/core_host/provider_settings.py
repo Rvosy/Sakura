@@ -9,7 +9,7 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 
 from app.config.model_references import EMPTY_REFERENCE, ModelReferenceRepository, model_reference
-from .protocol import error_payload, require_generation_identity, response
+from .protocol import error_payload, response
 
 SETTINGS_REQUEST_NAMES = frozenset({"settings.provider_model.get", "settings.provider_model.save"})
 
@@ -23,8 +23,6 @@ class ModelSettingsError(ValueError):
 class ProviderSettingsBoundary:
     def __init__(self, generation_id: str, generation_credential: str, app_root: Path, *,
                  plugin_application_provider: Callable[[], object | None] | None = None, runtime_apply=None):
-        self._generation_id = generation_id
-        self._generation_credential = generation_credential
         self._repository = ModelReferenceRepository(app_root)
         self._plugin_application_provider = plugin_application_provider
         self._runtime_apply = runtime_apply
@@ -40,19 +38,18 @@ class ProviderSettingsBoundary:
         return self._plugin_application_provider() if self._plugin_application_provider else None
 
     def handle(self, request):
-        require_generation_identity(request, self._generation_id, self._generation_credential)
         try:
             with self._lock:
                 if not self._enabled or self._closed:
                     raise ModelSettingsError("CAPABILITY_NEGOTIATION_FAILED", "设置能力尚未就绪。")
             name = request.get("name")
             if name == "settings.provider_model.get":
-                if request.get("payload") != {}:
+                if not isinstance(request.get("payload"), Mapping):
                     raise ModelSettingsError("INVALID_REQUEST")
                 payload = self._snapshot()
             elif name == "settings.provider_model.save":
                 raw = request.get("payload")
-                if not isinstance(raw, Mapping) or set(raw) != {"draft"}:
+                if not isinstance(raw, Mapping) or "draft" not in raw:
                     raise ModelSettingsError("INVALID_REQUEST")
                 with self._save_lock:
                     with self._lock:
@@ -114,16 +111,17 @@ class ProviderSettingsBoundary:
     def _save(self, raw):
         if not self._repository.path.exists() and self._application() is None:
             raise ModelSettingsError("MODEL_CONFIGURATION_NOT_READY", "模型配置尚未准备完成，请稍后重试。")
-        if not isinstance(raw, Mapping) or set(raw) != {"model_slots"} or not isinstance(raw["model_slots"], Mapping):
+        if not isinstance(raw, Mapping) or "model_slots" not in raw or not isinstance(raw["model_slots"], Mapping):
             raise ModelSettingsError("INVALID_REQUEST")
         snapshot = self._snapshot()
         current = {slot["identity"]: slot for slot in snapshot["model_slots"]}
         choices = {(provider["serviceKey"], profile["profileId"], model["modelId"])
                    for provider in snapshot["providers"] for profile in provider.get("profiles", []) for model in profile.get("models", [])}
-        if set(raw["model_slots"]) != set(current):
+        if not current.keys() <= raw["model_slots"].keys():
             raise ModelSettingsError("MODEL_SLOTS_INVALID", "模型设置项已变化，请刷新后重试。")
         selections = {}
-        for identity, value in raw["model_slots"].items():
+        for identity in current:
+            value = raw["model_slots"][identity]
             try:
                 selections[identity] = model_reference(value)
             except ValueError as error:
@@ -167,5 +165,4 @@ class ProviderSettingsBoundary:
         if error is not None:
             failure = error_payload(error.code, error.message)
             failure["details"] = {"feature": error.feature, "field": error.field}
-        return response(request, generation_id=self._generation_id, generation_credential=self._generation_credential,
-                        protocol_minor=int(request["protocolMinor"]), payload=payload, error=failure)
+        return response(request, protocol_minor=int(request["protocolMinor"]), payload=payload, error=failure)

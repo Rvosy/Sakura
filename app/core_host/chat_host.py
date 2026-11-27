@@ -49,7 +49,7 @@ class ChatHost:
         self._owner_revisions: dict[str, int] = {}
 
     def set_ui_state(self, facts: Mapping) -> dict:
-        if (not isinstance(facts, Mapping) or set(facts) != {"sessionId", "idle", "activityRevision"}
+        if (not isinstance(facts, Mapping) or not {"sessionId", "idle", "activityRevision"}.issubset(facts)
                 or not isinstance(facts["sessionId"], str) or not isinstance(facts["idle"], bool)
                 or type(facts["activityRevision"]) is not int or facts["activityRevision"] < 0):
             raise RealChatRejection("CHAT_UI_STATE_INVALID", "互动状态无效")
@@ -118,9 +118,9 @@ class ChatHost:
 
     def record_activity(self, request: Mapping) -> dict:
         owner = caller_identity()
-        if not isinstance(request, Mapping) or set(request) != {
+        if not isinstance(request, Mapping) or not {
             "sessionId", "text", "details", "recordId", "actionLabel"
-        }:
+        }.issubset(request):
             raise RealChatRejection("INVALID_CHAT_PAYLOAD", "活动记录格式无效")
         boundary = self._boundary_provider()
         if boundary is None:
@@ -136,13 +136,12 @@ class ChatHost:
     def submit(self, request: Mapping) -> dict:
         owner = caller_identity()
         if (not isinstance(request, Mapping) or not {"sessionId", "message", "resources"} <= set(request)
-                or set(request) - {"sessionId", "message", "resources", "notification"}
                 or not isinstance(request["message"], str) or not request["message"].strip()
                 or len(request["message"]) > 32768 or not isinstance(request["resources"], list)):
             raise RealChatRejection("INVALID_CHAT_PAYLOAD", "主动互动输入无效")
         notification = request.get("notification")
         if "notification" in request and (not isinstance(notification, Mapping)
-                or set(notification) != {"kind", "text"} or notification["kind"] != "update"
+                or not {"kind", "text"}.issubset(notification) or notification["kind"] != "update"
                 or not isinstance(notification["text"], str) or not notification["text"].strip()
                 or len(notification["text"]) > MAX_TEXT_CHARS):
             raise RealChatRejection("INVALID_CHAT_PAYLOAD", "通知信息无效")

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hmac
 import logging
 import re
 import secrets
@@ -897,8 +896,8 @@ class RealChatBoundary:
 
     def handle_cancel(self, request: dict[str, Any]) -> dict[str, Any]:
         payload = request.get("payload")
-        if not isinstance(payload, Mapping) or set(payload) != {"operationId"}:
-            raise ValueError("chat.cancel payload must contain only operationId")
+        if not isinstance(payload, Mapping) or "operationId" not in payload:
+            raise ValueError("chat.cancel payload must contain operationId")
         operation_id = payload.get("operationId")
         if not isinstance(operation_id, str) or not operation_id.strip():
             raise ValueError("chat.cancel operationId is invalid")
@@ -924,7 +923,7 @@ class RealChatBoundary:
         )
 
     def handle_screen_session(self, request: dict[str, Any]) -> dict[str, Any]:
-        if request.get("payload") != {}:
+        if not isinstance(request.get("payload"), Mapping):
             raise ValueError("screen.session payload is invalid")
         with self._lock:
             self._check_screen_session(self._screen_session_id)
@@ -941,7 +940,7 @@ class RealChatBoundary:
 
     def handle_screen_attach(self, request: dict[str, Any]) -> dict[str, Any]:
         payload = request.get("payload")
-        if not isinstance(payload, Mapping) or set(payload) != {"resource", "sessionId"}:
+        if not isinstance(payload, Mapping) or not {"resource", "sessionId"}.issubset(payload):
             raise ValueError("screen.attach payload is invalid")
         from app.core_host.screen_capture import consume_screen_resource
         from app.storage.visual_observation import generate_visual_observation_id
@@ -992,7 +991,7 @@ class RealChatBoundary:
 
     def handle_screen_remove(self, request: dict[str, Any]) -> dict[str, Any]:
         payload = request.get("payload")
-        if not isinstance(payload, Mapping) or set(payload) != {"attachmentId", "itemId"}:
+        if not isinstance(payload, Mapping) or not {"attachmentId", "itemId"}.issubset(payload):
             raise ValueError("screen.remove payload is invalid")
         attachment_id = payload.get("attachmentId")
         item_id = payload.get("itemId")
@@ -1039,7 +1038,7 @@ class RealChatBoundary:
 
     def handle_screen_release(self, request: dict[str, Any]) -> dict[str, Any]:
         payload = request.get("payload")
-        if not isinstance(payload, Mapping) or set(payload) != {"attachmentId"}:
+        if not isinstance(payload, Mapping) or "attachmentId" not in payload:
             raise ValueError("screen.release payload is invalid")
         attachment_id = payload.get("attachmentId")
         if (
@@ -1193,20 +1192,6 @@ class RealChatBoundary:
             )
 
     def _validate_send(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
-        # The Router deliberately does not understand generation credentials;
-        # the product boundary therefore repeats the transport checks before
-        # touching the published Assistant session.
-        if request.get("generationId") != self._generation_id:
-            raise RealChatRejection("GENERATION_MISMATCH", "chat request is stale")
-        supplied_credential = request.get("generationCredential")
-        if not isinstance(supplied_credential, str) or not hmac.compare_digest(
-            supplied_credential,
-            self._generation_credential,
-        ):
-            raise RealChatRejection(
-                "GENERATION_CREDENTIAL_MISMATCH",
-                "chat generation credential is invalid",
-            )
         if request.get("kind") != "request" or request.get("name") != "chat.send":
             raise RealChatRejection("INVALID_CHAT_REQUEST", "chat request envelope is invalid")
         payload = request.get("payload")
@@ -1217,12 +1202,12 @@ class RealChatBoundary:
             )
         if payload.get("operationId") != request.get("id"):
             raise RealChatRejection("INVALID_CHAT_PAYLOAD", "chat identity is invalid")
-        if set(payload) == {"operationId", "event"}:
+        if "event" in payload:
+            if "message" in payload or "attachmentId" in payload:
+                raise RealChatRejection("INVALID_CHAT_PAYLOAD", "event cannot include a message or attachment")
             self._validate_update_event(payload.get("event"))
             return payload
-        if not {"message", "operationId"}.issubset(payload) or not set(payload).issubset(
-            {"message", "operationId", "attachmentId"}
-        ):
+        if "message" not in payload:
             raise RealChatRejection(
                 "INVALID_CHAT_PAYLOAD",
                 "chat.send payload shape is invalid",

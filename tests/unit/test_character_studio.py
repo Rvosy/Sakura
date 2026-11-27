@@ -100,14 +100,14 @@ def test_character_studio_voice_assets_round_trip_through_the_draft(tmp_path: Pa
     }]
 
     saved = service.save_draft(doc, created["workspace_id"])
-    preview = service.load_reference_audio_preview(
+    preview = service.describe_reference_audio_preview(
         created["workspace_id"],
         audio["relative_path"],
     )
 
     assert saved["doc"]["reply_tones"] == ["温柔"]
     assert saved["doc"]["voice"]["tone_refs"] == "voice/refs/ref.txt"
-    assert preview["data_url"] == "data:audio/wav;base64,YXVkaW8="
+    assert Path(preview["source_path"]).read_bytes() == b"audio"
 
 
 def test_studio_can_save_models_without_reference_audio_or_enabling_speech(tmp_path: Path) -> None:

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import copy
-import hmac
 import json
 import queue
 import threading
@@ -18,7 +17,7 @@ from app.plugin_sdk.sakura_cancellation import OperationCancelled
 from app.plugins.runtime_v4 import CLOSE_TIMEOUT_SECONDS
 from app.storage.runtime_roots import RuntimeRoots
 
-from .protocol import PROTOCOL_MAJOR, PROTOCOL_MINOR, error_payload, read_frame, response, write_frame
+from .protocol import PROTOCOL_MAJOR, PROTOCOL_MINOR, TransportFailure, require_generation_identity, error_payload, read_frame, response, write_frame
 
 if TYPE_CHECKING:
     from app.plugin_sdk.sakura_tools import ToolRegistry
@@ -61,19 +60,6 @@ _SUMMARY_KEYS = (
     "replyTones",
     "portraitChoices",
 )
-_PRESENTATION_KEYS = (
-    "schemaVersion",
-    "generationId",
-    "characterId",
-    "displayName",
-    "initialMessage",
-    "themeTokens",
-    "defaultPortraitKey",
-    "portraitKeys",
-    "portraitResourceIds",
-)
-
-
 @dataclass(frozen=True)
 class HostConfig:
     roots: RuntimeRoots
@@ -115,13 +101,6 @@ class WriterError(RuntimeError):
 
 class InitializeError(ValueError):
     pass
-
-
-class TransportFailure(RuntimeError):
-    def __init__(self, code: str, message: str) -> None:
-        super().__init__(f"{code}: {message}")
-        self.code = code
-        self.message = message
 
 
 class NegotiationError(ValueError):
@@ -206,14 +185,14 @@ class ReadinessController:
             self._chat_boundary = boundary
             application = self._plugin_application
         if application is not None:
-            getattr(application, "bind_chat_boundary")(boundary)
+            application.bind_chat_boundary(boundary)
 
     def bind_tts_boundary(self, boundary: object) -> None:
         with self._lock:
             self._tts_boundary = boundary
             application = self._plugin_application
         if application is not None:
-            getattr(application, "bind_tts_boundary")(boundary)
+            application.bind_tts_boundary(boundary)
 
     def bind_visual_selector(self, callback) -> None:
         with self._lock:
@@ -236,8 +215,8 @@ class ReadinessController:
             self._plugins_enabled = True
 
     def begin(self, payload: Mapping[str, Any]) -> dict[str, Any]:
-        if not isinstance(payload, Mapping) or payload:
-            raise InitializeError("initialize payload must be an empty mapping")
+        if not isinstance(payload, Mapping):
+            raise InitializeError("initialize payload must be a mapping")
         with self._lock:
             if self._closed:
                 raise InitializeError("Core Host is shutting down")
@@ -351,7 +330,7 @@ class ReadinessController:
             plugin_application = self._plugin_application
         if initializer is None:
             raise RuntimeError("ASSISTANT_INITIALIZER_UNAVAILABLE")
-        result = getattr(initializer, "initialize")(self._cancel)
+        result = initializer.initialize(self._cancel)
         if result.state == "failed":
             self._reject_provider_configuration(result, session, plugin_application)
         candidate = None
@@ -450,14 +429,14 @@ class ReadinessController:
             return result
         try:
             if application is not None:
-                getattr(application, "bind_session")(result.session)
+                application.bind_session(result.session)
             if self._cancel.is_set():
                 raise OperationCancelled()
             return result
         except Exception as error:
             if application is not None:
                 try:
-                    getattr(application, "unbind_session")()
+                    application.unbind_session()
                 except Exception as cleanup_error:
                     error.add_note(f"Session unbind failed: {type(cleanup_error).__name__}")
             retire = getattr(initializer, "retire_session", None)
@@ -587,7 +566,7 @@ class ReadinessController:
                 "characterPresentation": presentation,
                 "activeInteractionSummary": None,
             }
-        snapshot = getattr(chat_boundary, "snapshot_fields")(
+        snapshot = chat_boundary.snapshot_fields(
             readiness,
             summary,
             base_revision=revision,
@@ -649,7 +628,7 @@ class ReadinessController:
             if resource is None:
                 continue
             try:
-                getattr(resource, "close")()
+                resource.close()
             except BaseException as error:  # noqa: BLE001 - preserve shutdown failure
                 with self._lock:
                     if self._background_close_error is None:
@@ -891,55 +870,20 @@ class ReadinessController:
             return None
         if not isinstance(presentation, Mapping):
             raise TypeError("character presentation must be a mapping")
-        projected = dict(presentation)
-        projected["generationId"] = self._config.generation_id
-        if projected.get("schemaVersion") == 2:
-            if set(projected) != {
-                "schemaVersion", "generationId", "characterId", "displayName", "initialMessage",
-                "initialMessageTranslation", "themeTokens", "visual", "visualReasonCode",
-            }:
-                raise TypeError("character presentation fields are invalid")
-            translation = projected.get("initialMessageTranslation")
-            if not isinstance(translation, str):
-                raise TypeError("character presentation translation is invalid")
-            for key in ("generationId", "characterId", "displayName", "initialMessage", "visualReasonCode"):
-                if not isinstance(projected[key], str) or not projected[key].strip():
-                    raise TypeError("character presentation strings are invalid")
-            if not isinstance(projected["themeTokens"], dict) or (projected["visual"] is not None and not isinstance(projected["visual"], dict)):
-                raise TypeError("character presentation visual is invalid")
-            return self._copy_presentation(projected)
-        if set(projected) != set(_PRESENTATION_KEYS):
-            raise TypeError("character presentation fields are invalid")
-        if projected["schemaVersion"] != 1:
+        if presentation.get("schemaVersion") != 2:
             raise TypeError("character presentation schema is invalid")
-        for key in (
-            "generationId",
-            "characterId",
-            "displayName",
-            "initialMessage",
-            "defaultPortraitKey",
-        ):
-            if not isinstance(projected[key], str) or not str(projected[key]).strip():
+        fields = ("schemaVersion", "characterId", "displayName", "initialMessage",
+                  "initialMessageTranslation", "themeTokens", "visual", "visualReasonCode")
+        projected = {key: presentation[key] for key in fields}
+        projected["generationId"] = self._config.generation_id
+        translation = projected.get("initialMessageTranslation")
+        if not isinstance(translation, str):
+            raise TypeError("character presentation translation is invalid")
+        for key in ("generationId", "characterId", "displayName", "initialMessage", "visualReasonCode"):
+            if not isinstance(projected[key], str) or not projected[key].strip():
                 raise TypeError("character presentation strings are invalid")
-        theme = projected["themeTokens"]
-        resource_ids = projected["portraitResourceIds"]
-        portrait_keys = projected["portraitKeys"]
-        if not isinstance(theme, dict) or any(
-            not isinstance(name, str) or not isinstance(value, str)
-            for name, value in theme.items()
-        ):
-            raise TypeError("character presentation theme is invalid")
-        if not isinstance(portrait_keys, list) or any(
-            not isinstance(value, str) or not value for value in portrait_keys
-        ):
-            raise TypeError("character presentation portrait keys are invalid")
-        if not isinstance(resource_ids, dict) or any(
-            not isinstance(name, str) or not isinstance(value, str)
-            for name, value in resource_ids.items()
-        ):
-            raise TypeError("character presentation resource IDs are invalid")
-        if set(portrait_keys) != set(resource_ids):
-            raise TypeError("character presentation portrait mapping is invalid")
+        if not isinstance(projected["themeTokens"], dict) or (projected["visual"] is not None and not isinstance(projected["visual"], dict)):
+            raise TypeError("character presentation visual is invalid")
         return self._copy_presentation(projected)
 
     @staticmethod
@@ -1118,9 +1062,9 @@ class ControlDispatcher:
                 cancel_all()
 
     def invalidate_generation_work(self) -> None:
-        """Cancel domain work before the Router waits for fixture workers."""
+        """Cancel domain work before the Router waits for workers."""
 
-        plugin_application = self.published_plugin_application()
+        plugin_application = self._readiness.published_plugin_application()
         quiesce = getattr(plugin_application, "quiesce", None)
         if callable(quiesce):
             quiesce()
@@ -1135,7 +1079,7 @@ class ControlDispatcher:
     @contextmanager
     def prepare_voice_resource_update(self):
         """Release only voice model readers; desired plugin enablement is unchanged."""
-        application = self.published_plugin_application()
+        application = self._readiness.published_plugin_application()
         if self._tts_boundary is not None:
             self._tts_boundary.cancel_all()
         if application is None:
@@ -1153,7 +1097,7 @@ class ControlDispatcher:
         with chat_scope, asr_scope:
             if self._tts_boundary is not None:
                 self._tts_boundary.reset_character()
-            application = self.published_plugin_application()
+            application = self._readiness.published_plugin_application()
             scope = application.prepare_character_switch() if application else nullcontext()
             with scope as errors:
                 yield
@@ -1189,33 +1133,8 @@ class ControlDispatcher:
             if callable(close):
                 close()
 
-    def published_session(self) -> object | None:
-        return self._readiness.published_session()
-
-    def switch_character_session(self) -> None:
-        self._readiness.switch_character_session()
-
-    def published_character_presentation(self) -> dict[str, object] | None:
-        return self._readiness.published_character_presentation()
-
-    def published_plugin_application(self) -> object | None:
-        return self._readiness.published_plugin_application()
-
     def plugin_initialization_failed(self) -> bool:
         return self._readiness.readiness() == "failed"
-
-    def bind_visual_selector(self, callback) -> None:
-        self._readiness.bind_visual_selector(callback)
-
-
-    def apply_provider_configuration(self) -> None:
-        self._readiness.apply_provider_configuration()
-
-    def refresh_assistant_binding(self) -> None:
-        self._readiness.refresh_assistant_binding()
-
-    def apply_tool_runtime_settings(self, settings: object) -> None:
-        self._readiness.apply_tool_runtime_settings(settings)
 
     def close(self) -> None:
         with self._close_lock:
@@ -1227,7 +1146,7 @@ class ControlDispatcher:
             self._asr_boundary.close()
         if self._chat_boundary is not None:
             try:
-                getattr(self._chat_boundary, "close")()
+                self._chat_boundary.close()
             except BaseException as error:  # noqa: BLE001
                 if primary is None:
                     primary = error
@@ -1235,7 +1154,7 @@ class ControlDispatcher:
                     primary.add_note(f"Additional cleanup failure: {type(error).__name__}")
         if self._provider_settings_boundary is not None:
             try:
-                getattr(self._provider_settings_boundary, "close")()
+                self._provider_settings_boundary.close()
             except BaseException as error:  # noqa: BLE001
                 if primary is None:
                     primary = error
@@ -1243,7 +1162,7 @@ class ControlDispatcher:
                     primary.add_note(f"Additional cleanup failure: {type(error).__name__}")
         if self._tts_boundary is not None:
             try:
-                getattr(self._tts_boundary, "close")()
+                self._tts_boundary.close()
             except BaseException as error:  # noqa: BLE001
                 if primary is None:
                     primary = error
@@ -1259,38 +1178,21 @@ class ControlDispatcher:
         if primary is not None:
             raise primary
 
-    def dispatch(self, request: dict[str, Any]) -> tuple[dict[str, Any], bool]:
-        supplied_credential = request.get("generationCredential")
-        if not isinstance(supplied_credential, str) or not hmac.compare_digest(
-            supplied_credential, self._config.generation_credential
-        ):
-            raise TransportFailure(
-                "GENERATION_CREDENTIAL_MISMATCH",
-                "request credential does not match the active generation",
-            )
-        if request["generationId"] != self._config.generation_id:
-            return (
-                response(
-                    request,
-                    generation_id=self._config.generation_id,
-                    generation_credential=self._config.generation_credential,
-                    protocol_minor=self._protocol_minor,
-                    error=error_payload("GENERATION_MISMATCH", "request belongs to another generation"),
-                ),
-                False,
-            )
+    def authorize_request(self, request: Mapping[str, Any]) -> dict[str, Any] | None:
+        try:
+            require_generation_identity(request, self._config.generation_id, self._config.generation_credential)
+        except TransportFailure as error:
+            if error.code == "GENERATION_CREDENTIAL_MISMATCH":
+                raise
+            return self._error_response(request, error.code, error.message)
         if request["kind"] != "request":
-            return (
-                response(
-                    request,
-                    generation_id=self._config.generation_id,
-                    generation_credential=self._config.generation_credential,
-                    protocol_minor=self._protocol_minor,
-                    error=error_payload("INVALID_CONTROL", "control plane accepts requests only"),
-                ),
-                False,
-            )
+            return self._error_response(request, "INVALID_CONTROL", "control plane accepts requests only")
+        return None
 
+    def dispatch(self, request: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+        rejection = self.authorize_request(request)
+        if rejection is not None:
+            return rejection, False
         name = request["name"]
         if self._handshake == "failed":
             return self._error_response(
@@ -1347,7 +1249,7 @@ class ControlDispatcher:
                     "chat cancellation requires the concurrent router",
                 ), False
             try:
-                return getattr(self._chat_boundary, "handle_cancel")(request), False
+                return self._chat_boundary.handle_cancel(request), False
             except ValueError as error:
                 return self._error_response(request, "INVALID_CHAT_CANCEL", str(error)), False
         elif name in {"screen.session", "screen.attach", "screen.remove", "screen.release"}:
@@ -1409,10 +1311,10 @@ class ControlDispatcher:
 
     def _negotiate(self, request: dict[str, Any]) -> dict[str, Any]:
         payload = request["payload"]
-        if set(payload) != {"protocol", "requiredCapabilities", "optionalCapabilities"}:
+        if not {"protocol", "requiredCapabilities", "optionalCapabilities"}.issubset(payload):
             raise NegotiationError("INVALID_NEGOTIATION", "hello payload fields are invalid")
         protocol = payload.get("protocol")
-        if not isinstance(protocol, Mapping) or set(protocol) != {"major", "minMinor", "maxMinor"}:
+        if not isinstance(protocol, Mapping) or not {"major", "minMinor", "maxMinor"}.issubset(protocol):
             raise NegotiationError("INVALID_NEGOTIATION", "protocol range is invalid")
         major = _negotiation_integer(protocol, "major")
         minimum = _negotiation_integer(protocol, "minMinor")
@@ -1463,7 +1365,7 @@ class ControlDispatcher:
             PROVIDER_SETTINGS_CAPABILITY in selected
             and self._provider_settings_boundary is not None
         ):
-            getattr(self._provider_settings_boundary, "enable")()
+            self._provider_settings_boundary.enable()
         if TOOLS_CAPABILITY in selected:
             self._readiness.enable_tools()
         if PLUGINS_CAPABILITY in selected:
@@ -1552,26 +1454,20 @@ def run_host(
         repair_character_packages(config.user_root)
         import_seed_characters(config.distribution_root, config.user_root)
         dispatcher = ControlDispatcher(config)
+        readiness = dispatcher._readiness
         asr_boundary = ASRBoundary(
-            config.generation_id, config.generation_credential,
-            user_root=config.user_root,
-            plugin_application_provider=getattr(dispatcher, "published_plugin_application", lambda: None),
-            character_presentation_provider=getattr(dispatcher, "published_character_presentation", lambda: None),
+            config.generation_id, user_root=config.user_root,
+            plugin_application_provider=readiness.published_plugin_application,
+            character_presentation_provider=readiness.published_character_presentation,
         )
-        attach_asr = getattr(dispatcher, "attach_asr_boundary", None)
-        if callable(attach_asr):
-            attach_asr(asr_boundary)
+        dispatcher.attach_asr_boundary(asr_boundary)
         tts_boundary = TTSBoundary(
             config.generation_id,
             config.generation_credential,
             config.user_root,
-            session_provider=getattr(dispatcher, "published_session", lambda: None),
-            character_presentation_provider=getattr(
-                dispatcher, "published_character_presentation", lambda: None
-            ),
-            plugin_application_provider=getattr(
-                dispatcher, "published_plugin_application", lambda: None
-            ),
+            session_provider=readiness.published_session,
+            character_presentation_provider=readiness.published_character_presentation,
+            plugin_application_provider=readiness.published_plugin_application,
         )
         chat_boundary = (
             chat_boundary_factory(dispatcher)
@@ -1580,84 +1476,63 @@ def run_host(
                 config.generation_id,
                 config.generation_credential,
                 config.user_root,
-                session_provider=getattr(dispatcher, "published_session", lambda: None),
-                plugin_application_provider=getattr(
-                    dispatcher, "published_plugin_application", lambda: None
-                ),
+                session_provider=readiness.published_session,
+                plugin_application_provider=readiness.published_plugin_application,
                 segment_authorizer=tts_boundary.authorize_segment,
             )
         )
-        attach_chat_boundary = getattr(dispatcher, "attach_chat_boundary", None)
-        if callable(attach_chat_boundary):
-            attach_chat_boundary(chat_boundary)
-        attach_tts_boundary = getattr(dispatcher, "attach_tts_boundary", None)
-        if callable(attach_tts_boundary):
-            attach_tts_boundary(tts_boundary)
+        dispatcher.attach_chat_boundary(chat_boundary)
+        dispatcher.attach_tts_boundary(tts_boundary)
         provider_settings = ProviderSettingsBoundary(
             config.generation_id,
             config.generation_credential,
             config.user_root,
-            plugin_application_provider=getattr(
-                dispatcher, "published_plugin_application", lambda: None
-            ),
+            plugin_application_provider=readiness.published_plugin_application,
             runtime_apply=lambda: chat_boundary.apply_runtime_update(
-                getattr(dispatcher, "apply_provider_configuration", lambda: None),
+                readiness.apply_provider_configuration,
             ),
         )
         tool_settings = ToolSettingsBoundary(
-            config.generation_id,
-            config.generation_credential,
             config.user_root,
             runtime_apply=lambda settings: chat_boundary.apply_runtime_update(
-                lambda: getattr(
-                    dispatcher, "apply_tool_runtime_settings", lambda _settings: None
-                )(settings),
+                lambda: readiness.apply_tool_runtime_settings(settings),
             ),
         )
         plugin_settings = PluginSettingsBoundary(
             config.generation_id,
             config.generation_credential,
             config.roots,
-            application_provider=getattr(
-                dispatcher, "published_plugin_application", lambda: None
-            ),
-            initialization_failed=getattr(dispatcher, "plugin_initialization_failed", lambda: False),
+            application_provider=readiness.published_plugin_application,
+            initialization_failed=dispatcher.plugin_initialization_failed,
         )
         composer_tools = ComposerToolsBoundary(
             config.generation_id,
-            config.generation_credential,
-            application_provider=getattr(
-                dispatcher, "published_plugin_application", lambda: None
-            ),
+            application_provider=readiness.published_plugin_application,
         )
         character_settings = CharacterSettingsBoundary(
             config.generation_id,
             config.generation_credential,
             config.user_root,
-            prepare_voice_update=getattr(dispatcher, "prepare_voice_resource_update", None),
-            apply_current=getattr(dispatcher, "apply_character_configuration", None),
-            prepare_switch=getattr(dispatcher, "prepare_character_switch", None),
-            apply_switch=getattr(dispatcher, "switch_character_session", None),
-            plugin_application_provider=getattr(dispatcher, "published_plugin_application", lambda: None),
+            prepare_voice_update=dispatcher.prepare_voice_resource_update,
+            apply_current=dispatcher.apply_character_configuration,
+            prepare_switch=dispatcher.prepare_character_switch,
+            apply_switch=readiness.switch_character_session,
+            plugin_application_provider=readiness.published_plugin_application,
         )
         theme_generation = ThemeGenerationBoundary(
-            config.generation_id, config.generation_credential, config.user_root,
-            application_provider=getattr(dispatcher, "published_plugin_application", lambda: None),
+            config.generation_id, config.user_root,
+            application_provider=readiness.published_plugin_application,
         )
-        bind_visual_selector = getattr(dispatcher, "bind_visual_selector", None)
-        if callable(bind_visual_selector):
-            bind_visual_selector(character_settings.select_visual_resource)
+        readiness.bind_visual_selector(character_settings.select_visual_resource)
         character_studio = CharacterStudioBoundary(
             config.generation_id,
             config.generation_credential,
             config.user_root,
-            plugin_application_provider=getattr(dispatcher, "published_plugin_application", lambda: None),
-            prepare_current=getattr(dispatcher, "prepare_character_publish", None),
-            apply_current=getattr(dispatcher, "apply_character_configuration", None),
+            plugin_application_provider=readiness.published_plugin_application,
+            prepare_current=dispatcher.prepare_character_publish,
+            apply_current=dispatcher.apply_character_configuration,
         )
         storage_settings = StorageSettingsBoundary(
-            config.generation_id,
-            config.generation_credential,
             config.user_root,
         )
         usage_statistics = UsageStatisticsBoundary(config.generation_id, config.generation_credential, config.user_root)
@@ -1665,213 +1540,124 @@ def run_host(
             config.generation_id,
             config.generation_credential,
             config.user_root,
-            character_provider=lambda: (dispatcher.published_character_presentation() or {}).get("characterId"),
-            application_provider=getattr(dispatcher, "published_plugin_application", lambda: None),
+            character_provider=lambda: (readiness.published_character_presentation() or {}).get("characterId"),
+            application_provider=readiness.published_plugin_application,
         )
-        attach_provider_boundary = getattr(
-            dispatcher,
-            "attach_provider_settings_boundary",
-            None,
-        )
-        if callable(attach_provider_boundary):
-            attach_provider_boundary(provider_settings)
+        dispatcher.attach_provider_settings_boundary(provider_settings)
 
-        class RequestBoundary:
-            def handle(self, request: dict[str, Any]) -> object:
-                if request.get("name") in HOST_DESKTOP_REQUESTS:
-                    credential = request.get("generationCredential")
-                    if not isinstance(credential, str) or not hmac.compare_digest(credential, config.generation_credential):
-                        raise TransportFailure("GENERATION_CREDENTIAL_MISMATCH", "request credential does not match the active generation")
-                    if request.get("kind") != "request":
-                        raise TransportFailure("INVALID_CONTROL", "host interaction accepts requests only")
-                    try:
-                        if not isinstance(request.get("payload"), Mapping):
-                            raise ValueError("INVALID_REQUEST")
-                        payload = dict(request["payload"])
-                        if (request.get("generationId") != config.generation_id
-                                or payload.pop("generationId", None) != config.generation_id):
-                            raise ValueError("GENERATION_MISMATCH")
-                        application = dispatcher.published_plugin_application()
-                        if application is None:
-                            raise ValueError("HOST_INTERACTION_UNAVAILABLE")
-                        name = request["name"]
-                        if name == "host.interaction.current":
-                            if payload:
-                                raise ValueError("INVALID_REQUEST")
-                            result = application.chat.current()
-                        elif name == "host.interaction.state":
-                            result = application.chat.set_ui_state(payload)
-                        elif name == "host.interaction.presented":
-                            result = application.chat.presentation_changed(payload)
-                        elif name == "host.interaction.detach":
-                            if payload:
-                                raise ValueError("INVALID_REQUEST")
-                            application.chat.invalidate_session()
-                            application.screen.invalidate_session()
-                            application.visual_controls.invalidate_activity()
-                            result = {"accepted": True}
-                        elif name == "host.screen.result":
-                            result = application.screen.complete(payload)
-                        elif name == "host.visual.claim":
-                            if set(payload) != {"requestId", "target"}:
-                                raise ValueError("INVALID_REQUEST")
-                            result = application.visual_controls.claim(payload.get("requestId"), payload.get("target"))
-                        else:
-                            result = application.visual_controls.complete(payload)
-                        return response(request, generation_id=config.generation_id,
-                            generation_credential=config.generation_credential, protocol_minor=PROTOCOL_MINOR,
-                            payload=result if isinstance(result, Mapping) else {"accepted": True})
-                    except Exception as error:
-                        code = getattr(error, "code", str(error) if isinstance(error, ValueError) else "HOST_INTERACTION_FAILED")
-                        if not isinstance(code, str) or len(code) > 80 or not code.replace("_", "").isalnum():
-                            code = "HOST_INTERACTION_FAILED"
-                        return response(request, generation_id=config.generation_id,
-                            generation_credential=config.generation_credential, protocol_minor=PROTOCOL_MINOR,
-                            error=error_payload(code, "宿主操作未完成。"))
-                if request.get("name") == "visual.control.parse":
-                    credential = request.get("generationCredential")
-                    if not isinstance(credential, str) or not hmac.compare_digest(credential, config.generation_credential):
-                        raise TransportFailure("GENERATION_CREDENTIAL_MISMATCH", "request credential does not match the active generation")
-                    if request.get("kind") != "request":
-                        raise TransportFailure("INVALID_CONTROL", "visual control accepts requests only")
-                    if request.get("generationId") != config.generation_id:
-                        return response(request, generation_id=config.generation_id,
-                            generation_credential=config.generation_credential, protocol_minor=PROTOCOL_MINOR,
-                            error=error_payload("GENERATION_MISMATCH", "request belongs to another generation"))
-                    application = dispatcher.published_plugin_application()
-                    parsed = application.visuals.resolve_control(request.get("payload")) if application is not None else None
-                    return response(request, generation_id=config.generation_id,
-                        generation_credential=config.generation_credential, protocol_minor=PROTOCOL_MINOR,
-                        payload={"control": parsed.control if parsed is not None else None,
-                            "reasonCode": parsed.reason_code if parsed is not None else "VISUAL_BINDING_EXPIRED"})
-                if request.get("name") in ASR_REQUEST_NAMES:
-                    return asr_boundary.handle(request)
-                if request.get("name") == "chat.send":
-                    start_send = getattr(chat_boundary, "start_send", None)
-                    if callable(start_send):
-                        return start_send(request)
-                    return chat_boundary.handle_send(request)
-                if request.get("name") in TOOL_SETTINGS_REQUEST_NAMES:
-                    if TOOLS_CAPABILITY not in dispatcher._negotiated_capabilities:
-                        return response(
-                            request,
-                            generation_id=config.generation_id,
-                            generation_credential=config.generation_credential,
-                            protocol_minor=PROTOCOL_MINOR,
-                            error=error_payload(
-                                "CAPABILITY_NEGOTIATION_FAILED",
-                                "Tools settings capability was not negotiated",
-                            ),
-                        )
-                    return tool_settings.handle(request)
-                if request.get("name") in PLUGIN_SETTINGS_REQUEST_NAMES:
-                    if PLUGINS_CAPABILITY not in dispatcher._negotiated_capabilities:
-                        return response(
-                            request,
-                            generation_id=config.generation_id,
-                            generation_credential=config.generation_credential,
-                            protocol_minor=PROTOCOL_MINOR,
-                            error=error_payload(
-                                "CAPABILITY_NEGOTIATION_FAILED",
-                                "Plugin settings capability was not negotiated",
-                            ),
-                        )
-                    result = plugin_settings.handle(request)
-                    # 失败后的回滚也可能重启插件，聊天需绑定恢复后的实例。
-                    if request.get("name") in {
-                        "plugins.settings.save", "plugins.enabled.set", "plugins.settings.action",
-                        "plugins.install", "plugins.uninstall", "plugins.marketplace.install",
-                    }:
-                        try:
-                            dispatcher.refresh_assistant_binding()
-                        except Exception:
-                            # 绑定失败已由会话层记录，保留原操作的失败原因。
-                            if result.get("ok"):
-                                raise
-                    return result
-                if request.get("name") in COMPOSER_TOOL_REQUEST_NAMES:
-                    if PLUGINS_CAPABILITY not in dispatcher._negotiated_capabilities:
-                        return response(
-                            request,
-                            generation_id=config.generation_id,
-                            generation_credential=config.generation_credential,
-                            protocol_minor=PROTOCOL_MINOR,
-                            error=error_payload(
-                                "CAPABILITY_NEGOTIATION_FAILED",
-                                "Plugin capability was not negotiated",
-                            ),
-                        )
-                    return composer_tools.handle(request)
-                if request.get("name") in TTS_REQUEST_NAMES:
-                    if TTS_CAPABILITY not in dispatcher._negotiated_capabilities:
-                        return response(
-                            request,
-                            generation_id=config.generation_id,
-                            generation_credential=config.generation_credential,
-                            protocol_minor=PROTOCOL_MINOR,
-                            error=error_payload(
-                                "CAPABILITY_NEGOTIATION_FAILED",
-                                "TTS capability was not negotiated",
-                            ),
-                        )
-                    return tts_boundary.handle(request)
-                if request.get("name") in CHARACTER_SETTINGS_REQUEST_NAMES:
-                    return character_settings.handle(request)
-                if request.get("name") in THEME_REQUEST_NAMES:
-                    return theme_generation.handle(request)
-                if request.get("name") in CHARACTER_STUDIO_REQUEST_NAMES:
-                    return character_studio.handle(request)
-                if request.get("name") in STORAGE_SETTINGS_REQUEST_NAMES:
-                    return storage_settings.handle(request)
-                if request.get("name") == "usage.statistics.get":
-                    return usage_statistics.handle(request)
-                if request.get("name") in HISTORY_REQUEST_NAMES:
-                    return history.handle(request)
-                return provider_settings.handle(request)
+        def handle_desktop(request):
+            try:
+                if not isinstance(request.get("payload"), Mapping):
+                    raise ValueError("INVALID_REQUEST")
+                payload = dict(request["payload"])
+                if payload.pop("generationId", None) != config.generation_id:
+                    raise ValueError("GENERATION_MISMATCH")
+                application = readiness.published_plugin_application()
+                if application is None:
+                    raise ValueError("HOST_INTERACTION_UNAVAILABLE")
+                name = request["name"]
+                if name == "host.interaction.current":
+                    result = application.chat.current()
+                elif name == "host.interaction.state":
+                    result = application.chat.set_ui_state(payload)
+                elif name == "host.interaction.presented":
+                    result = application.chat.presentation_changed(payload)
+                elif name == "host.interaction.detach":
+                    application.chat.invalidate_session()
+                    application.screen.invalidate_session()
+                    application.visual_controls.invalidate_activity()
+                    result = {"accepted": True}
+                elif name == "host.screen.result":
+                    result = application.screen.complete(payload)
+                elif name == "host.visual.claim":
+                    if not {"requestId", "target"}.issubset(payload):
+                        raise ValueError("INVALID_REQUEST")
+                    result = application.visual_controls.claim(payload.get("requestId"), payload.get("target"))
+                else:
+                    result = application.visual_controls.complete(payload)
+                return response(request,
+                    payload=result if isinstance(result, Mapping) else {"accepted": True})
+            except Exception as error:
+                code = getattr(error, "code", str(error) if isinstance(error, ValueError) else "HOST_INTERACTION_FAILED")
+                if not isinstance(code, str) or len(code) > 80 or not code.replace("_", "").isalnum():
+                    code = "HOST_INTERACTION_FAILED"
+                return response(request,
+                    error=error_payload(code, "宿主操作未完成。"))
 
-            def reserve_send(self, request: dict[str, Any]) -> None:
-                if request.get("name") == "theme.generate":
-                    theme_generation.reserve(request)
-                if request.get("name") == "chat.send":
-                    reserve = getattr(chat_boundary, "reserve_send", None)
-                    if callable(reserve):
-                        reserve(request)
+        def parse_visual(request):
+            application = readiness.published_plugin_application()
+            parsed = application.visuals.resolve_control(request.get("payload")) if application is not None else None
+            return response(request,
+                payload={"control": parsed.control if parsed is not None else None,
+                    "reasonCode": parsed.reason_code if parsed is not None else "VISUAL_BINDING_EXPIRED"})
 
-            def abandon_send(self, request: dict[str, Any]) -> None:
-                if request.get("name") == "theme.generate":
-                    theme_generation.abandon(request)
-                if request.get("name") == "chat.send":
-                    abandon = getattr(chat_boundary, "abandon_send", None)
-                    if callable(abandon):
-                        abandon(request)
+        def handle_plugin_settings(request):
+            result = plugin_settings.handle(request)
+            # 失败后的回滚也可能重启插件，聊天需绑定恢复后的实例。
+            if request.get("name") in {
+                "plugins.settings.save", "plugins.enabled.set", "plugins.settings.action",
+                "plugins.install", "plugins.uninstall", "plugins.marketplace.install",
+            }:
+                try:
+                    readiness.refresh_assistant_binding()
+                except Exception:
+                    # 绑定失败已由会话层记录，保留原操作的失败原因。
+                    if result.get("ok"):
+                        raise
+            return result
 
-        request_boundary = RequestBoundary()
+        routes = {}
+        for names, handler, capability in (
+            (HOST_DESKTOP_REQUESTS, handle_desktop, None),
+            ({"visual.control.parse"}, parse_visual, None),
+            ({"chat.send"}, getattr(chat_boundary, "start_send", None) or chat_boundary.handle_send, None),
+            (ASR_REQUEST_NAMES, asr_boundary.handle, None),
+            (SETTINGS_REQUEST_NAMES, provider_settings.handle, None),
+            (TOOL_SETTINGS_REQUEST_NAMES, tool_settings.handle, TOOLS_CAPABILITY),
+            (PLUGIN_SETTINGS_REQUEST_NAMES, handle_plugin_settings, PLUGINS_CAPABILITY),
+            (COMPOSER_TOOL_REQUEST_NAMES, composer_tools.handle, PLUGINS_CAPABILITY),
+            (TTS_REQUEST_NAMES, tts_boundary.handle, TTS_CAPABILITY),
+            (CHARACTER_SETTINGS_REQUEST_NAMES, character_settings.handle, None),
+            (THEME_REQUEST_NAMES, theme_generation.handle, None),
+            (CHARACTER_STUDIO_REQUEST_NAMES, character_studio.handle, None),
+            (STORAGE_SETTINGS_REQUEST_NAMES, storage_settings.handle, None),
+            ({"usage.statistics.get"}, usage_statistics.handle, None),
+            (HISTORY_REQUEST_NAMES, history.handle, None),
+        ):
+            routes.update(dict.fromkeys(names, (handler, capability)))
+
+        def handle_work(request):
+            handler, capability = routes[request["name"]]
+            if capability and capability not in dispatcher._negotiated_capabilities:
+                return response(request, error=error_payload(
+                    "CAPABILITY_NEGOTIATION_FAILED", f"{capability} was not negotiated",
+                ))
+            return handler(request)
+
+        def reserve_send(request: dict[str, Any]) -> None:
+            if request.get("name") == "theme.generate":
+                theme_generation.reserve(request)
+            if request.get("name") == "chat.send":
+                reserve = getattr(chat_boundary, "reserve_send", None)
+                if callable(reserve):
+                    reserve(request)
+
+        def abandon_send(request: dict[str, Any]) -> None:
+            if request.get("name") == "theme.generate":
+                theme_generation.abandon(request)
+            if request.get("name") == "chat.send":
+                abandon = getattr(chat_boundary, "abandon_send", None)
+                if callable(abandon):
+                    abandon(request)
+
         router = ConcurrentHostRouter(
             input_stream,
             writer,
             dispatcher,
-            fixture_handler=request_boundary.handle,
-            fixture_reserve=request_boundary.reserve_send,
-            fixture_abandon=request_boundary.abandon_send,
-            fixture_names=frozenset(
-                {
-                    "chat.send",
-                    "visual.control.parse",
-                    *SETTINGS_REQUEST_NAMES,
-                    *TOOL_SETTINGS_REQUEST_NAMES,
-                    *PLUGIN_SETTINGS_REQUEST_NAMES,
-                    *COMPOSER_TOOL_REQUEST_NAMES,
-                    *TTS_REQUEST_NAMES,
-                    *ASR_REQUEST_NAMES,
-                    *HOST_DESKTOP_REQUESTS,
-                    *CHARACTER_SETTINGS_REQUEST_NAMES,
-                    *THEME_REQUEST_NAMES,
-                    *CHARACTER_STUDIO_REQUEST_NAMES,
-                    *STORAGE_SETTINGS_REQUEST_NAMES,
-                    "usage.statistics.get",
-                    *HISTORY_REQUEST_NAMES,
-                }
-            ),
+            worker_handler=handle_work,
+            worker_reserve=reserve_send,
+            worker_abandon=abandon_send,
+            worker_names=frozenset(routes),
             read_frame_fn=read_frame,
         )
         chat_boundary.set_event_publisher(router.publish_event)

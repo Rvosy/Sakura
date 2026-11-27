@@ -370,7 +370,7 @@ def test_message_and_trace_image_estimates_share_the_conservative_low_detail_cos
 
 
 def test_high_detail_image_estimate_uses_known_dimensions_and_model_profile() -> None:
-    from app.agent.screen_awareness import (
+    from app.plugin_sdk.sakura_image_tokens import (
         estimate_screen_context_image_tokens_for_size,
     )
 

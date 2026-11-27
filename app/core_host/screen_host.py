@@ -84,7 +84,7 @@ class ScreenHost:
 
     def capture(self, request: Mapping) -> dict:
         owner = caller_identity()
-        if (not isinstance(request, Mapping) or set(request) != {"operationId", "sessionId", "resolution"}
+        if (not isinstance(request, Mapping) or not {"operationId", "sessionId", "resolution"}.issubset(request)
                 or not isinstance(request.get("operationId"), str) or not 1 <= len(request["operationId"]) <= 128
                 or request.get("resolution") not in _RESOLUTIONS):
             raise ScreenHostError("SCREEN_CAPTURE_REQUEST_INVALID")

@@ -6,9 +6,10 @@ import json
 import os
 import re
 import shutil
+import threading
 import uuid
 import wave
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterable
@@ -82,6 +83,8 @@ class VoiceRecordingStore:
         self.max_bytes: int | None = None
         self._recordings_root: Path | None = None
         self._diagnostic_sink = diagnostic_sink
+        self._lock = threading.RLock()
+        self._records: dict[Path, dict[str, VoiceRecording]] = {}
         self._diagnostics: list[RecordingDiagnostic] = []
 
     @property
@@ -89,8 +92,11 @@ class VoiceRecordingStore:
         return tuple(self._diagnostics)
 
     def apply_cache_settings(self, directory: Path | None, max_bytes: int | None) -> None:
-        self._recordings_root = directory
-        self.max_bytes = max_bytes
+        with self._lock:
+            if self._recordings_root != directory:
+                self._records.clear()
+            self._recordings_root = directory
+            self.max_bytes = max_bytes
 
     def recordings_root(self) -> Path:
         if self._recordings_root is not None:
@@ -100,28 +106,43 @@ class VoiceRecordingStore:
     def recordings_for(self, character_id: str) -> Path:
         return self.recordings_root() / sanitize_directory_component(character_id)
 
+    def _directory_index(self, directory: Path) -> dict[str, VoiceRecording]:
+        if directory not in self._records:
+            self._records[directory] = {
+                record.recording_id: record for record in self._scan_character_directory(directory)
+            }
+        return self._records[directory]
+
+    def _character_records(self, character_id: str) -> tuple[VoiceRecording, ...]:
+        with self._lock:
+            return tuple(self._directory_index(self.recordings_for(character_id)).values())
+
     def has_room(self, character_id: str, *, headroom: int = 0) -> bool:
-        records = list(self._scan_character_directory(self.recordings_for(character_id)))
+        with self._lock:
+            records = tuple(self._directory_index(self.recordings_for(character_id)).values())
+            max_bytes = self.max_bytes
         non_favorite = sum(not record.favorite for record in records)
         if non_favorite >= self.non_favorite_limit:
             return False
-        if self.max_bytes is None:
+        if max_bytes is None:
             return True
         used = sum(record.byte_length for record in records)
-        return used + headroom <= self.max_bytes
+        return used + headroom <= max_bytes
 
     def scan_and_prune(self) -> tuple[VoiceRecording, ...]:
-        healthy: list[VoiceRecording] = []
-        root = self.recordings_root()
-        if not root.is_dir():
-            return ()
-        for character_dir in sorted(root.iterdir(), key=lambda item: item.name):
-            if character_dir.is_symlink() or not character_dir.is_dir():
-                continue
-            records = list(self._scan_character_directory(character_dir))
-            healthy.extend(records)
-            self._prune_records(records)
-        return tuple(record for record in healthy if record.directory.is_dir())
+        with self._lock:
+            self._records.clear()
+            root = self.recordings_root()
+            if not root.is_dir():
+                return ()
+            healthy = []
+            for directory in sorted(root.iterdir()):
+                if directory.is_symlink() or not directory.is_dir():
+                    continue
+                records = self._directory_index(directory)
+                self._prune_records(records.values())
+                healthy.extend(records.values())
+            return tuple(healthy)
 
     def commit(
         self,
@@ -192,9 +213,19 @@ class VoiceRecordingStore:
             )
             _sync_directory(staging)
             stage = "rename"
-            rename_with_retry(staging, final_dir)
-            staging = None
-            _sync_directory(character_dir)
+            with self._lock:
+                records = self._directory_index(character_dir)
+                rename_with_retry(staging, final_dir)
+                staging = None
+                stage = "validate_commit"
+                record = self._load_record(final_dir, expected_character_id=character_id)
+                if record is None:
+                    raise VoiceRecordingError("AUDIO_RECORDING_INVALID", "committed recording is invalid", stage=stage)
+                records[recording_id] = record
+                _sync_directory(character_dir)
+                stage = "prune"
+                self._prune_records(records.values(), protect=recording_id)
+                return record
         except VoiceRecordingError as exc:
             if staging is not None:
                 shutil.rmtree(staging, ignore_errors=True)
@@ -214,37 +245,30 @@ class VoiceRecordingStore:
                 shutil.rmtree(staging, ignore_errors=True)
             raise
 
-        stage = "validate_commit"
-        record = self._load_record(final_dir, expected_character_id=character_id)
-        if record is None:
-            raise VoiceRecordingError(
-                "AUDIO_RECORDING_INVALID",
-                "committed recording is invalid",
-                stage=stage,
-            )
-        try:
-            self.prune_character(character_id, protect=recording_id)
-        except (OSError, ValueError) as exc:
-            raise VoiceRecordingError(
-                "AUDIO_RECORDING_INVALID",
-                "recording retention could not be applied",
-                stage="prune",
-            ) from exc
-        return record
-
     def prune_character(self, character_id: str, *, protect: str | None = None) -> tuple[str, ...]:
-        records = list(self._scan_character_directory(self.recordings_for(character_id)))
-        return self._prune_records(records, protect=protect)
+        with self._lock:
+            return self._prune_records(self._character_records(character_id), protect=protect)
 
-    def latest_for_history(self, history_entry_id: str) -> VoiceRecording | None:
-        candidates = [
-            record
-            for record in self.scan_and_prune()
-            if record.history_entry_id == history_entry_id
-        ]
-        if not candidates:
-            return None
-        return max(candidates, key=lambda item: (_timestamp(item.created_at), item.recording_id))
+    def _delete_record(self, record: VoiceRecording) -> None:
+        directory = record.directory.parent
+        try:
+            shutil.rmtree(record.directory)
+        except OSError:
+            self._records.pop(directory, None)
+            raise
+        if directory in self._records:
+            self._records[directory].pop(record.recording_id, None)
+
+    def delete(self, recording_id: str) -> None:
+        with self._lock:
+            record = self.get(recording_id)
+            if record is not None:
+                self._delete_record(record)
+
+    def clear_character(self, character_id: str) -> None:
+        with self._lock:
+            for record in self._character_records(character_id):
+                self._delete_record(record)
 
     def get(self, recording_id: str) -> VoiceRecording | None:
         _require_safe_id(recording_id, "recording_id")
@@ -263,7 +287,7 @@ class VoiceRecordingStore:
         self, character_id: str, history_entry_id: str, segment_index: int,
     ) -> VoiceRecording | None:
         """Find an exact segment; legacy recordings without an index stay readable."""
-        records = self._scan_character_directory(self.recordings_for(character_id))
+        records = self._character_records(character_id)
         candidates = (record for record in records
                       if record.history_entry_id == history_entry_id
                       and record.segment_index == segment_index)
@@ -272,25 +296,8 @@ class VoiceRecordingStore:
     def recorded_segments(self, character_id: str) -> set[tuple[str, int]]:
         """Return one cache snapshot for a page of saved reply segments."""
         return {(record.history_entry_id, record.segment_index)
-                for record in self._scan_character_directory(self.recordings_for(character_id))
+                for record in self._character_records(character_id)
                 if record.segment_index is not None}
-
-    def set_favorite(self, recording_id: str, favorite: bool) -> VoiceRecording:
-        record = self.get(recording_id)
-        if record is None:
-            raise VoiceRecordingError("AUDIO_RECORDING_INVALID", "recording is unavailable")
-        metadata_path = record.directory / "record.json"
-        data = json.loads(metadata_path.read_text(encoding="utf-8"))
-        data.pop("sha256", None)  # Legacy metadata remains readable without a scan.
-        data["favorite"] = bool(favorite)
-        atomic_write_text(
-            metadata_path,
-            json.dumps(data, ensure_ascii=False, indent=2) + "\n",
-            backup=False,
-        )
-        updated = replace(record, favorite=bool(favorite))
-        self.prune_character(record.character_id)
-        return updated
 
     def create_playback_copy(
         self,
@@ -389,7 +396,7 @@ class VoiceRecordingStore:
                 break
             if record.recording_id == protect:
                 continue
-            shutil.rmtree(record.directory)
+            self._delete_record(record)
             removed.append(record.recording_id)
             excess -= 1
         if self.max_bytes is None:
@@ -402,7 +409,7 @@ class VoiceRecordingStore:
                 break
             if record.recording_id in removed_ids or record.recording_id == protect or record.favorite:
                 continue
-            shutil.rmtree(record.directory)
+            self._delete_record(record)
             removed.append(record.recording_id)
             removed_ids.add(record.recording_id)
             total -= record.byte_length

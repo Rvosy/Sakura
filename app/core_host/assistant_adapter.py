@@ -100,13 +100,15 @@ class BoundAssistant:
                 or type(result.get("retryable")) is not bool):
             raise ValueError("ASSISTANT_PREPARE_INVALID")
         bindings = result.get("modelBindings", {})
-        if (not isinstance(bindings, Mapping) or set(bindings) - {"chat", "vision_chat"}
-                or any(not isinstance(identity, Mapping) or set(identity) != {"providerId", "scopeId"}
-                       or any(not isinstance(value, str) or not value or len(value) > 200 for value in identity.values())
-                       for identity in bindings.values())):
+        if not isinstance(bindings, Mapping):
+            raise ValueError("ASSISTANT_PREPARE_INVALID")
+        bindings = {slot: bindings[slot] for slot in ("chat", "vision_chat") if slot in bindings}
+        if any(not isinstance(identity, Mapping) or not {"providerId", "scopeId"}.issubset(identity)
+                       or any(not isinstance(value, str) or not value or len(value) > 200 for value in (identity["providerId"], identity["scopeId"]))
+                       for identity in bindings.values()):
             raise ValueError("ASSISTANT_PREPARE_INVALID")
         return {**{key: result[key] for key in ("state", "code", "message", "retryable")},
-                "modelBindings": {slot: dict(identity) for slot, identity in bindings.items()}}
+                "modelBindings": {slot: {key: identity[key] for key in ("providerId", "scopeId")} for slot, identity in bindings.items()}}
 
     def commit_result(self, commit):
         from app.plugins.runtime_v4 import PluginRuntimeError

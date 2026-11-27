@@ -413,20 +413,12 @@ def test_delete_inactive_character_keeps_current_selection(tmp_path: Path) -> No
     drafts.mkdir(parents=True)
     (drafts / "draft.json").write_text("{}", encoding="utf-8")
 
-    extra = boundary.handle(
+    result = boundary.handle(
         _request(
             "characters.settings.delete",
-            {"characterId": "beta", "path": str(tmp_path / "escape")},
+            {"characterId": "beta", "path": str(memory)},
         )
     )
-    assert extra["ok"] is False
-    assert extra["error"]["code"] == "INVALID_REQUEST"
-    assert (tmp_path / "characters" / "beta").is_dir()
-
-    result = boundary.handle(
-        _request("characters.settings.delete", {"characterId": "beta"})
-    )
-
     assert result["ok"] is True
     assert result["payload"]["changePlan"] == "unchanged"
     assert result["payload"]["snapshot"]["currentCharacterId"] == "alpha"

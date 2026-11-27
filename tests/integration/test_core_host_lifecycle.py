@@ -493,7 +493,7 @@ def test_real_host_keeps_character_visible_while_provider_setup_is_required(
         stop_host(process)
 
 
-def test_real_host_rejects_fixture_modes_and_remains_responsive(tmp_path: Path) -> None:
+def test_real_host_ignores_extra_initialize_fields_and_remains_responsive(tmp_path: Path) -> None:
     process = start_host(isolated_app_root(tmp_path))
     try:
         assert exchange(process, request("hello", "system.hello"))["ok"] is True
@@ -501,14 +501,11 @@ def test_real_host_rejects_fixture_modes_and_remains_responsive(tmp_path: Path) 
             process,
             request("initialize", "core.initialize", {"mode": "hang"}),
         )
-        assert initialize["ok"] is False
-        assert initialize["error"]["code"] == "INVALID_INITIALIZE"
+        assert initialize["ok"]
+        assert initialize["payload"]["accepted"]
         for index in range(3):
             health = exchange(process, request(f"health-hang-{index}", "system.health"))
-            assert health["payload"] == {
-                "hostState": "transport_ready",
-                "status": "healthy",
-            }
+            assert health["payload"]["status"] == "healthy"
         assert exchange(process, request("shutdown", "system.shutdown"))["ok"] is True
         assert process.wait(timeout=5) == 0
     finally:

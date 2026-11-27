@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import base64
 import json
 import os
 import re
@@ -868,21 +867,6 @@ class CharacterStudioService:
             _cleanup_created_assets(package_dir, copied_assets)
             raise
         return {"items": items, "ignored_ref_file": (source / "ref.txt").is_file()}
-
-    def load_reference_audio_preview(
-        self,
-        package_dir: Path | str,
-        relative_path: str,
-    ) -> dict[str, str]:
-        package_dir = self._workspace_package(package_dir)
-        audio_path = _resolve_workspace_file(package_dir, relative_path, "参考语音")
-        mime_type = _REFERENCE_AUDIO_MIME_TYPES.get(audio_path.suffix.lower())
-        if mime_type is None:
-            raise ValueError("参考语音文件扩展名必须是 .wav / .mp3 / .ogg / .flac。")
-        if audio_path.stat().st_size > REFERENCE_AUDIO_PREVIEW_LIMIT:
-            raise ValueError("参考语音试听文件不能超过 20 MiB。")
-        encoded = base64.b64encode(audio_path.read_bytes()).decode("ascii")
-        return {"data_url": f"data:{mime_type};base64,{encoded}"}
 
     def describe_reference_audio_preview(
         self,

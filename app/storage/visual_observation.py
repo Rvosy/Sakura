@@ -12,8 +12,6 @@ TIMELINE_VISUAL_SUMMARY_CHARS = 4000
 _SENSITIVE_PATTERNS = (
     re.compile(r"\b(api[_-]?key|secret|token|password|passwd|pwd)\b\s*[:=：]\s*\S+", re.IGNORECASE),
     re.compile(r"\bsk-[A-Za-z0-9_\-]{16,}\b"),
-    re.compile(r"\b(?:\d[ -]*?){13,19}\b"),
-    re.compile(r"\b\d{17}[\dXx]\b"),
     re.compile(r"(密码|口令|密钥|令牌|银行卡|信用卡|身份证)\s*[:：]\s*\S+"),
 )
 

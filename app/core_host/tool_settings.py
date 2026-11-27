@@ -10,7 +10,8 @@ from typing import Any, Callable
 import yaml
 
 from app.plugin_sdk.sakura_assistant_contract import RuntimeLoopSettings, normalize_runtime_loop_settings
-from app.core_host.protocol import error_payload, require_generation_identity, response
+from app.core.diagnostics import safe_diagnostic_text
+from app.core_host.protocol import error_payload, response
 from app.storage.atomic import atomic_write_text
 from app.storage.paths import StoragePaths
 
@@ -38,47 +39,36 @@ class ToolSettingsError(ValueError):
 class ToolSettingsBoundary:
     def __init__(
         self,
-        generation_id: str,
-        generation_credential: str,
         app_root: Path,
         *,
         runtime_apply: Callable[[RuntimeLoopSettings], None] | None = None,
     ) -> None:
-        self._generation_id = generation_id
-        self._generation_credential = generation_credential
         self._path = StoragePaths(app_root).system_config()
         self._save_lock = threading.Lock()
         self._runtime_apply = runtime_apply
 
     def handle(self, request: dict[str, Any]) -> dict[str, Any]:
-        require_generation_identity(request, self._generation_id, self._generation_credential)
         try:
             name = request.get("name")
             payload = request.get("payload")
             if not isinstance(payload, Mapping):
                 raise ToolSettingsError("INVALID_REQUEST", "Tools 设置请求格式无效。")
             if name == "tools.settings.get":
-                if payload:
-                    raise ToolSettingsError("INVALID_REQUEST", "Tools 设置读取请求必须为空。")
                 result = self.snapshot()
             elif name == "tools.settings.save":
-                if set(payload) != {"settings"}:
+                if "settings" not in payload:
                     raise ToolSettingsError("INVALID_REQUEST", "Tools 设置保存请求格式无效。")
                 result = self.save(payload["settings"])
             else:
                 raise ToolSettingsError("UNKNOWN_COMMAND", "不支持的 Tools 设置命令。")
             return response(
                 request,
-                generation_id=self._generation_id,
-                generation_credential=self._generation_credential,
                 protocol_minor=2,
                 payload=result,
             )
         except ToolSettingsError as error:
             return response(
                 request,
-                generation_id=self._generation_id,
-                generation_credential=self._generation_credential,
                 protocol_minor=2,
                 error=error.public_error(),
             )
@@ -111,7 +101,7 @@ class ToolSettingsBoundary:
                 atomic_write_text(self._path, serialized)
             except OSError as error:
                 raise ToolSettingsError(
-                    "CONFIG_SAVE_FAILED", "Tools 设置保存失败，原文件保持不变。"
+                    "CONFIG_SAVE_FAILED", safe_diagnostic_text(error) or "Tools 设置保存失败，原文件保持不变。"
                 ) from error
             if self._runtime_apply is not None:
                 try:
@@ -155,14 +145,14 @@ def _read_document(path: Path) -> dict[str, Any]:
 
 
 def _validate_settings(raw: object) -> RuntimeLoopSettings:
-    if not isinstance(raw, Mapping) or set(raw) != {"runtimeLimits"}:
+    if not isinstance(raw, Mapping) or "runtimeLimits" not in raw:
         raise ToolSettingsError("INVALID_REQUEST", "Tools 设置字段无效。")
     limits = raw.get("runtimeLimits")
-    if not isinstance(limits, Mapping) or set(limits) != {
+    if not isinstance(limits, Mapping) or not {
         "maxAgentStepsPerTurn",
         "maxToolCallsPerStep",
         "maxToolCallsPerTurn",
-    }:
+    }.issubset(limits):
         raise ToolSettingsError("INVALID_REQUEST", "工具调用限制字段无效。")
     values: list[int] = []
     for field in ("maxAgentStepsPerTurn", "maxToolCallsPerStep", "maxToolCallsPerTurn"):

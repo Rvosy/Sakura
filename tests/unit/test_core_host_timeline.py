@@ -738,7 +738,7 @@ def test_activated_timeline_failure_does_not_fork_writes_back_to_legacy_jsonl(
     store.initialize()
     with sqlite3.connect(store.path) as connection:
         connection.execute("DROP TABLE timeline_entries")
-    legacy = paths.chat_history_for("sakura")
+    legacy = paths.chat_history_dir / "sakura.jsonl"
     legacy.parent.mkdir(parents=True, exist_ok=True)
     legacy.write_text("", encoding="utf-8")
     pipeline_called = False
@@ -815,7 +815,7 @@ def test_timeline_initialization_failure_never_falls_back_to_legacy_history(
     boundary.reserve_send(request)
     boundary.handle_send(request)
 
-    assert not StoragePaths(tmp_path).chat_history_for("sakura").exists()
+    assert not (StoragePaths(tmp_path).chat_history_dir / "sakura.jsonl").exists()
     assert plugin_events == []
     assert events[-1]["name"] == "chat.failed"
     assert events[-1]["payload"]["error"]["code"] == "TIMELINE_DATABASE_INVALID"
@@ -849,3 +849,14 @@ def _segment(text: str) -> dict[str, object]:
         "portrait": "neutral",
         "suppressTts": False,
     }
+
+
+def test_visual_summary_preserves_dates_and_order_numbers_while_redacting_credentials():
+    from app.storage.visual_observation import sanitize_timeline_visual_summary
+
+    summary = sanitize_timeline_visual_summary({
+        "summary": "2026-11-26 20-10-12 订单 123456789012345678 token=private-value",
+    })
+    assert "2026-11-26 20-10-12 订单 123456789012345678" in summary["text"]
+    assert "private-value" not in summary["text"]
+    assert summary["sensitive_redacted"]

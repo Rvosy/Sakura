@@ -8,12 +8,12 @@ from app.core_host.composer_tools import ComposerToolsBoundary
 from app.core_host.plugin_host_services import HostServiceError, _ComposerToolsV0HostService
 
 
-def test_composer_tool_host_service_projects_and_invokes_bounded_actions() -> None:
+def test_composer_tool_host_service_projects_and_invokes_actions() -> None:
     callbacks: list[tuple[str, str, object]] = []
 
     def invoke(handle: str, shape: str, payload: object) -> dict[str, str]:
         callbacks.append((handle, shape, payload))
-        return {"status": "completed", "message": "opened"}
+        return {"status": "completed", "message": "opened" * 100}
 
     service = _ComposerToolsV0HostService(invoke)
     handle = f"cb_{'a' * 32}"
@@ -45,7 +45,7 @@ def test_composer_tool_host_service_projects_and_invokes_bounded_actions() -> No
     ]
     assert service.invoke("com.example.tools:browser") == {
         "status": "completed",
-        "message": "opened",
+        "message": "opened" * 100,
     }
     assert callbacks == [
         (handle, "ui.composer_tool.invoke", {"source": "composer"})
@@ -104,7 +104,6 @@ def test_composer_tools_boundary_keeps_generation_identity_and_opaque_ids() -> N
     application = _Application()
     boundary = ComposerToolsBoundary(
         "generation-a",
-        "credential-a",
         application_provider=lambda: application,
     )
 

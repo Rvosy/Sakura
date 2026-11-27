@@ -10,9 +10,9 @@ from pathlib import Path
 from time import monotonic, sleep
 from typing import Any, Callable, Mapping
 
-from app.core_host.protocol import error_payload, event, response, verify_generation_identity
+from app.core_host.protocol import error_payload, event, response
 from app.core.runtime_log import log_event
-from app.core.diagnostics import exception_diagnostics
+from app.core.diagnostics import exception_diagnostics, safe_diagnostic_text
 from app.plugins.runtime_v4 import CLOSE_TIMEOUT_SECONDS
 from app.storage.tts_storage import TtsStorage, TtsStorageUnavailable
 from app.storage.paths import StoragePaths
@@ -337,7 +337,8 @@ class TTSBoundary:
 
     def handle(self, request: dict[str, Any]) -> dict[str, Any]:
         try:
-            self._validate_generation(request)
+            with self._lock:
+                self._ensure_open_locked()
             self._refresh_cache_settings()
             name = str(request.get("name", ""))
             if name == "tts.synthesis.start":
@@ -469,7 +470,7 @@ class TTSBoundary:
 
     def _handle_history_prepare(self, request: Mapping[str, Any]) -> dict[str, Any]:
         payload = request.get("payload")
-        if not isinstance(payload, Mapping) or set(payload) != {"operationId", "historyEntryId", "segmentIndex"}:
+        if not isinstance(payload, Mapping) or not {"operationId", "historyEntryId", "segmentIndex"}.issubset(payload):
             raise TTSBoundaryError("TTS_SEGMENT_NOT_AUTHORIZED", "朗读请求无效")
         operation_id = payload.get("operationId")
         entry_id = payload.get("historyEntryId")
@@ -547,7 +548,7 @@ class TTSBoundary:
     def _handle_start(self, request: Mapping[str, Any], *, reuse_recording: bool = False,
                       recording_only: bool = False):
         payload = request.get("payload")
-        if not isinstance(payload, Mapping) or set(payload) != {"operationId", "segmentIndex"}:
+        if not isinstance(payload, Mapping) or not {"operationId", "segmentIndex"}.issubset(payload):
             raise TTSBoundaryError("TTS_SEGMENT_NOT_AUTHORIZED", "invalid segment identity")
         operation_id = payload.get("operationId")
         segment_index = payload.get("segmentIndex")
@@ -690,10 +691,7 @@ class TTSBoundary:
 
     def _handle_cancel(self, request: Mapping[str, Any]) -> dict[str, Any]:
         payload = request.get("payload")
-        if not isinstance(payload, Mapping) or set(payload) not in (
-            {"requestId"},
-            {"operationId"},
-        ):
+        if not isinstance(payload, Mapping) or ("requestId" in payload) == ("operationId" in payload):
             raise TTSBoundaryError("TTS_SYNTHESIS_CANCELLED", "invalid cancellation identity")
         if "operationId" in payload:
             operation_id = payload.get("operationId")
@@ -973,20 +971,20 @@ class TTSBoundary:
             pass
 
     def _handle_settings_get(self, request: Mapping[str, Any]) -> dict[str, Any]:
-        if request.get("payload") not in ({}, None):
-            raise TTSBoundaryError("INVALID_TTS_SETTINGS", "settings get payload must be empty")
+        if not isinstance(request.get("payload"), Mapping):
+            raise TTSBoundaryError("INVALID_TTS_SETTINGS", "settings get payload must be an object")
         return self._voice_settings_snapshot()
 
     def _handle_settings_save(self, request: Mapping[str, Any]) -> dict[str, Any]:
         payload = request.get("payload")
-        if not isinstance(payload, Mapping) or set(payload) != {"settings"}:
+        if not isinstance(payload, Mapping) or "settings" not in payload:
             raise TTSBoundaryError("INVALID_TTS_SETTINGS", "settings save payload is invalid")
         draft = payload.get("settings")
-        if not isinstance(draft, Mapping) or set(draft) != {
+        if not isinstance(draft, Mapping) or not {
             "characterId",
             "enabled",
             "providerId",
-        }:
+        }.issubset(draft):
             raise TTSBoundaryError("INVALID_TTS_SETTINGS", "settings draft is invalid")
         character_id = draft.get("characterId")
         enabled = draft.get("enabled")
@@ -1014,7 +1012,10 @@ class TTSBoundary:
                     {"enabled": enabled, "provider": provider_id},
                 )
             except (OSError, RuntimeError, TypeError, ValueError) as exc:
-                raise TTSBoundaryError("INVALID_TTS_SETTINGS", "TTS settings could not be saved") from exc
+                diagnostics = getattr(exc, "diagnostics", None)
+                detail = diagnostics.get("diagnostic") if isinstance(diagnostics, Mapping) else None
+                message = safe_diagnostic_text(detail or exc, secrets=(self._generation_credential,))
+                raise TTSBoundaryError("INVALID_TTS_SETTINGS", message or "TTS settings could not be saved") from exc
             selection_saved = True
             reason_code = "READY"
         log_event(
@@ -1035,8 +1036,8 @@ class TTSBoundary:
         }
 
     def _handle_status_get(self, request: Mapping[str, Any]) -> dict[str, Any]:
-        if request.get("payload") not in ({}, None):
-            raise TTSBoundaryError("INVALID_TTS_SETTINGS", "status payload must be empty")
+        if not isinstance(request.get("payload"), Mapping):
+            raise TTSBoundaryError("INVALID_TTS_SETTINGS", "status payload must be an object")
         return self._voice_settings_snapshot()
 
     def _voice_application_and_character(self) -> tuple[object, str]:
@@ -1178,7 +1179,6 @@ class TTSBoundary:
         if (
             not isinstance(payload, Mapping)
             or not {"playbackId", "recordingId", "state"}.issubset(payload)
-            or not set(payload).issubset({"playbackId", "recordingId", "state", "errorCode"})
         ):
             raise TTSBoundaryError("AUDIO_PLAYBACK_FAILED", "invalid playback observation")
         playback_id = payload.get("playbackId")
@@ -1245,12 +1245,6 @@ class TTSBoundary:
                 "configured TTS storage is unavailable",
                 retryable=True,
             ) from error
-
-    def _validate_generation(self, request: Mapping[str, Any]) -> None:
-        if not verify_generation_identity(request, self._generation_id, self._generation_credential):
-            raise TTSBoundaryError("STALE_GENERATION", "TTS generation identity or credential is invalid")
-        with self._lock:
-            self._ensure_open_locked()
 
     def _ensure_open_locked(self) -> None:
         if self._closed:

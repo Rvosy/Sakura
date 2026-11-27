@@ -113,7 +113,7 @@ class Plugin:
     assert all(item["state"] == "active" for item in application.public_snapshot()["plugins"]), application.public_snapshot()
     application.call_service("sakura.asr", "configure", {"selectedProviderId": "test.asr.one"})
     character = {"characterId": "alpha"}
-    boundary = ASRBoundary("asr-test", "secret", user_root=roots.user_root, plugin_application_provider=lambda: application,
+    boundary = ASRBoundary("asr-test", user_root=roots.user_root, plugin_application_provider=lambda: application,
                            character_presentation_provider=lambda: character)
     def request(name, **payload):
         return boundary.handle({"name": name, "id": "test-call", "generationId": "asr-test",

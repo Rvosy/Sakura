@@ -155,7 +155,7 @@ def test_success_returning_after_reload_never_becomes_a_draft(
 ) -> None:
     application, user_root = runtime
     character = {"characterId": "fixture"}
-    boundary = ASRBoundary("asr-binding-test", "credential", user_root=user_root,
+    boundary = ASRBoundary("asr-binding-test", user_root=user_root,
         plugin_application_provider=lambda: application,
         character_presentation_provider=lambda: character)
     ready = threading.Event()
@@ -215,7 +215,7 @@ def test_ready_transcript_is_discarded_if_its_source_reloads_before_first_delive
 ) -> None:
     application, user_root = runtime
     character = {"characterId": "fixture"}
-    boundary = ASRBoundary("asr-binding-test", "credential", user_root=user_root,
+    boundary = ASRBoundary("asr-binding-test", user_root=user_root,
         plugin_application_provider=lambda: application,
         character_presentation_provider=lambda: character)
     ready = threading.Event()
@@ -259,7 +259,7 @@ def test_ready_transcript_is_discarded_if_its_source_reloads_before_first_delive
 def test_character_switch_rejects_new_recordings_until_session_is_published(runtime):
     application, user_root = runtime
     character = {"characterId": "fixture"}
-    boundary = ASRBoundary("asr-binding-test", "credential", user_root=user_root,
+    boundary = ASRBoundary("asr-binding-test", user_root=user_root,
         plugin_application_provider=lambda: application,
         character_presentation_provider=lambda: character)
 

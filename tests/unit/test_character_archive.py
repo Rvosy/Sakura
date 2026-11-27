@@ -875,3 +875,33 @@ def test_invalid_voice_requirement_does_not_replace_existing_resources(tmp_path)
         import_character_voice_archive(source, tmp_path / "target", target.id)
     assert (target.package_dir / "character.json").read_text(encoding="utf-8") == original
     assert target.voice.gpt_model_path.read_bytes() == b"gpt"
+
+
+@pytest.mark.parametrize("failure", ["backup", "publish", "manifest"])
+def test_voice_update_rename_and_manifest_failures_restore_existing_files(tmp_path, monkeypatch, failure):
+    import app.config.character_archive as archive
+
+    profile = _build_character_package(tmp_path)
+    target = profile.package_dir / "voice"
+    manifest = profile.package_dir / "character.json"
+    old_manifest = manifest.read_bytes()
+    old_model = (target / "models/gpt.ckpt").read_bytes()
+    package = _build_voice_archive(tmp_path)
+    rename = archive.rename_with_retry
+    def fail_rename(source, destination):
+        if (failure == "backup" and source == target) or (failure == "publish" and source.name == "voice" and destination == target):
+            raise OSError("rename failed")
+        rename(source, destination)
+
+    def fail_manifest(*args):
+        manifest.write_text("incomplete", encoding="utf-8")
+        raise OSError("manifest failed")
+
+    monkeypatch.setattr(archive, "rename_with_retry", fail_rename)
+    if failure == "manifest":
+        monkeypatch.setattr(archive, "_write_character_voice_manifest", fail_manifest)
+    with pytest.raises(OSError, match="failed"):
+        import_character_voice_archive(package, tmp_path, "demo")
+    assert manifest.read_bytes() == old_manifest
+    assert (target / "models/gpt.ckpt").read_bytes() == old_model
+    assert not (target / "refs/tone_refs/happy.wav").exists()

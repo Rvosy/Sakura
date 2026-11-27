@@ -42,7 +42,6 @@ def test_commit_is_atomic_and_lookup_and_playback_copy_are_controlled(tmp_path: 
     assert metadata["historyEntryId"] == "entry-0001"
     assert metadata["favorite"] is False
     assert not list(record.directory.parent.glob(".staging-*"))
-    assert store.latest_for_history("entry-0001") == record
 
     playback = store.create_playback_copy(
         record.recording_id,
@@ -57,6 +56,13 @@ def test_commit_is_atomic_and_lookup_and_playback_copy_are_controlled(tmp_path: 
     assert record.audio_path.exists()
 
 
+def _load_legacy_favorite(store, record):
+    metadata = record.directory / "record.json"
+    data = json.loads(metadata.read_text(encoding="utf-8"))
+    metadata.write_text(json.dumps({**data, "favorite": True}), encoding="utf-8")
+    store.scan_and_prune()
+
+
 def test_pruning_is_per_character_and_favorites_are_exempt(tmp_path: Path) -> None:
     store = VoiceRecordingStore(tmp_path, non_favorite_limit=2)
     first = store.commit(
@@ -67,7 +73,7 @@ def test_pruning_is_per_character_and_favorites_are_exempt(tmp_path: Path) -> No
         recording_id="record-0001",
         created_at=_stamp(1),
     )
-    store.set_favorite(first.recording_id, True)
+    _load_legacy_favorite(store, first)
     for index in range(2, 5):
         store.commit(
             _wav(tmp_path / f"{index}.wav", index),
@@ -134,7 +140,7 @@ def test_invalid_wav_is_rejected_without_recording(tmp_path: Path) -> None:
         assert getattr(error, "code", None) == "AUDIO_RECORDING_INVALID"
     else:
         raise AssertionError("invalid WAV was accepted")
-    assert not store.paths.voice_recordings_for("sakura").exists()
+    assert not store.recordings_for("sakura").exists()
 
 
 def test_trailing_dot_character_commits_through_windows_verbatim_root(tmp_path: Path) -> None:
@@ -154,7 +160,6 @@ def test_trailing_dot_character_commits_through_windows_verbatim_root(tmp_path: 
 
     assert not record.directory.parent.name.endswith((".", " "))
     assert record.character_id == "N.A.V.I."
-    assert store.latest_for_history("entry-navi-0001") == record
     playback = store.create_playback_copy(
         record.recording_id,
         generation_id="generation-navi",
@@ -175,7 +180,6 @@ def test_legacy_digest_is_ignored_and_invalid_audio_is_isolated(tmp_path: Path) 
     metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
     assert store.get(record.recording_id) == record
     assert store.scan_and_prune() == (record,)
-    assert store.set_favorite(record.recording_id, True).favorite
     # Equal byte length cannot make an invalid WAV healthy.
     record.audio_path.write_bytes(b"x" * record.byte_length)
     assert store.get(record.recording_id) is None
@@ -196,7 +200,7 @@ def test_size_cap_drops_the_oldest_non_favorite_and_keeps_the_new_line(tmp_path:
         recording_id="record-0001",
         created_at=_stamp(1),
     )
-    store.set_favorite(favorite.recording_id, True)
+    _load_legacy_favorite(store, favorite)
     older = store.commit(
         _wav(tmp_path / "old.wav", 2),
         character_id="sakura",
@@ -238,3 +242,29 @@ def test_truncated_wav_is_rejected_at_commit(tmp_path: Path) -> None:
         assert getattr(error, "code", None) == "AUDIO_RECORDING_INVALID"
     else:
         raise AssertionError("truncated WAV was accepted")
+
+
+def test_segment_queries_reuse_character_scan_across_writes_and_deletes(tmp_path, monkeypatch):
+    source = _wav(tmp_path / "source.wav")
+    store = VoiceRecordingStore(tmp_path, non_favorite_limit=1)
+    store.commit(source, character_id="a", history_entry_id="old", segment_index=0, provider="test")
+    store = VoiceRecordingStore(tmp_path, non_favorite_limit=1)
+    scanned = []
+    scan = store._scan_character_directory
+
+    def count(directory):
+        scanned.append(directory)
+        return scan(directory)
+
+    monkeypatch.setattr(store, "_scan_character_directory", count)
+    assert store.recorded_segments("a") == {("old", 0)}
+    assert store.for_segment("a", "old", 0)
+    new = store.commit(source, character_id="a", history_entry_id="new", segment_index=1, provider="test")
+    assert store.recorded_segments("a") == {("new", 1)}
+    assert not store.has_room("a")
+    store.delete(new.recording_id)
+    assert store.has_room("a")
+    store.commit(source, character_id="a", history_entry_id="last", segment_index=0, provider="test")
+    store.clear_character("a")
+    assert store.recorded_segments("a") == set()
+    assert scanned == [store.recordings_for("a")]
