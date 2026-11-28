@@ -177,6 +177,11 @@ def run():
             assert any(closed_height + 1 < height < heights[-1] - 1 for height in heights), heights
             expect(automatic.locator(".screen-observation-description")).to_have_text("正在阅读浏览器里的文章。")
             expect(automatic.get_by_role("button", name="展开", exact=False)).to_have_count(0)
+            for entry, ratio in ((automatic, 960 / 540),
+                                 (page.locator('article[data-entry-id="many-1"]'), 360 / 1100)):
+                thumbnail = entry.locator(".history-image-thumbnail")
+                box = thumbnail.bounding_box()
+                assert abs(box["width"] / box["height"] - ratio) < .01, "single images must retain their original proportions"
             auto_image = automatic.locator(".history-image-gallery").bounding_box()
             auto_column = automatic.locator(".entry-column").bounding_box()
             assert abs(auto_image["x"] + auto_image["width"] / 2 - auto_column["x"] - auto_column["width"] / 2) < 1
@@ -458,6 +463,10 @@ def run():
             page.wait_for_function("document.getAnimations().every(animation => animation.playState !== 'running')")
             expect(observation_album.locator(".screen-observation-description")).to_have_text("屏幕上同时打开了几个窗口。")
             expect(observation_album.get_by_role("button", name="展开", exact=False)).to_have_count(0)
+            for index, ratio in enumerate((6000 / 4000, 360 / 1100, 1)):
+                card = observation_album.locator(".image-album-card").nth(index)
+                actual = card.evaluate("el => parseFloat(el.style.width) / parseFloat(el.style.height)")
+                assert abs(actual - ratio) < .01, "screen observations must retain each screenshot's proportions"
             observation_front = observation_album.get_by_role("button", name="预览图片 1", exact=True)
             box = observation_front.bounding_box()
             page.mouse.move(box["x"] + box["width"] * .8, box["y"] + box["height"] / 2)
