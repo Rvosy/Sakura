@@ -1,0 +1,943 @@
+/*
+ * 模型服务页重构方案样式（严格复用 Sakura 主题变量与基础控件，仅作用于 .provider-redesign）
+ * 结构与视觉节奏对齐 #page-plugins（左列表容器 + 右详情面板），避免多层嵌套方框与多余分割线。
+ */
+
+/* ---------- 固定布局约束与非挤压式模型引用提醒 ---------- */
+
+#page-providers:has(.provider-redesign),
+#page-providers:has(.provider-redesign):has(.model-selection-warnings:not([hidden])) {
+  position: relative;
+  grid-template-rows: minmax(0, 1fr);
+}
+
+#page-providers:has(.provider-redesign) .model-selection-warnings:not([hidden]) {
+  position: absolute;
+  top: 0;
+  right: 0;
+  z-index: 40;
+  width: min(460px, 100%);
+  border-color: color-mix(in srgb, var(--sakura-accent) 34%, var(--sakura-border));
+  background: var(--surface-raised);
+  box-shadow: 0 12px 30px color-mix(in srgb, var(--sakura-text) 14%, transparent);
+}
+
+.provider-slot-alert {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  min-width: 0;
+  min-height: 28px;
+  margin-right: 10px;
+  padding: 0 10px;
+  border: 1px solid color-mix(in srgb, var(--sakura-accent) 36%, var(--hairline));
+  border-radius: 999px;
+  background: var(--surface-raised);
+  color: var(--sakura-accent);
+  font-size: 12px;
+  font-weight: var(--font-weight-medium);
+  white-space: nowrap;
+  box-shadow: none;
+  -webkit-app-region: no-drag;
+}
+
+.provider-slot-alert[hidden] {
+  display: none;
+}
+
+.provider-slot-alert:hover:not(:disabled),
+.provider-slot-alert[aria-expanded="true"] {
+  border-color: var(--sakura-accent);
+  background: color-mix(in srgb, var(--sakura-accent) 10%, var(--surface-raised));
+  transform: none;
+  box-shadow: none;
+}
+
+.provider-slot-alert .sakura-icon {
+  width: 13px;
+  height: 13px;
+}
+
+.provider-redesign {
+  display: grid;
+  grid-template-rows: minmax(0, 1fr);
+  min-height: 0;
+  height: 100%;
+}
+
+.provider-redesign .provider-workbench {
+  display: grid;
+  grid-template-columns: clamp(236px, 26.5%, 274px) minmax(0, 1fr);
+  gap: 14px;
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
+}
+
+/* ---------- 左侧服务列表 ---------- */
+
+.provider-redesign .provider-list-shell {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-md);
+  background: var(--surface-soft);
+  overflow: hidden;
+}
+
+.provider-redesign .provider-list-head {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 10px 4px;
+}
+
+.provider-redesign .provider-search-wrap {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+}
+
+.provider-redesign .provider-search-icon {
+  position: absolute;
+  left: 10px;
+  width: 14px;
+  height: 14px;
+  color: var(--sakura-muted-text);
+  pointer-events: none;
+}
+
+.provider-redesign .provider-search-input {
+  width: 100%;
+  max-width: none;
+  min-width: 0;
+  height: 34px;
+  padding: 6px 26px 6px 30px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-sm);
+  background: var(--surface-raised);
+  color: var(--sakura-text);
+  font: inherit;
+  font-size: 13px;
+  -webkit-user-select: text;
+  user-select: text;
+  transition: border-color var(--motion-base) var(--ease);
+}
+
+.provider-redesign .provider-search-input:focus {
+  outline: none;
+  border-color: var(--sakura-primary);
+}
+
+.provider-redesign .provider-search-clear {
+  position: absolute;
+  right: 4px;
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  min-width: 0;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--sakura-muted-text);
+  box-shadow: none;
+}
+
+.provider-redesign .provider-search-clear:hover:not(:disabled) {
+  background: var(--tint-faint);
+  color: var(--sakura-text);
+  transform: none;
+  box-shadow: none;
+}
+
+.provider-redesign .provider-search-clear .sakura-icon {
+  width: 12px;
+  height: 12px;
+}
+
+.provider-redesign .provider-add-btn {
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  min-width: 34px;
+  min-height: 34px;
+  padding: 0;
+}
+
+.provider-redesign .provider-add-btn .sakura-icon {
+  width: 16px;
+  height: 16px;
+}
+
+.provider-redesign .provider-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+  padding: 8px 10px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.provider-redesign .provider-card {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-width: 0;
+  padding: 10px 11px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-sm);
+  background: var(--surface-raised);
+  color: var(--sakura-text);
+  text-align: left;
+  box-shadow: none;
+  transition:
+    border-color var(--motion-base) var(--ease),
+    background-color var(--motion-base) var(--ease);
+}
+
+.provider-redesign .provider-card:hover {
+  border-color: color-mix(in srgb, var(--sakura-primary) 45%, var(--sakura-border));
+  transform: none;
+  box-shadow: none;
+}
+
+.provider-redesign .provider-card.is-selected {
+  border-color: var(--sakura-primary);
+  background: color-mix(in srgb, var(--sakura-primary) 9%, var(--surface-raised));
+}
+
+.provider-redesign .provider-card .provider-avatar {
+  width: 24px;
+  height: 24px;
+  flex-basis: 24px;
+}
+
+.provider-redesign .provider-card .provider-avatar-img {
+  width: 20px;
+  height: 20px;
+}
+
+.provider-redesign .provider-card .provider-avatar .icon-openai {
+  font-size: 20px;
+}
+
+.provider-redesign .provider-card-main {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.provider-redesign .provider-card-top {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.provider-redesign .provider-card-top strong {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13.5px;
+  font-weight: var(--font-weight-semibold);
+  line-height: 1.35;
+}
+
+.provider-redesign .provider-card-meta {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  color: var(--sakura-muted-text);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.provider-redesign .provider-card-host {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.provider-redesign .provider-card-models {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.provider-redesign .provider-list-empty {
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 10px;
+  flex: 1 1 auto;
+  padding: 24px 16px;
+  text-align: center;
+  color: var(--sakura-muted-text);
+  font-size: 13px;
+}
+
+.provider-redesign .provider-list-empty p {
+  margin: 0;
+}
+
+/* ---------- 右侧详情（对齐 #pluginDetail 的扁平呼吸布局） ---------- */
+
+.provider-redesign .provider-detail {
+  container-type: inline-size;
+  container-name: provider-detail;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+  padding: 20px 24px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--surface-raised) 82%, var(--sakura-panel-bg));
+}
+
+.provider-redesign .provider-detail-empty {
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 12px;
+  height: 100%;
+  padding: 32px;
+  text-align: center;
+  color: var(--sakura-muted-text);
+  font-size: 13.5px;
+}
+
+.provider-redesign .provider-detail-empty p {
+  margin: 0;
+}
+
+.provider-redesign .provider-detail-head {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px 16px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--hairline);
+}
+
+.provider-redesign .provider-detail-identity {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  flex: 1 1 220px;
+  min-width: 0;
+}
+
+.provider-redesign .provider-detail-identity .provider-avatar {
+  width: 28px;
+  height: 28px;
+  flex-basis: 28px;
+}
+
+.provider-redesign .provider-detail-identity .provider-avatar-img {
+  width: 24px;
+  height: 24px;
+}
+
+.provider-redesign .provider-detail-identity .provider-avatar .icon-openai {
+  font-size: 24px;
+}
+
+.provider-redesign .provider-detail-title {
+  margin: 0;
+  font-size: 20px;
+  font-weight: var(--font-weight-semibold);
+  line-height: 1.3;
+  color: var(--sakura-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.provider-redesign .provider-head-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
+.provider-redesign .provider-head-actions > button {
+  min-width: 0;
+  min-height: 34px;
+  padding: 6px 12px;
+  font-size: 13px;
+}
+
+/* ---------- 表单区：回归 Sakura .form-row 对齐，去掉外层嵌套框 ---------- */
+
+.provider-redesign .provider-form {
+  flex: 0 0 auto;
+  display: grid;
+  gap: 12px;
+}
+
+.provider-redesign .provider-form .form-row {
+  grid-template-columns: 76px minmax(0, 1fr);
+  gap: 14px;
+}
+
+@container provider-detail (max-width: 440px) {
+  .provider-redesign .provider-form .form-row {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 6px;
+  }
+}
+
+.provider-redesign .provider-form .form-row input[type="text"],
+.provider-redesign .provider-form .form-row input[type="password"] {
+  width: 100%;
+  max-width: none;
+  min-width: 0;
+  height: 36px;
+  padding: 7px 11px;
+  font-size: 13.5px;
+}
+
+.provider-redesign .provider-secret-wrap {
+  position: relative;
+  width: 100%;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+}
+
+.provider-redesign .provider-secret-wrap input {
+  padding-right: 36px !important;
+}
+
+.provider-redesign .provider-secret-toggle {
+  position: absolute;
+  right: 5px;
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  min-width: 0;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--sakura-muted-text);
+  box-shadow: none;
+}
+
+.provider-redesign .provider-secret-toggle:hover:not(:disabled) {
+  background: var(--tint-faint);
+  color: var(--sakura-text);
+  transform: none;
+  box-shadow: none;
+}
+
+/* ---------- 账号与额度（无嵌套方框） ---------- */
+
+.provider-redesign .provider-account-value {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+  color: var(--sakura-text);
+  font-size: 13.5px;
+}
+
+.provider-redesign .provider-quota-inline {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 12px 24px;
+  min-width: 0;
+}
+
+.provider-redesign .codex-quota-window {
+  display: grid;
+  gap: 5px;
+  font-size: 12px;
+}
+
+.provider-redesign .codex-quota-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--sakura-secondary-text);
+}
+
+.provider-redesign .codex-quota-heading strong {
+  color: var(--sakura-primary);
+  font-weight: var(--font-weight-medium);
+  font-variant-numeric: tabular-nums;
+}
+
+.provider-redesign .codex-quota-window progress {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 100%;
+  height: 5px;
+  border: 0;
+  border-radius: 999px;
+  overflow: hidden;
+  background: var(--tint-soft);
+}
+
+.provider-redesign .codex-quota-window progress::-webkit-progress-bar {
+  background: var(--tint-soft);
+}
+
+.provider-redesign .codex-quota-window progress::-webkit-progress-value {
+  background: var(--sakura-primary);
+  border-radius: 999px;
+}
+
+.provider-redesign .codex-quota-window progress::-moz-progress-bar {
+  background: var(--sakura-primary);
+}
+
+.provider-redesign .codex-quota-reset {
+  color: var(--sakura-muted-text);
+  font-size: 12px;
+}
+
+.provider-redesign .provider-text-action {
+  min-width: 0;
+  min-height: 0;
+  padding: 2px 6px;
+  border: 0;
+  background: transparent;
+  color: var(--sakura-primary);
+  font-size: 12px;
+  box-shadow: none;
+}
+
+.provider-redesign .provider-text-action:hover:not(:disabled) {
+  background: var(--tint-faint);
+  border: 0;
+  transform: none;
+  box-shadow: none;
+}
+
+.provider-redesign .provider-login {
+  padding: 12px 0 4px;
+  border: 0;
+  gap: 10px;
+}
+
+/* ---------- 模型区（直接承接，无双层框线与按钮框） ---------- */
+
+.provider-redesign .provider-models-section {
+  flex: 1 1 200px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  min-height: 180px;
+}
+
+.provider-redesign .provider-models-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+}
+
+.provider-redesign .provider-models-title {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 7px;
+}
+
+.provider-redesign .provider-models-title h3 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: var(--font-weight-semibold);
+  color: var(--sakura-text);
+}
+
+.provider-redesign .provider-models-count {
+  color: var(--sakura-muted-text);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.provider-redesign .provider-models-tools {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.provider-redesign .provider-filter-toggle {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  min-width: 32px;
+  min-height: 32px;
+  padding: 0;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--sakura-secondary-text);
+  box-shadow: none;
+}
+
+.provider-redesign .provider-filter-toggle:hover:not(:disabled),
+.provider-redesign .provider-filter-toggle[aria-pressed="true"] {
+  border-color: var(--hairline);
+  background: var(--surface-raised);
+  color: var(--sakura-primary);
+  transform: none;
+  box-shadow: none;
+}
+
+.provider-redesign .provider-filter-toggle .sakura-icon {
+  width: 15px;
+  height: 15px;
+}
+
+.provider-redesign .provider-model-filter {
+  width: 160px;
+  max-width: 100%;
+  height: 32px;
+  padding: 5px 10px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-sm);
+  background: var(--surface-raised);
+  color: var(--sakura-text);
+  font: inherit;
+  font-size: 12.5px;
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+.provider-redesign .provider-model-filter:focus {
+  outline: none;
+  border-color: var(--sakura-primary);
+}
+
+.provider-redesign .provider-models-tools .secondary-button {
+  min-width: 0;
+  height: 32px;
+  min-height: 32px;
+  padding: 0 12px;
+  font-size: 12.5px;
+}
+
+.provider-redesign .provider-model-list {
+  flex: 1 1 120px;
+  min-height: 112px;
+  max-height: 268px;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+  padding: 4px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-sm);
+  background: var(--surface-raised);
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.provider-redesign .provider-model-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-height: 36px;
+  padding: 4px 6px 4px 10px;
+  border-radius: 6px;
+  transition: background-color var(--motion-fast) var(--ease);
+}
+
+.provider-redesign .provider-model-row:hover {
+  background: var(--tint-faint);
+}
+
+.provider-redesign .provider-model-row.is-testing {
+  background: var(--tint-faint);
+}
+
+.provider-redesign .provider-model-main {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.provider-redesign .provider-model-row.has-probe-track .provider-model-main {
+  flex: 0 1 auto;
+}
+
+.provider-redesign .provider-model-id {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13.5px;
+  color: var(--sakura-text);
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+.provider-redesign .provider-model-note {
+  flex: 0 0 auto;
+  color: var(--sakura-muted-text);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.provider-redesign .provider-model-note.is-slot {
+  color: var(--sakura-primary);
+}
+
+.provider-redesign .provider-model-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  flex: 0 0 auto;
+}
+
+.provider-redesign .provider-model-actions .provider-icon-btn {
+  opacity: 0.45;
+  transition:
+    opacity var(--motion-fast) var(--ease),
+    background-color var(--motion-fast) var(--ease),
+    color var(--motion-fast) var(--ease);
+}
+
+.provider-redesign .provider-model-row:hover .provider-icon-btn,
+.provider-redesign .provider-model-row:focus-within .provider-icon-btn,
+.provider-redesign .provider-model-row.has-probe-state .provider-icon-btn:not(.is-danger) {
+  opacity: 1;
+}
+
+.provider-redesign .provider-icon-btn {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  min-width: 0;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--sakura-secondary-text);
+  box-shadow: none;
+}
+
+.provider-redesign .provider-icon-btn:hover:not(:disabled) {
+  background: var(--tint-soft);
+  color: var(--sakura-primary);
+  transform: none;
+  box-shadow: none;
+}
+
+.provider-redesign .provider-icon-btn.is-danger:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--sakura-accent) 12%, transparent);
+  color: var(--sakura-accent);
+}
+
+.provider-redesign .provider-icon-btn.is-passed {
+  color: color-mix(in srgb, #278655 86%, var(--sakura-text));
+}
+
+.provider-redesign .provider-icon-btn.is-passed:hover:not(:disabled) {
+  background: color-mix(in srgb, #278655 12%, transparent);
+  color: color-mix(in srgb, #278655 92%, var(--sakura-text));
+}
+
+.provider-redesign .provider-icon-btn.is-failed {
+  color: var(--sakura-accent);
+}
+
+.provider-redesign .provider-icon-btn.is-failed:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--sakura-accent) 12%, transparent);
+  color: var(--sakura-accent);
+}
+
+.provider-redesign .provider-icon-btn.is-working {
+  color: var(--sakura-primary);
+}
+
+.provider-redesign .provider-icon-btn .sakura-icon,
+.provider-redesign .provider-icon-btn .sakura-morph-icon {
+  width: 15px;
+  height: 15px;
+}
+
+/* 模型行内 M3 Expressive 波浪曲线测试轨道 + 右侧打勾收敛动效 */
+.provider-redesign .provider-probe-track {
+  flex: 1 1 72px;
+  min-width: 56px;
+  height: 14px;
+  margin-inline: 6px 2px;
+  display: flex;
+  align-items: center;
+  overflow: hidden;
+  animation: provider-track-in 0.14s var(--ease) both;
+}
+
+@keyframes provider-track-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.provider-redesign .provider-wavy-svg {
+  display: block;
+  width: 100%;
+  height: 14px;
+  overflow: visible;
+}
+
+.provider-redesign .provider-wavy-track {
+  stroke: color-mix(in srgb, var(--sakura-primary) 22%, transparent);
+}
+
+.provider-redesign .provider-wavy-active {
+  stroke: var(--sakura-primary);
+}
+
+.provider-redesign .provider-check-pop {
+  animation: provider-check-in 0.26s var(--ease) both;
+}
+
+@keyframes provider-check-in {
+  0% {
+    transform: scale(0.84);
+  }
+  58% {
+    transform: scale(1.1);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+.provider-redesign .provider-model-empty {
+  flex: 1 1 auto;
+  display: grid;
+  place-items: center;
+  padding: 18px;
+  color: var(--sakura-muted-text);
+  font-size: 13px;
+}
+
+.provider-redesign .provider-model-add {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.provider-redesign .provider-model-add input {
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: none;
+  height: 36px;
+  padding: 7px 11px;
+  font-size: 13.5px;
+}
+
+.provider-redesign .provider-model-add button {
+  flex: 0 0 auto;
+  min-width: 68px;
+  height: 36px;
+  min-height: 36px;
+  padding: 0 12px;
+  font-size: 13px;
+}
+
+/* ---------- 详情底栏（对齐 .plugin-detail-footer） ---------- */
+
+.provider-redesign .provider-detail-foot {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: auto;
+  padding: 16px 0 0;
+  border-top: 1px solid var(--hairline);
+}
+
+.provider-redesign .provider-detail-foot button {
+  min-width: 0;
+  padding-inline: 14px;
+}
+
+.provider-redesign .provider-detail-foot .provider-clear-models {
+  margin-right: auto;
+}
+
+/* ---------- 获取模型弹窗 ---------- */
+
+.provider-redesign-picker {
+  width: min(480px, calc(100vw - 40px));
+}
+
+.provider-redesign-picker .model-picker-search {
+  width: 100%;
+  max-width: none !important;
+  height: 34px;
+  padding: 6px 10px;
+  font-size: 13px;
+}
+
+.provider-redesign-picker .model-picker-list {
+  overflow-x: hidden;
+  padding-right: 4px;
+}
+
+.provider-redesign-picker .model-picker-item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+  width: 100%;
+  padding: 6px 4px;
+}
+
+.provider-redesign-picker .model-picker-item span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (max-width: 720px) {
+  .provider-redesign .provider-workbench {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: 220px minmax(0, 1fr);
+  }
+}

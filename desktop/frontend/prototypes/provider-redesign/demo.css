@@ -1,0 +1,232 @@
+@import url("../../assets/fonts/fonts.css");
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  font: 12px "Sakura Noto Sans SC", "Microsoft YaHei UI", "PingFang SC", sans-serif;
+  color: #27445a;
+  background: #e5eff5;
+}
+
+body[data-theme="dark"] {
+  background: #111822;
+  color: #e2ecf5;
+}
+
+body {
+  display: flex;
+  flex-direction: column;
+}
+
+.review-bar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px 16px;
+  min-height: 48px;
+  padding: 8px 18px;
+  border-bottom: 1px solid #cadde8;
+  background: #ffffff;
+}
+
+body[data-theme="dark"] .review-bar {
+  background: #1a2431;
+  border-bottom-color: #334559;
+}
+
+.review-brand {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  white-space: nowrap;
+}
+
+.review-brand strong {
+  font-size: 14px;
+  font-weight: 600;
+  color: #27445a;
+}
+
+.review-brand span {
+  font-size: 11.5px;
+  color: #6b8799;
+}
+
+body[data-theme="dark"] .review-brand strong {
+  color: #e2ecf5;
+}
+
+body[data-theme="dark"] .review-brand span {
+  color: #8ba0b8;
+}
+
+.review-controls {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.review-segment {
+  display: inline-flex;
+  padding: 2px;
+  border: 1px solid #cde0ea;
+  border-radius: 7px;
+  background: #eff6fa;
+  gap: 2px;
+}
+
+body[data-theme="dark"] .review-segment {
+  border-color: #384b60;
+  background: #141d28;
+}
+
+.review-bar button,
+.review-bar select {
+  font: inherit;
+  color: inherit;
+  border: 1px solid #c8dde8;
+  border-radius: 6px;
+  background: #f8fcfe;
+  padding: 5px 10px;
+  cursor: pointer;
+}
+
+body[data-theme="dark"] .review-bar button,
+body[data-theme="dark"] .review-bar select {
+  border-color: #3b4f64;
+  background: #222f3e;
+  color: #dce8f4;
+}
+
+.review-segment button {
+  border: 0;
+  background: transparent;
+  padding: 4px 10px;
+  border-radius: 5px;
+}
+
+.review-segment button[aria-pressed="true"] {
+  background: #ffffff;
+  color: #337ba4;
+  font-weight: 600;
+  box-shadow: 0 1px 3px rgba(39, 68, 90, 0.12);
+}
+
+body[data-theme="dark"] .review-segment button[aria-pressed="true"] {
+  background: #2f4257;
+  color: #8dc8e9;
+  box-shadow: none;
+}
+
+.review-bar button:hover:not([aria-pressed="true"]),
+.review-bar select:hover {
+  border-color: #4b9ac4;
+}
+
+.review-select-label {
+  color: #54768b;
+  font-size: 12px;
+}
+
+body[data-theme="dark"] .review-select-label {
+  color: #a9bcd1;
+}
+
+.review-stage {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  overflow: auto;
+}
+
+.review-stage[data-size="fill"] {
+  padding: 0;
+}
+
+.review-window-frame {
+  position: relative;
+  width: 1200px;
+  height: 800px;
+  max-width: 100%;
+  max-height: 100%;
+  border: 1px solid #b6d1df;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #f8fcfe;
+  box-shadow: 0 18px 44px rgba(24, 52, 74, 0.14);
+  transition: width 0.2s ease, height 0.2s ease, border-radius 0.2s ease;
+}
+
+body[data-theme="dark"] .review-window-frame {
+  border-color: #384c61;
+  background: #1c2532;
+  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.42);
+}
+
+.review-stage[data-size="min"] .review-window-frame {
+  width: 900px;
+  height: 720px;
+}
+
+.review-stage[data-size="fill"] .review-window-frame {
+  width: 100%;
+  height: 100%;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+#settingsFrame {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: 0;
+}
+
+#loadingOverlay {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: #f8fcfe;
+  color: #54768b;
+  font-size: 13px;
+}
+
+body[data-theme="dark"] #loadingOverlay {
+  background: #1c2532;
+  color: #a9bcd1;
+}
+
+#loadingOverlay[hidden] {
+  display: none;
+}
+
+.closed-state {
+  display: grid;
+  gap: 10px;
+  justify-items: center;
+}
+
+.closed-state p {
+  margin: 0;
+}
+
+@media (max-width: 1120px) {
+  .review-brand span {
+    display: none;
+  }
+}

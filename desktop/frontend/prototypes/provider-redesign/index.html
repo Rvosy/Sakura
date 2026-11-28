@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Sakura · 模型服务页重构 Demo</title>
+    <link rel="stylesheet" href="./demo.css" />
+  </head>
+  <body>
+    <header class="review-bar">
+      <div class="review-brand">
+        <strong>模型服务页重构 Demo</strong>
+        <span>复用设置主样式 · 内存模拟数据</span>
+      </div>
+      <div class="review-controls">
+        <div class="review-segment" role="group" aria-label="布局版本对比">
+          <button id="modeProposed" type="button" aria-pressed="true">重构方案</button>
+          <button id="modeOriginal" type="button" aria-pressed="false">现行原版</button>
+        </div>
+        <div class="review-segment" role="group" aria-label="窗口尺寸">
+          <button id="sizeDefault" type="button" aria-pressed="true">1200×800</button>
+          <button id="sizeMin" type="button" aria-pressed="false">900×720</button>
+          <button id="sizeFill" type="button" aria-pressed="false">铺满</button>
+        </div>
+        <div class="review-segment" role="group" aria-label="主题色">
+          <button id="themeLight" type="button" aria-pressed="true">浅色</button>
+          <button id="themeDark" type="button" aria-pressed="false">深色</button>
+        </div>
+        <label class="review-select-label" for="scenarioSelect">场景</label>
+        <select id="scenarioSelect">
+          <option value="typical">典型多服务（含长模型列表）</option>
+          <option value="minimal">少模型（1 服务 1 模型）</option>
+          <option value="broken">模型引用失效告警</option>
+          <option value="empty">空状态（尚未添加）</option>
+        </select>
+        <button id="resetButton" type="button">重置</button>
+      </div>
+    </header>
+    <main class="review-stage" data-size="default">
+      <div class="review-window-frame">
+        <iframe id="settingsFrame" title="Sakura 设置 · 模型服务"></iframe>
+        <div id="loadingOverlay" role="status">正在载入设置界面…</div>
+      </div>
+    </main>
+    <script type="module" src="./loader.js"></script>
+  </body>
+</html>
